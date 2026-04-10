@@ -1,0 +1,1547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WhatsApp Search</title>
+  <style>
+    :root {
+      --green: #00a884;
+      --green-dark: #005c4b;
+      --green-light: #d9fdd3;
+      --teal: #008069;
+      --teal-bg: #00a884;
+      --bg: #efeae2;
+      --bg-app: #f0f2f5;
+      --sidebar-bg: #fff;
+      --header-bg: #f0f2f5;
+      --text: #111b21;
+      --text2: #667781;
+      --border: #e9edef;
+      --hover: #f5f6f6;
+      --input-bg: #f0f2f5;
+      --msg-out: #d9fdd3;
+      --msg-in: #fff;
+      --shadow: rgba(0,0,0,0.06);
+      --pill-bg: #e1f3fb;
+      --pill-text: #667781;
+      --danger: #ea4335;
+      --blue: #027eb5;
+      --badge-bg: #25d366;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg-app); color: var(--text); height: 100vh; overflow: hidden; }
+    .app { display: flex; height: 100vh; max-width: 1600px; margin: 0 auto; box-shadow: 0 0 20px rgba(0,0,0,0.08); }
+
+    /* ── Sidebar ───────────────────────────────── */
+    .sidebar {
+      width: 420px; min-width: 340px; background: var(--sidebar-bg);
+      display: flex; flex-direction: column; border-right: 1px solid var(--border);
+      position: relative;
+    }
+    .sidebar-header {
+      padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
+      background: var(--header-bg); min-height: 56px;
+    }
+    .sidebar-header-left { display: flex; align-items: center; gap: 10px; }
+    .sidebar-header-left h1 { font-size: 20px; font-weight: 600; color: var(--text); }
+    .stored-badge {
+      display: flex; align-items: center; gap: 5px;
+      background: rgba(0,168,132,0.1); color: var(--green-dark);
+      font-size: 11px; font-weight: 500; padding: 3px 10px; border-radius: 12px;
+    }
+    .stored-badge svg { width: 12px; height: 12px; }
+    .sidebar-actions { display: flex; gap: 2px; }
+    .icon-btn {
+      width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent;
+      color: var(--text2); cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s;
+    }
+    .icon-btn:hover { background: var(--hover); }
+
+    .sidebar-search { padding: 6px 12px 8px; background: var(--header-bg); }
+    .search-wrap { position: relative; }
+    .search-wrap svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text2); }
+    .sidebar-search input {
+      width: 100%; background: #fff; border: none; border-radius: 8px;
+      padding: 8px 14px 8px 36px; font-size: 13px; color: var(--text); outline: none;
+    }
+    .sidebar-search input::placeholder { color: var(--text2); }
+
+    .chat-list { flex: 1; overflow-y: auto; scrollbar-width: thin; }
+    .chat-item {
+      display: flex; align-items: center; padding: 10px 16px; cursor: pointer;
+      gap: 14px; border-bottom: 1px solid var(--border); transition: background 0.1s;
+    }
+    .chat-item:hover { background: var(--hover); }
+    .chat-item.active { background: #f0f2f5; }
+    .chat-avatar {
+      width: 48px; height: 48px; border-radius: 50%; background: var(--teal-bg);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; color: #fff; font-weight: 500; flex-shrink: 0; text-transform: uppercase;
+    }
+    .chat-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .chat-meta-top { display: flex; align-items: center; justify-content: space-between; }
+    .chat-name { font-size: 16px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .chat-date { font-size: 12px; color: var(--text2); white-space: nowrap; margin-left: 8px; flex-shrink: 0; }
+    .chat-meta-bottom { display: flex; align-items: center; justify-content: space-between; }
+    .chat-participants { font-size: 13px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .chat-count-badge {
+      background: var(--badge-bg); color: #fff; font-size: 11px; font-weight: 600;
+      padding: 1px 7px; border-radius: 10px; min-width: 20px; text-align: center; flex-shrink: 0;
+    }
+    .sidebar-empty { text-align: center; padding: 48px 24px; color: var(--text2); font-size: 14px; line-height: 1.6; }
+
+    /* ── Menu dropdown ─────────────────────────── */
+    .menu-dropdown {
+      display: none; position: absolute; top: 50px; right: 8px;
+      background: #fff; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      min-width: 180px; z-index: 30; overflow: hidden;
+    }
+    .menu-dropdown.open { display: block; }
+    .menu-item { padding: 12px 20px; font-size: 14px; color: var(--text); cursor: pointer; display: flex; align-items: center; gap: 10px; }
+    .menu-item:hover { background: var(--hover); }
+    .menu-item svg { width: 16px; height: 16px; color: var(--text2); }
+    .menu-item.danger { color: var(--danger); }
+    .menu-item.danger svg { color: var(--danger); }
+
+    /* Chat-header dropdown */
+    .chat-header-actions { position: relative; display: flex; gap: 2px; }
+    .chat-menu-dropdown {
+      display: none; position: absolute; top: 36px; right: 0;
+      background: #fff; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      min-width: 170px; z-index: 30; overflow: hidden;
+    }
+    .chat-menu-dropdown.open { display: block; }
+
+    /* Confirm dialog */
+    .confirm-overlay {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.35); z-index: 100; align-items: center; justify-content: center;
+    }
+    .confirm-overlay.open { display: flex; }
+    .confirm-box {
+      background: #fff; border-radius: 12px; padding: 24px 28px; max-width: 360px; width: 90%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+    .confirm-box h4 { margin: 0 0 8px; font-size: 16px; color: var(--text); }
+    .confirm-box p { margin: 0 0 20px; font-size: 14px; color: var(--text2); line-height: 1.5; }
+    .confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
+    .confirm-actions button {
+      padding: 8px 20px; border-radius: 8px; border: none; font-size: 14px; cursor: pointer;
+    }
+    .btn-cancel { background: var(--hover); color: var(--text); }
+    .btn-cancel:hover { background: var(--border); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover { background: #d32f2f; }
+
+    /* ── Right Panel ───────────────────────────── */
+    .right { flex: 1; display: flex; flex-direction: column; background: var(--bg); position: relative; }
+
+    /* Global search bar — always visible */
+    .global-search {
+      background: var(--header-bg); padding: 8px 16px;
+      display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); z-index: 3;
+    }
+    .global-search .gs-wrap { flex: 1; position: relative; display: flex; align-items: center; }
+    .global-search .gs-wrap svg { position: absolute; left: 12px; width: 16px; height: 16px; color: var(--text2); pointer-events: none; }
+    .global-search input {
+      width: 100%; background: #fff; border: none; border-radius: 8px;
+      padding: 9px 14px 9px 36px; font-size: 14px; color: var(--text); outline: none;
+    }
+    .global-search input::placeholder { color: var(--text2); }
+    .global-search input:focus { box-shadow: 0 0 0 1.5px var(--green); }
+    .global-search select {
+      background: #fff; border: 1px solid var(--border); border-radius: 8px;
+      padding: 7px 8px; font-size: 12px; color: var(--text); outline: none; cursor: pointer;
+    }
+    .search-go {
+      background: var(--green); color: #fff; border: none; border-radius: 8px;
+      padding: 8px 18px; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap;
+    }
+    .search-go:hover { background: var(--green-dark); }
+    .search-go:disabled { opacity: 0.5; cursor: not-allowed; }
+    .search-clear-btn {
+      background: transparent; border: 1px solid var(--border); border-radius: 8px;
+      padding: 7px 12px; font-size: 13px; cursor: pointer; color: var(--text2); display: none;
+    }
+    .search-clear-btn.visible { display: block; }
+    .search-clear-btn:hover { background: var(--hover); }
+
+    /* Chat header */
+    .chat-header {
+      background: var(--header-bg); padding: 10px 16px; display: flex; align-items: center;
+      gap: 14px; border-bottom: 1px solid var(--border); min-height: 52px; z-index: 2;
+    }
+    .chat-header-info { flex: 1; min-width: 0; }
+    .chat-header-info h3 { font-size: 16px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .chat-header-info span { font-size: 13px; color: var(--text2); }
+
+    /* Messages */
+    .messages-area {
+      flex: 1; overflow-y: auto; padding: 8px 60px; display: flex; flex-direction: column;
+      z-index: 1; scrollbar-width: thin;
+    }
+    .date-sep { text-align: center; margin: 12px 0; }
+    .date-sep span {
+      background: var(--pill-bg); color: var(--pill-text); font-size: 12px;
+      padding: 5px 12px; border-radius: 8px; text-transform: uppercase; font-weight: 500; letter-spacing: 0.3px;
+    }
+    .bubble {
+      max-width: 60%; padding: 6px 8px 3px; margin: 1px 0; border-radius: 8px;
+      box-shadow: 0 1px 1px var(--shadow); line-height: 1.4; word-wrap: break-word;
+    }
+    .bubble.in { background: var(--msg-in); align-self: flex-start; border-top-left-radius: 0; }
+    .bubble.out { background: var(--msg-out); align-self: flex-end; border-top-right-radius: 0; }
+    .bubble .sender { font-size: 12.5px; font-weight: 500; margin-bottom: 2px; }
+    .bubble .text { font-size: 14px; white-space: pre-wrap; }
+    .bubble .time { font-size: 11px; color: var(--text2); text-align: right; margin-top: 2px; }
+    .bubble .media-badge { font-size: 12px; color: var(--text2); font-style: italic; }
+
+    /* Panels */
+    .panel { display: none; flex-direction: column; height: 100%; z-index: 1; }
+    .panel.visible { display: flex; }
+
+    /* Welcome */
+    .welcome-panel {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100%; text-align: center; padding: 40px; z-index: 1;
+    }
+    .welcome-icon { width: 200px; height: 200px; margin-bottom: 28px; opacity: 0.15; }
+    .welcome-panel h2 { font-size: 28px; font-weight: 300; margin-bottom: 12px; }
+    .welcome-panel p { font-size: 14px; color: var(--text2); max-width: 500px; line-height: 1.7; }
+    .welcome-panel .lock-note { margin-top: 24px; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text2); }
+    .welcome-panel .lock-note svg { width: 14px; height: 14px; }
+
+    /* Search results — displayed as right panel alongside chat */
+    #panel-search {
+      position: absolute; top: 0; right: 0; bottom: 0;
+      width: 420px; max-width: 45%;
+      border-left: 1px solid var(--border);
+      background: #f8f9fb;
+      flex-direction: column;
+      z-index: 5;
+      box-shadow: -2px 0 12px rgba(0,0,0,0.07);
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
+    }
+    #panel-search.visible {
+      display: flex;
+      transform: translateX(0);
+    }
+    /* Search panel header */
+    .search-panel-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--header);
+      flex-shrink: 0;
+    }
+    .search-panel-header h4 { flex: 1; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .search-panel-header .close-search {
+      background: none; border: none; cursor: pointer; padding: 4px;
+      color: var(--text2); border-radius: 50%; display: flex; align-items: center;
+    }
+    .search-panel-header .close-search:hover { background: var(--hover); }
+
+    .search-results-panel { flex: 1; overflow-y: auto; padding: 16px; }
+    .sr-header { margin-bottom: 12px; }
+    .sr-header h3 { font-size: 14px; font-weight: 600; }
+    .sr-header span { font-size: 11px; color: var(--text2); }
+    .answer-card {
+      background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 14px;
+      line-height: 1.65; font-size: 13.5px; white-space: pre-wrap;
+      box-shadow: 0 1px 3px var(--shadow); border-left: 3px solid var(--green);
+    }
+    .sources h4 { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
+    .src-item { background: #fff; border-radius: 8px; padding: 10px 12px; margin-bottom: 5px; font-size: 12.5px; box-shadow: 0 1px 2px var(--shadow); cursor: pointer; }
+    .src-item:hover { background: #f0f7f5; }
+    .src-item .meta { font-size: 10.5px; color: var(--text2); margin-bottom: 3px; }
+    .search-loading { display: none; align-items: center; justify-content: center; gap: 10px; padding: 40px; color: var(--text2); }
+    .search-loading.visible { display: flex; }
+    .spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--green); border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Overlay Panels */
+    .overlay-panel {
+      display: none; position: absolute; inset: 0; background: #fff;
+      z-index: 10; flex-direction: column; animation: slideIn 0.2s ease;
+    }
+    .overlay-panel.open { display: flex; }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .overlay-header {
+      padding: 14px 16px; display: flex; align-items: center; gap: 14px;
+      background: var(--teal-bg); min-height: 56px;
+    }
+    .overlay-header h2 { font-size: 18px; font-weight: 500; color: #fff; }
+    .overlay-close {
+      width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent;
+      color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 20px;
+    }
+    .overlay-close:hover { background: rgba(255,255,255,0.15); }
+    .overlay-body { flex: 1; overflow-y: auto; padding: 24px 20px; background: var(--bg-app); }
+
+    /* Import */
+    .drop-zone {
+      width: 100%; border: 2px dashed var(--border); border-radius: 12px; padding: 36px 24px;
+      text-align: center; cursor: pointer; background: #fff; transition: all 0.2s; margin-bottom: 16px;
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: var(--green); background: rgba(0,168,132,0.04); }
+    .drop-zone h3 { font-size: 15px; margin: 8px 0 4px; }
+    .drop-zone p { color: var(--text2); font-size: 13px; }
+    .drop-zone input { display: none; }
+    .import-result { background: #fff; border-radius: 8px; padding: 14px 18px; display: none; margin-bottom: 16px; border-left: 3px solid var(--green); box-shadow: 0 1px 3px var(--shadow); }
+    .import-result.visible { display: block; }
+    .import-result h4 { color: var(--green-dark); font-size: 14px; margin-bottom: 4px; }
+    .import-result p { color: var(--text2); font-size: 13px; white-space: pre-wrap; }
+    .import-guide { background: #fff; border-radius: 10px; padding: 16px 18px; margin-bottom: 12px; box-shadow: 0 1px 3px var(--shadow); }
+    .import-guide h3 { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+    .import-guide ol { padding-left: 18px; font-size: 13px; color: var(--text2); line-height: 1.9; }
+    .import-guide p { font-size: 13px; color: var(--text2); line-height: 1.6; }
+    .import-guide a { color: var(--blue); }
+    .import-guide code { background: var(--hover); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+    .warn-text { margin-top: 6px; font-size: 12px; color: #e67e22; }
+
+    /* Settings */
+    .setting-group { background: #fff; border-radius: 8px; padding: 18px; margin-bottom: 14px; box-shadow: 0 1px 3px var(--shadow); }
+    .setting-group h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+    .setting-group p { font-size: 13px; color: var(--text2); margin-bottom: 10px; line-height: 1.5; }
+    .setting-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    .setting-row label { font-size: 13px; color: var(--text2); min-width: 80px; }
+    .setting-row select, .setting-row input[type="text"], .setting-row input[type="password"] {
+      flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+      font-size: 13px; outline: none; min-width: 200px; background: #fff; color: var(--text);
+    }
+    .setting-row select:focus, .setting-row input:focus { border-color: var(--green); }
+    .btn { padding: 8px 18px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 500; }
+    .btn-primary { background: var(--green); color: #fff; }
+    .btn-primary:hover { background: var(--green-dark); }
+    .btn-secondary { background: var(--hover); color: var(--text); }
+    .health-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .health-dot.ok { background: #4caf50; }
+    .health-dot.fail { background: var(--danger); }
+    .health-dot.warn { background: #f59e0b; }
+  @keyframes sync-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .health-dot.unknown { background: #999; }
+    .install-steps { padding-left: 20px; font-size: 13px; line-height: 2; }
+    .install-steps code { background: var(--hover); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+    .install-steps a { color: var(--blue); }
+    #s-hint { font-size: 12px; color: var(--text2); margin-top: 4px; display: none; }
+    #s-hint a { color: var(--blue); }
+
+    /* ── Onboarding Modal ─────────────────────── */
+    .ob-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      z-index: 200; align-items: center; justify-content: center;
+      animation: fadeIn 0.3s ease;
+    }
+    .ob-overlay.open { display: flex; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .ob-card {
+      background: #fff; border-radius: 16px; width: 480px; max-width: 92vw;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.25); overflow: hidden;
+      animation: slideUp 0.35s ease;
+    }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+    .ob-header {
+      padding: 16px 20px 12px; display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+    }
+    .ob-header h3 { font-size: 14px; font-weight: 600; color: var(--text); }
+    .ob-header span { font-size: 12px; color: var(--text2); }
+    .ob-steps { display: flex; gap: 6px; padding: 0 20px; margin-top: 16px; }
+    .ob-step-dot {
+      flex: 1; height: 4px; border-radius: 2px; background: var(--border); transition: background 0.3s;
+    }
+    .ob-step-dot.active { background: var(--green); }
+    .ob-step-dot.done { background: var(--green-dark); }
+    .ob-body { padding: 28px 24px 20px; text-align: center; min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .ob-body h2 { font-size: 22px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
+    .ob-body .ob-subtitle { font-size: 13px; color: var(--text2); margin-bottom: 20px; }
+    .ob-body .ob-desc { font-size: 14px; color: var(--text); line-height: 1.7; max-width: 400px; margin-bottom: 20px; }
+    .ob-features { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-top: 8px; }
+    .ob-feat {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      background: var(--bg-app); border-radius: 12px; padding: 16px 14px; min-width: 120px; flex: 1;
+    }
+    .ob-feat-icon { font-size: 28px; }
+    .ob-feat-label { font-size: 12px; font-weight: 600; color: var(--text); }
+    .ob-feat-desc { font-size: 11px; color: var(--text2); }
+    .ob-steps-list { text-align: left; width: 100%; max-width: 380px; }
+    .ob-step-item {
+      display: flex; align-items: flex-start; gap: 12px; padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .ob-step-item:last-child { border-bottom: none; }
+    .ob-step-num {
+      width: 28px; height: 28px; border-radius: 50%; background: var(--green);
+      color: #fff; font-size: 13px; font-weight: 600;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .ob-step-text { font-size: 13px; color: var(--text); line-height: 1.5; padding-top: 3px; }
+    .ob-step-text strong { color: var(--green-dark); }
+    .ob-footer {
+      padding: 14px 20px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .ob-skip { background: none; border: none; color: var(--text2); font-size: 13px; cursor: pointer; padding: 6px 0; }
+    .ob-skip:hover { color: var(--text); }
+    .ob-next {
+      background: var(--green); color: #fff; border: none; border-radius: 8px;
+      padding: 9px 24px; font-size: 14px; font-weight: 500; cursor: pointer;
+    }
+    .ob-next:hover { background: var(--green-dark); }
+
+    /* ── Model Download Banner ─────────────────── */
+    .pull-banner {
+      display: none; background: #fff8e1; padding: 10px 16px;
+      border-bottom: 1px solid #ffe082; z-index: 5;
+      animation: fadeIn 0.3s ease;
+    }
+    .pull-banner.visible { display: block; }
+    .pull-banner.error { background: #fce4ec; border-color: #ef9a9a; }
+    .pull-banner.done { background: #e8f5e9; border-color: #a5d6a7; }
+    .pb-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .pb-icon { font-size: 18px; flex-shrink: 0; }
+    .pb-text { flex: 1; }
+    .pb-text strong { font-size: 13px; color: var(--text); }
+    .pb-text span { font-size: 12px; color: var(--text2); display: block; margin-top: 1px; }
+    .pb-pct { font-size: 13px; font-weight: 600; color: var(--text); min-width: 40px; text-align: right; }
+    .pb-bar { width: 100%; height: 4px; background: #ffe082; border-radius: 2px; overflow: hidden; }
+    .pull-banner.done .pb-bar { background: #a5d6a7; }
+    .pb-fill {
+      height: 100%; background: #f9a825; border-radius: 2px; transition: width 0.4s ease;
+      width: 0%;
+    }
+    .pull-banner.done .pb-fill { background: #43a047; }
+
+    /* ── Import Progress Bar ──────────────────── */
+    .import-progress { display: none; margin-bottom: 16px; }
+    .import-progress.visible { display: block; }
+    .ip-card {
+      background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 4px var(--shadow);
+    }
+    .ip-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .ip-icon { font-size: 24px; }
+    .ip-text h4 { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+    .ip-text span { font-size: 12px; color: var(--text2); }
+    .ip-bar {
+      width: 100%; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;
+    }
+    .ip-fill {
+      height: 100%; background: linear-gradient(90deg, var(--green), var(--green-dark));
+      border-radius: 3px; transition: width 0.4s ease;
+      width: 0%;
+    }
+    .ip-fill.indeterminate {
+      width: 30%; animation: ipSlide 1.2s ease-in-out infinite;
+    }
+    @keyframes ipSlide {
+      0% { margin-left: 0; }
+      50% { margin-left: 70%; }
+      100% { margin-left: 0; }
+    }
+    .ip-phase { font-size: 11px; color: var(--text2); margin-top: 8px; text-align: right; }
+
+    @media (max-width: 768px) {
+      .sidebar { width: 100%; position: absolute; z-index: 20; height: 100vh; }
+      .sidebar.hidden { display: none; }
+      .messages-area { padding: 8px 16px; }
+      .bubble { max-width: 85%; }
+      .global-search select { display: none; }
+    }
+  </style>
+</head>
+<body>
+<div id="app" class="app">
+
+  <!-- Sidebar -->
+  <div id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-header-left">
+        <h1>Chats</h1>
+        <div class="stored-badge">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
+          stored locally
+        </div>
+      </div>
+      <div class="sidebar-actions">
+        <button class="icon-btn" id="btn-import" title="Import chats">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-menu" title="Menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+        </button>
+      </div>
+    </div>
+    <!-- WhatsApp connection banner — click to show QR in main panel -->
+    <div id="wa-banner" style="display:none;padding:6px 16px;background:#fff3cd;font-size:12px;color:#856404;cursor:pointer;display:flex;align-items:center;gap:6px;" onclick="showEmptyPanel();">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.890-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+      <span id="wa-banner-text">Tap to connect WhatsApp</span>
+    </div>
+    <div class="sidebar-search">
+      <div class="search-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="filter" placeholder="Search imported chats..." />
+      </div>
+    </div>
+    <div id="chat-list" class="chat-list"></div>
+
+    <!-- Menu dropdown (positioned relative to sidebar) -->
+    <div class="menu-dropdown" id="sidebar-menu">
+      <div class="menu-item" id="menu-import">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Import chats
+      </div>
+      <div class="menu-item" id="menu-settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        Settings
+      </div>
+    </div>
+  </div>
+
+  <!-- Right panel -->
+  <div class="right">
+
+    <!-- Model download progress banner -->
+    <div class="pull-banner" id="pull-banner">
+      <div class="pb-row">
+        <div class="pb-icon" id="pb-icon">&#11015;&#65039;</div>
+        <div class="pb-text">
+          <strong id="pb-title">Downloading model...</strong>
+          <span id="pb-detail">This may take a few minutes</span>
+        </div>
+        <div class="pb-pct" id="pb-pct">0%</div>
+      </div>
+      <div class="pb-bar"><div class="pb-fill" id="pb-fill"></div></div>
+    </div>
+
+    <!-- Global search bar — always visible -->
+    <div class="global-search">
+      <div class="gs-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="q" placeholder="Ask AI anything about your chats..." />
+      </div>
+      <select id="q-media">
+        <option value="">All types</option>
+        <option value="image">Images</option>
+        <option value="video">Videos</option>
+        <option value="audio">Audio</option>
+        <option value="document">Docs</option>
+      </select>
+      <button class="search-go" id="q-btn">Search</button>
+      <button class="search-clear-btn" id="q-clear">Back</button>
+    </div>
+
+    <div class="content-area" style="flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;">
+
+      <!-- Welcome / QR connect panel -->
+      <div id="panel-empty" class="panel visible">
+        <!-- QR connect state — shown when WA not yet linked -->
+        <div id="welcome-qr" class="welcome-panel" style="display:none;">
+          <div style="width:52px;height:52px;background:#00a884;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="white"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.890-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          </div>
+          <h2 style="margin-bottom:4px;">Link WhatsApp</h2>
+          <p style="color:var(--text2);margin-bottom:20px;">Scan the QR code with your phone to sync chats</p>
+
+          <!-- QR image box -->
+          <div id="wqr-box" style="position:relative;display:inline-block;margin-bottom:12px;">
+            <img id="wqr-img" src="" alt="QR Code" style="width:256px;height:256px;border:1px solid var(--border);border-radius:12px;display:block;" />
+            <!-- Refreshing overlay — shown briefly while new QR is fetched -->
+            <div id="wqr-refreshing" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,0.75);border-radius:12px;align-items:center;justify-content:center;">
+              <div class="spinner"></div>
+            </div>
+            <!-- Loading overlay — shown while Puppeteer is starting -->
+            <div id="wqr-loading" style="position:absolute;inset:0;background:rgba(255,255,255,0.95);border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;">
+              <div class="spinner"></div>
+              <span style="font-size:13px;color:var(--text2);" id="wqr-loading-text">Starting WhatsApp…</span>
+            </div>
+          </div>
+
+          <!-- Subtle status line replacing the countdown -->
+          <p id="wqr-status-line" style="font-size:11px;color:var(--text2);margin-bottom:16px;">QR refreshes automatically</p>
+
+          <p style="font-size:12px;color:var(--text2);margin-bottom:20px;">
+            On your phone: <strong>WhatsApp → ⋮ → Linked Devices → Link a Device</strong>
+          </p>
+
+          <div class="lock-note">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
+            Session saved locally — scan once, stays linked across restarts.
+          </div>
+        </div>
+
+        <!-- Sync progress panel — shown during history sync -->
+        <div id="sync-progress-panel" style="display:none;padding:32px 40px;max-width:420px;width:100%;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+            <div style="width:40px;height:40px;background:#e7f8f2;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            </div>
+            <div>
+              <div style="font-weight:600;font-size:15px;color:var(--text);">Syncing chat history</div>
+              <div style="font-size:12px;color:var(--text2);" id="sync-detail">Starting…</div>
+            </div>
+          </div>
+          <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden;margin-bottom:10px;">
+            <div id="sync-bar" style="height:100%;background:#00a884;border-radius:4px;width:0%;transition:width 0.4s ease;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);">
+            <span id="sync-pct">0%</span>
+            <span id="sync-msgs">0 messages</span>
+          </div>
+          <p style="font-size:11px;color:var(--text2);margin-top:16px;">A summary will be sent to your WhatsApp when done. You can start searching now.</p>
+        </div>
+
+        <!-- Default welcome — shown once WA is connected or user has imported chats -->
+        <div id="welcome-default" class="welcome-panel">
+          <svg class="welcome-icon" viewBox="0 0 303 172" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path fill-rule="evenodd" clip-rule="evenodd" d="M229.565 160.229c32.647-16.884 55.022-50.77 55.022-90.229C284.587 31.59 253.107 0 213.87 0c-30.759 0-57.14 19.337-67.108 46.525C136.794 19.337 110.413 0 79.653 0 40.417 0 8.937 31.59 8.937 70c0 39.46 22.375 73.345 55.022 90.229L151.5 172l78.065-11.771z" fill="#d4dbe0"/>
+          </svg>
+          <h2>WhatsApp Search</h2>
+          <p>Select a chat from the left, or search your chats with AI.<br>Click <strong>+</strong> to import more chat exports.</p>
+          <div class="lock-note">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
+            Your messages stay on your device. Only search queries go to the AI you choose.
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat view -->
+      <div id="panel-chat" class="panel">
+        <div class="chat-header">
+          <div class="chat-avatar" id="cv-avatar"></div>
+          <div class="chat-header-info">
+            <h3 id="cv-name"></h3>
+            <span id="cv-info"></span>
+          </div>
+          <div class="chat-header-actions">
+            <button class="icon-btn" id="btn-chat-menu" title="More options">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+            </button>
+            <div class="chat-menu-dropdown" id="chat-menu">
+              <div class="menu-item danger" id="menu-delete-chat">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                Delete chat
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="cv-messages" class="messages-area"></div>
+      </div>
+
+      <!-- Search results panel — slides in from right, overlays chat -->
+      <div id="panel-search" class="panel">
+        <div class="search-panel-header">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <h4 id="search-panel-title">Search results</h4>
+          <button class="close-search" id="btn-close-search" title="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div id="search-loading" class="search-loading"><div class="spinner"></div><span>Searching…</span></div>
+        <div id="search-results" class="search-results-panel"></div>
+      </div>
+    </div>
+
+    <!-- Import overlay -->
+    <div class="overlay-panel" id="overlay-import">
+      <div class="overlay-header">
+        <button class="overlay-close" id="close-import">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Import Chats</h2>
+      </div>
+      <div class="overlay-body">
+        <div class="drop-zone" id="drop-zone">
+          <div style="font-size:36px;opacity:0.4;">&#128194;</div>
+          <h3>Drop files here or click to browse</h3>
+          <p>Accepts .zip or .txt &bull; Select multiple files</p>
+          <input type="file" id="file-input" accept=".zip,.txt" multiple />
+        </div>
+        <div id="import-loading" class="search-loading"><div class="spinner"></div><span>Importing...</span></div>
+        <div class="import-progress" id="import-progress">
+          <div class="ip-card">
+            <div class="ip-header">
+              <div class="ip-icon" id="ip-icon">&#128196;</div>
+              <div class="ip-text"><h4 id="ip-title">Importing chat...</h4><span id="ip-subtitle">Please wait</span></div>
+            </div>
+            <div class="ip-bar"><div class="ip-fill" id="ip-fill"></div></div>
+            <div class="ip-phase" id="ip-phase">Uploading...</div>
+          </div>
+        </div>
+        <div id="import-result" class="import-result"><h4 id="imp-title"></h4><p id="imp-text"></p></div>
+        <div class="import-guide">
+          <h3>&#128241; Export from WhatsApp</h3>
+          <ol><li>Open a chat &rarr; tap <strong>&#8942;</strong> &rarr; <strong>More</strong> &rarr; <strong>Export chat</strong></li><li>Choose <strong>Without media</strong> or <strong>Include media</strong></li><li>Save the .zip &rarr; drag it here</li></ol>
+        </div>
+        <div class="import-guide">
+          <h3>&#9729;&#65039; Google Drive</h3>
+          <ol><li>Open <a href="https://drive.google.com" target="_blank">drive.google.com</a></li><li>Search <code>WhatsApp Chat</code></li><li>Download .zip/.txt &rarr; upload here</li></ol>
+          <p class="warn-text">&#9888; Encrypted backups (crypt14) can't be read. Only exported .txt/.zip work.</p>
+        </div>
+        <div class="import-guide">
+          <h3>&#128268; Chrome Extension</h3>
+          <ol><li>Open <code>chrome://extensions</code> &rarr; <strong>Developer mode</strong></li><li><strong>Load unpacked</strong> &rarr; select <code>extension/</code></li><li>Open <a href="https://web.whatsapp.com" target="_blank">web.whatsapp.com</a></li></ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings overlay -->
+    <div class="overlay-panel" id="overlay-settings">
+      <div class="overlay-header">
+        <button class="overlay-close" id="close-settings">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Settings</h2>
+      </div>
+      <div class="overlay-body">
+        <div class="setting-group">
+          <h3>Search AI Model</h3>
+          <p>Used for search queries — pick a fast, smart cloud model for best results.</p>
+          <div class="setting-row"><label>Provider</label><select id="s-provider"><option value="groq">Groq — Fast Llama (Free)</option><option value="gemini">Google Gemini (Free)</option><option value="ollama">Ollama (Local, Free)</option><option value="openai">OpenAI</option><option value="claude">Anthropic Claude</option><option value="grok">Grok / xAI (Free Tier)</option></select></div>
+          <div class="setting-row" id="s-key-row" style="align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><textarea id="s-key" rows="3" placeholder="Paste one key per line, or comma-separated. Multiple keys are rotated automatically." style="flex:1;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea></div>
+          <div class="setting-row"><label>Model</label><select id="s-model"></select></div>
+          <div class="setting-row" style="gap:12px;"><button class="btn btn-primary" id="s-save">Save & Connect</button><span id="s-status"></span></div>
+          <div id="s-hint"></div>
+        </div>
+        <div class="setting-group">
+          <h3>Summary AI Model</h3>
+          <p>Used for daily summaries (background task). A local/free model works great here.</p>
+          <div class="setting-row"><label>Provider</label>
+            <select id="ss-provider">
+              <option value="same">Same as Search</option>
+              <option value="ollama">Ollama (Local, Free)</option>
+              <option value="groq">Groq — Fast Llama (Free)</option>
+              <option value="gemini">Google Gemini (Free)</option>
+              <option value="openai">OpenAI</option>
+              <option value="claude">Anthropic Claude</option>
+              <option value="grok">Grok / xAI (Free Tier)</option>
+            </select>
+          </div>
+          <div class="setting-row" id="ss-key-row" style="display:none;align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><textarea id="ss-key" rows="3" placeholder="Paste one key per line, or comma-separated. Multiple keys are rotated automatically." style="flex:1;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea></div>
+          <div class="setting-row" id="ss-model-row" style="display:none;"><label>Model</label><select id="ss-model"></select></div>
+          <div class="setting-row" style="gap:12px;"><button class="btn btn-secondary" id="ss-save">Save Summary Provider</button><span id="ss-status"></span></div>
+          <div id="ss-hint" style="font-size:11px;color:var(--text2);margin-top:4px;">Tip: Use Ollama (local, free) for summaries and a cloud model for search to save on API costs.</div>
+        </div>
+        <div class="setting-group">
+          <h3>WhatsApp Connection</h3>
+          <p>Link your phone as a WhatsApp Web device. Scan once — session is saved automatically.</p>
+          <div class="setting-row" style="margin-bottom:8px;">
+            <span class="health-dot" id="wa-dot"></span>
+            <span id="wa-status-text">Initialising…</span>
+            <button class="btn btn-secondary" id="wa-logout-btn" style="display:none;margin-left:auto;">Logout</button>
+          </div>
+          <!-- QR code panel — shown only when QR_READY -->
+          <div id="wa-qr-panel" style="display:none;text-align:center;padding:16px 0;">
+            <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Open WhatsApp → Linked Devices → Link a Device</p>
+            <img id="wa-qr-img" src="" alt="QR Code" style="width:240px;height:240px;border:1px solid var(--border);border-radius:8px;" />
+            <p style="font-size:11px;color:var(--text2);margin-top:8px;">QR refreshes automatically every ~20 seconds</p>
+          </div>
+          <div id="wa-ready-panel" style="display:none;padding:8px 0;">
+            <div style="display:flex;align-items:center;gap:8px;color:#00a884;font-weight:600;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span id="wa-ready-msg">Connected</span>
+            </div>
+            <p style="font-size:12px;color:var(--text2);margin-top:6px;">Messages sync automatically. History is loaded on first connect.</p>
+          </div>
+        </div>
+        <div class="setting-group">
+          <h3>Data</h3>
+          <p>All data stored locally in SQLite.</p>
+          <div class="setting-row"><span>Messages: <strong id="stat-msgs">0</strong></span><span style="margin-left:20px;">Chats: <strong id="stat-chats">0</strong></span><span style="margin-left:20px;">Summaries: <strong id="stat-sums">0</strong></span></div>
+          <div class="setting-row" style="margin-top:8px;">
+            <button class="btn btn-secondary" id="gen-summaries">Generate Summaries</button>
+            <button class="btn btn-secondary" id="regen-summaries" style="background:#fff3cd;color:#856404;">Regenerate All</button>
+            <span id="sum-status" style="font-size:12px;color:var(--text2);"></span>
+          </div>
+          <p style="font-size:11px;color:var(--text2);margin-top:4px;">Regenerate All: clears existing summaries and rebuilds with improved prompt (captures tone, arguments, emotions).</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Onboarding walkthrough -->
+<div class="ob-overlay" id="onboarding">
+  <div class="ob-card">
+    <div class="ob-header">
+      <h3>WhatsApp Search &mdash; Getting Started</h3>
+      <span id="ob-counter">Step 1 of 4</span>
+    </div>
+    <div class="ob-steps">
+      <div class="ob-step-dot active" data-step="0"></div>
+      <div class="ob-step-dot" data-step="1"></div>
+      <div class="ob-step-dot" data-step="2"></div>
+      <div class="ob-step-dot" data-step="3"></div>
+    </div>
+    <div class="ob-body" id="ob-body"></div>
+    <div class="ob-footer">
+      <button class="ob-skip" id="ob-skip">Skip</button>
+      <button class="ob-next" id="ob-next">Next</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete confirmation dialog -->
+<div class="confirm-overlay" id="confirm-delete">
+  <div class="confirm-box">
+    <h4>Delete chat?</h4>
+    <p id="confirm-delete-msg">All messages and summaries for this chat will be permanently deleted from local storage.</p>
+    <div class="confirm-actions">
+      <button class="btn-cancel" id="confirm-delete-no">Cancel</button>
+      <button class="btn-danger" id="confirm-delete-yes">Delete</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const $ = s => document.querySelector(s);
+  const $$ = s => document.querySelectorAll(s);
+  let ws, chatData = [], activeChat = null, connected = false, searchActive = false;
+
+  const MODELS = {
+    groq: ['llama-3.3-70b-versatile','llama-3.1-8b-instant','meta-llama/llama-4-scout-17b-16e-instruct','qwen/qwen3-32b'],
+    ollama: ['qwen3.5:4b','llama3.2:3b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud'],
+    gemini: ['gemini-2.5-flash','gemini-2.0-flash','gemini-2.0-flash-lite'],
+    openai: ['gpt-4o-mini','gpt-4o','gpt-4.1-mini','gpt-4.1-nano'],
+    claude: ['claude-sonnet-4-20250514','claude-haiku-4-20250414'],
+    grok: ['grok-2-latest','grok-2-mini'],
+  };
+  const HINTS = {
+    groq: 'Free key from <a href="https://console.groq.com/keys" target="_blank">console.groq.com</a>. Runs Llama 70B at blazing speed. <strong>Paste multiple keys separated by commas</strong> to avoid rate limits.',
+    ollama: 'Local models run on your machine (no API key). <code>glm-5.1:cloud</code> runs via Ollama\'s cloud proxy (needs internet).',
+    gemini: 'Free key from <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a>. <strong>Paste multiple keys separated by commas</strong> — they will be rotated on each call to avoid rate limits.',
+    openai: 'Key from <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a>.',
+    claude: 'Key from <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.',
+    grok: 'Free tier ($25/mo credits) from <a href="https://console.x.ai/" target="_blank">console.x.ai</a>. Uses grok-2 family.',
+  };
+
+  // ── Navigation ──────────────────────────────────────────────────────
+  $('#btn-import').addEventListener('click', () => openOverlay('import'));
+  $('#menu-import').addEventListener('click', () => { closeMenu(); openOverlay('import'); });
+  $('#menu-settings').addEventListener('click', () => { closeMenu(); openOverlay('settings'); loadSettings(); });
+  $('#close-import').addEventListener('click', () => closeOverlay('import'));
+  $('#close-settings').addEventListener('click', () => closeOverlay('settings'));
+
+  $('#btn-menu').addEventListener('click', (e) => {
+    e.stopPropagation();
+    $('#sidebar-menu').classList.toggle('open');
+  });
+  document.addEventListener('click', () => closeAllMenus());
+
+  function closeMenu() { $('#sidebar-menu').classList.remove('open'); }
+  function closeChatMenu() { $('#chat-menu').classList.remove('open'); }
+  function closeAllMenus() { closeMenu(); closeChatMenu(); }
+
+  // ── Chat header menu ──────────────────────────────────────────────
+  $('#btn-chat-menu').addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeMenu();
+    $('#chat-menu').classList.toggle('open');
+  });
+
+  $('#menu-delete-chat').addEventListener('click', () => {
+    closeChatMenu();
+    if (!activeChat) return;
+    const ch = chatData.find(c => c.chatJid === activeChat);
+    const name = ch?.chatName || activeChat;
+    $('#confirm-delete-msg').textContent = `All ${(ch?.messageCount || 0).toLocaleString()} messages and summaries for "${name}" will be permanently deleted.`;
+    $('#confirm-delete').classList.add('open');
+  });
+
+  $('#confirm-delete-no').addEventListener('click', () => $('#confirm-delete').classList.remove('open'));
+  $('#confirm-delete-yes').addEventListener('click', async () => {
+    $('#confirm-delete').classList.remove('open');
+    if (!activeChat) return;
+    try {
+      const res = await fetch(`/api/chats/${encodeURIComponent(activeChat)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.ok) {
+        activeChat = null;
+        switchPanel();
+        refreshDash();
+      }
+    } catch (err) {
+      console.error('Delete failed:', err);
+    }
+  });
+  function openOverlay(name) { $(`#overlay-${name}`).classList.add('open'); }
+  function closeOverlay(name) { $(`#overlay-${name}`).classList.remove('open'); }
+  function closeAllOverlays() { $$('.overlay-panel').forEach(o => o.classList.remove('open')); }
+
+  function switchPanel() {
+    // Search panel is now a slide-over — it doesn't replace the chat panel
+    if (searchActive) {
+      $('#panel-search').classList.add('visible');
+      // Ensure the underlying panel is also visible
+      if (activeChat) {
+        $$('.panel:not(#panel-search)').forEach(p => p.classList.remove('visible'));
+        $('#panel-chat').classList.add('visible');
+      } else {
+        $$('.panel:not(#panel-search)').forEach(p => p.classList.remove('visible'));
+        $('#panel-empty').classList.add('visible');
+      }
+      return;
+    }
+    $('#panel-search').classList.remove('visible');
+    $$('.panel').forEach(p => p.classList.remove('visible'));
+    if (activeChat) {
+      $('#panel-chat').classList.add('visible');
+    } else {
+      $('#panel-empty').classList.add('visible');
+      // Show QR screen if not connected, else default welcome
+      if (_waState !== 'READY') {
+        $('#welcome-qr').style.display = '';
+        $('#welcome-default').style.display = 'none';
+      } else {
+        $('#welcome-qr').style.display = 'none';
+        $('#welcome-default').style.display = '';
+      }
+    }
+  }
+
+  function showEmptyPanel() {
+    activeChat = null;
+    searchActive = false;
+    switchPanel();
+  }
+
+  // ── WebSocket ──────────────────────────────────────────────────────
+  function connectWS() {
+    ws = new WebSocket(`ws://${location.host}`);
+    ws.onmessage = e => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'status') { connected = msg.data.connected; refreshDash(); }
+        else if (msg.type === 'new-messages') { refreshDash(); if (_waState === 'READY') { /* keep welcome hidden */ } }
+        else if (msg.type === 'wa-status') {
+          updateWaUI(msg.data);
+          if (msg.data.state === 'READY') { clearInterval(_qrPollTimer); }
+          if (msg.data.stats) refreshDash();
+        }
+        else if (msg.type === 'wa-qr') { showQr(msg.data.qr); }
+        else if (msg.type === 'sync-progress') { updateSyncProgress(msg.data); }
+      } catch {}
+    };
+    ws.onclose = () => setTimeout(connectWS, 3000);
+  }
+  connectWS();
+
+  // ── WhatsApp connection UI ─────────────────────────────────────────
+  let _waState = 'DISCONNECTED';
+  let _qrPollTimer = null;
+  let _lastQrDataUrl = null;
+
+  function updateWaUI({ state, message }) {
+    _waState = state;
+    const dot = $('#wa-dot');
+    const txt = $('#wa-status-text');
+    const banner = $('#wa-banner');
+    const logoutBtn = $('#wa-logout-btn');
+    const hasChats = chatData && chatData.length > 0;
+
+    txt.textContent = message || state;
+    dot.className = 'health-dot ' + (state === 'READY' ? 'ok' : state === 'QR_READY' ? 'warn' : 'unknown');
+    logoutBtn.style.display = state === 'READY' ? '' : 'none';
+
+    // Settings panel sub-sections
+    const qrPanel = $('#wa-qr-panel');
+    const readyPanel = $('#wa-ready-panel');
+    if (qrPanel) qrPanel.style.display = state === 'QR_READY' ? '' : 'none';
+    if (readyPanel) readyPanel.style.display = state === 'READY' ? '' : 'none';
+    if (state === 'READY' && $('#wa-ready-msg')) $('#wa-ready-msg').textContent = message || 'Connected';
+
+    // Sidebar banner
+    if (state === 'READY') {
+      banner.style.display = 'none';
+    } else if (state === 'QR_READY') {
+      banner.style.display = 'flex';
+      banner.style.background = '#fff3cd'; banner.style.color = '#856404';
+      $('#wa-banner-text').textContent = 'Scan QR code to connect WhatsApp';
+    } else {
+      banner.style.display = 'flex';
+      banner.style.background = '#f0f2f5'; banner.style.color = '#667781';
+      $('#wa-banner-text').textContent = message || 'Connecting…';
+    }
+
+    // Main panel: show correct screen based on state
+    const isEmptyPanel = $('#panel-empty').classList.contains('visible');
+    if (state === 'READY') {
+      clearInterval(_qrPollTimer);
+      $('#welcome-qr').style.display = 'none';
+      $('#sync-progress-panel').style.display = 'none';
+      $('#welcome-default').style.display = '';
+      $('#wqr-loading').style.display = 'none';
+      refreshDash();
+    } else if (state === 'SYNCING') {
+      $('#welcome-qr').style.display = 'none';
+      $('#welcome-default').style.display = 'none';
+      $('#wqr-loading').style.display = 'none';
+      $('#sync-progress-panel').style.display = isEmptyPanel ? '' : 'none';
+    } else if (state === 'QR_READY') {
+      $('#sync-progress-panel').style.display = 'none';
+      if (isEmptyPanel || !hasChats) {
+        $('#welcome-qr').style.display = '';
+        $('#welcome-default').style.display = 'none';
+      }
+      $('#wqr-loading').style.display = 'none';
+    } else {
+      // LOADING or DISCONNECTED
+      $('#sync-progress-panel').style.display = 'none';
+      if (isEmptyPanel || !hasChats) {
+        $('#welcome-qr').style.display = '';
+        $('#welcome-default').style.display = 'none';
+      }
+      $('#wqr-loading').style.display = 'flex';
+      $('#wqr-loading-text').textContent = message || 'Starting WhatsApp…';
+    }
+  }
+
+  function showQr(dataUrl) {
+    if (!dataUrl || dataUrl === _lastQrDataUrl) return;
+    _lastQrDataUrl = dataUrl;
+
+    // Silently swap image — no expiry overlay
+    $('#wqr-img').src = dataUrl;
+    $('#wqr-loading').style.display = 'none';
+    $('#wqr-refreshing').style.display = 'none';
+    $('#welcome-qr').style.display = '';
+    $('#welcome-default').style.display = 'none';
+    $('#sync-progress-panel').style.display = 'none';
+    $('#wqr-status-line').textContent = 'Scan with your phone — refreshes automatically';
+
+    // Safety-net poll every 26s — silently swaps if WebSocket misses a refresh
+    clearInterval(_qrPollTimer);
+    _qrPollTimer = setInterval(async () => {
+      if (_waState === 'READY' || _waState === 'SYNCING') { clearInterval(_qrPollTimer); return; }
+      try {
+        $('#wqr-refreshing').style.display = 'flex';
+        const d = await fetch('/api/wa/qr').then(r => r.json());
+        if (d.qr) showQr(d.qr);
+        else $('#wqr-refreshing').style.display = 'none';
+      } catch { $('#wqr-refreshing').style.display = 'none'; }
+    }, 26_000);
+  }
+
+  function updateSyncProgress({ completed, total, messages }) {
+    // Baileys sends total=0 (unknown) — show an animated indeterminate bar
+    const hasTotal = total > 0;
+    const pct = hasTotal ? Math.round((completed / total) * 100) : 0;
+    $('#sync-bar').style.width = hasTotal ? pct + '%' : '100%';
+    $('#sync-bar').style.animation = hasTotal ? '' : 'sync-pulse 1.5s ease-in-out infinite';
+    $('#sync-pct').textContent = hasTotal ? pct + '%' : 'syncing…';
+    $('#sync-msgs').textContent = messages.toLocaleString() + ' messages';
+    $('#sync-detail').textContent = hasTotal ? `${completed} of ${total} chats` : 'Receiving history…';
+    $('#sync-progress-panel').style.display = '';
+    $('#welcome-qr').style.display = 'none';
+    $('#welcome-default').style.display = 'none';
+  }
+
+  // Fetch initial WA state on load
+  fetch('/api/wa/status').then(r => r.json()).then(d => updateWaUI(d)).catch(() => {});
+  fetch('/api/wa/qr').then(r => r.json()).then(d => { if (d.qr) showQr(d.qr); }).catch(() => {});
+
+  // Logout button
+  $('#wa-logout-btn').addEventListener('click', async () => {
+    if (!confirm('Log out of WhatsApp? You will need to scan a new QR code to reconnect.')) return;
+    await fetch('/api/wa/logout', { method: 'POST' });
+    updateWaUI({ state: 'DISCONNECTED', message: 'Logged out' });
+  });
+
+  // ── Dashboard ──────────────────────────────────────────────────────
+  async function refreshDash() {
+    try {
+      const [chats, status] = await Promise.all([
+        fetch('/api/chats').then(r => r.json()),
+        fetch('/api/status').then(r => r.json()),
+      ]);
+      chatData = chats;
+      renderChats(chats);
+      const s = status.stats;
+      $('#stat-msgs').textContent = s.totalMessages.toLocaleString();
+      $('#stat-chats').textContent = s.totalChats;
+      $('#stat-sums').textContent = s.totalSummaries;
+      connected = status.connected;
+      updateExtBadge();
+    } catch {}
+  }
+  refreshDash();
+
+  function formatDate(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    const now = new Date();
+    const diff = (now - d) / 86400000;
+    if (diff < 1 && d.getDate() === now.getDate()) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    if (diff < 2) return 'Yesterday';
+    if (diff < 7) return d.toLocaleDateString('en-US', { weekday: 'short' });
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+  }
+  function formatCount(n) { return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n); }
+
+  function renderChats(chats) {
+    const c = $('#chat-list');
+    if (!chats.length) { c.innerHTML = '<div class="sidebar-empty">No chats yet.<br>Click <strong>+</strong> to import.</div>'; return; }
+    c.innerHTML = chats.map(ch => {
+      const n = ch.chatName || ch.chatJid;
+      const isGroup = ch.chatJid?.includes('@g.us') || (ch.participantCount > 2);
+      return `<div class="chat-item${activeChat === ch.chatJid ? ' active' : ''}" data-jid="${esc(ch.chatJid)}">
+        <div class="chat-avatar">${esc(n.charAt(0).toUpperCase() + (n.charAt(1) || '').toUpperCase())}</div>
+        <div class="chat-meta">
+          <div class="chat-meta-top"><span class="chat-name">${esc(n)}</span><span class="chat-date">${esc(formatDate(ch.lastMessageTs))}</span></div>
+          <div class="chat-meta-bottom"><span class="chat-participants">${isGroup ? ch.participantCount + ' participants' : ''}</span><span class="chat-count-badge">${formatCount(ch.messageCount)}</span></div>
+        </div>
+      </div>`;
+    }).join('');
+    c.querySelectorAll('.chat-item').forEach(i => i.addEventListener('click', () => openChat(i.dataset.jid)));
+  }
+
+  $('#filter').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    renderChats(chatData.filter(c => (c.chatName || c.chatJid).toLowerCase().includes(q)));
+  });
+
+  // ── Open chat ──────────────────────────────────────────────────────
+  async function openChat(jid) {
+    activeChat = jid;
+    closeAllOverlays();
+    clearSearch();
+    const ch = chatData.find(c => c.chatJid === jid);
+    const n = ch?.chatName || jid;
+    const isGroup = jid.includes('@g.us') || (ch?.participantCount > 2);
+    $('#cv-name').textContent = n;
+    $('#cv-info').textContent = isGroup
+      ? `${ch?.participantCount || 0} participants \u00b7 ${(ch?.messageCount || 0).toLocaleString()} messages`
+      : `${(ch?.messageCount || 0).toLocaleString()} messages`;
+    $('#cv-avatar').textContent = n.charAt(0).toUpperCase() + (n.charAt(1) || '').toUpperCase();
+    $$('.chat-item').forEach(i => i.classList.toggle('active', i.dataset.jid === jid));
+    switchPanel();
+    try {
+      const msgs = await fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200`).then(r => r.json());
+      renderMessages(msgs, jid);
+    } catch {}
+  }
+
+  function renderMessages(msgs, jid) {
+    const c = $('#cv-messages');
+    if (!msgs.length) { c.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2);">No messages</div>'; return; }
+    const isGroup = jid.includes('@g.us');
+    let html = '', lastDate = '';
+    const sorted = [...msgs].sort((a, b) => a.timestamp - b.timestamp);
+    for (const m of sorted) {
+      const d = new Date(m.timestamp * 1000);
+      const ds = d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase();
+      if (ds !== lastDate) { html += `<div class="date-sep"><span>${esc(ds)}</span></div>`; lastDate = ds; }
+      const out = m.sender === 'You';
+      const ts = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+      let sender = '';
+      if (!out && isGroup && m.sender) {
+        const colors = ['#1fa855','#6b46c1','#d93025','#1a73e8','#e8710a','#9334e6','#0d652d'];
+        sender = `<div class="sender" style="color:${colors[hash(m.sender) % colors.length]}">${esc(m.sender)}</div>`;
+      }
+      const body = m.mediaType && (!m.text || m.text.startsWith('['))
+        ? `<span class="media-badge">[${esc(m.mediaType)}]${m.mediaCaption ? ' ' + esc(m.mediaCaption) : ''}</span>`
+        : `<span class="text">${esc(m.text || '')}</span>`;
+      html += `<div class="bubble ${out ? 'out' : 'in'}">${sender}${body}<div class="time">${esc(ts)}</div></div>`;
+    }
+    c.innerHTML = html;
+    c.scrollTop = c.scrollHeight;
+  }
+
+  // ── Search ─────────────────────────────────────────────────────────
+  $('#q-btn').addEventListener('click', doSearch);
+  $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+  $('#q-clear').addEventListener('click', () => { clearSearch(); switchPanel(); });
+  $('#btn-close-search').addEventListener('click', () => { clearSearch(); switchPanel(); });
+
+  function clearSearch() {
+    searchActive = false;
+    $('#q').value = '';
+    $('#q-media').value = '';
+    $('#q-clear').classList.remove('visible');
+    $('#search-results').innerHTML = '';
+    $('#search-loading').classList.remove('visible');
+  }
+
+  async function doSearch() {
+    const query = $('#q').value.trim();
+    if (!query) return;
+    const chatJid = activeChat || null;
+    const mediaType = $('#q-media').value || null;
+    searchActive = true;
+    $('#q-btn').disabled = true;
+    $('#q-clear').classList.add('visible');
+    $('#search-results').innerHTML = '';
+    $('#search-panel-title').textContent = `"${query.slice(0, 40)}${query.length > 40 ? '…' : ''}"`;
+    switchPanel();
+    $('#search-loading').classList.add('visible');
+    try {
+      const data = await fetch('/api/search', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, chatJid, mediaType }),
+      }).then(r => r.json());
+      if (data.error) {
+        $('#search-results').innerHTML = `<div style="text-align:center;padding:60px;color:var(--danger)">${esc(data.error)}</div>`;
+      } else {
+        renderSearch(data, query, chatJid);
+      }
+    } catch (err) {
+      $('#search-results').innerHTML = `<div style="text-align:center;padding:60px;color:var(--danger)">${esc(err.message)}</div>`;
+    } finally {
+      $('#q-btn').disabled = false;
+      $('#search-loading').classList.remove('visible');
+    }
+  }
+
+  function renderSearch(data, query, chatJid) {
+    let html = '';
+    const scope = chatJid ? (chatData.find(c => c.chatJid === chatJid)?.chatName || 'this chat') : 'all chats';
+    const srcCount = data.sources?.length || 0;
+    $('#search-panel-title').textContent = `"${query.slice(0, 35)}${query.length > 35 ? '…' : ''}"`;
+    html += `<div class="sr-header"><span style="font-size:11px;color:var(--text2)">${srcCount} source${srcCount !== 1 ? 's' : ''} · ${esc(scope)}</span></div>`;
+    if (data.answer) html += `<div class="answer-card">${formatAnswer(data.answer)}</div>`;
+    if (data.sources?.length) {
+      html += '<div class="sources"><h4>Sources</h4>';
+      const seen = new Set();
+      for (const s of data.sources) {
+        const k = `${s.chatName}|${s.sender}|${s.timestamp}`;
+        if (seen.has(k)) continue; seen.add(k);
+        const ts = s.timestamp ? new Date(s.timestamp * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+        html += `<div class="src-item"><div class="meta">${esc(s.chatName || '')} &bull; ${esc(s.sender || '')} &bull; ${esc(ts)}</div><div>${esc((s.text || '').slice(0, 250))}</div></div>`;
+      }
+      html += '</div>';
+    }
+    if (!data.answer && !srcCount) html += '<div style="text-align:center;padding:60px;color:var(--text2)">No results found.</div>';
+    $('#search-results').innerHTML = html;
+  }
+
+  function formatAnswer(t) {
+    let s = esc(t);
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\*([^*]+)\*/g, '<strong>$1</strong>');
+    s = s.replace(/_([^_]+)_/g, '<em>$1</em>');
+    return s;
+  }
+
+  // ── Import ─────────────────────────────────────────────────────────
+  const dz = $('#drop-zone'), fi = $('#file-input');
+  dz.addEventListener('click', () => fi.click());
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+  dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); if (e.dataTransfer.files.length) uploadBatch(e.dataTransfer.files); });
+  fi.addEventListener('change', () => { if (fi.files.length) uploadBatch(fi.files); fi.value = ''; });
+
+  function setImportPhase(phase, pct) {
+    const prog = $('#import-progress');
+    const fill = $('#ip-fill');
+    const phaseEl = $('#ip-phase');
+    const titleEl = $('#ip-title');
+    const subEl = $('#ip-subtitle');
+    const iconEl = $('#ip-icon');
+
+    prog.classList.add('visible');
+
+    fill.classList.remove('indeterminate');
+    if (phase === 'upload') {
+      iconEl.innerHTML = '&#128228;'; titleEl.textContent = 'Uploading...';
+      subEl.textContent = 'Sending file to local server';
+      fill.classList.add('indeterminate'); phaseEl.textContent = 'Uploading file...';
+    } else if (phase === 'parse') {
+      iconEl.innerHTML = '&#128196;'; titleEl.textContent = 'Parsing messages...';
+      subEl.textContent = 'Reading chat export';
+      fill.style.width = '40%'; phaseEl.textContent = 'Parsing messages...';
+    } else if (phase === 'index') {
+      iconEl.innerHTML = '&#128269;'; titleEl.textContent = 'Indexing for search...';
+      subEl.textContent = 'Building search index';
+      fill.style.width = '75%'; phaseEl.textContent = 'Indexing for search...';
+    } else if (phase === 'done') {
+      iconEl.innerHTML = '&#9989;'; titleEl.textContent = 'Import complete!';
+      subEl.textContent = 'Your chat is ready to search';
+      fill.style.width = '100%'; phaseEl.textContent = pct || 'Done!';
+    } else if (phase === 'error') {
+      iconEl.innerHTML = '&#10060;'; titleEl.textContent = 'Import failed';
+      subEl.textContent = pct || 'Something went wrong';
+      fill.style.width = '100%'; fill.style.background = 'var(--danger)';
+      phaseEl.textContent = '';
+    }
+  }
+
+  function hideImportProgress() {
+    const prog = $('#import-progress');
+    const fill = $('#ip-fill');
+    fill.style.background = ''; fill.style.width = '0%'; fill.classList.remove('indeterminate');
+    prog.classList.remove('visible');
+  }
+
+  async function uploadBatch(fileList) {
+    $('#import-result').classList.remove('visible');
+    hideImportProgress();
+    setImportPhase('upload');
+
+    const form = new FormData();
+    for (const f of fileList) form.append('file', f);
+
+    try {
+      setImportPhase('parse');
+      const data = await fetch('/api/import', { method: 'POST', body: form }).then(r => r.json());
+
+      setImportPhase('index');
+      await new Promise(r => setTimeout(r, 600));
+
+      if (data.error) {
+        setImportPhase('error', data.error);
+        $('#imp-title').textContent = 'Import Failed'; $('#imp-text').textContent = data.error;
+        $('#import-result').classList.add('visible');
+      } else if (data.results) {
+        const ok = data.results.filter(r => !r.error), fail = data.results.filter(r => r.error);
+        const total = ok.reduce((s, r) => s + (r.inserted || 0), 0);
+        setImportPhase('done', `${total.toLocaleString()} messages indexed`);
+        $('#imp-title').textContent = `Imported ${ok.length} of ${data.totalFiles} files`;
+        const lines = ok.map(r => `${r.chatName}: ${r.inserted?.toLocaleString() || 0} messages`);
+        if (fail.length) lines.push(`Failed: ${fail.map(r => r.chatName).join(', ')}`);
+        $('#imp-text').textContent = lines.join('\n');
+        refreshDash();
+        $('#import-result').classList.add('visible');
+      } else {
+        setImportPhase('done', `${(data.inserted || 0).toLocaleString()} messages indexed`);
+        $('#imp-title').textContent = `Imported: ${data.chatName}`;
+        $('#imp-text').textContent = `${data.inserted?.toLocaleString() || 0} of ${data.total?.toLocaleString() || 0} messages`;
+        refreshDash();
+        $('#import-result').classList.add('visible');
+      }
+
+      setTimeout(hideImportProgress, 4000);
+    } catch (err) {
+      setImportPhase('error', err.message);
+      $('#imp-title').textContent = 'Import Failed'; $('#imp-text').textContent = err.message;
+      $('#import-result').classList.add('visible');
+      setTimeout(hideImportProgress, 4000);
+    }
+  }
+
+  // ── Settings ───────────────────────────────────────────────────────
+  function updateModelOptions() {
+    const p = $('#s-provider').value, sel = $('#s-model');
+    sel.innerHTML = '';
+    (MODELS[p] || []).forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
+    $('#s-key-row').style.display = p === 'ollama' ? 'none' : '';
+    const h = $('#s-hint'); h.style.display = ''; h.innerHTML = HINTS[p] || '';
+  }
+  $('#s-provider').addEventListener('change', updateModelOptions);
+
+  async function loadSettings() {
+    try {
+      const { settings } = await fetch('/api/settings').then(r => r.json());
+      if (settings.llm_provider) $('#s-provider').value = settings.llm_provider;
+      updateModelOptions();
+      if (settings.llm_model) $('#s-model').value = settings.llm_model;
+      if (settings.llm_api_key) $('#s-key').value = settings.llm_api_key.split(',').join('\n');
+
+      if (settings.summary_provider) $('#ss-provider').value = settings.summary_provider;
+      else $('#ss-provider').value = 'same';
+      updateSummaryModelOptions();
+      if (settings.summary_model) $('#ss-model').value = settings.summary_model;
+      if (settings.summary_api_key) $('#ss-key').value = settings.summary_api_key.split(',').join('\n');
+    } catch {}
+    refreshDash();
+  }
+
+  /** Normalise a textarea of keys (one per line or comma-separated) → compact comma string */
+  function normaliseKeys(raw) {
+    return raw.split(/[\n,]+/).map(k => k.trim()).filter(Boolean).join(',');
+  }
+
+  $('#s-save').addEventListener('click', async () => {
+    const provider = $('#s-provider').value, apiKey = normaliseKeys($('#s-key').value), model = $('#s-model').value;
+    const isOllama = provider === 'ollama';
+    $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> ${isOllama ? 'Starting Ollama...' : 'Connecting...'}`;
+    $('#s-save').disabled = true;
+    try {
+      const data = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey, model }) }).then(r => r.json());
+      if (data.healthy) $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
+      else if (isOllama) $('#s-status').innerHTML = '<span class="health-dot fail"></span> Loading model... try again soon';
+      else $('#s-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
+    } catch (err) { $('#s-status').innerHTML = `<span class="health-dot fail"></span> ${esc(err.message)}`; }
+    finally { $('#s-save').disabled = false; }
+  });
+
+  // ── Summary Provider Settings ───────────────────────────────────
+  function updateSummaryModelOptions() {
+    const p = $('#ss-provider').value;
+    const isSame = p === 'same';
+    $('#ss-key-row').style.display = isSame || p === 'ollama' ? 'none' : '';
+    $('#ss-model-row').style.display = isSame ? 'none' : '';
+    if (!isSame) {
+      const sel = $('#ss-model');
+      sel.innerHTML = '';
+      (MODELS[p] || []).forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
+    }
+  }
+  $('#ss-provider').addEventListener('change', updateSummaryModelOptions);
+
+  $('#ss-save').addEventListener('click', async () => {
+    const provider = $('#ss-provider').value;
+    const apiKey = provider !== 'same' && provider !== 'ollama' ? normaliseKeys($('#ss-key').value) : '';
+    const model = provider !== 'same' ? $('#ss-model').value : '';
+    const isOllama = provider === 'ollama';
+    $('#ss-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> ${provider === 'same' ? 'Syncing...' : isOllama ? 'Starting Ollama...' : 'Connecting...'}`;
+    $('#ss-save').disabled = true;
+    try {
+      const data = await fetch('/api/settings/summary-provider', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey, model }) }).then(r => r.json());
+      if (data.healthy) $('#ss-status').innerHTML = `<span class="health-dot ok"></span> Connected: ${esc(data.model)}`;
+      else if (isOllama) $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Loading model... try again soon';
+      else $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
+    } catch (err) { $('#ss-status').innerHTML = `<span class="health-dot fail"></span> ${esc(err.message)}`; }
+    finally { $('#ss-save').disabled = false; }
+  });
+
+  $('#gen-summaries').addEventListener('click', async () => {
+    $('#sum-status').textContent = 'Generating...';
+    try {
+      const data = await fetch('/api/summaries/generate', { method: 'POST' }).then(r => r.json());
+      $('#sum-status').textContent = data.error ? `Error: ${data.error}` : `Generated ${data.generated} summaries`;
+      refreshDash();
+    } catch (err) { $('#sum-status').textContent = err.message; }
+  });
+
+  $('#regen-summaries').addEventListener('click', async () => {
+    if (!confirm('This will clear all existing summaries and regenerate them with the improved prompt. This may take several minutes. Continue?')) return;
+    $('#sum-status').textContent = 'Clearing old summaries...';
+    $('#regen-summaries').disabled = true;
+    try {
+      const data = await fetch('/api/summaries/regenerate', { method: 'POST' }).then(r => r.json());
+      $('#sum-status').textContent = `Cleared ${data.cleared} summaries. Regenerating in background...`;
+      refreshDash();
+    } catch (err) { $('#sum-status').textContent = err.message; }
+    finally { $('#regen-summaries').disabled = false; }
+  });
+
+  // ── Onboarding ─────────────────────────────────────────────────────
+  const OB_STEPS = [
+    {
+      title: 'Welcome to WhatsApp Search',
+      subtitle: 'Your chats as a private knowledge base',
+      html: `<p class="ob-desc">Import your WhatsApp export and ask questions in plain English. Get direct answers with source messages &mdash; like having a personal assistant that knows your chat history.</p>
+        <div class="ob-features">
+          <div class="ob-feat"><div class="ob-feat-icon">&#128274;</div><div class="ob-feat-label">100% local</div><div class="ob-feat-desc">Nothing leaves your device</div></div>
+          <div class="ob-feat"><div class="ob-feat-icon">&#129302;</div><div class="ob-feat-label">AI-powered</div><div class="ob-feat-desc">Direct answers with sources</div></div>
+          <div class="ob-feat"><div class="ob-feat-icon">&#128269;</div><div class="ob-feat-label">Deep search</div><div class="ob-feat-desc">Find images &amp; media too</div></div>
+        </div>`,
+    },
+    {
+      title: 'Export Your Chats',
+      subtitle: 'Get your WhatsApp data ready',
+      html: `<div class="ob-steps-list">
+          <div class="ob-step-item"><div class="ob-step-num">1</div><div class="ob-step-text">Open a WhatsApp chat &rarr; tap <strong>&#8942; &rarr; More &rarr; Export chat</strong></div></div>
+          <div class="ob-step-item"><div class="ob-step-num">2</div><div class="ob-step-text">Choose <strong>Without media</strong> (faster) or <strong>Include media</strong></div></div>
+          <div class="ob-step-item"><div class="ob-step-num">3</div><div class="ob-step-text">Save the <strong>.zip</strong> file &mdash; you'll upload it next</div></div>
+        </div>
+        <p class="ob-desc" style="margin-top:14px;font-size:12px;color:var(--text2);">Tip: Also check Google Drive for <code style="background:var(--hover);padding:2px 5px;border-radius:3px;font-size:11px;">WhatsApp Chat</code> backups.</p>`,
+    },
+    {
+      title: 'Import & Search',
+      subtitle: 'Drop your file and start asking',
+      html: `<div class="ob-steps-list">
+          <div class="ob-step-item"><div class="ob-step-num">1</div><div class="ob-step-text">Click <strong>+</strong> in the sidebar or drag &amp; drop your .zip/.txt file</div></div>
+          <div class="ob-step-item"><div class="ob-step-num">2</div><div class="ob-step-text">Wait for indexing &mdash; the AI builds a <strong>searchable index</strong> of every day's conversations</div></div>
+          <div class="ob-step-item"><div class="ob-step-num">3</div><div class="ob-step-text">Ask anything in the <strong>search bar</strong> &mdash; "Who mentioned the trip?" "What was that restaurant name?"</div></div>
+        </div>`,
+    },
+    {
+      title: 'Choose Your AI',
+      subtitle: 'Pick a model that works for you',
+      html: `<p class="ob-desc">Go to <strong>Settings</strong> (&#8942; menu) to pick your AI model.</p>
+        <div class="ob-features">
+          <div class="ob-feat"><div class="ob-feat-icon">&#9889;</div><div class="ob-feat-label">Gemini</div><div class="ob-feat-desc">Free &amp; fast (recommended)</div></div>
+          <div class="ob-feat"><div class="ob-feat-icon">&#128187;</div><div class="ob-feat-label">Ollama</div><div class="ob-feat-desc">100% local, no internet</div></div>
+          <div class="ob-feat"><div class="ob-feat-icon">&#127776;</div><div class="ob-feat-label">GPT / Claude / Grok</div><div class="ob-feat-desc">Premium quality</div></div>
+        </div>
+        <p class="ob-desc" style="margin-top:16px;font-size:12px;color:var(--text2);">You can also install the <strong>Chrome extension</strong> for live sync from WhatsApp Web.</p>`,
+    },
+  ];
+
+  let obStep = 0;
+  function renderObStep() {
+    const s = OB_STEPS[obStep];
+    $('#ob-counter').textContent = `Step ${obStep + 1} of ${OB_STEPS.length}`;
+    $$('.ob-step-dot').forEach((d, i) => {
+      d.className = 'ob-step-dot' + (i < obStep ? ' done' : i === obStep ? ' active' : '');
+    });
+    $('#ob-body').innerHTML = `<h2>${s.title}</h2><div class="ob-subtitle">${s.subtitle}</div>${s.html}`;
+    $('#ob-next').textContent = obStep === OB_STEPS.length - 1 ? 'Get Started' : 'Next';
+  }
+
+  $('#ob-next').addEventListener('click', () => {
+    if (obStep < OB_STEPS.length - 1) { obStep++; renderObStep(); }
+    else { closeOnboarding(); }
+  });
+  $('#ob-skip').addEventListener('click', closeOnboarding);
+
+  function closeOnboarding() {
+    $('#onboarding').classList.remove('open');
+    localStorage.setItem('wa_onboarding_done', '1');
+  }
+
+  if (!localStorage.getItem('wa_onboarding_done')) {
+    renderObStep();
+    $('#onboarding').classList.add('open');
+  }
+
+  // ── Utils ──────────────────────────────────────────────────────────
+  function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0; return Math.abs(h); }
+
+  updateModelOptions();
+
+  // ── Model Pull Progress Polling ──────────────────────────────────
+  let pullPollTimer = null;
+  function startPullPolling() {
+    if (pullPollTimer) return;
+    pullPollTimer = setInterval(checkPullStatus, 2000);
+    checkPullStatus();
+  }
+  function stopPullPolling() {
+    if (pullPollTimer) { clearInterval(pullPollTimer); pullPollTimer = null; }
+  }
+
+  async function checkPullStatus() {
+    try {
+      const data = await fetch('/api/pull-status').then(r => r.json());
+      const banner = $('#pull-banner');
+      if (!data) { banner.classList.remove('visible', 'error', 'done'); stopPullPolling(); return; }
+
+      banner.classList.add('visible');
+      banner.classList.remove('error', 'done');
+      $('#pb-fill').style.width = data.percent + '%';
+      $('#pb-pct').textContent = data.percent + '%';
+
+      if (data.status === 'downloading') {
+        $('#pb-icon').innerHTML = '&#11015;&#65039;';
+        $('#pb-title').textContent = `Downloading ${data.model}...`;
+        $('#pb-detail').textContent = data.detail || 'This may take a few minutes';
+      } else if (data.status === 'done') {
+        banner.classList.add('done');
+        $('#pb-icon').innerHTML = '&#9989;';
+        $('#pb-title').textContent = `${data.model} ready!`;
+        $('#pb-detail').textContent = 'Model downloaded successfully';
+        $('#pb-pct').textContent = '';
+        setTimeout(() => { banner.classList.remove('visible'); stopPullPolling(); }, 5000);
+      } else if (data.status === 'error') {
+        banner.classList.add('error');
+        $('#pb-icon').innerHTML = '&#10060;';
+        $('#pb-title').textContent = `Download failed`;
+        $('#pb-detail').textContent = data.detail || 'Try again from Settings';
+        $('#pb-pct').textContent = '';
+        setTimeout(() => { banner.classList.remove('visible'); stopPullPolling(); }, 8000);
+      }
+    } catch { /* server not reachable */ }
+  }
+
+  startPullPolling();
+  setInterval(() => { if (!pullPollTimer) startPullPolling(); }, 30000);
+})();
+</script>
+</body>
+</html>
