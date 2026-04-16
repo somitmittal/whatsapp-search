@@ -205,6 +205,7 @@ export default class WaClient {
     // ── Real-time messages ────────────────────────────────────────────────
     this._sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
+      await this._backfillLidPnChatNamesFromMessages(messages || []);
       const rows = [];
       for (const msg of messages) {
         const jid = msg.key.remoteJid;
@@ -245,6 +246,8 @@ export default class WaClient {
       } catch (e) {
         console.warn('[WA] history name hydrate:', e.message);
       }
+
+      await this._backfillLidPnChatNamesFromMessages(messages || []);
 
       for (const m of messages || []) {
         const jid = m.key?.remoteJid;
@@ -329,15 +332,73 @@ export default class WaClient {
     if (label) await this._applyDisplayName(c.id, label);
   }
 
+  /** Resolve display name from cache (raw JID or Baileys-normalized user id). */
+  _nameFromChatMap(jid) {
+    if (!jid) return null;
+    const direct = this._chatNames.get(jid);
+    if (direct) return direct;
+    try {
+      const n = jidNormalizedUser(jid);
+      if (n && n !== jid) return this._chatNames.get(n) || null;
+    } catch (_) {}
+    return null;
+  }
+
+  /**
+   * 1:1 chats may use @lid as remoteJid while contact names arrive on @s.whatsapp.net.
+   * Message keys often include `remoteJidAlt` / `participantAlt` with the paired address.
+   * Signal LID↔PN store fills in the rest once mappings exist.
+   */
+  async _backfillLidPnChatNamesFromMessages(messages) {
+    const lm = this._sock?.signalRepository?.lidMapping;
+    if (!lm || !messages?.length) return;
+    const jids = [...new Set(messages.map((m) => m.key?.remoteJid).filter(Boolean))];
+    for (const jid of jids) {
+      try {
+        if (isLidUser(jid)) {
+          if (this._nameFromChatMap(jid)) continue;
+          const pn = await lm.getPNForLID(jid);
+          if (!pn) continue;
+          const name = this._nameFromChatMap(pn);
+          if (name) await this._applyDisplayName(jid, name);
+        } else if (isPnUser(jid) || jid?.endsWith?.('@hosted')) {
+          const nameHere = this._nameFromChatMap(jid);
+          const lids = await lm.getLIDsForPNs([jid]);
+          const lid = lids?.[0]?.lid;
+          if (lid && nameHere && !this._nameFromChatMap(lid)) {
+            await this._applyDisplayName(lid, nameHere);
+          } else if (lid && !nameHere) {
+            const fromLid = this._nameFromChatMap(lid);
+            if (fromLid) await this._applyDisplayName(jid, fromLid);
+          }
+        }
+      } catch (_) { /* mapping can lag first sync */ }
+    }
+  }
+
   /**
    * Group titles come from chat/group metadata; 1:1 chats often only get a name via contact events
    * or incoming `pushName` (peer display name) — use that so the sidebar matches WhatsApp.
    */
   _resolveChatDisplayName(jid, msg) {
     if (isJidGroup(jid)) {
-      return this._chatNames.get(jid) || jid.split('@')[0];
+      return this._nameFromChatMap(jid) || jid.split('@')[0];
     }
     const bare = jid.split('@')[0];
+    // PN ⇄ LID: paired JID on the key (see Baileys decodeMessageNode / messages-recv mapping)
+    const alts = [msg.key?.remoteJidAlt, msg.key?.participantAlt].filter(Boolean);
+    for (const alt of alts) {
+      const label = this._nameFromChatMap(alt);
+      if (label) {
+        this._chatNames.set(jid, label);
+        try {
+          const norm = jidNormalizedUser(jid);
+          if (norm && norm !== jid) this._chatNames.set(norm, label);
+        } catch (_) {}
+        void this._mirrorDisplayNameAcrossJids(jid, label).catch(() => {});
+        return label;
+      }
+    }
     const biz = msg.verifiedBizName;
     if (biz) {
       this._chatNames.set(jid, biz);
@@ -349,7 +410,7 @@ export default class WaClient {
       void this._mirrorDisplayNameAcrossJids(jid, msg.pushName).catch(() => {});
       return msg.pushName;
     }
-    const cached = this._chatNames.get(jid);
+    const cached = this._nameFromChatMap(jid);
     if (cached) return cached;
     return bare;
   }
@@ -447,7 +508,20 @@ export default class WaClient {
    */
   async getChatDetails(jid) {
     if (!jid) return null;
-    const cachedName = this._chatNames.get(jid);
+    let cachedName = this._nameFromChatMap(jid);
+    const lm = this._sock?.signalRepository?.lidMapping;
+    if (!cachedName && lm) {
+      try {
+        if (isLidUser(jid)) {
+          const pn = await lm.getPNForLID(jid);
+          if (pn) cachedName = this._nameFromChatMap(pn);
+        } else if (isPnUser(jid) || jid?.endsWith?.('@hosted')) {
+          const lids = await lm.getLIDsForPNs([jid]);
+          const lid = lids?.[0]?.lid;
+          if (lid) cachedName = this._nameFromChatMap(lid);
+        }
+      } catch (_) {}
+    }
     const base = {
       chatJid: jid,
       displayName: cachedName || jid.split('@')[0],
@@ -496,7 +570,13 @@ export default class WaClient {
         : null;
 
       const senderJid  = msg.key.participant || (msg.key.fromMe ? this._ownerJid : jid);
-      const senderName = msg.pushName || this._chatNames.get(senderJid) || senderJid?.split('@')[0] || 'Unknown';
+      let senderName =
+        msg.pushName ||
+        this._nameFromChatMap(senderJid) ||
+        this._nameFromChatMap(msg.key?.participantAlt) ||
+        this._nameFromChatMap(msg.key?.remoteJidAlt) ||
+        senderJid?.split('@')[0] ||
+        'Unknown';
       const chatName   = this._resolveChatDisplayName(jid, msg);
 
       return {

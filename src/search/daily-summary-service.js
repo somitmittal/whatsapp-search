@@ -12,6 +12,8 @@ const DELAY_LOCAL_MS = 2000;
 const DEFAULT_CONCURRENCY = 3;
 /** Cap for thread-batch parallelism (non-local). */
 const SUMMARY_CONCURRENCY_MAX = 8;
+/** Default thread-batch concurrency for cloud/API when SUMMARY_CONCURRENCY is unset (min 2 vs key count). */
+const DEFAULT_CLOUD_SUMMARY_CONCURRENCY = 5;
 /** Longer than default provider HTTP timeout — summaries + merges can be slow on large threads. */
 const SUMMARY_LLM_TIMEOUT_MS = 180_000;
 
@@ -20,7 +22,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 /**
  * Thread-batch concurrency for cloud/API providers.
  * - If SUMMARY_CONCURRENCY (or SUMMARY_THREAD_CONCURRENCY) is set, that value wins (clamped 1–SUMMARY_CONCURRENCY_MAX).
- * - Otherwise: max(1, key count) so multi-key setups stay parallel; single-key Ollama Cloud defaults to 1 unless overridden.
+ * - Otherwise: max(DEFAULT_CLOUD_SUMMARY_CONCURRENCY, key count) so single-key cloud uses 2; more keys still scale up.
  * Local Ollama stays at 1. Total tokens for a fixed backlog are ~unchanged; higher concurrency raises peak RPM/TPM and can trigger rate limits.
  */
 function parseSummaryConcurrencyEnv() {
@@ -35,7 +37,7 @@ function getSummaryThreadConcurrency(isLocal, keyCount) {
   if (isLocal) return 1;
   const override = parseSummaryConcurrencyEnv();
   if (override !== null) return override;
-  return Math.max(1, keyCount || 1);
+  return Math.max(DEFAULT_CLOUD_SUMMARY_CONCURRENCY, keyCount || 1);
 }
 
 /** Optional delay between cloud thread batches (ms); default DELAY_CLOUD_MS. Raise if SUMMARY_CONCURRENCY > 1 causes 429s. */

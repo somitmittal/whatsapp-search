@@ -340,6 +340,16 @@ export default class Database {
     return inserted;
   }
 
+  /**
+   * When we learn a human-readable chat title (from WA), backfill all rows for that chat so the sidebar
+   * and search stop showing bare phone / LID after older messages were stored with a numeric label.
+   */
+  propagateChatDisplayName(chatJid, chatName) {
+    if (!chatJid || !chatName || !looksLikeContactDisplayName(chatName, chatJid)) return 0;
+    const r = this._db.prepare('UPDATE messages SET chat_name = ? WHERE chat_jid = ?').run(chatName, chatJid);
+    return r.changes ?? 0;
+  }
+
   updateMediaCaption(messageId, caption) {
     this._db.prepare('UPDATE messages SET media_caption = ? WHERE message_id = ?')
       .run(caption, messageId);

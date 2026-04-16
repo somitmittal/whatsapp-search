@@ -66,6 +66,13 @@ export default class WebServer {
   /** Called by WaClient when messages arrive (real-time or history). */
   onWaMessages(rows) {
     const inserted = this.db.insertMessageBatch(rows);
+    const lastNameByChat = new Map();
+    for (const r of rows || []) {
+      if (r?.chatJid && r?.chatName) lastNameByChat.set(r.chatJid, r.chatName);
+    }
+    for (const [chatJid, chatName] of lastNameByChat) {
+      this.db.propagateChatDisplayName(chatJid, chatName);
+    }
     if (inserted > 0) {
       console.log(`[WA] Saved ${inserted} new messages`);
       this._broadcast({ type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } });
