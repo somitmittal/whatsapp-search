@@ -1006,6 +1006,7 @@
         const msg = JSON.parse(e.data);
         if (msg.type === 'status') { connected = msg.data.connected; refreshDash(); }
         else if (msg.type === 'new-messages') { refreshDash(); if (_waState === 'READY') { /* keep welcome hidden */ } }
+        else if (msg.type === 'chat-names-refreshed') { refreshDash(); }
         else if (msg.type === 'wa-status') {
           updateWaUI(msg.data);
           if (msg.data.state === 'READY') { clearInterval(_qrPollTimer); }

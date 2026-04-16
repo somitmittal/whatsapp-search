@@ -237,11 +237,14 @@ export default class WaClient {
     this._sock.ev.on('messaging-history.set', async ({ chats, messages, contacts }) => {
       try {
         for (const c of (chats || [])) {
-          if (c.id && c.name) await this._applyDisplayName(c.id, c.name);
+          const label = c.name;
+          if (!label) continue;
+          await this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
         }
         for (const c of (contacts || [])) {
           const label = c.name || c.notify || c.verifiedName;
-          if (c.id && label) await this._applyDisplayName(c.id, label);
+          if (!label) continue;
+          await this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
         }
       } catch (e) {
         console.warn('[WA] history name hydrate:', e.message);
@@ -280,17 +283,20 @@ export default class WaClient {
     // Chat / contact name updates
     this._sock.ev.on('chats.set', async ({ chats }) => {
       for (const c of chats || []) {
-        if (c.id && c.name) await this._applyDisplayName(c.id, c.name);
+        if (!c?.name) continue;
+        await this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
       }
     });
     this._sock.ev.on('chats.upsert', async (chats) => {
       for (const c of chats || []) {
-        if (c.id && c.name) await this._applyDisplayName(c.id, c.name);
+        if (!c?.name) continue;
+        await this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
       }
     });
     this._sock.ev.on('chats.update', async (updates) => {
       for (const u of updates || []) {
-        if (u.id && u.name) await this._applyDisplayName(u.id, u.name);
+        if (!u?.name) continue;
+        await this._applyLabelToLinkedJids(u.name, u.id, u.lidJid, u.pnJid, u.lid, u.phoneNumber);
       }
     });
     this._sock.ev.on('contacts.set', async ({ contacts }) => {
@@ -310,6 +316,46 @@ export default class WaClient {
     await this._mirrorDisplayNameAcrossJids(jid, label);
   }
 
+  /**
+   * History + live events often carry the same display name on multiple keys (LID chat id, PN contact id, etc.).
+   * Baileys `processHistoryMessage` uses id / lidJid / pnJid (chats) and id / lid / phoneNumber (contacts).
+   */
+  async _applyLabelToLinkedJids(label, ...jids) {
+    if (!label || typeof label !== 'string') return;
+    const s = label.trim();
+    if (!s) return;
+    const seen = new Set();
+    for (const jid of jids) {
+      if (!jid || seen.has(jid)) continue;
+      seen.add(jid);
+      await this._applyDisplayName(jid, s);
+    }
+  }
+
+  /**
+   * After sync, push resolved titles into SQLite so `getChatStats()` sidebar matches WhatsApp
+   * (fixes rows indexed under LID before PN↔LID name mapping was applied).
+   */
+  async syncResolvedNamesToDb(db) {
+    if (!db || typeof db.getDistinctChatJids !== 'function') return 0;
+    const jids = db.getDistinctChatJids();
+    let rowsUpdated = 0;
+    for (const jid of jids) {
+      if (isJidGroup(jid)) continue;
+      try {
+        const details = await this.getChatDetails(jid);
+        const name = details?.chatName || details?.displayName;
+        const bare = jid.split('@')[0] || '';
+        if (!name || name === bare) continue;
+        rowsUpdated += db.propagateChatDisplayName(jid, name) || 0;
+      } catch (_) { /* ignore per-chat */ }
+    }
+    if (rowsUpdated > 0) {
+      console.log(`[WA] Backfilled chat_name on ${rowsUpdated} message row(s) from resolved contact titles`);
+    }
+    return rowsUpdated;
+  }
+
   /** WhatsApp links the same person under @lid (chat id) and @s.whatsapp.net (contact id) — mirror the label. */
   async _mirrorDisplayNameAcrossJids(jid, label) {
     const sock = this._sock;
@@ -327,9 +373,9 @@ export default class WaClient {
   }
 
   async _ingestContact(c) {
-    if (!c?.id) return;
     const label = c.name || c.notify || c.verifiedName;
-    if (label) await this._applyDisplayName(c.id, label);
+    if (!label) return;
+    await this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
   }
 
   /** Resolve display name from cache (raw JID or Baileys-normalized user id). */

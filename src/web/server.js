@@ -56,6 +56,20 @@ export default class WebServer {
     if (state === 'READY') {
       this._waQrDataUrl = null;
       this._extensionConnected = true;
+      if (this._waClient?.syncResolvedNamesToDb) {
+        setTimeout(() => {
+          this._waClient
+            .syncResolvedNamesToDb(this.db)
+            .then((n) => {
+              if (n > 0) {
+                this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats() } });
+              }
+            })
+            .catch((e) => {
+              console.warn('[WA] syncResolvedNamesToDb:', e.message);
+            });
+        }, 2000);
+      }
     }
     this._broadcast({
       type: 'wa-status',

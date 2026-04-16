@@ -19,6 +19,13 @@ function looksLikeContactDisplayName(name, chatJid) {
   return true;
 }
 
+/** True if the string is only a phone number (no letters) — poor sidebar title vs push names / saved names. */
+function looksLikePhoneOnly(str) {
+  if (!str || typeof str !== 'string') return false;
+  const d = str.replace(/\s/g, '').replace(/^\+/, '');
+  return /^\d{8,20}$/.test(d);
+}
+
 export default class Database {
   constructor() {
     const dir = dirname(config.dbPath);
@@ -530,6 +537,12 @@ export default class Database {
     this._stmtUpsertState.run(key, String(value));
   }
 
+  /** Distinct chat JIDs with at least one message (for WA name backfill). */
+  getDistinctChatJids() {
+    const rows = this._db.prepare('SELECT DISTINCT chat_jid AS chatJid FROM messages').all();
+    return rows.map((r) => r.chatJid).filter(Boolean);
+  }
+
   getChatStats() {
     const rows = this._db.prepare(`
       SELECT chat_jid AS chatJid, chat_name AS chatName, sender, timestamp
@@ -548,8 +561,10 @@ export default class Database {
           messages: [],
           anyChatName: null,
           displayChatName: null,
-          /** For 1:1 chats: latest non-"You" sender (usually the peer's display name from pushName). */
+          /** For 1:1 chats: latest non-"You" sender (often phone if pushName missing). */
           peerSenderName: null,
+          /** Latest peer sender that is not phone-only (push name / business name). */
+          peerHumanSenderName: null,
           senders: new Set(),
         });
       }
@@ -565,6 +580,9 @@ export default class Database {
       const isGroup = r.chatJid.endsWith('@g.us');
       if (!isGroup && r.sender && r.sender !== 'You') {
         g.peerSenderName = r.sender;
+        if (!looksLikePhoneOnly(r.sender)) {
+          g.peerHumanSenderName = r.sender;
+        }
       }
     }
 
@@ -578,9 +596,15 @@ export default class Database {
         totalThreads === 0 ? 100 : Math.min(100, Math.round((summarizedThreads / totalThreads) * 100));
       const lastMessageTs = g.messages.length ? g.messages[g.messages.length - 1].timestamp : 0;
       const isGroup = chatJid.endsWith('@g.us');
+      // 1:1: do not let a numeric chat_name (stored on every row) hide the peer's pushName on incoming msgs.
       const title = isGroup
         ? (g.displayChatName || g.anyChatName || chatJid)
-        : (g.displayChatName || g.anyChatName || g.peerSenderName || chatJid);
+        : (g.displayChatName
+          || g.peerHumanSenderName
+          || (looksLikePhoneOnly(g.anyChatName) ? null : g.anyChatName)
+          || g.peerSenderName
+          || g.anyChatName
+          || chatJid);
       out.push({
         chatJid,
         chatName: title,
