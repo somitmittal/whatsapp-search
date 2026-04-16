@@ -70,6 +70,22 @@ export default class WebServer {
             });
         }, 2000);
       }
+      // Phone book / saved contact names come from WhatsApp app-state (`contactAction.fullName` → contacts.upsert)
+      if (this._waClient?.refreshPhoneBookNamesInDb) {
+        setTimeout(() => {
+          this._waClient
+            .refreshPhoneBookNamesInDb(this.db)
+            .then((n) => {
+              this._broadcast({
+                type: 'chat-names-refreshed',
+                data: { stats: this.db.getTotalStats(), rowsUpdated: n },
+              });
+            })
+            .catch((e) => {
+              console.warn('[WA] refreshPhoneBookNamesInDb:', e.message);
+            });
+        }, 5500);
+      }
     }
     this._broadcast({
       type: 'wa-status',
@@ -270,6 +286,25 @@ export default class WebServer {
       try {
         await this._waClient.logout();
         res.json({ ok: true });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    /** Re-fetch WhatsApp app state (contact / phone book names) and update indexed chat titles. */
+    this._app.post('/api/wa/sync-contacts', async (_req, res) => {
+      if (!this._waClient) return res.status(503).json({ error: 'WA client not initialised' });
+      if (this._waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
+      if (typeof this._waClient.refreshPhoneBookNamesInDb !== 'function') {
+        return res.status(503).json({ error: 'Contact sync not available' });
+      }
+      try {
+        const rowsUpdated = await this._waClient.refreshPhoneBookNamesInDb(this.db);
+        this._broadcast({
+          type: 'chat-names-refreshed',
+          data: { stats: this.db.getTotalStats(), rowsUpdated },
+        });
+        res.json({ ok: true, rowsUpdated });
       } catch (err) {
         res.status(500).json({ error: err.message });
       }

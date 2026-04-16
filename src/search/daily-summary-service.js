@@ -13,7 +13,7 @@ const DEFAULT_CONCURRENCY = 3;
 /** Cap for thread-batch parallelism (non-local). */
 const SUMMARY_CONCURRENCY_MAX = 8;
 /** Default thread-batch concurrency for cloud/API when SUMMARY_CONCURRENCY is unset (min 2 vs key count). */
-const DEFAULT_CLOUD_SUMMARY_CONCURRENCY = 5;
+const DEFAULT_CLOUD_SUMMARY_CONCURRENCY = 7;
 /** Longer than default provider HTTP timeout — summaries + merges can be slow on large threads. */
 const SUMMARY_LLM_TIMEOUT_MS = 180_000;
 

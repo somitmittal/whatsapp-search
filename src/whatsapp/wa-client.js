@@ -19,6 +19,7 @@ const {
   isJidGroup,
   isLidUser,
   isPnUser,
+  ALL_WA_PATCH_NAMES,
 } = require('@whiskeysockets/baileys');
 const QRCode   = require('qrcode');
 const P        = require('pino');
@@ -354,6 +355,27 @@ export default class WaClient {
       console.log(`[WA] Backfilled chat_name on ${rowsUpdated} message row(s) from resolved contact titles`);
     }
     return rowsUpdated;
+  }
+
+  /**
+   * Pulls WhatsApp app-state patches (includes contact mutations with phone-book `fullName`).
+   * Emits `contacts.upsert` → `_ingestContact` → `_applyLabelToLinkedJids` for LID + PN.
+   */
+  async resyncPhoneBookFromWhatsApp() {
+    if (!this._sock?.resyncAppState || !ALL_WA_PATCH_NAMES?.length) return;
+    try {
+      console.log('[WA] Syncing app state from WhatsApp (contact / phone book names)…');
+      await this._sock.resyncAppState(ALL_WA_PATCH_NAMES, false);
+    } catch (e) {
+      console.warn('[WA] resyncAppState:', e.message);
+    }
+  }
+
+  /** Resync server contact data, wait for events, then push titles into SQLite + FTS. */
+  async refreshPhoneBookNamesInDb(db) {
+    await this.resyncPhoneBookFromWhatsApp();
+    await new Promise((r) => setTimeout(r, 3500));
+    return this.syncResolvedNamesToDb(db);
   }
 
   /** WhatsApp links the same person under @lid (chat id) and @s.whatsapp.net (contact id) — mirror the label. */
