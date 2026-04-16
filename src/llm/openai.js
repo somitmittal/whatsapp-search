@@ -29,7 +29,7 @@ export default class OpenAIProvider {
       max_tokens: options.maxTokens ?? 2048,
     };
 
-    const res = await this._fetch('/chat/completions', 'POST', body, TIMEOUT_MS);
+    const res = await this._fetch('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content?.trim() || '';
   }

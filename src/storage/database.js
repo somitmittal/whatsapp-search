@@ -2,9 +2,22 @@ import { createRequire } from 'module';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import config from '../config.js';
+import { buildSearchText } from '../search/fact-extract.js';
+import { segmentIntoThreads } from '../search/thread-segment.js';
 
 const require = createRequire(import.meta.url);
 const SQLite = require('better-sqlite3');
+
+/** True if `name` is a better sidebar title than the bare JID local part (avoids last-outgoing-msg wiping the label). */
+function looksLikeContactDisplayName(name, chatJid) {
+  if (!name || !chatJid) return false;
+  const local = String(chatJid).split('@')[0];
+  if (name === local) return false;
+  const digitsOnly = String(name).replace(/\s/g, '').replace(/^\+/, '');
+  const localDigits = local.replace(/^\+/, '');
+  if (/^\d{8,16}$/.test(digitsOnly) && digitsOnly === localDigits) return false;
+  return true;
+}
 
 export default class Database {
   constructor() {
@@ -15,6 +28,31 @@ export default class Database {
     this._db.pragma('foreign_keys = ON');
     this._initSchema();
     this._prepareStatements();
+    this._migrateOllamaCloudModelSettings();
+  }
+
+  /**
+   * Ollama Cloud model IDs are the same strings as `ollama run name:tag` (e.g. qwen3.5:4b, glm-5.1:cloud).
+   * `:cloud` is part of the official model name for some GLM routes — not a separate "cloud suffix" you add yourself.
+   * This migration only rewrites known-bad *exact* IDs stored from older app defaults; it does not strip `:cloud`.
+   */
+  _migrateOllamaCloudModelSettings() {
+    const rename = {
+      'deepseek-r1:8b': 'deepseek-r1:7b',
+      'mistral-small3.1:24b': 'mistral-small3.2:24b',
+    };
+    const fix = (providerKey, modelKey) => {
+      if (this.getSetting(providerKey) !== 'ollama_cloud') return;
+      const cur = this.getSetting(modelKey);
+      if (!cur) return;
+      const next = rename[cur];
+      if (next) {
+        this.setSetting(modelKey, next);
+        console.log(`[DB] Ollama Cloud ${modelKey}: "${cur}" → "${next}"`);
+      }
+    };
+    fix('summary_provider', 'summary_model');
+    fix('llm_provider', 'llm_model');
   }
 
   _initSchema() {
@@ -130,6 +168,41 @@ export default class Database {
         INSERT INTO thread_summaries_fts(thread_summaries_fts, rowid) VALUES('delete', old.id);
         INSERT INTO thread_summaries_fts(rowid, summary, chat_name)
         VALUES (new.id, new.summary, new.chat_name);
+      END;
+
+      CREATE TABLE IF NOT EXISTS thread_facts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_jid TEXT NOT NULL,
+        chat_name TEXT,
+        thread_start INTEGER NOT NULL,
+        thread_end INTEGER NOT NULL,
+        fact_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        search_text TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_thread_facts_chat_thread ON thread_facts(chat_jid, thread_start);
+    `);
+
+    this._db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS thread_facts_fts USING fts5(
+        search_text, fact_type, chat_name,
+        content='thread_facts', content_rowid='id',
+        tokenize='porter unicode61'
+      );
+    `);
+
+    this._db.exec(`
+      CREATE TRIGGER IF NOT EXISTS thread_facts_ai AFTER INSERT ON thread_facts BEGIN
+        INSERT INTO thread_facts_fts(rowid, search_text, fact_type, chat_name)
+        VALUES (new.id, new.search_text, new.fact_type, COALESCE(new.chat_name, ''));
+      END;
+      CREATE TRIGGER IF NOT EXISTS thread_facts_ad AFTER DELETE ON thread_facts BEGIN
+        INSERT INTO thread_facts_fts(thread_facts_fts, rowid) VALUES('delete', old.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS thread_facts_au AFTER UPDATE ON thread_facts BEGIN
+        INSERT INTO thread_facts_fts(thread_facts_fts, rowid) VALUES('delete', old.id);
+        INSERT INTO thread_facts_fts(rowid, search_text, fact_type, chat_name)
+        VALUES (new.id, new.search_text, new.fact_type, COALESCE(new.chat_name, ''));
       END;
     `);
 
@@ -294,6 +367,69 @@ export default class Database {
     `).all();
   }
 
+  countDailySummaries() {
+    return this._db.prepare('SELECT COUNT(*) AS c FROM daily_summaries').get()?.c || 0;
+  }
+
+  getDailySummary(chatJid, date) {
+    return this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+             date, summary, message_count AS messageCount
+      FROM daily_summaries
+      WHERE chat_jid = ? AND date = ?
+    `).get(chatJid, date);
+  }
+
+  /** Recent days (chronological) — FTS-empty fallback without loading all rows. */
+  getRecentDailySummaries(chatJid = null, limit = 32) {
+    const safe = Math.max(1, Math.min(Number(limit) || 32, 200));
+    if (chatJid) {
+      const rows = this._db.prepare(`
+        SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+               date, summary, message_count AS messageCount
+        FROM daily_summaries
+        WHERE chat_jid = ?
+        ORDER BY date DESC
+        LIMIT ?
+      `).all(chatJid, safe);
+      return rows.reverse();
+    }
+    const rows = this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+             date, summary, message_count AS messageCount
+      FROM daily_summaries
+      ORDER BY date DESC
+      LIMIT ?
+    `).all(safe);
+    return rows.reverse();
+  }
+
+  /** Recent threads (chronological order) without loading the full table — FTS-empty fallback. */
+  getRecentThreadSummaries(chatJid = null, limit = 32) {
+    const safe = Math.max(1, Math.min(Number(limit) || 32, 200));
+    if (chatJid) {
+      const rows = this._db.prepare(`
+        SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+               thread_start AS threadStart, thread_end AS threadEnd,
+               summary, message_count AS messageCount
+        FROM thread_summaries
+        WHERE chat_jid = ?
+        ORDER BY thread_start DESC
+        LIMIT ?
+      `).all(chatJid, safe);
+      return rows.reverse();
+    }
+    const rows = this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+             thread_start AS threadStart, thread_end AS threadEnd,
+             summary, message_count AS messageCount
+      FROM thread_summaries
+      ORDER BY thread_start DESC
+      LIMIT ?
+    `).all(safe);
+    return rows.reverse();
+  }
+
   _toFtsQuery(query) {
     const STOP_WORDS = new Set([
       'a','an','the','is','are','was','were','be','been','being','have','has','had',
@@ -385,14 +521,73 @@ export default class Database {
   }
 
   getChatStats() {
-    return this._db.prepare(`
-      SELECT chat_jid AS chatJid,
-             MAX(chat_name) AS chatName,
-             COUNT(*) AS messageCount,
-             COUNT(DISTINCT sender) AS participantCount,
-             MAX(timestamp) AS lastMessageTs
-      FROM messages GROUP BY chat_jid ORDER BY lastMessageTs DESC
+    const rows = this._db.prepare(`
+      SELECT chat_jid AS chatJid, chat_name AS chatName, sender, timestamp
+      FROM messages ORDER BY chat_jid ASC, timestamp ASC
     `).all();
+
+    const summaryRows = this._db.prepare(`
+      SELECT chat_jid AS chatJid, COUNT(*) AS c FROM thread_summaries GROUP BY chat_jid
+    `).all();
+    const summarizedByChat = new Map(summaryRows.map((r) => [r.chatJid, r.c]));
+
+    const groups = new Map();
+    for (const r of rows) {
+      if (!groups.has(r.chatJid)) {
+        groups.set(r.chatJid, {
+          messages: [],
+          anyChatName: null,
+          displayChatName: null,
+          /** For 1:1 chats: latest non-"You" sender (usually the peer's display name from pushName). */
+          peerSenderName: null,
+          senders: new Set(),
+        });
+      }
+      const g = groups.get(r.chatJid);
+      g.messages.push({ timestamp: r.timestamp });
+      if (r.chatName) {
+        g.anyChatName = r.chatName;
+        if (looksLikeContactDisplayName(r.chatName, r.chatJid)) {
+          g.displayChatName = r.chatName;
+        }
+      }
+      if (r.sender) g.senders.add(r.sender);
+      const isGroup = r.chatJid.endsWith('@g.us');
+      if (!isGroup && r.sender && r.sender !== 'You') {
+        g.peerSenderName = r.sender;
+      }
+    }
+
+    const out = [];
+    for (const [chatJid, g] of groups) {
+      const threads = segmentIntoThreads(g.messages);
+      const totalThreads = threads.length;
+      let summarizedThreads = summarizedByChat.get(chatJid) || 0;
+      if (summarizedThreads > totalThreads) summarizedThreads = totalThreads;
+      const searchIndexPct =
+        totalThreads === 0 ? 100 : Math.min(100, Math.round((summarizedThreads / totalThreads) * 100));
+      const lastMessageTs = g.messages.length ? g.messages[g.messages.length - 1].timestamp : 0;
+      const isGroup = chatJid.endsWith('@g.us');
+      const title = isGroup
+        ? (g.displayChatName || g.anyChatName || chatJid)
+        : (g.displayChatName || g.anyChatName || g.peerSenderName || chatJid);
+      out.push({
+        chatJid,
+        chatName: title,
+        messageCount: g.messages.length,
+        participantCount: g.senders.size,
+        lastMessageTs,
+        totalThreads,
+        summarizedThreads,
+        searchIndexPct,
+        /** At least one thread summary exists — hierarchical AI search can use this chat. */
+        aiSearchReady: summarizedThreads > 0,
+        /** All segments that qualify for summaries have been summarized. */
+        aiSearchComplete: totalThreads === 0 ? true : summarizedThreads >= totalThreads,
+      });
+    }
+    out.sort((a, b) => b.lastMessageTs - a.lastMessageTs);
+    return out;
   }
 
   getTotalStats() {
@@ -401,7 +596,8 @@ export default class Database {
         (SELECT COUNT(*) FROM messages) AS totalMessages,
         (SELECT COUNT(DISTINCT chat_jid) FROM messages) AS totalChats,
         (SELECT COUNT(*) FROM daily_summaries) AS dailySummaries,
-        (SELECT COUNT(*) FROM thread_summaries) AS threadSummaries
+        (SELECT COUNT(*) FROM thread_summaries) AS threadSummaries,
+        (SELECT COUNT(*) FROM thread_facts) AS threadFacts
     `).get();
     return {
       totalMessages: row.totalMessages,
@@ -409,6 +605,7 @@ export default class Database {
       totalSummaries: row.dailySummaries + row.threadSummaries,
       threadSummaries: row.threadSummaries,
       dailySummaries: row.dailySummaries,
+      threadFacts: row.threadFacts || 0,
     };
   }
 
@@ -486,6 +683,33 @@ export default class Database {
     `).all();
   }
 
+  countThreadSummaries() {
+    return this._db.prepare('SELECT COUNT(*) AS c FROM thread_summaries').get()?.c || 0;
+  }
+
+  /** One thread row by natural key (for merging fact hits into the candidate pool). */
+  getThreadSummary(chatJid, threadStart) {
+    return this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+             thread_start AS threadStart, thread_end AS threadEnd,
+             summary, message_count AS messageCount
+      FROM thread_summaries
+      WHERE chat_jid = ? AND thread_start = ?
+    `).get(chatJid, threadStart);
+  }
+
+  /** Thread whose time range covers a message timestamp (for lexical message → thread expansion). */
+  getThreadSummaryCoveringTimestamp(chatJid, timestamp) {
+    return this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+             thread_start AS threadStart, thread_end AS threadEnd,
+             summary, message_count AS messageCount
+      FROM thread_summaries
+      WHERE chat_jid = ? AND ? >= thread_start AND ? <= thread_end
+      LIMIT 1
+    `).get(chatJid, timestamp, timestamp);
+  }
+
   getSummarizedThreadStarts(chatJid) {
     const rows = this._db.prepare(
       'SELECT thread_start FROM thread_summaries WHERE chat_jid = ?'
@@ -513,6 +737,53 @@ export default class Database {
     `).all(chatJid);
   }
 
+  /** Replace all facts for one thread (after re-extraction). */
+  replaceThreadFacts({ chatJid, chatName = null, threadStart, threadEnd, facts }) {
+    this._db.prepare('DELETE FROM thread_facts WHERE chat_jid = ? AND thread_start = ?').run(chatJid, threadStart);
+    if (!facts?.length) return 0;
+    const ins = this._db.prepare(`
+      INSERT INTO thread_facts (chat_jid, chat_name, thread_start, thread_end, fact_type, payload_json, search_text)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    let n = 0;
+    for (const f of facts) {
+      const factType = String(f.type || 'other').slice(0, 64);
+      const payload = JSON.stringify(f);
+      const st = f.search_text ? String(f.search_text) : buildSearchText(f);
+      ins.run(chatJid, chatName, threadStart, threadEnd, factType, payload, st);
+      n++;
+    }
+    return n;
+  }
+
+  searchFacts(query, chatJid = null, limit = 15) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 15, 100));
+    const cleaned = this._toFtsQuery(query);
+    if (!cleaned) return [];
+    return this._db.prepare(`
+      SELECT tf.id, tf.chat_jid AS chatJid, tf.chat_name AS chatName,
+             tf.thread_start AS threadStart, tf.thread_end AS threadEnd,
+             tf.fact_type AS factType, tf.payload_json AS payloadJson,
+             bm25(thread_facts_fts) AS rank
+      FROM thread_facts_fts
+      INNER JOIN thread_facts tf ON tf.id = thread_facts_fts.rowid
+      WHERE thread_facts_fts MATCH ?
+        AND (? IS NULL OR tf.chat_jid = ?)
+      ORDER BY rank LIMIT ?
+    `).all(cleaned, chatJid, chatJid, safeLimit);
+  }
+
+  clearAllThreadFacts() {
+    const c = this._db.prepare('SELECT COUNT(*) AS n FROM thread_facts').get()?.n || 0;
+    this._db.prepare('DELETE FROM thread_facts').run();
+    try {
+      this._db.exec("INSERT INTO thread_facts_fts(thread_facts_fts) VALUES('rebuild')");
+    } catch (err) {
+      console.error('[DB] thread_facts FTS rebuild failed:', err.message);
+    }
+    return c;
+  }
+
   searchThreadSummaries(query, chatJid = null, limit = 10) {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
     const cleaned = this._toFtsQuery(query);
@@ -538,6 +809,7 @@ export default class Database {
     } catch (err) {
       console.error('[DB] FTS rebuild after thread summary clear failed:', err.message);
     }
+    this.clearAllThreadFacts();
     return count;
   }
 
@@ -546,10 +818,12 @@ export default class Database {
     this._db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(chatJid);
     this._db.prepare('DELETE FROM daily_summaries WHERE chat_jid = ?').run(chatJid);
     this._db.prepare('DELETE FROM thread_summaries WHERE chat_jid = ?').run(chatJid);
+    this._db.prepare('DELETE FROM thread_facts WHERE chat_jid = ?').run(chatJid);
     try {
       this._db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
       this._db.exec("INSERT INTO summaries_fts(summaries_fts) VALUES('rebuild')");
       this._db.exec("INSERT INTO thread_summaries_fts(thread_summaries_fts) VALUES('rebuild')");
+      this._db.exec("INSERT INTO thread_facts_fts(thread_facts_fts) VALUES('rebuild')");
     } catch (err) {
       console.error('[DB] FTS rebuild after delete failed:', err.message);
     }

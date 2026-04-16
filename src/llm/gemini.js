@@ -61,8 +61,9 @@ export default class GeminiProvider {
       },
     };
 
+    const timeout = options.timeoutMs ?? TIMEOUT_MS;
     const res = await this._fetchWithFallback(
-      `/models/${this._model}:generateContent`, 'POST', body, TIMEOUT_MS,
+      `/models/${this._model}:generateContent`, 'POST', body, timeout,
     );
     const data = await res.json();
     const candidate = data?.candidates?.[0];

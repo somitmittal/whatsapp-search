@@ -59,7 +59,7 @@ export default class OllamaProvider {
       },
     };
 
-    const res = await this._fetch('/api/chat', 'POST', body, TIMEOUT_MS);
+    const res = await this._fetch('/api/chat', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
     const data = await res.json();
     return data?.message?.content?.trim() || data?.response?.trim() || '';
   }

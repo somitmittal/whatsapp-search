@@ -1,63 +1,67 @@
-// Gap between messages that defines a new conversation thread (30 minutes)
-const THREAD_GAP_SECONDS = 30 * 60;
-// Minimum messages for a thread to get its own summary
-const MIN_THREAD_MESSAGES = 3;
-// Maximum messages to include in one summary prompt
-const MAX_MESSAGES_CLOUD = 200;
-const MAX_MESSAGES_LOCAL = 100;
+import { FACT_EXTRACTION_PROMPT, parseFactsFromLlm } from './fact-extract.js';
+import { segmentIntoThreads } from './thread-segment.js';
+/** Messages per LLM call — keeps prompts bounded and allows parallel segment work. */
+const SUMMARY_CHUNK_CLOUD = 200;
+const SUMMARY_CHUNK_LOCAL = 150;
+/** Parallel segment-summary calls per thread (speed without hammering the API). */
+const CHUNK_SUMMARY_CONCURRENCY = 3;
 // Min delay between batches (ms) — kept small because key-rotation handles rate limits
 const DELAY_CLOUD_MS = 500;
 const DELAY_LOCAL_MS = 2000;
 // Default concurrency when provider exposes no key count
 const DEFAULT_CONCURRENCY = 3;
+/** Cap for thread-batch parallelism (non-local). */
+const SUMMARY_CONCURRENCY_MAX = 8;
+/** Longer than default provider HTTP timeout — summaries + merges can be slow on large threads. */
+const SUMMARY_LLM_TIMEOUT_MS = 180_000;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/**
+ * Thread-batch concurrency for cloud/API providers.
+ * - If SUMMARY_CONCURRENCY (or SUMMARY_THREAD_CONCURRENCY) is set, that value wins (clamped 1–SUMMARY_CONCURRENCY_MAX).
+ * - Otherwise: max(1, key count) so multi-key setups stay parallel; single-key Ollama Cloud defaults to 1 unless overridden.
+ * Local Ollama stays at 1. Total tokens for a fixed backlog are ~unchanged; higher concurrency raises peak RPM/TPM and can trigger rate limits.
+ */
+function parseSummaryConcurrencyEnv() {
+  const raw = process.env.SUMMARY_CONCURRENCY ?? process.env.SUMMARY_THREAD_CONCURRENCY;
+  if (raw === undefined || String(raw).trim() === '') return null;
+  const n = parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(SUMMARY_CONCURRENCY_MAX, n);
+}
+
+function getSummaryThreadConcurrency(isLocal, keyCount) {
+  if (isLocal) return 1;
+  const override = parseSummaryConcurrencyEnv();
+  if (override !== null) return override;
+  return Math.max(1, keyCount || 1);
+}
+
+/** Optional delay between cloud thread batches (ms); default DELAY_CLOUD_MS. Raise if SUMMARY_CONCURRENCY > 1 causes 429s. */
+function getCloudBatchDelayMs(isLocal) {
+  if (isLocal) return DELAY_LOCAL_MS;
+  const raw = process.env.SUMMARY_BATCH_DELAY_MS;
+  if (raw === undefined || String(raw).trim() === '') return DELAY_CLOUD_MS;
+  const n = parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n < 0) return DELAY_CLOUD_MS;
+  return Math.min(120_000, n);
+}
+
+function isAbortOrTimeoutErr(err) {
+  const msg = `${err?.name || ''} ${err?.message || ''} ${err?.cause?.message || ''}`;
+  return /aborted|AbortError|timeout|timed out/i.test(msg);
+}
+
+/** Options merged into every summary / merge / facts LLM call. */
+function summaryLlmOptions(extra = {}) {
+  return { timeoutMs: SUMMARY_LLM_TIMEOUT_MS, ...extra };
+}
 
 function formatTime(ts) {
   return new Date(ts * 1000).toLocaleString('en-US', {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
   });
-}
-
-/**
- * Splits a chronologically-sorted message array into conversation threads.
- * A new thread starts when the gap between consecutive messages exceeds gapSeconds.
- * Threads with fewer than MIN_THREAD_MESSAGES are merged into the nearest neighbour.
- */
-function segmentIntoThreads(messages, gapSeconds = THREAD_GAP_SECONDS) {
-  if (messages.length === 0) return [];
-
-  const rawThreads = [];
-  let current = [messages[0]];
-
-  for (let i = 1; i < messages.length; i++) {
-    const gap = messages[i].timestamp - messages[i - 1].timestamp;
-    if (gap > gapSeconds) {
-      rawThreads.push(current);
-      current = [messages[i]];
-    } else {
-      current.push(messages[i]);
-    }
-  }
-  rawThreads.push(current);
-
-  // Merge tiny threads (< MIN_THREAD_MESSAGES) into previous thread
-  const threads = [];
-  for (const t of rawThreads) {
-    if (t.length < MIN_THREAD_MESSAGES && threads.length > 0) {
-      threads[threads.length - 1].push(...t);
-    } else {
-      threads.push([...t]);
-    }
-  }
-
-  // Edge case: first thread is tiny and nothing before it — merge into next
-  if (threads.length >= 2 && threads[0].length < MIN_THREAD_MESSAGES) {
-    threads[1].unshift(...threads[0]);
-    threads.shift();
-  }
-
-  return threads.filter(t => t.length >= MIN_THREAD_MESSAGES);
 }
 
 const SUMMARY_PROMPT =
@@ -78,15 +82,23 @@ export default class DailySummaryService {
     this._fallback = fallbackProvider;
     this._onProgress = onProgress ?? null;
     this._running = false;
-    this._aborted = false;
+    this._aborted = false; // reserved for explicit cancel (future)
+  }
+
+  /** Split a message array into consecutive chunks of at most `size` messages. */
+  _splitIntoChunks(messages, size) {
+    if (!messages?.length || size < 1) return [];
+    const out = [];
+    for (let i = 0; i < messages.length; i += size) {
+      out.push(messages.slice(i, i + size));
+    }
+    return out;
   }
 
   setProvider(provider) {
     this._provider = provider;
     if (this._running) {
-      console.log('[Summaries] Provider changed — aborting current run, will restart');
-      this._aborted = true;
-      this._restartPending = true;
+      console.log('[Summaries] Summary provider updated — remaining threads will use the new provider on the next batch');
     }
   }
 
@@ -96,6 +108,56 @@ export default class DailySummaryService {
 
   _isLocal(provider) {
     return provider?.name === 'ollama';
+  }
+
+  async _collectFactsFromTranscript(provider, transcript) {
+    if (!provider || !transcript?.trim()) return [];
+    const prompt = `${FACT_EXTRACTION_PROMPT}\n${transcript}`;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const raw = await provider.chat(
+          [{ role: 'user', content: prompt }],
+          summaryLlmOptions({ temperature: 0.1, maxTokens: 2000 }),
+        );
+        return parseFactsFromLlm(raw);
+      } catch (err) {
+        const msg = err.message || '';
+        const is429 = msg.includes('429');
+        const isAbort = isAbortOrTimeoutErr(err);
+        if ((is429 || isAbort) && attempt < 2) {
+          const waitMs = is429 ? 5000 : 6000 * (attempt + 1);
+          if (isAbort) console.log(`[Facts] Request aborted/timeout, retry in ${waitMs / 1000}s (${attempt + 1}/3)`);
+          await sleep(waitMs);
+          continue;
+        }
+        console.error(`[Facts] ✗ chunk:`, msg.slice(0, 120));
+        return [];
+      }
+    }
+    return [];
+  }
+
+  _dedupeFacts(facts) {
+    const seen = new Set();
+    const out = [];
+    for (const f of facts) {
+      if (!f || typeof f !== 'object') continue;
+      const key = String(f.search_text || '').toLowerCase().slice(0, 400) || JSON.stringify(f).slice(0, 500);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(f);
+    }
+    return out;
+  }
+
+  /** Second pass: structured facts for hybrid search (same provider as thread summary). */
+  async _extractFacts(provider, transcript, chatJid, chatName, threadStart, threadEnd) {
+    const facts = await this._collectFactsFromTranscript(provider, transcript);
+    if (facts.length === 0) return;
+    const n = this._db.replaceThreadFacts({
+      chatJid, chatName, threadStart, threadEnd, facts,
+    });
+    if (n > 0) console.log(`[Facts] ✓ ${n} facts for thread ${threadStart}`);
   }
 
   async _pickProvider() {
@@ -120,116 +182,214 @@ export default class DailySummaryService {
 
   async indexPendingDays() {
     if (this._running) {
-      // Schedule a restart after the current run finishes
       this._restartPending = true;
-      console.log('[Summaries] Already running — restart queued');
+      console.log('[Summaries] Already running — another pass will run when the current one finishes');
       return 0;
     }
 
-    const activeProvider = await this._pickProvider();
-    if (!activeProvider) {
+    let firstProvider = await this._pickProvider();
+    if (!firstProvider) {
       console.log('[Summaries] No LLM provider reachable — skipping');
       return 0;
     }
 
-    const isLocal = this._isLocal(activeProvider);
-    const maxMsgs = isLocal ? MAX_MESSAGES_LOCAL : MAX_MESSAGES_CLOUD;
-    const delayMs = isLocal ? DELAY_LOCAL_MS : DELAY_CLOUD_MS;
-    // Parallelise across keys: Ollama is single-threaded, cloud providers scale with key count
-    const keyCount = activeProvider._keys?.length ?? (isLocal ? 1 : DEFAULT_CONCURRENCY);
-    const concurrency = isLocal ? 1 : Math.max(1, keyCount);
-
-    console.log(`[Summaries] Using ${activeProvider.name}/${activeProvider.model} — concurrency ${concurrency}, ${keyCount} key(s)`);
-
     this._running = true;
-    this._aborted = false;
     this._restartPending = false;
 
     try {
       const chats = this._db.getChatStats();
-      let totalGenerated = 0;
-
+      /** Chats that still have at least one unsummarized thread */
+      const workQueue = [];
       for (const { chatJid, chatName } of chats) {
-        if (this._aborted) break;
-
         const allMessages = this._db.getAllMessagesForChat(chatJid);
         if (allMessages.length === 0) continue;
-
         const threads = segmentIntoThreads(allMessages);
         if (threads.length === 0) continue;
-
         const summarizedStarts = this._db.getSummarizedThreadStarts(chatJid);
         const pending = threads.filter(t => !summarizedStarts.has(t[0].timestamp));
-
         if (pending.length === 0) continue;
-        console.log(`[Summaries] ${chatName || chatJid}: ${pending.length} unsummarized threads (${threads.length} total)`);
+        workQueue.push({ chatJid, chatName, pending });
+      }
+
+      const chatsTotal = workQueue.length;
+      let totalGenerated = 0;
+
+      if (chatsTotal === 0) {
+        console.log('[Summaries] All thread summaries up to date');
+        this._onProgress?.({ phase: 'summary', done: true, chatsTotal: 0 });
+        return 0;
+      }
+
+      this._onProgress?.({
+        phase: 'summary',
+        started: true,
+        chatsTotal,
+        provider: `${firstProvider.name}/${firstProvider.model}`,
+      });
+
+      let chatIndex = 0;
+      for (const { chatJid, chatName, pending } of workQueue) {
+        chatIndex += 1;
+        console.log(`[Summaries] ${chatName || chatJid}: ${pending.length} unsummarized threads (${chatIndex}/${chatsTotal} chats)`);
+
+        this._onProgress?.({
+          phase: 'summary',
+          chatJid,
+          chatName: chatName || chatJid,
+          chatIndex,
+          chatsTotal,
+          threadsTotal: pending.length,
+          threadsDone: 0,
+          active: true,
+        });
 
         let completed = 0;
         let consecutiveFailures = 0;
 
-        // Process threads in parallel batches of `concurrency`
-        for (let batchStart = 0; batchStart < pending.length; batchStart += concurrency) {
-          if (this._aborted) {
-            console.log('[Summaries] Aborted — provider was changed');
+        for (let batchStart = 0; batchStart < pending.length; ) {
+          const activeProvider = await this._pickProvider();
+          if (!activeProvider) {
+            console.log('[Summaries] Provider became unavailable — pausing');
             break;
           }
+
+          const isLocal = this._isLocal(activeProvider);
+          const chunkSize = isLocal ? SUMMARY_CHUNK_LOCAL : SUMMARY_CHUNK_CLOUD;
+          const delayMs = isLocal ? DELAY_LOCAL_MS : getCloudBatchDelayMs(isLocal);
+          const keyCount = activeProvider._keys?.length ?? (isLocal ? 1 : DEFAULT_CONCURRENCY);
+          const concurrency = getSummaryThreadConcurrency(isLocal, keyCount);
+
+          if (batchStart === 0) {
+            console.log(`[Summaries] Using ${activeProvider.name}/${activeProvider.model} — concurrency ${concurrency}`);
+          }
+
           if (consecutiveFailures >= 5) {
-            console.log(`[Summaries] Stopping after ${consecutiveFailures} consecutive failures`);
+            console.log(`[Summaries] Stopping chat after ${consecutiveFailures} consecutive failures`);
             break;
           }
 
           const batch = pending.slice(batchStart, batchStart + concurrency);
           const results = await Promise.allSettled(
-            batch.map(thread => this._summariseThread(activeProvider, thread, chatJid, chatName, maxMsgs))
+            batch.map(thread => this._summariseThread(activeProvider, thread, chatJid, chatName, chunkSize))
           );
 
+          let batchSuccesses = 0;
           for (const result of results) {
             completed++;
             if (result.status === 'fulfilled' && result.value) {
               totalGenerated++;
-              consecutiveFailures = 0;
-            } else {
-              consecutiveFailures++;
+              batchSuccesses++;
             }
           }
+          if (batchSuccesses > 0) {
+            consecutiveFailures = 0;
+          } else {
+            consecutiveFailures++;
+          }
 
-          this._onProgress?.({ totalDays: pending.length, completed, chatJid });
-          if (!this._aborted && batchStart + concurrency < pending.length) await sleep(delayMs);
+          this._onProgress?.({
+            phase: 'summary',
+            chatJid,
+            chatName: chatName || chatJid,
+            chatIndex,
+            chatsTotal,
+            threadsTotal: pending.length,
+            threadsDone: completed,
+            active: true,
+          });
+
+          batchStart += concurrency;
+          if (batchStart < pending.length) await sleep(delayMs);
         }
+
+        const threadsProcessed = Math.min(completed, pending.length);
+        const chatFinished = threadsProcessed >= pending.length;
+        this._onProgress?.({
+          phase: 'summary',
+          chatJid,
+          chatName: chatName || chatJid,
+          chatIndex,
+          chatsTotal,
+          threadsTotal: pending.length,
+          threadsDone: threadsProcessed,
+          chatComplete: chatFinished,
+          active: false,
+        });
       }
 
-      if (this._aborted) {
-        console.log(`[Summaries] Run aborted after generating ${totalGenerated} thread summaries`);
-      } else if (totalGenerated > 0) {
+      if (totalGenerated > 0) {
         console.log(`[Summaries] Done — generated ${totalGenerated} thread summaries`);
-      } else {
-        console.log('[Summaries] All thread summaries up to date');
       }
+      this._onProgress?.({ phase: 'summary', done: true, chatsTotal, totalGenerated });
       return totalGenerated;
     } finally {
       this._running = false;
-      this._aborted = false;
-      // If provider was swapped while running, kick off a fresh run automatically
       if (this._restartPending) {
         this._restartPending = false;
-        console.log('[Summaries] Restarting with new provider...');
-        setTimeout(() => this.indexPendingDays(), 1000);
+        console.log('[Summaries] Running queued pass (new messages or concurrent trigger)...');
+        setTimeout(() => this.indexPendingDays(), 500);
       }
     }
   }
 
-  async _summariseThread(provider, thread, chatJid, chatName, maxMsgs) {
+  async _summariseThread(provider, thread, chatJid, chatName, chunkSize) {
     const threadStart = thread[0].timestamp;
     const threadEnd = thread[thread.length - 1].timestamp;
     const timeLabel = `${formatTime(threadStart)} – ${formatTime(threadEnd)}`;
     try {
-      const transcript = this._formatTranscript(thread, maxMsgs);
-      const summary = await this._generateSummary(provider, transcript, chatName, timeLabel);
-      if (summary) {
-        this._db.upsertThreadSummary({ chatJid, chatName, threadStart, threadEnd, summary, messageCount: thread.length });
-        console.log(`[Summaries] ✓ ${timeLabel} (${thread.length} msgs)`);
-        return true;
+      const chunks = this._splitIntoChunks(thread, chunkSize);
+      const partials = [];
+
+      for (let i = 0; i < chunks.length; i += CHUNK_SUMMARY_CONCURRENCY) {
+        const slice = chunks.slice(i, i + CHUNK_SUMMARY_CONCURRENCY);
+        const batchResults = await Promise.all(
+          slice.map((chunk, j) => {
+            const segIndex = i + j + 1;
+            const transcript = this._formatTranscript(chunk, chunk.length);
+            return this._generateSummary(provider, transcript, chatName, timeLabel, {
+              segmentIndex: segIndex,
+              segmentTotal: chunks.length,
+            });
+          })
+        );
+        for (const s of batchResults) {
+          if (s?.trim()) partials.push(s.trim());
+        }
       }
+
+      if (partials.length === 0) return false;
+
+      let summary;
+      if (partials.length === 1) {
+        summary = partials[0];
+      } else {
+        summary = await this._mergePartialSummaries(provider, partials, chatName, timeLabel);
+        if (!summary?.trim()) return false;
+      }
+
+      this._db.upsertThreadSummary({
+        chatJid, chatName, threadStart, threadEnd, summary: summary.trim(), messageCount: thread.length,
+      });
+      const segNote = chunks.length > 1 ? `, ${chunks.length}×${chunkSize} batches` : '';
+      console.log(`[Summaries] ✓ ${timeLabel} (${thread.length} msgs${segNote})`);
+
+      const allFacts = [];
+      for (let i = 0; i < chunks.length; i += CHUNK_SUMMARY_CONCURRENCY) {
+        const slice = chunks.slice(i, i + CHUNK_SUMMARY_CONCURRENCY);
+        const batchFacts = await Promise.all(
+          slice.map((chunk) => this._collectFactsFromTranscript(provider, this._formatTranscript(chunk, chunk.length)))
+        );
+        for (const chunkFacts of batchFacts) allFacts.push(...chunkFacts);
+      }
+      const mergedFacts = this._dedupeFacts(allFacts);
+      if (mergedFacts.length > 0) {
+        const n = this._db.replaceThreadFacts({
+          chatJid, chatName, threadStart, threadEnd, facts: mergedFacts,
+        });
+        if (n > 0) console.log(`[Facts] ✓ ${n} facts for thread ${threadStart}`);
+      }
+
+      return true;
     } catch (err) {
       console.error(`[Summaries] ✗ ${chatJid} ${timeLabel}:`, err.message.slice(0, 120));
     }
@@ -246,28 +406,104 @@ export default class DailySummaryService {
     }).join('\n');
   }
 
-  async _generateSummary(provider, transcript, chatName, timeLabel) {
+  async _generateSummary(provider, transcript, chatName, timeLabel, segment = null) {
     const header = `Chat: ${chatName || 'Group'} | Time: ${timeLabel}\n\n`;
-    const prompt = SUMMARY_PROMPT + header + transcript;
+    let intro = SUMMARY_PROMPT;
+    if (segment && segment.segmentTotal > 1) {
+      intro =
+        `This is segment ${segment.segmentIndex} of ${segment.segmentTotal} of ONE continuous WhatsApp thread (chronological). ` +
+        'Summarize ONLY this segment; other segments will be merged into one summary later. ' +
+        'Still include names, numbers, dates, topics, and tone for this slice.\n\n' +
+        SUMMARY_PROMPT;
+    }
+    const prompt = intro + header + transcript;
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const result = await provider.chat([
-          { role: 'user', content: prompt },
-        ], { temperature: 0.2, maxTokens: 450 });
+        const result = await provider.chat(
+          [{ role: 'user', content: prompt }],
+          summaryLlmOptions({
+            temperature: 0.2,
+            maxTokens: segment?.segmentTotal > 1 ? 500 : 450,
+          }),
+        );
 
         return result?.trim() || null;
       } catch (err) {
         const msg = err.message || '';
         const is429 = msg.includes('429') || msg.includes('rate limit') || msg.includes('Rate limit');
-        if (is429 && attempt < 2) {
+        const isAbort = isAbortOrTimeoutErr(err);
+        if ((is429 || isAbort) && attempt < 2) {
           const retryMatch = msg.match(/try again in ([\d.]+)s/i);
-          const waitSec = retryMatch ? Math.ceil(parseFloat(retryMatch[1])) + 2 : 10 * (attempt + 1);
-          console.log(`[Summaries] Rate limited, waiting ${waitSec}s (attempt ${attempt + 1}/3)`);
+          const waitSec = is429
+            ? (retryMatch ? Math.ceil(parseFloat(retryMatch[1])) + 2 : 10 * (attempt + 1))
+            : 8 * (attempt + 1);
+          console.log(
+            `[Summaries] ${isAbort ? 'Timeout/abort' : 'Rate limited'}, waiting ${waitSec}s (attempt ${attempt + 1}/3)`,
+          );
           await sleep(waitSec * 1000);
           continue;
         }
         console.error(`[Summaries] LLM failed for ${chatName} ${timeLabel}:`, msg.slice(0, 200));
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Merge ordered partial summaries (pairwise tree) so each LLM call stays small.
+   */
+  async _mergePartialSummaries(provider, partials, chatName, timeLabel) {
+    if (!partials.length) return null;
+    let layer = [...partials];
+    while (layer.length > 1) {
+      const next = [];
+      for (let i = 0; i < layer.length; i += 2) {
+        if (i + 1 >= layer.length) {
+          next.push(layer[i]);
+        } else {
+          const merged = await this._mergeTwoSummaries(provider, layer[i], layer[i + 1], chatName, timeLabel);
+          next.push(merged || `${layer[i]}\n${layer[i + 1]}`);
+        }
+      }
+      layer = next;
+    }
+    return layer[0]?.trim() || null;
+  }
+
+  async _mergeTwoSummaries(provider, a, b, chatName, timeLabel) {
+    const header = `Chat: ${chatName || 'Group'} | Time: ${timeLabel}\n\n`;
+    const mergePrompt =
+      'Two consecutive summary fragments describe adjacent parts of the SAME WhatsApp conversation (in order). ' +
+      'Merge them into 2-4 keyword-rich sentences. Keep ALL names, numbers, dates, topics, and tone. ' +
+      'Remove redundancy. Do not add opinions.\n\n' +
+      header +
+      '--- Fragment A ---\n' +
+      a +
+      '\n\n--- Fragment B ---\n' +
+      b;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const result = await provider.chat(
+          [{ role: 'user', content: mergePrompt }],
+          summaryLlmOptions({ temperature: 0.15, maxTokens: 550 }),
+        );
+        return result?.trim() || null;
+      } catch (err) {
+        const msg = err.message || '';
+        const is429 = msg.includes('429') || msg.includes('rate limit') || msg.includes('Rate limit');
+        const isAbort = isAbortOrTimeoutErr(err);
+        if ((is429 || isAbort) && attempt < 2) {
+          const retryMatch = msg.match(/try again in ([\d.]+)s/i);
+          const waitSec = is429
+            ? (retryMatch ? Math.ceil(parseFloat(retryMatch[1])) + 2 : 10 * (attempt + 1))
+            : 8 * (attempt + 1);
+          await sleep(waitSec * 1000);
+          continue;
+        }
+        console.error(`[Summaries] Merge failed for ${chatName}:`, msg.slice(0, 160));
         return null;
       }
     }

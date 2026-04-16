@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import config from '../config.js';
 import { importExportedChat, extractTextFromZip } from '../import/chat-import.js';
 import { createProvider, clearProviderCache, PROVIDER_META } from '../llm/provider.js';
+import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
 
 const require = createRequire(import.meta.url);
 const express = require('express');
@@ -74,6 +75,34 @@ export default class WebServer {
   /** Called by WaClient during history sync with progress info. */
   onWaProgress({ completed, total, messages }) {
     this._broadcast({ type: 'sync-progress', data: { completed, total, messages } });
+  }
+
+  /** Called by DailySummaryService while indexing thread summaries per chat. */
+  onSummaryProgress(data) {
+    this._broadcast({ type: 'summary-progress', data });
+  }
+
+  /** Merge static PROVIDER_META with live Ollama Cloud /api/tags when an API key is available. */
+  async _buildProvidersMeta(settings) {
+    const oc = PROVIDER_META.ollama_cloud;
+    const providers = {
+      ...PROVIDER_META,
+      ollama_cloud: { ...oc, models: [...oc.models] },
+    };
+    const sumProv = settings.summary_provider;
+    const llmProv = settings.llm_provider;
+    const key =
+      (sumProv === 'ollama_cloud' ? (settings.summary_api_key || '') : '') ||
+      (llmProv === 'ollama_cloud' ? (settings.llm_api_key || '') : '') ||
+      (settings.llm_api_key || '') ||
+      (settings.summary_api_key || '');
+    if (key && String(key).trim()) {
+      const remote = await fetchOllamaCloudModelNames(key);
+      if (remote.length) {
+        providers.ollama_cloud.models = [...new Set([...remote, ...providers.ollama_cloud.models])];
+      }
+    }
+    return providers;
   }
 
   _setupWebSocket() {
@@ -181,6 +210,28 @@ export default class WebServer {
       res.json({ qr });
     });
 
+    this._app.get('/api/wa/chat-details', async (req, res) => {
+      const chatJid = req.query.chatJid;
+      if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+      try {
+        const stats = this.db.getChatStats().find((c) => c.chatJid === chatJid);
+        const local = {
+          chatJid,
+          chatName: stats?.chatName ?? null,
+          messageCount: stats?.messageCount ?? 0,
+          participantCountFromDb: stats?.participantCount ?? 0,
+          lastMessageTs: stats?.lastMessageTs ?? null,
+          isGroup: chatJid.includes('@g.us'),
+        };
+        const wa = this._waClient && typeof this._waClient.getChatDetails === 'function'
+          ? await this._waClient.getChatDetails(chatJid)
+          : null;
+        return res.json({ ...local, ...(wa || {}) });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
     this._app.post('/api/wa/connect', async (_req, res) => {
       if (!this._waClient) return res.status(503).json({ error: 'WA client not initialised' });
       if (this._waState === 'READY') return res.json({ ok: true, state: 'READY' });
@@ -246,10 +297,15 @@ export default class WebServer {
     });
 
     // ── Settings API ──────────────────────────────────────────────────
-    this._app.get('/api/settings', (_req, res) => {
-      const settings = this.db.getAllSettings();
-      const providers = PROVIDER_META;
-      res.json({ settings, providers });
+    this._app.get('/api/settings', async (_req, res) => {
+      try {
+        const settings = this.db.getAllSettings();
+        const providers = await this._buildProvidersMeta(settings);
+        res.json({ settings, providers });
+      } catch (err) {
+        console.error('[Settings] GET error:', err.message);
+        res.json({ settings: this.db.getAllSettings(), providers: PROVIDER_META });
+      }
     });
 
     this._app.post('/api/settings', async (req, res) => {
@@ -360,7 +416,7 @@ export default class WebServer {
         const clearedDaily = this.db.clearAllSummaries();
         const clearedThread = this.db.clearAllThreadSummaries();
         const cleared = clearedDaily + clearedThread;
-        console.log(`[Summaries] Cleared ${clearedDaily} daily + ${clearedThread} thread summaries — regenerating as threads...`);
+        console.log(`[Summaries] Cleared ${clearedDaily} daily + ${clearedThread} thread summaries (and thread facts) — regenerating...`);
         res.json({ cleared, status: 'regenerating' });
         this.summaryService.indexPendingDays().then(count => {
           console.log(`[Summaries] Regenerated ${count} thread summaries`);

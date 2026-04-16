@@ -70,9 +70,83 @@
 
     .chat-list { flex: 1; overflow-y: auto; scrollbar-width: thin; }
     .chat-item {
-      display: flex; align-items: center; padding: 10px 16px; cursor: pointer;
+      display: flex; flex-wrap: wrap; align-items: center; padding: 10px 16px 8px; cursor: pointer;
       gap: 14px; border-bottom: 1px solid var(--border); transition: background 0.1s;
     }
+    .chat-index-track {
+      flex: 1 0 100%;
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 2px;
+    }
+    .chat-index-track[style*="display: none"] { margin: 0; height: 0; }
+    .chat-index-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--green), #128c7e);
+      border-radius: 2px;
+      transition: width 0.2s ease;
+    }
+    .wa-sync-track {
+      flex: 1 0 100%;
+      height: 3px;
+      background: rgba(26, 115, 232, 0.15);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 2px;
+    }
+    .wa-sync-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #1a73e8, #1557b0);
+      border-radius: 2px;
+      transition: width 0.25s ease;
+    }
+    .search-index-track {
+      flex: 1 0 100%;
+      height: 3px;
+      background: rgba(147, 51, 234, 0.12);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 2px;
+    }
+    .search-index-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #9333ea, #7c3aed);
+      border-radius: 2px;
+      transition: width 0.25s ease;
+    }
+    .search-index-track.done .search-index-bar {
+      background: linear-gradient(90deg, #15803d, #16a34a);
+    }
+    .search-badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 8px;
+      background: var(--border);
+      color: var(--text2);
+      flex-shrink: 0;
+      margin-left: 6px;
+    }
+    .search-badge.partial { background: rgba(147, 51, 234, 0.15); color: #6b21a8; }
+    .search-badge.complete { background: rgba(22, 163, 74, 0.18); color: #166534; }
+    .cv-contact {
+      display: none;
+      margin-top: 6px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text2);
+      line-height: 1.45;
+    }
+    .cv-contact.visible { display: block; }
+    .cv-contact-row { margin-bottom: 4px; }
+    .cv-contact-row strong { color: var(--text); margin-right: 6px; }
+    .cv-contact code { font-size: 11px; word-break: break-all; background: var(--input-bg); padding: 2px 6px; border-radius: 4px; }
     .chat-item:hover { background: var(--hover); }
     .chat-item.active { background: #f0f2f5; }
     .chat-avatar {
@@ -81,7 +155,7 @@
       font-size: 20px; color: #fff; font-weight: 500; flex-shrink: 0; text-transform: uppercase;
     }
     .chat-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-    .chat-meta-top { display: flex; align-items: center; justify-content: space-between; }
+    .chat-meta-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
     .chat-name { font-size: 16px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .chat-date { font-size: 12px; color: var(--text2); white-space: nowrap; margin-left: 8px; flex-shrink: 0; }
     .chat-meta-bottom { display: flex; align-items: center; justify-content: space-between; }
@@ -614,6 +688,7 @@
           <div class="chat-header-info">
             <h3 id="cv-name"></h3>
             <span id="cv-info"></span>
+            <div id="cv-contact" class="cv-contact" aria-label="Contact details"></div>
           </div>
           <div class="chat-header-actions">
             <button class="icon-btn" id="btn-chat-menu" title="More options">
@@ -699,7 +774,7 @@
         <div class="setting-group">
           <h3>Search AI Model</h3>
           <p>Used for search queries — pick a fast, smart cloud model for best results.</p>
-          <div class="setting-row"><label>Provider</label><select id="s-provider"><option value="groq">Groq — Fast Llama (Free)</option><option value="gemini">Google Gemini (Free)</option><option value="ollama">Ollama (Local, Free)</option><option value="openai">OpenAI</option><option value="claude">Anthropic Claude</option><option value="grok">Grok / xAI (Free Tier)</option></select></div>
+          <div class="setting-row"><label>Provider</label><select id="s-provider"><option value="groq">Groq — Fast Llama (Free)</option><option value="gemini">Google Gemini (Free)</option><option value="openrouter">OpenRouter (Free models)</option><option value="ollama">Ollama — Local</option><option value="ollama_cloud">Ollama Cloud</option><option value="openai">OpenAI</option><option value="claude">Anthropic Claude</option><option value="grok">Grok / xAI (Free Tier)</option></select></div>
           <div class="setting-row" id="s-key-row" style="align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><textarea id="s-key" rows="3" placeholder="Paste one key per line, or comma-separated. Multiple keys are rotated automatically." style="flex:1;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea></div>
           <div class="setting-row"><label>Model</label><select id="s-model"></select></div>
           <div class="setting-row" style="gap:12px;"><button class="btn btn-primary" id="s-save">Save & Connect</button><span id="s-status"></span></div>
@@ -711,7 +786,9 @@
           <div class="setting-row"><label>Provider</label>
             <select id="ss-provider">
               <option value="same">Same as Search</option>
-              <option value="ollama">Ollama (Local, Free)</option>
+              <option value="ollama">Ollama — Local</option>
+              <option value="openrouter">OpenRouter (Free models)</option>
+              <option value="ollama_cloud">Ollama Cloud</option>
               <option value="groq">Groq — Fast Llama (Free)</option>
               <option value="gemini">Google Gemini (Free)</option>
               <option value="openai">OpenAI</option>
@@ -749,7 +826,7 @@
         <div class="setting-group">
           <h3>Data</h3>
           <p>All data stored locally in SQLite.</p>
-          <div class="setting-row"><span>Messages: <strong id="stat-msgs">0</strong></span><span style="margin-left:20px;">Chats: <strong id="stat-chats">0</strong></span><span style="margin-left:20px;">Summaries: <strong id="stat-sums">0</strong></span></div>
+          <div class="setting-row"><span>Messages: <strong id="stat-msgs">0</strong></span><span style="margin-left:20px;">Chats: <strong id="stat-chats">0</strong></span><span style="margin-left:20px;">Summaries: <strong id="stat-sums">0</strong></span><span style="margin-left:20px;">Facts: <strong id="stat-facts">0</strong></span></div>
           <div class="setting-row" style="margin-top:8px;">
             <button class="btn btn-secondary" id="gen-summaries">Generate Summaries</button>
             <button class="btn btn-secondary" id="regen-summaries" style="background:#fff3cd;color:#856404;">Regenerate All</button>
@@ -800,18 +877,31 @@
   const $ = s => document.querySelector(s);
   const $$ = s => document.querySelectorAll(s);
   let ws, chatData = [], activeChat = null, connected = false, searchActive = false;
+  /** @type {Record<string, { pct: number, show: boolean }>} */
+  let summaryProgressByJid = {};
+  /** Per-chat message counts during WhatsApp history sync (from server). */
+  let waSyncByChat = {};
 
+  // Ollama local vs cloud: same first 5 tags (see src/llm/ollama-model-lists.js). Hydrated from /api/settings when possible.
   const MODELS = {
     groq: ['llama-3.3-70b-versatile','llama-3.1-8b-instant','meta-llama/llama-4-scout-17b-16e-instruct','qwen/qwen3-32b'],
-    ollama: ['qwen3.5:4b','llama3.2:3b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud'],
+    ollama: ['qwen3.5:4b','llama3.2:3b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','deepseek-v3.1:671b-cloud','kimi-k2:1t-cloud'],
+    ollama_cloud: ['qwen3.5:4b','llama3.2:3b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','qwen3:8b','mistral-small3.2:24b','deepseek-r1:7b','deepseek-r1:latest','gemma3:4b'],
+    openrouter: ['google/gemma-2-9b-it:free','meta-llama/llama-3.2-3b-instruct:free','mistralai/mistral-7b-instruct:free','qwen/qwen-2.5-7b-instruct:free','meta-llama/llama-3.2-1b-instruct:free'],
     gemini: ['gemini-2.5-flash','gemini-2.0-flash','gemini-2.0-flash-lite'],
     openai: ['gpt-4o-mini','gpt-4o','gpt-4.1-mini','gpt-4.1-nano'],
     claude: ['claude-sonnet-4-20250514','claude-haiku-4-20250414'],
     grok: ['grok-2-latest','grok-2-mini'],
   };
+  fetch('/api/settings').then(r => r.json()).then(({ providers }) => {
+    if (providers?.ollama?.models?.length) MODELS.ollama = providers.ollama.models;
+    if (providers?.ollama_cloud?.models?.length) MODELS.ollama_cloud = providers.ollama_cloud.models;
+  }).catch(() => {});
   const HINTS = {
     groq: 'Free key from <a href="https://console.groq.com/keys" target="_blank">console.groq.com</a>. Runs Llama 70B at blazing speed. <strong>Paste multiple keys separated by commas</strong> to avoid rate limits.',
-    ollama: 'Local models run on your machine (no API key). <code>glm-5.1:cloud</code> runs via Ollama\'s cloud proxy (needs internet).',
+    ollama: 'The <strong>first five</strong> model tags match Ollama Cloud. The last three are <strong>desktop-only</strong> cloud proxies (<code>glm-5.1:cloud</code>, etc.) — they need the local Ollama app, not the Cloud API.',
+    ollama_cloud: 'API key from <a href="https://ollama.com" target="_blank">ollama.com</a>. The <strong>first five</strong> tags are the same as local Ollama; then cloud extras including <code>glm-5.1:cloud</code>. Same <code>/api/chat</code> as local. Optional: <code>OLLAMA_CLOUD_URL</code>.',
+    openrouter: 'Key from <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai</a>. Models ending in <code>:free</code> are free tier. Any OpenRouter model id works.',
     gemini: 'Free key from <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a>. <strong>Paste multiple keys separated by commas</strong> — they will be rotated on each call to avoid rate limits.',
     openai: 'Key from <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a>.',
     claude: 'Key from <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.',
@@ -923,6 +1013,7 @@
         }
         else if (msg.type === 'wa-qr') { showQr(msg.data.qr); }
         else if (msg.type === 'sync-progress') { updateSyncProgress(msg.data); }
+        else if (msg.type === 'summary-progress') { handleSummaryProgress(msg.data); }
       } catch {}
     };
     ws.onclose = () => setTimeout(connectWS, 3000);
@@ -974,6 +1065,8 @@
       $('#sync-progress-panel').style.display = 'none';
       $('#welcome-default').style.display = '';
       $('#wqr-loading').style.display = 'none';
+      waSyncByChat = {};
+      applyWaSyncBars();
       refreshDash();
     } else if (state === 'SYNCING') {
       $('#welcome-qr').style.display = 'none';
@@ -990,6 +1083,10 @@
     } else {
       // LOADING or DISCONNECTED
       $('#sync-progress-panel').style.display = 'none';
+      if (state === 'DISCONNECTED' || state === 'LOADING') {
+        waSyncByChat = {};
+        applyWaSyncBars();
+      }
       if (isEmptyPanel || !hasChats) {
         $('#welcome-qr').style.display = '';
         $('#welcome-default').style.display = 'none';
@@ -1025,18 +1122,46 @@
     }, 26_000);
   }
 
-  function updateSyncProgress({ completed, total, messages }) {
+  function updateSyncProgress(data) {
+    const { completed, total, messages, byChat } = data || {};
+    if (byChat && typeof byChat === 'object') {
+      waSyncByChat = { ...byChat };
+      applyWaSyncBars();
+    }
     // Baileys sends total=0 (unknown) — show an animated indeterminate bar
     const hasTotal = total > 0;
     const pct = hasTotal ? Math.round((completed / total) * 100) : 0;
     $('#sync-bar').style.width = hasTotal ? pct + '%' : '100%';
     $('#sync-bar').style.animation = hasTotal ? '' : 'sync-pulse 1.5s ease-in-out infinite';
     $('#sync-pct').textContent = hasTotal ? pct + '%' : 'syncing…';
-    $('#sync-msgs').textContent = messages.toLocaleString() + ' messages';
+    const msgN = messages ?? 0;
+    $('#sync-msgs').textContent = msgN.toLocaleString() + ' messages';
     $('#sync-detail').textContent = hasTotal ? `${completed} of ${total} chats` : 'Receiving history…';
     $('#sync-progress-panel').style.display = '';
     $('#welcome-qr').style.display = 'none';
     $('#welcome-default').style.display = 'none';
+  }
+
+  function applyWaSyncBars() {
+    const root = $('#chat-list');
+    if (!root) return;
+    const syncing = _waState === 'SYNCING';
+    const counts = Object.values(waSyncByChat);
+    const max = Math.max(1, ...counts);
+    root.querySelectorAll('.wa-sync-track').forEach(tr => {
+      const jid = tr.dataset.jid;
+      const n = waSyncByChat[jid] || 0;
+      const bar = tr.querySelector('.wa-sync-bar');
+      if (!syncing || n <= 0) {
+        tr.style.display = 'none';
+        tr.removeAttribute('title');
+        if (bar) bar.style.width = '0%';
+        return;
+      }
+      tr.style.display = '';
+      tr.title = `${n.toLocaleString()} messages received for this chat in the current sync (bar is relative to the busiest chat)`;
+      if (bar) bar.style.width = Math.round((n / max) * 100) + '%';
+    });
   }
 
   // Fetch initial WA state on load
@@ -1063,6 +1188,7 @@
       $('#stat-msgs').textContent = s.totalMessages.toLocaleString();
       $('#stat-chats').textContent = s.totalChats;
       $('#stat-sums').textContent = s.totalSummaries;
+      if ($('#stat-facts')) $('#stat-facts').textContent = (s.threadFacts ?? 0).toLocaleString();
       connected = status.connected;
       updateExtBadge();
     } catch {}
@@ -1081,21 +1207,114 @@
   }
   function formatCount(n) { return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n); }
 
+  function applyChatSummaryBars() {
+    const root = $('#chat-list');
+    if (!root) return;
+    root.querySelectorAll('.chat-index-track').forEach(tr => {
+      const jid = tr.dataset.jid;
+      const st = summaryProgressByJid[jid];
+      const bar = tr.querySelector('.chat-index-bar');
+      if (!st || !st.show) {
+        tr.style.display = 'none';
+        if (bar) bar.style.width = '0%';
+        return;
+      }
+      tr.style.display = '';
+      if (bar) bar.style.width = st.pct + '%';
+    });
+  }
+
+  function handleSummaryProgress(d) {
+    if (!d || d.phase !== 'summary') return;
+    if (d.done) {
+      summaryProgressByJid = {};
+      applyChatSummaryBars();
+      refreshDash();
+      return;
+    }
+    if (d.started) return;
+    if (!d.chatJid) return;
+    const jid = d.chatJid;
+    if (d.chatComplete) {
+      summaryProgressByJid[jid] = { pct: 100, show: true };
+      applyChatSummaryBars();
+      setTimeout(() => {
+        delete summaryProgressByJid[jid];
+        applyChatSummaryBars();
+      }, 450);
+      return;
+    }
+    if (d.active === false) {
+      delete summaryProgressByJid[jid];
+      applyChatSummaryBars();
+      return;
+    }
+    const total = d.threadsTotal || 1;
+    const done = Math.min(d.threadsDone ?? 0, total);
+    summaryProgressByJid[jid] = { pct: Math.round((done / total) * 100), show: true };
+    applyChatSummaryBars();
+  }
+
+  function applySearchIndexBars() {
+    const root = $('#chat-list');
+    if (!root) return;
+    root.querySelectorAll('.search-index-track').forEach(tr => {
+      const pct = parseInt(tr.dataset.searchPct, 10);
+      const safePct = Number.isFinite(pct) ? Math.min(100, Math.max(0, pct)) : 0;
+      const done = tr.dataset.searchComplete === '1';
+      const bar = tr.querySelector('.search-index-bar');
+      tr.classList.toggle('done', done);
+      tr.style.display = '';
+      if (bar) bar.style.width = safePct + '%';
+      const sum = parseInt(tr.dataset.summarized, 10) || 0;
+      const tot = parseInt(tr.dataset.totalThreads, 10) || 0;
+      tr.title = done
+        ? 'AI search: all conversation threads in this chat are summarized (thread summaries + facts). Plain text search in messages always works.'
+        : (tot > 0
+          ? `AI search index: ${sum} of ${tot} threads summarized (${safePct}%). Message search works anytime; summaries improve AI answers.`
+          : 'No multi-message threads yet — AI index complete when threads exist.');
+    });
+  }
+
   function renderChats(chats) {
     const c = $('#chat-list');
     if (!chats.length) { c.innerHTML = '<div class="sidebar-empty">No chats yet.<br>Click <strong>+</strong> to import.</div>'; return; }
     c.innerHTML = chats.map(ch => {
       const n = ch.chatName || ch.chatJid;
       const isGroup = ch.chatJid?.includes('@g.us') || (ch.participantCount > 2);
+      const pct = ch.searchIndexPct ?? 0;
+      const sumT = ch.summarizedThreads ?? 0;
+      const totT = ch.totalThreads ?? 0;
+      const aiDone = !!ch.aiSearchComplete;
+      const aiReady = !!ch.aiSearchReady;
+      let badgeClass = '';
+      let badgeText = 'AI —';
+      if (aiDone) { badgeClass = 'complete'; badgeText = 'AI ✓'; }
+      else if (aiReady) { badgeClass = 'partial'; badgeText = pct + '%'; }
       return `<div class="chat-item${activeChat === ch.chatJid ? ' active' : ''}" data-jid="${esc(ch.chatJid)}">
         <div class="chat-avatar">${esc(n.charAt(0).toUpperCase() + (n.charAt(1) || '').toUpperCase())}</div>
         <div class="chat-meta">
-          <div class="chat-meta-top"><span class="chat-name">${esc(n)}</span><span class="chat-date">${esc(formatDate(ch.lastMessageTs))}</span></div>
+          <div class="chat-meta-top">
+            <span class="chat-name">${esc(n)}</span>
+            <span style="display:flex;align-items:center;flex-shrink:0;">
+              <span class="search-badge ${badgeClass}" title="Thread summaries for AI search">${esc(badgeText)}</span>
+              <span class="chat-date">${esc(formatDate(ch.lastMessageTs))}</span>
+            </span>
+          </div>
           <div class="chat-meta-bottom"><span class="chat-participants">${isGroup ? ch.participantCount + ' participants' : ''}</span><span class="chat-count-badge">${formatCount(ch.messageCount)}</span></div>
         </div>
+        <div class="wa-sync-track" data-jid="${esc(ch.chatJid)}" style="display:none"><div class="wa-sync-bar"></div></div>
+        <div class="search-index-track${aiDone ? ' done' : ''}" data-jid="${esc(ch.chatJid)}"
+          data-search-pct="${pct}" data-search-complete="${aiDone ? '1' : '0'}"
+          data-summarized="${sumT}" data-total-threads="${totT}"
+          style="${ch.messageCount > 0 ? '' : 'display:none'}"><div class="search-index-bar"></div></div>
+        <div class="chat-index-track" data-jid="${esc(ch.chatJid)}" style="display:none"><div class="chat-index-bar"></div></div>
       </div>`;
     }).join('');
     c.querySelectorAll('.chat-item').forEach(i => i.addEventListener('click', () => openChat(i.dataset.jid)));
+    applyWaSyncBars();
+    applySearchIndexBars();
+    applyChatSummaryBars();
   }
 
   $('#filter').addEventListener('input', e => {
@@ -1104,6 +1323,38 @@
   });
 
   // ── Open chat ──────────────────────────────────────────────────────
+  function renderCvContact(d, jid) {
+    const el = $('#cv-contact');
+    if (!el) return;
+    if (!d) {
+      el.classList.remove('visible');
+      el.innerHTML = '';
+      return;
+    }
+    const g = d.isGroup || jid.includes('@g.us');
+    const rows = [];
+    rows.push(`<div class="cv-contact-row"><strong>Type</strong> ${g ? 'Group' : 'Contact'}</div>`);
+    rows.push(`<div class="cv-contact-row"><strong>JID</strong> <code>${esc(jid)}</code></div>`);
+    if (d.waConnected === false) {
+      rows.push(`<div class="cv-contact-row" style="opacity:0.85">WhatsApp not connected — details from local index only.</div>`);
+    }
+    if (g) {
+      const subj = d.subject || d.displayName || d.chatName;
+      if (subj) rows.push(`<div class="cv-contact-row"><strong>Name</strong> ${esc(String(subj))}</div>`);
+      const pc = d.participantCount != null ? d.participantCount : d.participantCountFromDb;
+      if (pc != null) rows.push(`<div class="cv-contact-row"><strong>Participants</strong> ${Number(pc).toLocaleString()}</div>`);
+      if (d.description) rows.push(`<div class="cv-contact-row"><strong>Description</strong> ${esc(d.description)}</div>`);
+      if (d.owner) rows.push(`<div class="cv-contact-row"><strong>Owner</strong> <code>${esc(String(d.owner))}</code></div>`);
+    } else {
+      const indivName = d.chatName || (d.displayName && String(d.displayName) !== String(d.phone) ? d.displayName : null);
+      if (indivName) rows.push(`<div class="cv-contact-row"><strong>Name</strong> ${esc(String(indivName))}</div>`);
+      if (d.phone) rows.push(`<div class="cv-contact-row"><strong>Phone</strong> ${esc(String(d.phone))}</div>`);
+    }
+    if (d.error) rows.push(`<div class="cv-contact-row" style="color:var(--danger)">Could not load live metadata: ${esc(d.error)}</div>`);
+    el.innerHTML = rows.join('');
+    el.classList.add('visible');
+  }
+
   async function openChat(jid) {
     activeChat = jid;
     closeAllOverlays();
@@ -1116,11 +1367,26 @@
       ? `${ch?.participantCount || 0} participants \u00b7 ${(ch?.messageCount || 0).toLocaleString()} messages`
       : `${(ch?.messageCount || 0).toLocaleString()} messages`;
     $('#cv-avatar').textContent = n.charAt(0).toUpperCase() + (n.charAt(1) || '').toUpperCase();
+    renderCvContact(null, jid);
     $$('.chat-item').forEach(i => i.classList.toggle('active', i.dataset.jid === jid));
     switchPanel();
     try {
-      const msgs = await fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200`).then(r => r.json());
+      const [msgs, details] = await Promise.all([
+        fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200`).then(r => r.json()),
+        fetch(`/api/wa/chat-details?chatJid=${encodeURIComponent(jid)}`).then(r => r.ok ? r.json() : null),
+      ]);
+      if (activeChat !== jid) return;
       renderMessages(msgs, jid);
+      if (details && activeChat === jid) {
+        const display = details.subject || details.chatName || details.displayName || n;
+        $('#cv-name').textContent = display;
+        $('#cv-avatar').textContent = display.charAt(0).toUpperCase() + (display.charAt(1) || '').toUpperCase();
+        const row = chatData.find(c => c.chatJid === jid);
+        if (row && display) row.chatName = display;
+        const fq = ($('#filter') && $('#filter').value || '').toLowerCase();
+        renderChats(chatData.filter(c => !fq || (c.chatName || c.chatJid).toLowerCase().includes(fq)));
+        renderCvContact(details, jid);
+      }
     } catch {}
   }
 
@@ -1326,7 +1592,7 @@
     const p = $('#s-provider').value, sel = $('#s-model');
     sel.innerHTML = '';
     (MODELS[p] || []).forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
-    $('#s-key-row').style.display = p === 'ollama' ? 'none' : '';
+    $('#s-key-row').style.display = (p === 'ollama') ? 'none' : '';
     const h = $('#s-hint'); h.style.display = ''; h.innerHTML = HINTS[p] || '';
   }
   $('#s-provider').addEventListener('change', updateModelOptions);

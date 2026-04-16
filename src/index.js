@@ -46,12 +46,16 @@ async function main() {
   }
 
   const searchEngine = new SmartSearch(db, provider);
+  let webServer;
   const summaryService = new DailySummaryService({
     db,
     provider: summaryProvider,
     fallbackProvider: summaryProvider !== provider ? provider : null,
+    onProgress: (data) => {
+      if (webServer) webServer.onSummaryProgress(data);
+    },
   });
-  const webServer = new WebServer({ db, searchEngine, summaryService });
+  webServer = new WebServer({ db, searchEngine, summaryService });
 
   // ── WhatsApp Linked-Device client ───────────────────────────────
   const waClient = new WaClient({

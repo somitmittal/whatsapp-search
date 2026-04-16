@@ -17,6 +17,8 @@ const {
   fetchLatestBaileysVersion,
   jidNormalizedUser,
   isJidGroup,
+  isLidUser,
+  isPnUser,
 } = require('@whiskeysockets/baileys');
 const QRCode   = require('qrcode');
 const P        = require('pino');
@@ -86,6 +88,8 @@ export default class WaClient {
     this._ownerJid      = null;
     this._searchGroupJid = null;
     this._chatNames     = new Map();   // jid → display name
+    /** Messages received per chat during current history sync (for UI progress). */
+    this._syncByChat    = new Map();
     this._totalMsgs     = 0;
     this._syncDoneTimer = null;
     this._historyDone   = false;
@@ -229,10 +233,24 @@ export default class WaClient {
     });
 
     // ── History sync (fires in one or more batches) ───────────────────────
-    this._sock.ev.on('messaging-history.set', ({ chats, messages, contacts }) => {
-      // Build name map from this batch
-      for (const c of (chats || []))    if (c.id && c.name) this._chatNames.set(c.id, c.name);
-      for (const c of (contacts || [])) if (c.id && (c.name || c.notify)) this._chatNames.set(c.id, c.name || c.notify);
+    this._sock.ev.on('messaging-history.set', async ({ chats, messages, contacts }) => {
+      try {
+        for (const c of (chats || [])) {
+          if (c.id && c.name) await this._applyDisplayName(c.id, c.name);
+        }
+        for (const c of (contacts || [])) {
+          const label = c.name || c.notify || c.verifiedName;
+          if (c.id && label) await this._applyDisplayName(c.id, label);
+        }
+      } catch (e) {
+        console.warn('[WA] history name hydrate:', e.message);
+      }
+
+      for (const m of messages || []) {
+        const jid = m.key?.remoteJid;
+        if (!jid || jid === this._searchGroupJid || !m.message) continue;
+        this._syncByChat.set(jid, (this._syncByChat.get(jid) || 0) + 1);
+      }
 
       const rows = messages
         .filter(m => m.message && m.key.remoteJid !== this._searchGroupJid)
@@ -242,7 +260,12 @@ export default class WaClient {
       if (rows.length) {
         this._onMessages?.(rows);
         this._totalMsgs += rows.length;
-        this._onProgress?.({ completed: 0, total: 0, messages: this._totalMsgs });
+        this._onProgress?.({
+          completed: 0,
+          total: 0,
+          messages: this._totalMsgs,
+          byChat: Object.fromEntries(this._syncByChat),
+        });
         this._setState('SYNCING', `Syncing… ${this._totalMsgs.toLocaleString()} messages received`);
         console.log(`[WA] History batch: +${rows.length} msgs (total ${this._totalMsgs})`);
       }
@@ -252,15 +275,83 @@ export default class WaClient {
     });
 
     // Chat / contact name updates
-    this._sock.ev.on('chats.set', ({ chats }) => {
-      for (const c of chats) if (c.id && c.name) this._chatNames.set(c.id, c.name);
+    this._sock.ev.on('chats.set', async ({ chats }) => {
+      for (const c of chats || []) {
+        if (c.id && c.name) await this._applyDisplayName(c.id, c.name);
+      }
     });
-    this._sock.ev.on('chats.upsert', (chats) => {
-      for (const c of chats) if (c.id && c.name) this._chatNames.set(c.id, c.name);
+    this._sock.ev.on('chats.upsert', async (chats) => {
+      for (const c of chats || []) {
+        if (c.id && c.name) await this._applyDisplayName(c.id, c.name);
+      }
     });
-    this._sock.ev.on('contacts.set', ({ contacts }) => {
-      for (const c of contacts) if (c.id && (c.name || c.notify)) this._chatNames.set(c.id, c.name || c.notify);
+    this._sock.ev.on('chats.update', async (updates) => {
+      for (const u of updates || []) {
+        if (u.id && u.name) await this._applyDisplayName(u.id, u.name);
+      }
     });
+    this._sock.ev.on('contacts.set', async ({ contacts }) => {
+      for (const c of contacts || []) await this._ingestContact(c);
+    });
+    this._sock.ev.on('contacts.upsert', async (contacts) => {
+      for (const c of contacts || []) await this._ingestContact(c);
+    });
+    this._sock.ev.on('contacts.update', async (contacts) => {
+      for (const c of contacts || []) await this._ingestContact(c);
+    });
+  }
+
+  async _applyDisplayName(jid, label) {
+    if (!jid || !label) return;
+    this._chatNames.set(jid, label);
+    await this._mirrorDisplayNameAcrossJids(jid, label);
+  }
+
+  /** WhatsApp links the same person under @lid (chat id) and @s.whatsapp.net (contact id) — mirror the label. */
+  async _mirrorDisplayNameAcrossJids(jid, label) {
+    const sock = this._sock;
+    const lm = sock?.signalRepository?.lidMapping;
+    if (!lm || !label) return;
+    try {
+      if (isLidUser(jid)) {
+        const pn = await lm.getPNForLID(jid);
+        if (pn) this._chatNames.set(jidNormalizedUser(pn), label);
+      } else if (isPnUser(jid)) {
+        const lid = await lm.getLIDForPN(jid);
+        if (lid) this._chatNames.set(jidNormalizedUser(lid), label);
+      }
+    } catch (_) { /* mapping may lag behind first messages */ }
+  }
+
+  async _ingestContact(c) {
+    if (!c?.id) return;
+    const label = c.name || c.notify || c.verifiedName;
+    if (label) await this._applyDisplayName(c.id, label);
+  }
+
+  /**
+   * Group titles come from chat/group metadata; 1:1 chats often only get a name via contact events
+   * or incoming `pushName` (peer display name) — use that so the sidebar matches WhatsApp.
+   */
+  _resolveChatDisplayName(jid, msg) {
+    if (isJidGroup(jid)) {
+      return this._chatNames.get(jid) || jid.split('@')[0];
+    }
+    const bare = jid.split('@')[0];
+    const biz = msg.verifiedBizName;
+    if (biz) {
+      this._chatNames.set(jid, biz);
+      void this._mirrorDisplayNameAcrossJids(jid, biz).catch(() => {});
+      return biz;
+    }
+    if (!msg.key.fromMe && msg.pushName) {
+      this._chatNames.set(jid, msg.pushName);
+      void this._mirrorDisplayNameAcrossJids(jid, msg.pushName).catch(() => {});
+      return msg.pushName;
+    }
+    const cached = this._chatNames.get(jid);
+    if (cached) return cached;
+    return bare;
   }
 
   // ── Sync-done gate ─────────────────────────────────────────────────────────
@@ -272,6 +363,7 @@ export default class WaClient {
   _finishSync() {
     if (this._historyDone) return;
     this._historyDone = true;
+    this._syncByChat.clear();
     console.log(`[WA] Sync complete — ${this._totalMsgs} messages`);
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
     if (this._ownerJid && this._totalMsgs > 0) {
@@ -350,6 +442,44 @@ export default class WaClient {
     this._onStatus?.({ state, message });
   }
 
+  /**
+   * Live metadata (groups + contacts) when the socket is up. Falls back to minimal info on error.
+   */
+  async getChatDetails(jid) {
+    if (!jid) return null;
+    const cachedName = this._chatNames.get(jid);
+    const base = {
+      chatJid: jid,
+      displayName: cachedName || jid.split('@')[0],
+      isGroup: isJidGroup(jid),
+    };
+    if (!this._sock) {
+      return { ...base, waConnected: false };
+    }
+    try {
+      if (isJidGroup(jid)) {
+        const meta = await this._sock.groupMetadata(jid);
+        return {
+          ...base,
+          waConnected: true,
+          subject: meta.subject || base.displayName,
+          description: meta.desc || '',
+          participantCount: meta.participants?.length ?? 0,
+          owner: meta.owner || null,
+        };
+      }
+      const phone = jid.split('@')[0] || '';
+      return {
+        ...base,
+        waConnected: true,
+        phone,
+        chatName: cachedName || base.displayName,
+      };
+    } catch (e) {
+      return { ...base, waConnected: true, error: e.message };
+    }
+  }
+
   // ── Message → DB row ───────────────────────────────────────────────────────
   _msgToRow(msg) {
     try {
@@ -367,7 +497,7 @@ export default class WaClient {
 
       const senderJid  = msg.key.participant || (msg.key.fromMe ? this._ownerJid : jid);
       const senderName = msg.pushName || this._chatNames.get(senderJid) || senderJid?.split('@')[0] || 'Unknown';
-      const chatName   = this._chatNames.get(jid) || jid.split('@')[0];
+      const chatName   = this._resolveChatDisplayName(jid, msg);
 
       return {
         messageId:    msg.key.id || `${msg.messageTimestamp}_${Math.random()}`,

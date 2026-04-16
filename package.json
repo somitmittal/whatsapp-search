@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit"
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit",
+    "qa:search": "node scripts/search-qa-agent.mjs"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc.9",

@@ -1,9 +1,17 @@
 import Fuse from 'fuse.js';
 
 const MAX_THREADS = 8;
-const MAX_SUMMARIES_FOR_LLM = 400;
+const MAX_DAYS = 8;
+/**
+ * Max TOC rows for hierarchical picking — pool is built from BM25 + facts + message hits, not full scans.
+ */
+const MAX_CANDIDATES_FOR_LLM = 36;
+/** Truncate each summary line; row count is capped so lines can be slightly longer than old “last N days” mode. */
+const MAX_SUMMARY_LINE_CHARS = 400;
 const MAX_SOURCES_RETURNED = 8;
 const MAX_MSGS_FOR_SYNTHESIS = 50;
+/** Cap each message body in synthesis so the second LLM call stays within small context limits. */
+const MAX_SYNTH_MESSAGE_CHARS = 420;
 const LLM_DAY_SELECT_TIMEOUT = 12_000;
 const LLM_SYNTH_TIMEOUT = 20_000;
 const LLM_HEALTH_TIMEOUT = 4_000;
@@ -14,6 +22,34 @@ function formatTs(ts) {
   return d.toLocaleString('en-US', {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
   });
+}
+
+/** Local calendar date matching SQLite `date(timestamp, 'unixepoch', 'localtime')`. */
+function localDateFromUnix(ts) {
+  const d = new Date(ts * 1000);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${da}`;
+}
+
+function truncateTocText(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length <= MAX_SUMMARY_LINE_CHARS) return t;
+  return `${t.slice(0, MAX_SUMMARY_LINE_CHARS - 1)}…`;
+}
+
+/** LLMs sometimes wrap JSON in prose or truncate — avoid throwing on bad output. */
+function parseHierarchicalIndexResponse(response) {
+  const jsonMatch = String(response || '').match(/\[[\s\S]*?\]/);
+  if (!jsonMatch) return null;
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function race(promise, ms) {
@@ -57,11 +93,16 @@ export default class SmartSearch {
    *   4. Synthesis (1 LLM call) — crisp 2-3 sentence answer
    */
   async search(query, chatJid = null, mediaType = null) {
+    const q = typeof query === 'string' ? query.trim() : '';
+    if (!q) {
+      return { answer: 'Enter a search query.', sources: [] };
+    }
+
     const t0 = Date.now();
 
     // ── Instant search + health check in parallel ───────────────────
     const [instantRaw, llmAvailable] = await Promise.all([
-      Promise.resolve(this._instantSearch(query, chatJid)),
+      Promise.resolve(this._instantSearch(q, chatJid)),
       this._checkLlm(),
     ]);
 
@@ -70,22 +111,26 @@ export default class SmartSearch {
 
     if (!llmAvailable) {
       if (instantHits.length === 0) return { answer: 'No results found. Try different keywords, or configure an AI model in Settings for smarter search.', sources: [] };
-      return this._rawGroupedResult(instantHits.slice(0, 15), query);
+      return this._rawGroupedResult(instantHits.slice(0, 15), q);
     }
 
     // ── Hierarchical thread/day selection (single LLM call) ────────
     let hierarchicalHits = [];
-    const threadSummaries = this._db.getAllThreadSummaries();
-    const dailySummaries = threadSummaries.length === 0 ? this._db.getAllDailySummaries() : [];
-    const summaries = threadSummaries.length > 0 ? threadSummaries : dailySummaries;
-    const useThreads = threadSummaries.length > 0;
+    const threadCount = typeof this._db.countThreadSummaries === 'function'
+      ? this._db.countThreadSummaries()
+      : this._db.getAllThreadSummaries().length;
+    const useThreads = threadCount > 0;
+    const dailyCount = useThreads ? 0
+      : (typeof this._db.countDailySummaries === 'function'
+        ? this._db.countDailySummaries()
+        : this._db.getAllDailySummaries().length);
 
-    if (summaries.length > 0) {
+    if (useThreads || dailyCount > 0) {
       try {
         hierarchicalHits = await race(
           useThreads
-            ? this._hierarchicalThreadMessages(query, chatJid, threadSummaries)
-            : this._hierarchicalDayMessages(query, chatJid, dailySummaries),
+            ? this._hierarchicalThreadMessages(q, chatJid)
+            : this._hierarchicalDayMessages(q, chatJid),
           LLM_DAY_SELECT_TIMEOUT,
         );
         if (mediaType) hierarchicalHits = hierarchicalHits.filter(m => m.mediaType === mediaType);
@@ -112,7 +157,7 @@ export default class SmartSearch {
 
     // ── Synthesis (single LLM call) ─────────────────────────────────
     try {
-      const result = await race(this._synthesize(query, allMessages), LLM_SYNTH_TIMEOUT);
+      const result = await race(this._synthesize(q, allMessages), LLM_SYNTH_TIMEOUT);
       if (result) {
         console.log(`[Search] Done in ${Date.now() - t0}ms`);
         return result;
@@ -122,7 +167,7 @@ export default class SmartSearch {
     }
 
     console.log(`[Search] Done in ${Date.now() - t0}ms (raw fallback)`);
-    return this._rawGroupedResult(allMessages.slice(0, 15), query);
+    return this._rawGroupedResult(allMessages.slice(0, 15), q);
   }
 
   async _checkLlm() {
@@ -135,15 +180,47 @@ export default class SmartSearch {
   // Hierarchical: summaries TOC → LLM picks days → load messages
   // ──────────────────────────────────────────────────────────────────
 
-  async _hierarchicalDayMessages(query, chatJid, allSummaries) {
-    const summaries = chatJid
-      ? allSummaries.filter(s => s.chatJid === chatJid)
-      : allSummaries;
-    if (summaries.length === 0) return [];
+  /**
+   * BM25-ranked days + days implied by message hits; bounded TOC. Empty-query / no FTS → recent days.
+   */
+  _buildDayCandidatePool(query, chatJid) {
+    const byKey = new Map();
+    const order = [];
+    const push = (row) => {
+      if (!row?.chatJid || !row.date) return;
+      const k = `${row.chatJid}|${row.date}`;
+      if (!byKey.has(k)) {
+        byKey.set(k, row);
+        order.push(k);
+      }
+    };
 
-    const capped = summaries.slice(-MAX_SUMMARIES_FOR_LLM);
+    try {
+      for (const d of this._db.searchSummaries(query, chatJid, 48)) push(d);
+    } catch { /* empty */ }
+
+    try {
+      for (const m of this._db.searchMessages(query, chatJid, 24)) {
+        const dateStr = localDateFromUnix(m.timestamp);
+        if (!dateStr || typeof this._db.getDailySummary !== 'function') continue;
+        const row = this._db.getDailySummary(m.chatJid, dateStr);
+        if (row) push(row);
+      }
+    } catch { /* empty */ }
+
+    if (order.length === 0 && typeof this._db.getRecentDailySummaries === 'function') {
+      for (const row of this._db.getRecentDailySummaries(chatJid, 36)) push(row);
+    }
+
+    return order.map(k => byKey.get(k)).slice(0, MAX_CANDIDATES_FOR_LLM);
+  }
+
+  async _hierarchicalDayMessages(query, chatJid) {
+    const capped = this._buildDayCandidatePool(query, chatJid);
+    if (capped.length === 0) return [];
+
     const toc = capped.map((s, i) =>
-      `[${i + 1}] ${s.chatName || s.chatJid} | ${s.date} | ${s.summary}`
+      `[${i + 1}] ${s.chatName || s.chatJid} | ${s.date} | ${truncateTocText(s.summary)}`
     ).join('\n');
 
     const response = await this._provider.chat(
@@ -157,11 +234,8 @@ export default class SmartSearch {
       { temperature: 0.1, maxTokens: 200 },
     );
 
-    const jsonMatch = response.match(/\[[\s\S]*?\]/);
-    if (!jsonMatch) return [];
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (!Array.isArray(parsed)) return [];
+    const parsed = parseHierarchicalIndexResponse(response);
+    if (!parsed) return [];
 
     const selected = [];
     for (const item of parsed) {
@@ -184,17 +258,58 @@ export default class SmartSearch {
   // Hierarchical: thread summaries TOC → LLM picks threads → load messages
   // ──────────────────────────────────────────────────────────────────
 
-  async _hierarchicalThreadMessages(query, chatJid, allSummaries) {
-    const summaries = chatJid
-      ? allSummaries.filter(s => s.chatJid === chatJid)
-      : allSummaries;
-    if (summaries.length === 0) return [];
+  /**
+   * BM25 thread summaries + threads from fact hits + threads covering message hits; bounded TOC.
+   */
+  _buildThreadCandidatePool(query, chatJid) {
+    const byKey = new Map();
+    const order = [];
+    const push = (row) => {
+      if (!row?.chatJid || row.threadStart == null) return;
+      const k = `${row.chatJid}\t${row.threadStart}`;
+      if (!byKey.has(k)) {
+        byKey.set(k, row);
+        order.push(k);
+      }
+    };
 
-    const capped = summaries.slice(-MAX_SUMMARIES_FOR_LLM);
+    try {
+      for (const t of this._db.searchThreadSummaries(query, chatJid, 48)) push(t);
+    } catch { /* empty */ }
+
+    try {
+      if (typeof this._db.searchFacts === 'function' && typeof this._db.getThreadSummary === 'function') {
+        for (const f of this._db.searchFacts(query, chatJid, 28)) {
+          const full = this._db.getThreadSummary(f.chatJid, f.threadStart);
+          if (full) push(full);
+        }
+      }
+    } catch { /* empty */ }
+
+    try {
+      if (typeof this._db.getThreadSummaryCoveringTimestamp === 'function') {
+        for (const m of this._db.searchMessages(query, chatJid, 28)) {
+          const full = this._db.getThreadSummaryCoveringTimestamp(m.chatJid, m.timestamp);
+          if (full) push(full);
+        }
+      }
+    } catch { /* empty */ }
+
+    if (order.length === 0 && typeof this._db.getRecentThreadSummaries === 'function') {
+      for (const row of this._db.getRecentThreadSummaries(chatJid, 40)) push(row);
+    }
+
+    return order.map(k => byKey.get(k)).slice(0, MAX_CANDIDATES_FOR_LLM);
+  }
+
+  async _hierarchicalThreadMessages(query, chatJid) {
+    const capped = this._buildThreadCandidatePool(query, chatJid);
+    if (capped.length === 0) return [];
+
     const toc = capped.map((s, i) => {
       const start = formatTs(s.threadStart);
       const end = formatTs(s.threadEnd);
-      return `[${i + 1}] ${s.chatName || s.chatJid} | ${start} – ${end} | ${s.messageCount} msgs | ${s.summary}`;
+      return `[${i + 1}] ${s.chatName || s.chatJid} | ${start} – ${end} | ${s.messageCount} msgs | ${truncateTocText(s.summary)}`;
     }).join('\n');
 
     const response = await this._provider.chat(
@@ -208,11 +323,8 @@ export default class SmartSearch {
       { temperature: 0.1, maxTokens: 200 },
     );
 
-    const jsonMatch = response.match(/\[[\s\S]*?\]/);
-    if (!jsonMatch) return [];
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (!Array.isArray(parsed)) return [];
+    const parsed = parseHierarchicalIndexResponse(response);
+    if (!parsed) return [];
 
     const selected = [];
     for (const item of parsed) {
@@ -250,6 +362,16 @@ export default class SmartSearch {
       for (const hit of this._db.searchThreadSummaries(query, chatJid, 4)) {
         for (const m of this._db.getMessagesByTimeRange(hit.chatJid, hit.threadStart, hit.threadEnd)) {
           if (!allHits.has(m.id)) allHits.set(m.id, m);
+        }
+      }
+    } catch {}
+
+    try {
+      if (typeof this._db.searchFacts === 'function') {
+        for (const hit of this._db.searchFacts(query, chatJid, 12)) {
+          for (const m of this._db.getMessagesByTimeRange(hit.chatJid, hit.threadStart, hit.threadEnd)) {
+            if (!allHits.has(m.id)) allHits.set(m.id, m);
+          }
         }
       }
     } catch {}
@@ -299,7 +421,8 @@ export default class SmartSearch {
     const transcript = messages.map((m, i) => {
       const ts = formatTs(m.timestamp);
       const sender = m.sender || 'Unknown';
-      const text = m.text || (m.mediaCaption ? `[${m.mediaType}] ${m.mediaCaption}` : `[${m.mediaType || 'media'}]`);
+      let text = m.text || (m.mediaCaption ? `[${m.mediaType}] ${m.mediaCaption}` : `[${m.mediaType || 'media'}]`);
+      if (text.length > MAX_SYNTH_MESSAGE_CHARS) text = `${text.slice(0, MAX_SYNTH_MESSAGE_CHARS - 1)}…`;
       return `[${i + 1}] ${sender} (${ts}): ${text}`;
     }).join('\n');
 

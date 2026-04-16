@@ -36,7 +36,7 @@ export default class ClaudeProvider {
     };
     if (systemMsg) body.system = systemMsg.content;
 
-    const res = await this._fetch('/messages', 'POST', body, TIMEOUT_MS);
+    const res = await this._fetch('/messages', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
     const data = await res.json();
     return data?.content?.[0]?.text?.trim() || '';
   }
