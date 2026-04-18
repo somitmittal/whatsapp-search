@@ -1000,7 +1000,8 @@
 
   // ── WebSocket ──────────────────────────────────────────────────────
   function connectWS() {
-    ws = new WebSocket(`ws://${location.host}`);
+    const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host;
+    ws = new WebSocket(wsUrl);
     ws.onmessage = e => {
       try {
         const msg = JSON.parse(e.data);

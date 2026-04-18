@@ -171,6 +171,11 @@ export default class WebServer {
       next();
     });
     this._app.use(express.json({ limit: '10mb' }));
+
+    // Render / load balancers: use Health Check Path = /health or /api/health
+    this._app.get('/health', (_req, res) => res.status(200).type('text/plain').send('ok'));
+    this._app.get('/api/health', (_req, res) => res.status(200).json({ ok: true }));
+
     this._app.use(express.static(config.publicDir));
 
     // ── Status ────────────────────────────────────────────────────────

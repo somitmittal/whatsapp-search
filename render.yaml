@@ -1,0 +1,9 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Use a Web Service (not Static Site). Set Root Directory if the app lives in a subfolder.
+services:
+  - type: web
+    name: whatsapp-search
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
