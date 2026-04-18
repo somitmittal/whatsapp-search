@@ -26,7 +26,10 @@ const config = {
   dataDir: resolve(ROOT, process.env.DATA_DIR || './data'),
   mediaDir: resolve(ROOT, process.env.DATA_DIR || './data', 'media'),
   dbPath: resolve(ROOT, process.env.DATA_DIR || './data', 'whatsapp_search.db'),
-  webPort: parseInt(process.env.WEB_PORT || '3000', 10),
+  /** Render/Heroku set `PORT`; local dev often uses `WEB_PORT`. */
+  webPort: parseInt(process.env.PORT || process.env.WEB_PORT || '3000', 10),
+  /** Bind all interfaces so PaaS (e.g. Render) can route traffic. Override with `HOST` / `WEB_HOST`. */
+  webHost: process.env.HOST || process.env.WEB_HOST || '0.0.0.0',
   publicDir: resolve(ROOT, 'public'),
 };
 

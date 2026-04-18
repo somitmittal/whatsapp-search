@@ -549,8 +549,10 @@ export default class WebServer {
 
   start() {
     return new Promise((resolve) => {
-      this._server.listen(config.webPort, () => {
-        console.log(`\nWeb UI: http://localhost:${config.webPort}\n`);
+      this._server.listen(config.webPort, config.webHost, () => {
+        const publicUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${config.webPort}`;
+        console.log(`\nListening on ${config.webHost}:${config.webPort}`);
+        console.log(`Web UI: ${publicUrl}\n`);
         resolve();
       });
     });
