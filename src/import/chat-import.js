@@ -112,7 +112,7 @@ export function importExportedChat(db, content, chatName) {
     timestamp: m.timestamp,
   }));
 
-  const inserted = db.insertMessageBatch(rows);
+  const { count: inserted } = db.insertMessageBatch(rows);
   return { inserted, total: messages.length };
 }
 

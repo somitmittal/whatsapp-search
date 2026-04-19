@@ -1,23 +1,36 @@
 import { createRequire } from 'module';
 import { createServer } from 'http';
 import { resolve } from 'path';
+import { randomBytes } from 'node:crypto';
 import config from '../config.js';
 import { importExportedChat, extractTextFromZip } from '../import/chat-import.js';
+import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
 import { createProvider, clearProviderCache, PROVIDER_META } from '../llm/provider.js';
 import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
+import {
+  effectiveSearchApiKey,
+  effectiveSummaryApiKey,
+  keyHints,
+  publicSettingsFromDb,
+} from '../llm/defaults.js';
 
 const require = createRequire(import.meta.url);
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const multer = require('multer');
+const { google } = require('googleapis');
+
+const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 export default class WebServer {
-  constructor({ db, searchEngine, summaryService }) {
+  constructor({ db, searchEngine, summaryService, mediaIndexService, actionItemService }) {
     this.db = db;
     this.searchEngine = searchEngine;
     this.summaryService = summaryService;
+    this._mediaIndexService = mediaIndexService || null;
+    this._actionItemService = actionItemService || null;
 
     this._app = express();
     this._server = createServer(this._app);
@@ -33,8 +46,77 @@ export default class WebServer {
     this._waQrDataUrl = null;
     this._waClient = null; // set by index.js via setWaClient()
 
+    /** @type {Map<string, { ts: number, onboarding: boolean }>} */
+    this._gmailOAuthState = new Map();
+
     this._setupWebSocket();
     this._setupRoutes();
+  }
+
+  /** Default callback URL when not using browser `origin` (must match an entry in Google Cloud Console). */
+  _defaultGmailRedirectUri() {
+    const fixed = (config.googleRedirectUri || process.env.GOOGLE_REDIRECT_URI || '').trim();
+    if (fixed) return fixed.replace(/\/$/, '');
+    const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${config.webPort}`;
+    return `${String(base).replace(/\/$/, '')}/api/gmail/oauth/callback`;
+  }
+
+  /**
+   * Browser often uses `http://localhost:3000` while the server defaulted to `127.0.0.1` — Google requires
+   * an exact redirect_uri match. Prefer `?origin=` from the client, or env override.
+   */
+  _isAllowedOAuthOrigin(originParam) {
+    if (!originParam || typeof originParam !== 'string') return null;
+    try {
+      const u = new URL(originParam);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      const host = u.hostname;
+      if (host === 'localhost' || host === '127.0.0.1') {
+        return `${u.protocol}//${u.host}`;
+      }
+      const render = process.env.RENDER_EXTERNAL_URL;
+      if (render) {
+        try {
+          if (u.origin === new URL(render).origin) return u.origin;
+        } catch { /* ignore */ }
+      }
+      const extra = config.googleOauthPublicOrigins || process.env.GOOGLE_OAUTH_PUBLIC_ORIGINS || '';
+      for (const raw of extra.split(',')) {
+        const t = raw.trim();
+        if (!t) continue;
+        try {
+          const allowed = new URL(t.includes('://') ? t : `https://${t}`).origin;
+          if (u.origin === allowed) return u.origin;
+        } catch { /* ignore */ }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Full redirect_uri for authorize + token exchange (one string for both steps).
+   * Prefer a validated browser `?origin=` (e.g. http://localhost:3000) over GOOGLE_REDIRECT_URI so local
+   * dev works when the env still points at production; Google Console must list both redirect URIs.
+   */
+  _resolveGmailOAuthRedirectUri(req) {
+    const origin = req.query?.origin;
+    const allowed = origin ? this._isAllowedOAuthOrigin(origin) : null;
+    if (allowed) return `${allowed.replace(/\/$/, '')}/api/gmail/oauth/callback`;
+    return this._defaultGmailRedirectUri();
+  }
+
+  _gmailOAuth2Client(redirectUri) {
+    const id = config.googleClientId || process.env.GOOGLE_CLIENT_ID;
+    const secret = config.googleClientSecret || process.env.GOOGLE_CLIENT_SECRET;
+    if (!id || !secret) return null;
+    const uri = redirectUri || this._defaultGmailRedirectUri();
+    return new google.auth.OAuth2(id, secret, uri);
+  }
+
+  _gmailConfigured() {
+    return !!this._gmailOAuth2Client();
   }
 
   /** Called from index.js to give the server a reference to the WA client. */
@@ -95,17 +177,23 @@ export default class WebServer {
 
   /** Called by WaClient when messages arrive (real-time or history). */
   onWaMessages(rows) {
-    const inserted = this.db.insertMessageBatch(rows);
+    const { count: inserted, insertedMessageIds } = this.db.insertMessageBatch(rows);
     const lastNameByChat = new Map();
     for (const r of rows || []) {
       if (r?.chatJid && r?.chatName) lastNameByChat.set(r.chatJid, r.chatName);
     }
     for (const [chatJid, chatName] of lastNameByChat) {
-      this.db.propagateChatDisplayName(chatJid, chatName);
+      if (this._waClient?.propagateDisplayNameForChat) {
+        void this._waClient.propagateDisplayNameForChat(this.db, chatJid, chatName).catch(() => {});
+      } else {
+        this.db.propagateChatDisplayName(chatJid, chatName);
+      }
     }
     if (inserted > 0) {
       console.log(`[WA] Saved ${inserted} new messages`);
       this._broadcast({ type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } });
+      this._mediaIndexService?.scheduleProcess?.();
+      this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
     }
   }
 
@@ -195,6 +283,10 @@ export default class WebServer {
       if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
       const limit = Math.min(parseInt(req.query.limit, 10) || 80, 500);
       const offset = parseInt(req.query.offset, 10) || 0;
+      const focusMessageId = typeof req.query.focusMessageId === 'string' ? req.query.focusMessageId.trim() : '';
+      if (focusMessageId) {
+        return res.json(this.db.getMessagesAroundMessageId(chatJid, focusMessageId, limit));
+      }
       return res.json(this.db.getMessagesPaginated(chatJid, limit, offset));
     });
 
@@ -344,10 +436,11 @@ export default class WebServer {
           timestamp: m.timestamp || Math.floor(Date.now() / 1000),
         }));
 
-        const inserted = this.db.insertMessageBatch(rows);
+        const { count: inserted, insertedMessageIds } = this.db.insertMessageBatch(rows);
         if (inserted > 0) {
           console.log(`[Extension] Synced ${inserted} new messages`);
           this._broadcast({ type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } });
+          this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
         }
 
         return res.json({ inserted, total: rows.length });
@@ -360,12 +453,16 @@ export default class WebServer {
     // ── Settings API ──────────────────────────────────────────────────
     this._app.get('/api/settings', async (_req, res) => {
       try {
-        const settings = this.db.getAllSettings();
-        const providers = await this._buildProvidersMeta(settings);
-        res.json({ settings, providers });
+        const settings = publicSettingsFromDb(this.db);
+        const providers = await this._buildProvidersMeta(this.db.getAllSettings());
+        res.json({ settings, providers, keyHints: keyHints(this.db) });
       } catch (err) {
         console.error('[Settings] GET error:', err.message);
-        res.json({ settings: this.db.getAllSettings(), providers: PROVIDER_META });
+        res.json({
+          settings: publicSettingsFromDb(this.db),
+          providers: PROVIDER_META,
+          keyHints: keyHints(this.db),
+        });
       }
     });
 
@@ -374,19 +471,22 @@ export default class WebServer {
         const { provider, apiKey, model } = req.body;
 
         if (provider) this.db.setSetting('llm_provider', provider);
-        if (apiKey !== undefined) this.db.setSetting('llm_api_key', apiKey);
+        if (Object.prototype.hasOwnProperty.call(req.body, 'apiKey')) {
+          this.db.setSetting('llm_api_key', apiKey ?? '');
+        }
         if (model) this.db.setSetting('llm_model', model);
 
         clearProviderCache();
 
-        const p = provider || this.db.getSetting('llm_provider') || 'gemini';
-        const k = apiKey !== undefined ? apiKey : (this.db.getSetting('llm_api_key') || '');
-        const m = model || this.db.getSetting('llm_model') || '';
+        const p = provider || this.db.getSetting('llm_provider') || config.defaultSearchProvider;
+        const m = model || this.db.getSetting('llm_model') || config.defaultSearchModel;
+        const k = effectiveSearchApiKey(this.db);
 
         const instance = await createProvider(p, k, m || undefined);
         const healthy = await instance.checkHealth();
 
         this.searchEngine.setProvider(instance);
+        this._mediaIndexService?.setProvider?.(instance);
 
         this.summaryService.setFallbackProvider(instance);
         const sumP = this.db.getSetting('summary_provider');
@@ -410,9 +510,9 @@ export default class WebServer {
           this.db.setSetting('summary_api_key', '');
           this.db.setSetting('summary_model', '');
           clearProviderCache();
-          const mainP = this.db.getSetting('llm_provider') || 'gemini';
-          const mainK = this.db.getSetting('llm_api_key') || '';
-          const mainM = this.db.getSetting('llm_model') || '';
+          const mainP = this.db.getSetting('llm_provider') || config.defaultSearchProvider;
+          const mainK = effectiveSearchApiKey(this.db);
+          const mainM = this.db.getSetting('llm_model') || config.defaultSearchModel;
           const mainInstance = await createProvider(mainP, mainK, mainM || undefined);
           this.summaryService.setProvider(mainInstance);
           this._triggerSummaryGen();
@@ -420,14 +520,16 @@ export default class WebServer {
         }
 
         if (provider) this.db.setSetting('summary_provider', provider);
-        if (apiKey !== undefined) this.db.setSetting('summary_api_key', apiKey);
+        if (Object.prototype.hasOwnProperty.call(req.body, 'apiKey')) {
+          this.db.setSetting('summary_api_key', apiKey ?? '');
+        }
         if (model) this.db.setSetting('summary_model', model);
 
         clearProviderCache();
 
-        const sp = provider || this.db.getSetting('summary_provider') || 'ollama';
-        const sk = apiKey !== undefined ? apiKey : (this.db.getSetting('summary_api_key') || '');
-        const sm = model || this.db.getSetting('summary_model') || '';
+        const sp = provider || this.db.getSetting('summary_provider') || config.defaultSummaryProvider;
+        const sm = model || this.db.getSetting('summary_model') || config.defaultSummaryModel;
+        const sk = effectiveSummaryApiKey(this.db);
 
         const instance = await createProvider(sp, sk, sm || undefined);
         const healthy = await instance.checkHealth();
@@ -460,6 +562,115 @@ export default class WebServer {
       const p = this.searchEngine?._provider;
       if (p?.pullStatus) return res.json(p.pullStatus);
       return res.json(null);
+    });
+
+    // ── Gmail: OAuth + sync WhatsApp exports from attachments ─────────
+    this._app.get('/api/gmail/status', (_req, res) => {
+      const configured = this._gmailConfigured();
+      const connected = !!this.db.getSetting('gmail_refresh_token');
+      const email = this.db.getSetting('gmail_email') || null;
+      return res.json({ configured, connected, email });
+    });
+
+    this._app.get('/api/gmail/auth-url', (req, res) => {
+      const id = config.googleClientId || process.env.GOOGLE_CLIENT_ID;
+      const secret = config.googleClientSecret || process.env.GOOGLE_CLIENT_SECRET;
+      if (!id || !secret) {
+        return res.status(503).json({
+          error: 'Gmail sync is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (and GOOGLE_REDIRECT_URI in production).',
+        });
+      }
+      const redirectUri = this._resolveGmailOAuthRedirectUri(req);
+      const oauth2 = new google.auth.OAuth2(id, secret, redirectUri);
+      const state = randomBytes(24).toString('hex');
+      const now = Date.now();
+      for (const [k, v] of this._gmailOAuthState) {
+        if (now - v.ts > 15 * 60 * 1000) this._gmailOAuthState.delete(k);
+      }
+      this._gmailOAuthState.set(state, { ts: now, onboarding: req.query.ob === '1', redirectUri });
+      const url = oauth2.generateAuthUrl({
+        access_type: 'offline',
+        prompt: 'consent',
+        scope: [GMAIL_SCOPE],
+        state,
+      });
+      return res.json({ url });
+    });
+
+    this._app.get('/api/gmail/oauth/callback', async (req, res) => {
+      const err = req.query.error;
+      if (err) {
+        const desc = req.query.error_description;
+        const msg = desc ? `${err}: ${desc}` : String(err);
+        return res.redirect(`/?gmail_error=${encodeURIComponent(msg)}`);
+      }
+      const code = req.query.code;
+      const state = req.query.state;
+      if (!code || !state) return res.status(400).send('Missing code or state');
+      const pending = this._gmailOAuthState.get(state);
+      if (!pending || Date.now() - pending.ts > 15 * 60 * 1000) {
+        return res.status(400).send('Invalid or expired OAuth state. Try connecting again.');
+      }
+      this._gmailOAuthState.delete(state);
+      const id = config.googleClientId || process.env.GOOGLE_CLIENT_ID;
+      const secret = config.googleClientSecret || process.env.GOOGLE_CLIENT_SECRET;
+      if (!id || !secret) return res.status(503).send('Gmail is not configured');
+
+      const redirectUri = pending.redirectUri || this._defaultGmailRedirectUri();
+      const oauth2 = new google.auth.OAuth2(id, secret, redirectUri);
+
+      try {
+        const { tokens } = await oauth2.getToken({
+          code: String(code),
+          redirect_uri: redirectUri,
+        });
+        if (!tokens.refresh_token) {
+          return res.redirect(
+            `/?gmail_error=${encodeURIComponent('No refresh token — remove app access in Google Account → Security and try again.')}`,
+          );
+        }
+        this.db.setSetting('gmail_refresh_token', tokens.refresh_token);
+        oauth2.setCredentials(tokens);
+        try {
+          const gmail = google.gmail({ version: 'v1', auth: oauth2 });
+          const prof = await gmail.users.getProfile({ userId: 'me' });
+          if (prof.data.emailAddress) this.db.setSetting('gmail_email', prof.data.emailAddress);
+        } catch (e) {
+          console.warn('[Gmail] getProfile:', e.message);
+        }
+      } catch (e) {
+        console.error('[Gmail] token exchange:', e.message);
+        return res.redirect(`/?gmail_error=${encodeURIComponent(e.message)}`);
+      }
+
+      let loc = '/?gmail_connected=1';
+      if (pending.onboarding) loc += '&ob=1';
+      return res.redirect(loc);
+    });
+
+    this._app.post('/api/gmail/disconnect', (_req, res) => {
+      this.db.setSetting('gmail_refresh_token', '');
+      this.db.setSetting('gmail_email', '');
+      return res.json({ ok: true });
+    });
+
+    this._app.post('/api/gmail/sync', async (_req, res) => {
+      const refresh = this.db.getSetting('gmail_refresh_token');
+      if (!refresh) return res.status(401).json({ error: 'Gmail not connected. Use Connect Google first.' });
+      const oauth2 = this._gmailOAuth2Client();
+      if (!oauth2) return res.status(503).json({ error: 'Server Gmail OAuth is not configured.' });
+      oauth2.setCredentials({ refresh_token: refresh });
+      try {
+        const out = await syncWhatsAppExportsFromGmail(this.db, oauth2);
+        this._broadcast({ type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } });
+        this.summaryService.indexPendingDays().then((count) => {
+          if (count > 0) console.log(`[Gmail sync] Generated ${count} daily summaries`);
+        }).catch((err) => console.error('[Gmail sync] Summary error:', err.message));
+        return res.json({ ok: true, ...out });
+      } catch (err) {
+        console.error('[Gmail sync]', err.message);
+        return res.status(500).json({ error: err.message });
+      }
     });
 
     // ── Summaries ─────────────────────────────────────────────────────

@@ -31,6 +31,29 @@ const config = {
   /** Bind all interfaces so PaaS (e.g. Render) can route traffic. Override with `HOST` / `WEB_HOST`. */
   webHost: process.env.HOST || process.env.WEB_HOST || '0.0.0.0',
   publicDir: resolve(ROOT, 'public'),
+  /**
+   * Gmail API (optional): set in `.env` to enable “Sync from Gmail” for WhatsApp `.txt` / `.zip` exports.
+   * Redirect URI in Google Cloud Console must match exactly (e.g. `https://<host>/api/gmail/oauth/callback`).
+   */
+  googleClientId: process.env.GOOGLE_CLIENT_ID || '',
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+  /** If unset, derived at runtime from `RENDER_EXTERNAL_URL` or `http://localhost:<WEB_PORT>`. */
+  googleRedirectUri: process.env.GOOGLE_REDIRECT_URI || '',
+  /**
+   * Optional comma-separated origins allowed for Gmail OAuth when using `?origin=` from the browser
+   * (e.g. custom domain). Localhost / 127.0.0.1 always allowed; `RENDER_EXTERNAL_URL` origin always allowed.
+   */
+  googleOauthPublicOrigins: process.env.GOOGLE_OAUTH_PUBLIC_ORIGINS || '',
+  /**
+   * Defaults when settings table has no row yet (first run / new DB).
+   * Search: Groq. Summary: Ollama Cloud (gpt-oss:20b on free tier when available).
+   * On Render, set `GROQ_API_KEY` and `OLLAMA_CLOUD_API_KEY` as secrets; users can paste their own keys in Settings to override.
+   */
+  defaultSearchProvider: 'groq',
+  defaultSearchModel:
+    process.env.LLM_MODEL || process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+  defaultSummaryProvider: 'ollama_cloud',
+  defaultSummaryModel: process.env.SUMMARY_MODEL || 'gpt-oss:20b',
 };
 
 export default config;

@@ -67,10 +67,21 @@ function dedupeById(messages) {
   return Array.from(seen.values());
 }
 
+/** Prefer body text; else user caption + AI index (vision / transcript) for display and search snippets. */
+function displayMessageText(m) {
+  const t = m.text?.trim();
+  if (t) return m.text;
+  const bits = [m.mediaCaption, m.mediaAiIndex].filter((x) => x && String(x).trim());
+  if (bits.length) return `[${m.mediaType || 'media'}] ${bits.join(' · ')}`;
+  return `[${m.mediaType || 'media'}]`;
+}
+
 function toSource(m) {
   return {
-    text: m.text || `[${m.mediaType || 'media'}]`,
+    text: displayMessageText(m),
     chatName: m.chatName || m.chatJid,
+    chatJid: m.chatJid || null,
+    messageId: m.messageId || null,
     sender: m.sender || 'Unknown',
     timestamp: m.timestamp,
     mediaType: m.mediaType || null,
@@ -352,7 +363,7 @@ export default class SmartSearch {
 
     try {
       for (const h of this._db.searchMessages(query, chatJid, 30)) {
-        allHits.set(h.id, { ...h, text: h.text || (h.mediaCaption ? `[${h.mediaType}] ${h.mediaCaption}` : '') });
+        allHits.set(h.id, { ...h, text: displayMessageText(h) });
       }
     } catch (err) {
       console.error('[Search] FTS failed:', err.message);
@@ -400,9 +411,10 @@ export default class SmartSearch {
 
     const fuse = new Fuse(messages, {
       keys: [
-        { name: 'text', weight: 0.7 },
-        { name: 'sender', weight: 0.15 },
-        { name: 'mediaCaption', weight: 0.15 },
+        { name: 'text', weight: 0.55 },
+        { name: 'sender', weight: 0.12 },
+        { name: 'mediaCaption', weight: 0.12 },
+        { name: 'mediaAiIndex', weight: 0.21 },
       ],
       threshold: 0.4,
       distance: 200,
@@ -421,7 +433,7 @@ export default class SmartSearch {
     const transcript = messages.map((m, i) => {
       const ts = formatTs(m.timestamp);
       const sender = m.sender || 'Unknown';
-      let text = m.text || (m.mediaCaption ? `[${m.mediaType}] ${m.mediaCaption}` : `[${m.mediaType || 'media'}]`);
+      let text = displayMessageText(m);
       if (text.length > MAX_SYNTH_MESSAGE_CHARS) text = `${text.slice(0, MAX_SYNTH_MESSAGE_CHARS - 1)}…`;
       return `[${i + 1}] ${sender} (${ts}): ${text}`;
     }).join('\n');
@@ -484,7 +496,7 @@ export default class SmartSearch {
     for (const [date, msgs] of byDay) {
       lines.push(`**${date}** (${msgs.length} messages)`);
       for (const m of msgs.slice(0, 4)) {
-        const text = (m.text || `[${m.mediaType}]`).slice(0, 120);
+        const text = displayMessageText(m).slice(0, 120);
         lines.push(`  **${m.sender || 'Unknown'}**: ${text}`);
       }
       if (msgs.length > 4) lines.push(`  _...and ${msgs.length - 4} more_`);

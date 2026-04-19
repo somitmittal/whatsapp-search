@@ -403,7 +403,8 @@ export default class DailySummaryService {
       const d = new Date(m.timestamp * 1000);
       const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
       const sender = m.sender || 'Unknown';
-      const text = m.text || (m.mediaCaption ? `[${m.mediaType}] ${m.mediaCaption}` : `[${m.mediaType || 'media'}]`);
+      const bits = [m.mediaCaption, m.mediaAiIndex].filter(Boolean);
+      const text = m.text || (bits.length ? `[${m.mediaType}] ${bits.join(' · ')}` : `[${m.mediaType || 'media'}]`);
       return `[${time}] ${sender}: ${text}`;
     }).join('\n');
   }

@@ -20,6 +20,7 @@ const {
   isLidUser,
   isPnUser,
   ALL_WA_PATCH_NAMES,
+  downloadMediaMessage,
 } = require('@whiskeysockets/baileys');
 const QRCode   = require('qrcode');
 const P        = require('pino');
@@ -29,6 +30,25 @@ const CONFIG_FILE      = join(config.dataDir, 'wa-config.json');
 const SEARCH_GROUP     = '🔍 WhatsApp Search';
 const BATCH_MS         = 2000;
 const SYNC_DONE_DELAY  = 8_000; // ms of silence after last history batch → mark READY
+
+const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker']);
+const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
+
+function safeJidDir(jid) {
+  return String(jid || 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '_');
+}
+
+function extFromMime(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.includes('jpeg') || m.includes('jpg')) return 'jpg';
+  if (m.includes('png')) return 'png';
+  if (m.includes('webp')) return 'webp';
+  if (m.includes('ogg') || m.includes('opus')) return 'ogg';
+  if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
+  if (m.includes('mp4')) return 'mp4';
+  if (m.includes('pdf')) return 'pdf';
+  return 'bin';
+}
 
 // ── tiny helpers ─────────────────────────────────────────────────────────────
 function loadCfg() {
@@ -74,7 +94,7 @@ function formatResult(result) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default class WaClient {
-  constructor({ onQr, onReady, onMessages, onStatus, onProgress, onSearchQuery, onDisconnected }) {
+  constructor({ onQr, onReady, onMessages, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath }) {
     this._onQr          = onQr;
     this._onReady       = onReady;
     this._onMessages    = onMessages;
@@ -82,6 +102,7 @@ export default class WaClient {
     this._onProgress    = onProgress;
     this._onSearchQuery = onSearchQuery;
     this._onDisconnected = onDisconnected;
+    this._onMediaPath   = onMediaPath;
 
     this._sock          = null;
     this._state         = 'DISCONNECTED';
@@ -97,6 +118,9 @@ export default class WaClient {
     this._destroyed     = false;
     this._pendingBatch  = [];
     this._flushTimer    = null;
+    this._mediaQueue    = [];
+    this._mediaDraining = false;
+    this._mediaLogger   = P({ level: 'silent' });
   }
 
   get state()    { return this._state; }
@@ -120,6 +144,7 @@ export default class WaClient {
     this._destroyed = true;
     clearTimeout(this._flushTimer);
     clearTimeout(this._syncDoneTimer);
+    this._mediaQueue.length = 0;
     try { this._sock?.end?.(new Error('destroy')); } catch {}
     this._sock = null;
     this._setState('DISCONNECTED', 'Stopped');
@@ -204,8 +229,10 @@ export default class WaClient {
     });
 
     // ── Real-time messages ────────────────────────────────────────────────
+    // Baileys uses type `notify` for live traffic and `append` for offline/queued sync — both must be indexed
+    // or the DB stops updating (e.g. everything stuck on the last day the socket saw only `append` events).
     this._sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return;
+      if (type !== 'notify' && type !== 'append') return;
       await this._backfillLidPnChatNamesFromMessages(messages || []);
       const rows = [];
       for (const msg of messages) {
@@ -229,7 +256,9 @@ export default class WaClient {
         if (jid === this._searchGroupJid && msg.key.fromMe) continue;
 
         const row = this._msgToRow(msg);
-        if (row) rows.push(row);
+        if (!row) continue;
+        const enriched = await this._enrichRowWithMedia(msg, row);
+        rows.push(enriched);
       }
       if (rows.length) this._enqueueBatch(rows);
     });
@@ -266,6 +295,14 @@ export default class WaClient {
 
       if (rows.length) {
         this._onMessages?.(rows);
+        for (const m of messages || []) {
+          const jid = m.key?.remoteJid;
+          if (!jid || jid === this._searchGroupJid || !m.message) continue;
+          const row = this._msgToRow(m);
+          if (row?.mediaType && MEDIA_FOR_INDEX.has(row.mediaType)) {
+            this._queueMediaDownload(m, row);
+          }
+        }
         this._totalMsgs += rows.length;
         this._onProgress?.({
           completed: 0,
@@ -334,6 +371,32 @@ export default class WaClient {
   }
 
   /**
+   * Apply a display name to all messages for `jid` and for the paired LID/PN JID when known, so the sidebar
+   * stays consistent when history was stored under @lid but contact names arrived on @s.whatsapp.net.
+   */
+  async _propagateChatNameToDb(db, jid, name) {
+    if (!db?.propagateChatDisplayName || !jid || !name) return 0;
+    let total = db.propagateChatDisplayName(jid, name) || 0;
+    const lm = this._sock?.signalRepository?.lidMapping;
+    if (!lm) return total;
+    try {
+      let other = null;
+      if (isLidUser(jid)) {
+        const pn = await lm.getPNForLID(jid);
+        if (pn) other = jidNormalizedUser(pn);
+      } else if (isPnUser(jid) || jid?.endsWith?.('@hosted')) {
+        const lids = await lm.getLIDsForPNs([jid]);
+        const lid = lids?.[0]?.lid;
+        if (lid) other = jidNormalizedUser(lid);
+      }
+      if (other && other !== jid) {
+        total += db.propagateChatDisplayName(other, name) || 0;
+      }
+    } catch (_) { /* mapping optional */ }
+    return total;
+  }
+
+  /**
    * After sync, push resolved titles into SQLite so `getChatStats()` sidebar matches WhatsApp
    * (fixes rows indexed under LID before PN↔LID name mapping was applied).
    */
@@ -348,7 +411,7 @@ export default class WaClient {
         const name = details?.chatName || details?.displayName;
         const bare = jid.split('@')[0] || '';
         if (!name || name === bare) continue;
-        rowsUpdated += db.propagateChatDisplayName(jid, name) || 0;
+        rowsUpdated += await this._propagateChatNameToDb(db, jid, name);
       } catch (_) { /* ignore per-chat */ }
     }
     if (rowsUpdated > 0) {
@@ -374,8 +437,13 @@ export default class WaClient {
   /** Resync server contact data, wait for events, then push titles into SQLite + FTS. */
   async refreshPhoneBookNamesInDb(db) {
     await this.resyncPhoneBookFromWhatsApp();
-    await new Promise((r) => setTimeout(r, 3500));
+    await new Promise((r) => setTimeout(r, 6000));
     return this.syncResolvedNamesToDb(db);
+  }
+
+  /** Server: when a new human-readable title is known for a chat, backfill SQLite for LID+PN pair. */
+  propagateDisplayNameForChat(db, jid, name) {
+    return this._propagateChatNameToDb(db, jid, name);
   }
 
   /** WhatsApp links the same person under @lid (chat id) and @s.whatsapp.net (contact id) — mirror the label. */
@@ -619,6 +687,60 @@ export default class WaClient {
       };
     } catch (e) {
       return { ...base, waConnected: true, error: e.message };
+    }
+  }
+
+  async _enrichRowWithMedia(msg, row) {
+    if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return row;
+    try {
+      const buffer = await downloadMediaMessage(msg, 'buffer', {}, {
+        logger: this._mediaLogger,
+        reuploadRequest: (m) => this._sock.updateMediaMessage(m),
+      });
+      if (row.mediaType === 'video' && buffer.length > MAX_VIDEO_BYTES) {
+        console.warn(`[WA] skip large video (${buffer.length} bytes)`);
+        return row;
+      }
+      const m = msg.message;
+      const mime =
+        m.imageMessage?.mimetype ||
+        m.videoMessage?.mimetype ||
+        m.audioMessage?.mimetype ||
+        m.stickerMessage?.mimetype ||
+        'application/octet-stream';
+      const ext = extFromMime(mime);
+      const dir = join(config.mediaDir, safeJidDir(row.chatJid));
+      mkdirSync(dir, { recursive: true });
+      const filename = `${row.messageId}.${ext}`;
+      const fullPath = join(dir, filename);
+      writeFileSync(fullPath, buffer);
+      return { ...row, mediaPath: fullPath };
+    } catch (e) {
+      console.warn(`[WA] media download ${row.messageId}:`, e.message);
+      return row;
+    }
+  }
+
+  _queueMediaDownload(msg, row) {
+    if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return;
+    this._mediaQueue.push({ msg, row });
+    this._drainMediaQueue().catch(() => {});
+  }
+
+  async _drainMediaQueue() {
+    if (this._mediaDraining) return;
+    this._mediaDraining = true;
+    try {
+      while (this._mediaQueue.length && !this._destroyed) {
+        const { msg, row } = this._mediaQueue.shift();
+        const enriched = await this._enrichRowWithMedia(msg, row);
+        if (enriched.mediaPath && this._onMediaPath) {
+          this._onMediaPath(enriched.messageId, enriched.mediaPath);
+        }
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    } finally {
+      this._mediaDraining = false;
     }
   }
 

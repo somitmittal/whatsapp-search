@@ -32,6 +32,8 @@ export const OLLAMA_MODELS_CLOUD_EXTRA = [
   'deepseek-r1:7b',
   'deepseek-r1:latest',
   'gemma3:4b',
+  'gpt-oss:20b',
+  'gpt-oss:120b',
 ];
 
 export function ollamaLocalModelList() {

@@ -75,6 +75,7 @@ export default class Database {
         media_type TEXT,
         media_path TEXT,
         media_caption TEXT,
+        media_ai_index TEXT,
         timestamp INTEGER NOT NULL,
         indexed_at INTEGER DEFAULT (unixepoch())
       );
@@ -117,7 +118,7 @@ export default class Database {
 
     this._db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-        text, sender, chat_name, media_caption,
+        text, sender, chat_name, media_caption, media_ai_index,
         content='messages', content_rowid='id',
         tokenize='porter unicode61'
       );
@@ -141,16 +142,16 @@ export default class Database {
 
     this._db.exec(`
       CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-        INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption)
-        VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption);
+        INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption, media_ai_index)
+        VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
       END;
       CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
         INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
       END;
       CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
         INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
-        INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption)
-        VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption);
+        INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption, media_ai_index)
+        VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
       END;
       CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON daily_summaries BEGIN
         INSERT INTO summaries_fts(rowid, summary, chat_name, date)
@@ -213,7 +214,76 @@ export default class Database {
       END;
     `);
 
+    this._migrateMediaAiIndexAndFts();
+    this._migrateActionSuggestionsColumn();
     this._rebuildFtsIfEmpty();
+  }
+
+  _migrateActionSuggestionsColumn() {
+    try {
+      const cols = this._db.prepare('PRAGMA table_info(messages)').all();
+      if (cols.some((c) => c.name === 'action_suggestions')) return;
+      this._db.exec('ALTER TABLE messages ADD COLUMN action_suggestions TEXT');
+      console.log('[DB] Added messages.action_suggestions');
+    } catch (e) {
+      console.warn('[DB] action_suggestions column:', e.message);
+    }
+  }
+
+  /**
+   * Adds `media_ai_index` on legacy DBs and rebuilds `messages_fts` when it was created
+   * without the fifth column (image/audio transcript + vision caption text for search).
+   */
+  _migrateMediaAiIndexAndFts() {
+    try {
+      const cols = this._db.prepare('PRAGMA table_info(messages)').all();
+      const hasCol = cols.some((c) => c.name === 'media_ai_index');
+      if (!hasCol) {
+        this._db.exec('ALTER TABLE messages ADD COLUMN media_ai_index TEXT');
+        console.log('[DB] Added messages.media_ai_index');
+      }
+    } catch (e) {
+      console.warn('[DB] media_ai_index column:', e.message);
+    }
+
+    const row = this._db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+    ).get();
+    const sql = row?.sql ? String(row.sql) : '';
+    if (sql.includes('media_ai_index')) return;
+
+    console.log('[DB] Rebuilding messages_fts for media_ai_index...');
+    this._db.exec('DROP TRIGGER IF EXISTS messages_ai');
+    this._db.exec('DROP TRIGGER IF EXISTS messages_ad');
+    this._db.exec('DROP TRIGGER IF EXISTS messages_au');
+    this._db.exec('DROP TABLE IF EXISTS messages_fts');
+    this._db.exec(`
+      CREATE VIRTUAL TABLE messages_fts USING fts5(
+        text, sender, chat_name, media_caption, media_ai_index,
+        content='messages', content_rowid='id',
+        tokenize='porter unicode61'
+      );
+    `);
+    this._db.exec(`
+      CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+        INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption, media_ai_index)
+        VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
+      END;
+      CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
+      END;
+      CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
+        INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption, media_ai_index)
+        VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
+      END;
+    `);
+    try {
+      this._db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
+    } catch (e) {
+      console.warn('[DB] FTS rebuild:', e.message);
+    }
+    console.log('[DB] messages_fts media_ai_index migration done');
   }
 
   _rebuildFtsIfEmpty() {
@@ -265,10 +335,10 @@ export default class Database {
     this._stmtInsertMessage = this._db.prepare(`
       INSERT OR IGNORE INTO messages (
         message_id, chat_jid, chat_name, sender, sender_jid,
-        text, media_type, media_path, media_caption, timestamp
+        text, media_type, media_path, media_caption, media_ai_index, timestamp
       ) VALUES (
         @messageId, @chatJid, @chatName, @sender, @senderJid,
-        @text, @mediaType, @mediaPath, @mediaCaption, @timestamp
+        @text, @mediaType, @mediaPath, @mediaCaption, @mediaAiIndex, @timestamp
       )
     `);
     this._stmtSelectIdByMessageId = this._db.prepare(
@@ -313,19 +383,22 @@ export default class Database {
 
   insertMessage({
     messageId, chatJid, chatName = null, sender = null, senderJid = null,
-    text = null, mediaType = null, mediaPath = null, mediaCaption = null, timestamp,
+    text = null, mediaType = null, mediaPath = null, mediaCaption = null, mediaAiIndex = null, timestamp,
   }) {
     const info = this._stmtInsertMessage.run({
       messageId, chatJid, chatName, sender, senderJid,
-      text, mediaType, mediaPath, mediaCaption, timestamp,
+      text, mediaType, mediaPath, mediaCaption, mediaAiIndex, timestamp,
     });
     if (info.changes > 0) return Number(info.lastInsertRowid);
     const row = this._stmtSelectIdByMessageId.get(messageId);
     return row ? row.id : Number(info.lastInsertRowid);
   }
 
+  /**
+   * @returns {{ count: number, insertedMessageIds: string[] }}
+   */
   insertMessageBatch(rows) {
-    let inserted = 0;
+    const insertedMessageIds = [];
     const run = this._db.transaction((batch) => {
       for (const row of batch) {
         const info = this._stmtInsertMessage.run({
@@ -338,13 +411,14 @@ export default class Database {
           mediaType: row.mediaType ?? null,
           mediaPath: row.mediaPath ?? null,
           mediaCaption: row.mediaCaption ?? null,
+          mediaAiIndex: row.mediaAiIndex ?? null,
           timestamp: row.timestamp,
         });
-        if (info.changes > 0) inserted++;
+        if (info.changes > 0 && row.messageId) insertedMessageIds.push(row.messageId);
       }
     });
     run(rows);
-    return inserted;
+    return { count: insertedMessageIds.length, insertedMessageIds };
   }
 
   /**
@@ -360,6 +434,57 @@ export default class Database {
   updateMediaCaption(messageId, caption) {
     this._db.prepare('UPDATE messages SET media_caption = ? WHERE message_id = ?')
       .run(caption, messageId);
+  }
+
+  updateMessageMediaPath(messageId, mediaPath) {
+    if (!messageId) return 0;
+    const r = this._db.prepare('UPDATE messages SET media_path = ? WHERE message_id = ?')
+      .run(mediaPath, messageId);
+    return r.changes ?? 0;
+  }
+
+  /** @param jsonStr JSON array string e.g. `["…","…"]` or `[]` after processing */
+  updateMessageActionSuggestions(messageId, jsonStr) {
+    if (!messageId) return 0;
+    const r = this._db.prepare('UPDATE messages SET action_suggestions = ? WHERE message_id = ?')
+      .run(jsonStr ?? '', messageId);
+    return r.changes ?? 0;
+  }
+
+  getMessageRowByMessageId(messageId) {
+    if (!messageId) return null;
+    return this._db.prepare(`
+      SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
+             sender, text, media_caption AS mediaCaption, timestamp
+      FROM messages WHERE message_id = ?
+    `).get(messageId);
+  }
+
+  /**
+   * Persists AI-generated searchable text for image/video/sticker captions and audio transcripts.
+   * Empty string means "indexed but nothing usable" (avoids infinite retries).
+   */
+  updateMediaAiIndex(messageId, text) {
+    if (!messageId) return 0;
+    const r = this._db.prepare('UPDATE messages SET media_ai_index = ? WHERE message_id = ?')
+      .run(text ?? '', messageId);
+    return r.changes ?? 0;
+  }
+
+  /**
+   * Rows with downloaded media that still need caption/transcribe (media_ai_index IS NULL).
+   */
+  getPendingMediaIndexJobs(limit = 12) {
+    const n = Math.max(1, Math.min(Number(limit) || 12, 40));
+    return this._db.prepare(`
+      SELECT id, message_id AS messageId, media_type AS mediaType, media_path AS mediaPath
+      FROM messages
+      WHERE media_path IS NOT NULL AND trim(media_path) != ''
+        AND media_type IN ('image', 'audio', 'video', 'sticker')
+        AND media_ai_index IS NULL
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `).all(n);
   }
 
   // ── Daily Summaries ───────────────────────────────────────────────────
@@ -493,6 +618,7 @@ export default class Database {
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
              m.chat_name AS chatName, m.sender, m.text,
              m.media_type AS mediaType, m.media_caption AS mediaCaption,
+             m.media_ai_index AS mediaAiIndex,
              m.timestamp, bm25(messages_fts) AS rank
       FROM messages_fts
       INNER JOIN messages m ON m.id = messages_fts.rowid
@@ -506,7 +632,8 @@ export default class Database {
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
-             text, media_type AS mediaType, media_caption AS mediaCaption, timestamp
+             text, media_type AS mediaType, media_caption AS mediaCaption,
+             media_ai_index AS mediaAiIndex, timestamp
       FROM messages
       WHERE chat_jid = ? AND date(timestamp, 'unixepoch', 'localtime') = ?
       ORDER BY timestamp ASC
@@ -565,6 +692,8 @@ export default class Database {
           peerSenderName: null,
           /** Latest peer sender that is not phone-only (push name / business name). */
           peerHumanSenderName: null,
+          /** First non–phone-only peer sender in chronological order (stable title when recent rows only have digits). */
+          firstHumanPeerName: null,
           senders: new Set(),
         });
       }
@@ -582,6 +711,7 @@ export default class Database {
         g.peerSenderName = r.sender;
         if (!looksLikePhoneOnly(r.sender)) {
           g.peerHumanSenderName = r.sender;
+          if (!g.firstHumanPeerName) g.firstHumanPeerName = r.sender;
         }
       }
     }
@@ -600,6 +730,7 @@ export default class Database {
       const title = isGroup
         ? (g.displayChatName || g.anyChatName || chatJid)
         : (g.displayChatName
+          || g.firstHumanPeerName
           || g.peerHumanSenderName
           || (looksLikePhoneOnly(g.anyChatName) ? null : g.anyChatName)
           || g.peerSenderName
@@ -644,15 +775,49 @@ export default class Database {
   }
 
   getMessagesPaginated(chatJid, limit = 80, offset = 0) {
-    return this._db.prepare(`
+    const rows = this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_path AS mediaPath,
-             media_caption AS mediaCaption, timestamp, indexed_at AS indexedAt
+             media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
+             action_suggestions AS actionSuggestionsRaw,
+             timestamp, indexed_at AS indexedAt
       FROM messages WHERE chat_jid = ?
       ORDER BY timestamp DESC, id DESC
       LIMIT ? OFFSET ?
     `).all(chatJid, Math.min(Number(limit) || 80, 500), Math.max(0, Number(offset) || 0));
+    return rows.map((r) => {
+      const { actionSuggestionsRaw, ...rest } = r;
+      let actionSuggestions = null;
+      if (actionSuggestionsRaw) {
+        try {
+          actionSuggestions = JSON.parse(actionSuggestionsRaw);
+        } catch {
+          actionSuggestions = null;
+        }
+      }
+      return { ...rest, actionSuggestions };
+    });
+  }
+
+  /**
+   * Loads a window of messages so `messageId` appears near the middle (for “jump to source”).
+   */
+  getMessagesAroundMessageId(chatJid, messageId, limit = 200) {
+    const safeLimit = Math.min(Math.max(Number(limit) || 200, 40), 500);
+    const half = Math.floor(safeLimit / 2);
+    const anchor = this._db.prepare(
+      'SELECT id, timestamp FROM messages WHERE chat_jid = ? AND message_id = ? LIMIT 1',
+    ).get(chatJid, messageId);
+    if (!anchor) return this.getMessagesPaginated(chatJid, safeLimit, 0);
+
+    const rankRow = this._db.prepare(`
+      SELECT COUNT(*) AS c FROM messages
+      WHERE chat_jid = ? AND (timestamp > ? OR (timestamp = ? AND id > ?))
+    `).get(chatJid, anchor.timestamp, anchor.timestamp, anchor.id);
+    const newerCount = rankRow?.c ?? 0;
+    const offset = Math.max(0, newerCount - half);
+    return this.getMessagesPaginated(chatJid, safeLimit, offset);
   }
 
   getMediaMessages(chatJid = null, mediaType = null, limit = 50) {
@@ -669,14 +834,24 @@ export default class Database {
   }
 
   getAllMessagesLight(chatJid = null, limit = 5000) {
+    const hasContent = `(
+           (text IS NOT NULL AND trim(text) != '')
+           OR (media_caption IS NOT NULL AND trim(media_caption) != '')
+           OR (media_ai_index IS NOT NULL AND trim(media_ai_index) != '')
+           OR (media_type IS NOT NULL AND trim(media_type) != '')
+         )`;
     const sql = chatJid
-      ? `SELECT id, chat_jid AS chatJid, chat_name AS chatName, sender, text,
-                media_type AS mediaType, media_caption AS mediaCaption, timestamp
-         FROM messages WHERE chat_jid = ? AND text IS NOT NULL AND text != ''
+      ? `SELECT id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
+                media_type AS mediaType, media_caption AS mediaCaption,
+                media_ai_index AS mediaAiIndex, timestamp
+         FROM messages
+         WHERE chat_jid = ? AND ${hasContent}
          ORDER BY timestamp DESC LIMIT ?`
-      : `SELECT id, chat_jid AS chatJid, chat_name AS chatName, sender, text,
-                media_type AS mediaType, media_caption AS mediaCaption, timestamp
-         FROM messages WHERE text IS NOT NULL AND text != ''
+      : `SELECT id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
+                media_type AS mediaType, media_caption AS mediaCaption,
+                media_ai_index AS mediaAiIndex, timestamp
+         FROM messages
+         WHERE ${hasContent}
          ORDER BY timestamp DESC LIMIT ?`;
     return chatJid
       ? this._db.prepare(sql).all(chatJid, limit)
@@ -755,7 +930,8 @@ export default class Database {
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
-             text, media_type AS mediaType, media_caption AS mediaCaption, timestamp
+             text, media_type AS mediaType, media_caption AS mediaCaption,
+             media_ai_index AS mediaAiIndex, timestamp
       FROM messages
       WHERE chat_jid = ? AND timestamp >= ? AND timestamp <= ?
       ORDER BY timestamp ASC
@@ -766,7 +942,8 @@ export default class Database {
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, text,
-             media_type AS mediaType, media_caption AS mediaCaption, timestamp
+             media_type AS mediaType, media_caption AS mediaCaption,
+             media_ai_index AS mediaAiIndex, timestamp
       FROM messages WHERE chat_jid = ? ORDER BY timestamp ASC
     `).all(chatJid);
   }

@@ -2,10 +2,17 @@ import { mkdirSync } from 'fs';
 import config from './config.js';
 import Database from './storage/database.js';
 import SmartSearch from './search/smart-search.js';
+import MediaIndexService from './search/media-index-service.js';
 import DailySummaryService from './search/daily-summary-service.js';
 import WebServer from './web/server.js';
 import WaClient from './whatsapp/wa-client.js';
+import ActionItemService from './search/action-item-service.js';
 import { createProvider } from './llm/provider.js';
+import {
+  applyLlmDefaultsIfUnset,
+  effectiveSearchApiKey,
+  effectiveSummaryApiKey,
+} from './llm/defaults.js';
 
 async function main() {
   console.log('=================================');
@@ -19,10 +26,11 @@ async function main() {
 
   console.log('Initializing database...');
   const db = new Database();
+  applyLlmDefaultsIfUnset(db);
 
-  const savedProvider = db.getSetting('llm_provider') || 'gemini';
-  const savedKey = db.getSetting('llm_api_key') || '';
-  const savedModel = db.getSetting('llm_model') || '';
+  const savedProvider = db.getSetting('llm_provider') || config.defaultSearchProvider;
+  const savedKey = effectiveSearchApiKey(db);
+  const savedModel = db.getSetting('llm_model') || config.defaultSearchModel;
 
   let provider = null;
   try {
@@ -35,8 +43,8 @@ async function main() {
   const sumProvSetting = db.getSetting('summary_provider');
   if (sumProvSetting && sumProvSetting !== 'same') {
     try {
-      const sumKey = db.getSetting('summary_api_key') || '';
-      const sumModel = db.getSetting('summary_model') || '';
+      const sumKey = effectiveSummaryApiKey(db);
+      const sumModel = db.getSetting('summary_model') || config.defaultSummaryModel;
       summaryProvider = await createProvider(sumProvSetting, sumKey, sumModel || undefined);
       console.log(`Summary provider: ${sumProvSetting} (${summaryProvider.model})`);
     } catch (err) {
@@ -46,7 +54,18 @@ async function main() {
   }
 
   const searchEngine = new SmartSearch(db, provider);
+  const mediaIndexService = new MediaIndexService({
+    db,
+    getProvider: () => provider,
+  });
   let webServer;
+  const actionItemService = new ActionItemService({
+    db,
+    getProvider: () => provider,
+    onSuggestionsUpdated: ({ chatJid }) => {
+      webServer?._broadcast?.({ type: 'action-suggestions', data: { chatJid } });
+    },
+  });
   const summaryService = new DailySummaryService({
     db,
     provider: summaryProvider,
@@ -55,7 +74,7 @@ async function main() {
       if (webServer) webServer.onSummaryProgress(data);
     },
   });
-  webServer = new WebServer({ db, searchEngine, summaryService });
+  webServer = new WebServer({ db, searchEngine, summaryService, mediaIndexService, actionItemService });
 
   // ── WhatsApp Linked-Device client ───────────────────────────────
   const waClient = new WaClient({
@@ -72,6 +91,10 @@ async function main() {
       }
     },
     onDisconnected: () => console.log('[WA] Connection closed'),
+    onMediaPath: (messageId, mediaPath) => {
+      db.updateMessageMediaPath(messageId, mediaPath);
+      mediaIndexService.scheduleProcess();
+    },
   });
   webServer.setWaClient(waClient);
 
@@ -107,9 +130,14 @@ async function main() {
     try { await summaryService.indexPendingDays(); } catch {}
   }, 300_000);
 
+  let mediaIndexInterval = setInterval(async () => {
+    try { await mediaIndexService.processPending(12); } catch {}
+  }, 120_000);
+
   const shutdown = async () => {
     console.log('\nShutting down...');
     clearInterval(summaryInterval);
+    clearInterval(mediaIndexInterval);
     await waClient.destroy();
     webServer.stop();
     db.close();

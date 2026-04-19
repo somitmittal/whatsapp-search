@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#00a884">
   <title>WhatsApp Search</title>
   <style>
     :root {
@@ -30,8 +31,9 @@
       --badge-bg: #25d366;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg-app); color: var(--text); height: 100vh; overflow: hidden; }
-    .app { display: flex; height: 100vh; max-width: 1600px; margin: 0 auto; box-shadow: 0 0 20px rgba(0,0,0,0.08); }
+    html { -webkit-text-size-adjust: 100%; }
+    body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg-app); color: var(--text); height: 100vh; height: 100dvh; overflow: hidden; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+    .app { display: flex; height: 100%; max-height: 100dvh; max-width: 1600px; margin: 0 auto; box-shadow: 0 0 20px rgba(0,0,0,0.08); min-width: 0; }
 
     /* ── Sidebar ───────────────────────────────── */
     .sidebar {
@@ -53,11 +55,12 @@
     .stored-badge svg { width: 12px; height: 12px; }
     .sidebar-actions { display: flex; gap: 2px; }
     .icon-btn {
-      width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent;
+      width: 36px; height: 36px; min-width: 44px; min-height: 44px; border-radius: 50%; border: none; background: transparent;
       color: var(--text2); cursor: pointer; display: flex; align-items: center; justify-content: center;
-      transition: background 0.15s;
+      transition: background 0.15s; touch-action: manipulation;
     }
     .icon-btn:hover { background: var(--hover); }
+    .mobile-back-btn { display: none; margin-right: 4px; flex-shrink: 0; }
 
     .sidebar-search { padding: 6px 12px 8px; background: var(--header-bg); }
     .search-wrap { position: relative; }
@@ -214,10 +217,10 @@
 
     /* Global search bar — always visible */
     .global-search {
-      background: var(--header-bg); padding: 8px 16px;
-      display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); z-index: 3;
+      background: var(--header-bg); padding: 8px 12px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); z-index: 3;
     }
-    .global-search .gs-wrap { flex: 1; position: relative; display: flex; align-items: center; }
+    .global-search .gs-wrap { flex: 1 1 160px; min-width: 0; position: relative; display: flex; align-items: center; }
     .global-search .gs-wrap svg { position: absolute; left: 12px; width: 16px; height: 16px; color: var(--text2); pointer-events: none; }
     .global-search input {
       width: 100%; background: #fff; border: none; border-radius: 8px;
@@ -231,7 +234,8 @@
     }
     .search-go {
       background: var(--green); color: #fff; border: none; border-radius: 8px;
-      padding: 8px 18px; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap;
+      padding: 10px 16px; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap;
+      min-height: 44px; touch-action: manipulation;
     }
     .search-go:hover { background: var(--green-dark); }
     .search-go:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -271,6 +275,29 @@
     .bubble .text { font-size: 14px; white-space: pre-wrap; }
     .bubble .time { font-size: 11px; color: var(--text2); text-align: right; margin-top: 2px; }
     .bubble .media-badge { font-size: 12px; color: var(--text2); font-style: italic; }
+
+    .msg-block {
+      display: flex; flex-direction: column; max-width: 72%; margin: 3px 0;
+    }
+    .msg-block.in { align-self: flex-start; }
+    .msg-block.out { align-self: flex-end; }
+    .msg-block .bubble { max-width: 100%; }
+    .action-suggestions {
+      margin-top: 5px;
+      padding: 7px 10px 8px;
+      border-radius: 8px;
+      background: rgba(0, 168, 132, 0.09);
+      border-left: 3px solid var(--green);
+      font-size: 12px;
+      color: var(--text);
+      line-height: 1.4;
+    }
+    .action-suggestions .as-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.35px;
+      color: var(--green-dark); font-weight: 600; margin-bottom: 5px;
+    }
+    .action-suggestions ul { margin: 0; padding-left: 18px; }
+    .action-suggestions li { margin-bottom: 3px; }
 
     /* Panels */
     .panel { display: none; flex-direction: column; height: 100%; z-index: 1; }
@@ -330,6 +357,9 @@
     .sources h4 { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
     .src-item { background: #fff; border-radius: 8px; padding: 10px 12px; margin-bottom: 5px; font-size: 12.5px; box-shadow: 0 1px 2px var(--shadow); cursor: pointer; }
     .src-item:hover { background: #f0f7f5; }
+    .src-item.src-disabled { cursor: default; opacity: 0.75; }
+    .src-item.src-disabled:hover { background: #fff; }
+    .bubble.msg-focus { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 8px; }
     .src-item .meta { font-size: 10.5px; color: var(--text2); margin-bottom: 3px; }
     .search-loading { display: none; align-items: center; justify-content: center; gap: 10px; padding: 40px; color: var(--text2); }
     .search-loading.visible { display: flex; }
@@ -347,7 +377,9 @@
       padding: 14px 16px; display: flex; align-items: center; gap: 14px;
       background: var(--teal-bg); min-height: 56px;
     }
-    .overlay-header h2 { font-size: 18px; font-weight: 500; color: #fff; }
+    .overlay-header h2 { font-size: 18px; font-weight: 500; color: #fff; margin: 0; }
+    .overlay-header-text { flex: 1; min-width: 0; }
+    .overlay-header-sub { font-size: 12px; color: rgba(255,255,255,0.88); margin: 4px 0 0 0; font-weight: 400; line-height: 1.35; }
     .overlay-close {
       width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent;
       color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 20px;
@@ -397,6 +429,8 @@
     .health-dot.warn { background: #f59e0b; }
   @keyframes sync-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
     .health-dot.unknown { background: #999; }
+    .env-key-note { font-size: 11px; color: var(--text2); margin: 0 0 10px; line-height: 1.45; }
+    .env-key-note code { font-size: 10px; background: var(--hover); padding: 1px 5px; border-radius: 4px; }
     .install-steps { padding-left: 20px; font-size: 13px; line-height: 2; }
     .install-steps code { background: var(--hover); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
     .install-steps a { color: var(--blue); }
@@ -518,11 +552,33 @@
     .ip-phase { font-size: 11px; color: var(--text2); margin-top: 8px; text-align: right; }
 
     @media (max-width: 768px) {
-      .sidebar { width: 100%; position: absolute; z-index: 20; height: 100vh; }
-      .sidebar.hidden { display: none; }
-      .messages-area { padding: 8px 16px; }
-      .bubble { max-width: 85%; }
-      .global-search select { display: none; }
+      .sidebar {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        position: relative;
+        z-index: 2;
+        flex: 1;
+        min-height: 0;
+      }
+      .app.chat-open .sidebar { display: none; }
+      .right { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+      .app.chat-open .right { flex: 1; width: 100%; }
+      .mobile-back-btn { display: flex !important; }
+      .sidebar-header h1 { font-size: 18px; }
+      .stored-badge { font-size: 10px; padding: 2px 8px; }
+      .messages-area { padding: 8px 12px; }
+      .bubble { max-width: 92%; }
+      .global-search { padding: 8px 10px; }
+      .global-search select { flex: 0 1 auto; min-width: 0; font-size: 11px; }
+      .search-clear-btn { min-height: 44px; padding: 8px 12px; }
+      .setting-row { flex-direction: column; align-items: stretch; }
+      .setting-row label { min-width: 0; }
+      .setting-row select, .setting-row input[type="text"], .setting-row input[type="password"] { min-width: 0; width: 100%; }
+      .overlay-body { padding: 16px 14px; }
+      .welcome-panel { padding: 24px 16px; }
+      .welcome-panel h2 { font-size: 22px; }
+      #panel-search { width: 100%; max-width: 100%; }
     }
   </style>
 </head>
@@ -540,7 +596,7 @@
         </div>
       </div>
       <div class="sidebar-actions">
-        <button class="icon-btn" id="btn-import" title="Import chats">
+        <button class="icon-btn" id="btn-import" title="Add chats — upload export files or sync from Gmail" aria-label="Add chats">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
         <button class="icon-btn" id="btn-menu" title="Menu">
@@ -563,10 +619,6 @@
 
     <!-- Menu dropdown (positioned relative to sidebar) -->
     <div class="menu-dropdown" id="sidebar-menu">
-      <div class="menu-item" id="menu-import">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Import chats
-      </div>
       <div class="menu-item" id="menu-settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
         Settings
@@ -684,6 +736,9 @@
       <!-- Chat view -->
       <div id="panel-chat" class="panel">
         <div class="chat-header">
+          <button type="button" class="icon-btn mobile-back-btn" id="btn-mobile-chat-back" title="Chats" aria-label="Back to chats">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
           <div class="chat-avatar" id="cv-avatar"></div>
           <div class="chat-header-info">
             <h3 id="cv-name"></h3>
@@ -719,15 +774,32 @@
       </div>
     </div>
 
-    <!-- Import overlay -->
+    <!-- Import overlay (+ button) — Gmail sync first, then file upload -->
     <div class="overlay-panel" id="overlay-import">
       <div class="overlay-header">
         <button class="overlay-close" id="close-import">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
-        <h2>Import Chats</h2>
+        <div class="overlay-header-text">
+          <h2>Add chats</h2>
+          <p class="overlay-header-sub">Sync a mailed export from Gmail, or upload .zip / .txt files</p>
+        </div>
       </div>
       <div class="overlay-body">
+        <p style="font-size:13px;color:var(--text2);margin:0 0 14px 0;line-height:1.45;">Bring in <strong>exported</strong> chats only (not crypt14 phone backups). Use Gmail if you emailed the export to yourself; otherwise drop files below.</p>
+        <div class="import-guide" id="gmail-import-section" style="border:1px solid rgba(0,168,132,0.35);">
+          <h3>&#128231; From Gmail (exported backup)</h3>
+          <p style="font-size:13px;color:var(--text);margin:0 0 8px 0;">Sign in with Google (<strong>Gmail</strong> read-only, not Google Drive). We find <code>WhatsApp Chat …</code> attachments in your inbox — same files as a manual export, without plugging in your phone.</p>
+          <p id="gmail-import-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;"></p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+            <button class="btn btn-primary" type="button" id="gmail-btn-connect">Connect Google</button>
+            <button class="btn btn-secondary" type="button" id="gmail-btn-sync">Sync from Gmail</button>
+            <button class="btn btn-secondary" type="button" id="gmail-btn-disconnect" style="display:none;">Disconnect</button>
+          </div>
+          <ol style="margin:0;padding-left:18px;font-size:12px;color:var(--text2);"><li>On your phone: <strong>Export chat</strong> &rarr; email the <strong>.zip</strong> or <strong>.txt</strong> to yourself.</li><li>Here: <strong>Connect Google</strong>, then <strong>Sync from Gmail</strong>.</li></ol>
+          <p class="warn-text" style="margin-top:10px;">&#9888; Server must set <code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code>. Encrypted backups (crypt14) are not supported.</p>
+        </div>
+        <h3 style="font-size:14px;font-weight:600;margin:18px 0 10px 0;color:var(--text);">Or upload files</h3>
         <div class="drop-zone" id="drop-zone">
           <div style="font-size:36px;opacity:0.4;">&#128194;</div>
           <h3>Drop files here or click to browse</h3>
@@ -751,11 +823,6 @@
           <ol><li>Open a chat &rarr; tap <strong>&#8942;</strong> &rarr; <strong>More</strong> &rarr; <strong>Export chat</strong></li><li>Choose <strong>Without media</strong> or <strong>Include media</strong></li><li>Save the .zip &rarr; drag it here</li></ol>
         </div>
         <div class="import-guide">
-          <h3>&#9729;&#65039; Google Drive</h3>
-          <ol><li>Open <a href="https://drive.google.com" target="_blank">drive.google.com</a></li><li>Search <code>WhatsApp Chat</code></li><li>Download .zip/.txt &rarr; upload here</li></ol>
-          <p class="warn-text">&#9888; Encrypted backups (crypt14) can't be read. Only exported .txt/.zip work.</p>
-        </div>
-        <div class="import-guide">
           <h3>&#128268; Chrome Extension</h3>
           <ol><li>Open <code>chrome://extensions</code> &rarr; <strong>Developer mode</strong></li><li><strong>Load unpacked</strong> &rarr; select <code>extension/</code></li><li>Open <a href="https://web.whatsapp.com" target="_blank">web.whatsapp.com</a></li></ol>
         </div>
@@ -775,7 +842,11 @@
           <h3>Search AI Model</h3>
           <p>Used for search queries — pick a fast, smart cloud model for best results.</p>
           <div class="setting-row"><label>Provider</label><select id="s-provider"><option value="groq">Groq — Fast Llama (Free)</option><option value="gemini">Google Gemini (Free)</option><option value="openrouter">OpenRouter (Free models)</option><option value="ollama">Ollama — Local</option><option value="ollama_cloud">Ollama Cloud</option><option value="openai">OpenAI</option><option value="claude">Anthropic Claude</option><option value="grok">Grok / xAI (Free Tier)</option></select></div>
-          <div class="setting-row" id="s-key-row" style="align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><textarea id="s-key" rows="3" placeholder="Paste one key per line, or comma-separated. Multiple keys are rotated automatically." style="flex:1;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea></div>
+          <div class="setting-row" id="s-key-row" style="align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><div style="flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;">
+            <textarea id="s-key" rows="3" placeholder="Paste one key per line, or comma-separated. Multiple keys are rotated automatically." style="width:100%;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea>
+            <p id="s-key-stored-hint" class="env-key-note" style="display:none;margin:0;"><span>A key is saved locally. Paste to replace, or <button type="button" id="s-key-clear" style="background:none;border:none;color:var(--blue);cursor:pointer;padding:0;font:inherit;text-decoration:underline;">remove stored key</button>.</span><span id="s-key-clear-msg" style="display:none;"><br><strong>Click Save &amp; Connect</strong> to remove the stored key.</span></p>
+          </div></div>
+          <p id="s-key-env-note" class="env-key-note" style="display:none;">Using server secrets (<code>GROQ_API_KEY</code> or <code>LLM_API_KEY</code>). Paste keys above to override.</p>
           <div class="setting-row"><label>Model</label><select id="s-model"></select></div>
           <div class="setting-row" style="gap:12px;"><button class="btn btn-primary" id="s-save">Save & Connect</button><span id="s-status"></span></div>
           <div id="s-hint"></div>
@@ -796,10 +867,14 @@
               <option value="grok">Grok / xAI (Free Tier)</option>
             </select>
           </div>
-          <div class="setting-row" id="ss-key-row" style="display:none;align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><textarea id="ss-key" rows="3" placeholder="Paste one key per line, or comma-separated. Multiple keys are rotated automatically." style="flex:1;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea></div>
+          <div class="setting-row" id="ss-key-row" style="display:none;align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><div style="flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;">
+            <textarea id="ss-key" rows="3" placeholder="Paste one key per line, or comma-separated. Multiple keys are rotated automatically." style="width:100%;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea>
+            <p id="ss-key-stored-hint" class="env-key-note" style="display:none;margin:0;"><span>A key is saved locally. Paste to replace, or <button type="button" id="ss-key-clear" style="background:none;border:none;color:var(--blue);cursor:pointer;padding:0;font:inherit;text-decoration:underline;">remove stored key</button>.</span><span id="ss-key-clear-msg" style="display:none;"><br><strong>Save Summary Provider</strong> to remove the stored key.</span></p>
+          </div></div>
+          <p id="ss-key-env-note" class="env-key-note" style="display:none;">Using server secrets (<code>OLLAMA_CLOUD_API_KEY</code> or <code>SUMMARY_API_KEY</code>). Paste keys above to override.</p>
           <div class="setting-row" id="ss-model-row" style="display:none;"><label>Model</label><select id="ss-model"></select></div>
           <div class="setting-row" style="gap:12px;"><button class="btn btn-secondary" id="ss-save">Save Summary Provider</button><span id="ss-status"></span></div>
-          <div id="ss-hint" style="font-size:11px;color:var(--text2);margin-top:4px;">Tip: Use Ollama (local, free) for summaries and a cloud model for search to save on API costs.</div>
+          <div id="ss-hint" style="font-size:11px;color:var(--text2);margin-top:4px;">Default: Ollama Cloud with <code>gpt-oss:20b</code> (set <code>OLLAMA_CLOUD_API_KEY</code> on Render). Choose &ldquo;Same as Search&rdquo; to use only Groq.</div>
         </div>
         <div class="setting-group">
           <h3>WhatsApp Connection</h3>
@@ -844,13 +919,14 @@
   <div class="ob-card">
     <div class="ob-header">
       <h3>WhatsApp Search &mdash; Getting Started</h3>
-      <span id="ob-counter">Step 1 of 4</span>
+      <span id="ob-counter">Step 1 of 5</span>
     </div>
     <div class="ob-steps">
       <div class="ob-step-dot active" data-step="0"></div>
       <div class="ob-step-dot" data-step="1"></div>
       <div class="ob-step-dot" data-step="2"></div>
       <div class="ob-step-dot" data-step="3"></div>
+      <div class="ob-step-dot" data-step="4"></div>
     </div>
     <div class="ob-body" id="ob-body"></div>
     <div class="ob-footer">
@@ -881,12 +957,14 @@
   let summaryProgressByJid = {};
   /** Per-chat message counts during WhatsApp history sync (from server). */
   let waSyncByChat = {};
+  /** Whether DB holds a user API key (GET /api/settings — raw keys are never sent). */
+  let settingsKeyState = { hasLlm: false, hasSummary: false, pendingClearLlm: false, pendingClearSummary: false };
 
   // Ollama local vs cloud: same first 5 tags (see src/llm/ollama-model-lists.js). Hydrated from /api/settings when possible.
   const MODELS = {
     groq: ['llama-3.3-70b-versatile','llama-3.1-8b-instant','meta-llama/llama-4-scout-17b-16e-instruct','qwen/qwen3-32b'],
     ollama: ['qwen3.5:4b','llama3.2:3b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','deepseek-v3.1:671b-cloud','kimi-k2:1t-cloud'],
-    ollama_cloud: ['qwen3.5:4b','llama3.2:3b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','qwen3:8b','mistral-small3.2:24b','deepseek-r1:7b','deepseek-r1:latest','gemma3:4b'],
+    ollama_cloud: ['qwen3.5:4b','llama3.2:3b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','qwen3:8b','mistral-small3.2:24b','deepseek-r1:7b','deepseek-r1:latest','gemma3:4b','gpt-oss:20b','gpt-oss:120b'],
     openrouter: ['google/gemma-2-9b-it:free','meta-llama/llama-3.2-3b-instruct:free','mistralai/mistral-7b-instruct:free','qwen/qwen-2.5-7b-instruct:free','meta-llama/llama-3.2-1b-instruct:free'],
     gemini: ['gemini-2.5-flash','gemini-2.0-flash','gemini-2.0-flash-lite'],
     openai: ['gpt-4o-mini','gpt-4o','gpt-4.1-mini','gpt-4.1-nano'],
@@ -898,7 +976,7 @@
     if (providers?.ollama_cloud?.models?.length) MODELS.ollama_cloud = providers.ollama_cloud.models;
   }).catch(() => {});
   const HINTS = {
-    groq: 'Free key from <a href="https://console.groq.com/keys" target="_blank">console.groq.com</a>. Runs Llama 70B at blazing speed. <strong>Paste multiple keys separated by commas</strong> to avoid rate limits.',
+    groq: 'On Render, set <code>GROQ_API_KEY</code> as a secret, or get a free key from <a href="https://console.groq.com/keys" target="_blank">console.groq.com</a>. Llama 70B at high speed. <strong>Multiple keys (comma-separated)</strong> rotate automatically.',
     ollama: 'The <strong>first five</strong> model tags match Ollama Cloud. The last three are <strong>desktop-only</strong> cloud proxies (<code>glm-5.1:cloud</code>, etc.) — they need the local Ollama app, not the Cloud API.',
     ollama_cloud: 'API key from <a href="https://ollama.com" target="_blank">ollama.com</a>. The <strong>first five</strong> tags are the same as local Ollama; then cloud extras including <code>glm-5.1:cloud</code>. Same <code>/api/chat</code> as local. Optional: <code>OLLAMA_CLOUD_URL</code>.',
     openrouter: 'Key from <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai</a>. Models ending in <code>:free</code> are free tier. Any OpenRouter model id works.',
@@ -910,7 +988,6 @@
 
   // ── Navigation ──────────────────────────────────────────────────────
   $('#btn-import').addEventListener('click', () => openOverlay('import'));
-  $('#menu-import').addEventListener('click', () => { closeMenu(); openOverlay('import'); });
   $('#menu-settings').addEventListener('click', () => { closeMenu(); openOverlay('settings'); loadSettings(); });
   $('#close-import').addEventListener('click', () => closeOverlay('import'));
   $('#close-settings').addEventListener('click', () => closeOverlay('settings'));
@@ -957,9 +1034,100 @@
       console.error('Delete failed:', err);
     }
   });
-  function openOverlay(name) { $(`#overlay-${name}`).classList.add('open'); }
+  async function refreshGmailImportUi() {
+    const statusEl = $('#gmail-import-status');
+    const connectBtn = $('#gmail-btn-connect');
+    const syncBtn = $('#gmail-btn-sync');
+    const discBtn = $('#gmail-btn-disconnect');
+    if (!statusEl || !connectBtn || !syncBtn || !discBtn) return;
+    try {
+      const s = await fetch('/api/gmail/status').then(r => r.json());
+      if (!s.configured) {
+        statusEl.textContent = 'Not available: server needs GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.';
+        connectBtn.disabled = true;
+        syncBtn.disabled = true;
+        discBtn.style.display = 'none';
+        return;
+      }
+      connectBtn.disabled = false;
+      if (s.connected) {
+        statusEl.textContent = 'Connected: ' + (s.email || 'Gmail');
+        syncBtn.disabled = false;
+        discBtn.style.display = '';
+      } else {
+        statusEl.textContent = 'Connect to find WhatsApp Chat … .txt / .zip attachments in your mailbox.';
+        syncBtn.disabled = true;
+        discBtn.style.display = 'none';
+      }
+    } catch {
+      statusEl.textContent = '';
+    }
+  }
+
+  async function connectGmail(onboarding) {
+    const params = new URLSearchParams();
+    params.set('origin', window.location.origin);
+    if (onboarding) params.set('ob', '1');
+    let r;
+    try {
+      r = await fetch(`/api/gmail/auth-url?${params.toString()}`);
+    } catch (e) {
+      alert(e.message || 'Network error');
+      return;
+    }
+    let data;
+    try {
+      data = await r.json();
+    } catch {
+      alert('Invalid response from server');
+      return;
+    }
+    if (!r.ok || !data.url) {
+      alert(data.error || 'Could not start Google sign-in');
+      return;
+    }
+    window.location.href = data.url;
+  }
+
+  function openOverlay(name) {
+    $(`#overlay-${name}`).classList.add('open');
+    if (name === 'import') void refreshGmailImportUi();
+  }
   function closeOverlay(name) { $(`#overlay-${name}`).classList.remove('open'); }
   function closeAllOverlays() { $$('.overlay-panel').forEach(o => o.classList.remove('open')); }
+
+  $('#gmail-btn-connect').addEventListener('click', () => connectGmail(false));
+  $('#gmail-btn-sync').addEventListener('click', async () => {
+    const syncBtn = $('#gmail-btn-sync');
+    syncBtn.disabled = true;
+    try {
+      const r = await fetch('/api/gmail/sync', { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) {
+        $('#import-result').classList.add('visible');
+        $('#imp-title').textContent = 'Gmail sync';
+        $('#imp-text').textContent = data.error || 'Failed';
+        return;
+      }
+      const n = (data.results && data.results.length) || 0;
+      $('#import-result').classList.add('visible');
+      $('#imp-title').textContent = 'Gmail sync complete';
+      const errTail = (data.errors && data.errors.length) ? ` Notes: ${data.errors.slice(0, 3).join('; ')}` : '';
+      $('#imp-text').textContent = `Imported ${n} file(s). Skipped ${data.skipped || 0} already imported.${errTail}`;
+      refreshDash();
+    } catch (e) {
+      $('#import-result').classList.add('visible');
+      $('#imp-title').textContent = 'Gmail sync';
+      $('#imp-text').textContent = e.message;
+    } finally {
+      syncBtn.disabled = false;
+      void refreshGmailImportUi();
+    }
+  });
+  $('#gmail-btn-disconnect').addEventListener('click', async () => {
+    await fetch('/api/gmail/disconnect', { method: 'POST' });
+    void refreshGmailImportUi();
+  });
 
   function switchPanel() {
     // Search panel is now a slide-over — it doesn't replace the chat panel
@@ -995,8 +1163,21 @@
   function showEmptyPanel() {
     activeChat = null;
     searchActive = false;
+    setMobileChatOpen(false);
     switchPanel();
   }
+
+  function isNarrowViewport() {
+    return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches;
+  }
+  function setMobileChatOpen(open) {
+    const app = $('#app');
+    if (!app || !isNarrowViewport()) return;
+    app.classList.toggle('chat-open', !!open);
+  }
+  window.addEventListener('resize', () => {
+    if (!isNarrowViewport()) $('#app')?.classList.remove('chat-open');
+  });
 
   // ── WebSocket ──────────────────────────────────────────────────────
   function connectWS() {
@@ -1006,7 +1187,14 @@
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === 'status') { connected = msg.data.connected; refreshDash(); }
-        else if (msg.type === 'new-messages') { refreshDash(); if (_waState === 'READY') { /* keep welcome hidden */ } }
+        else if (msg.type === 'new-messages') {
+          refreshDash();
+          void refreshActiveChatMessages();
+          if (_waState === 'READY') { /* keep welcome hidden */ }
+        }
+        else if (msg.type === 'action-suggestions' && msg.data?.chatJid && msg.data.chatJid === activeChat) {
+          void refreshActiveChatMessages();
+        }
         else if (msg.type === 'chat-names-refreshed') { refreshDash(); }
         else if (msg.type === 'wa-status') {
           updateWaUI(msg.data);
@@ -1357,10 +1545,15 @@
     el.classList.add('visible');
   }
 
-  async function openChat(jid) {
+  async function openChat(jid, focusMessageId = null) {
     activeChat = jid;
     closeAllOverlays();
-    clearSearch();
+    if (focusMessageId) {
+      searchActive = false;
+      $('#panel-search').classList.remove('visible');
+    } else {
+      clearSearch();
+    }
     const ch = chatData.find(c => c.chatJid === jid);
     const n = ch?.chatName || jid;
     const isGroup = jid.includes('@g.us') || (ch?.participantCount > 2);
@@ -1373,12 +1566,15 @@
     $$('.chat-item').forEach(i => i.classList.toggle('active', i.dataset.jid === jid));
     switchPanel();
     try {
+      const msgUrl = focusMessageId
+        ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200&focusMessageId=${encodeURIComponent(focusMessageId)}`
+        : `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200`;
       const [msgs, details] = await Promise.all([
-        fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200`).then(r => r.json()),
+        fetch(msgUrl).then(r => r.json()),
         fetch(`/api/wa/chat-details?chatJid=${encodeURIComponent(jid)}`).then(r => r.ok ? r.json() : null),
       ]);
       if (activeChat !== jid) return;
-      renderMessages(msgs, jid);
+      renderMessages(msgs, jid, focusMessageId);
       if (details && activeChat === jid) {
         const display = details.subject || details.chatName || details.displayName || n;
         $('#cv-name').textContent = display;
@@ -1390,14 +1586,25 @@
         renderCvContact(details, jid);
       }
     } catch {}
+    setMobileChatOpen(true);
   }
 
-  function renderMessages(msgs, jid) {
+  $('#btn-mobile-chat-back').addEventListener('click', () => {
+    activeChat = null;
+    searchActive = false;
+    $('#panel-search').classList.remove('visible');
+    $$('.chat-item').forEach(i => i.classList.remove('active'));
+    setMobileChatOpen(false);
+    switchPanel();
+  });
+
+  function renderMessages(msgs, jid, focusMessageId = null) {
     const c = $('#cv-messages');
     if (!msgs.length) { c.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2);">No messages</div>'; return; }
     const isGroup = jid.includes('@g.us');
     let html = '', lastDate = '';
     const sorted = [...msgs].sort((a, b) => a.timestamp - b.timestamp);
+    const focusStr = focusMessageId != null ? String(focusMessageId) : '';
     for (const m of sorted) {
       const d = new Date(m.timestamp * 1000);
       const ds = d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase();
@@ -1405,17 +1612,51 @@
       const out = m.sender === 'You';
       const ts = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
       let sender = '';
-      if (!out && isGroup && m.sender) {
-        const colors = ['#1fa855','#6b46c1','#d93025','#1a73e8','#e8710a','#9334e6','#0d652d'];
-        sender = `<div class="sender" style="color:${colors[hash(m.sender) % colors.length]}">${esc(m.sender)}</div>`;
+      if (!out && m.sender) {
+        if (isGroup) {
+          const colors = ['#1fa855','#6b46c1','#d93025','#1a73e8','#e8710a','#9334e6','#0d652d'];
+          sender = `<div class="sender" style="color:${colors[hash(m.sender) % colors.length]}">${esc(m.sender)}</div>`;
+        } else {
+          sender = `<div class="sender" style="color:#54656f">${esc(m.sender)}</div>`;
+        }
       }
       const body = m.mediaType && (!m.text || m.text.startsWith('['))
         ? `<span class="media-badge">[${esc(m.mediaType)}]${m.mediaCaption ? ' ' + esc(m.mediaCaption) : ''}</span>`
         : `<span class="text">${esc(m.text || '')}</span>`;
-      html += `<div class="bubble ${out ? 'out' : 'in'}">${sender}${body}<div class="time">${esc(ts)}</div></div>`;
+      const mid = m.messageId != null ? String(m.messageId) : '';
+      const isFocus = focusStr && mid === focusStr;
+      const focusCls = isFocus ? ' msg-focus' : '';
+      const dataMid = mid ? ` data-message-id="${escAttr(mid)}"` : '';
+      const items = Array.isArray(m.actionSuggestions) ? m.actionSuggestions.filter(Boolean) : [];
+      const actionsHtml = (!out && items.length)
+        ? `<div class="action-suggestions"><div class="as-label">Suggested follow-ups</div><ul>${items.map((i) => `<li>${esc(String(i))}</li>`).join('')}</ul></div>`
+        : '';
+      html += `<div class="msg-block ${out ? 'out' : 'in'}"><div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<div class="time">${esc(ts)}</div></div>${actionsHtml}</div>`;
     }
     c.innerHTML = html;
-    c.scrollTop = c.scrollHeight;
+    if (focusStr) {
+      const target = [...c.querySelectorAll('.bubble[data-message-id]')].find(
+        el => el.getAttribute('data-message-id') === focusStr
+      );
+      if (target) {
+        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        setTimeout(() => { target.classList.remove('msg-focus'); }, 2800);
+      } else {
+        c.scrollTop = c.scrollHeight;
+      }
+    } else {
+      c.scrollTop = c.scrollHeight;
+    }
+  }
+
+  async function refreshActiveChatMessages() {
+    const jid = activeChat;
+    if (!jid) return;
+    try {
+      const msgs = await fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200`).then((r) => r.json());
+      if (activeChat !== jid) return;
+      renderMessages(msgs, jid);
+    } catch {}
   }
 
   // ── Search ─────────────────────────────────────────────────────────
@@ -1423,6 +1664,16 @@
   $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
   $('#q-clear').addEventListener('click', () => { clearSearch(); switchPanel(); });
   $('#btn-close-search').addEventListener('click', () => { clearSearch(); switchPanel(); });
+
+  $('#search-results').addEventListener('click', (e) => {
+    const item = e.target.closest('.src-item');
+    if (!item || item.classList.contains('src-disabled')) return;
+    const jid = item.getAttribute('data-chat-jid');
+    const mid = item.getAttribute('data-message-id');
+    if (!jid || !mid) return;
+    e.preventDefault();
+    void openChat(jid, mid);
+  });
 
   function clearSearch() {
     searchActive = false;
@@ -1477,7 +1728,12 @@
         const k = `${s.chatName}|${s.sender}|${s.timestamp}`;
         if (seen.has(k)) continue; seen.add(k);
         const ts = s.timestamp ? new Date(s.timestamp * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) : '';
-        html += `<div class="src-item"><div class="meta">${esc(s.chatName || '')} &bull; ${esc(s.sender || '')} &bull; ${esc(ts)}</div><div>${esc((s.text || '').slice(0, 250))}</div></div>`;
+        const canJump = s.chatJid && s.messageId;
+        const dis = canJump ? '' : ' src-disabled';
+        const title = canJump ? 'View in chat' : 'Open the chat from the sidebar to jump (missing id)';
+        const dChat = s.chatJid ? ` data-chat-jid="${escAttr(s.chatJid)}"` : '';
+        const dMid = s.messageId ? ` data-message-id="${escAttr(s.messageId)}"` : '';
+        html += `<div class="src-item${dis}"${dChat}${dMid} title="${escAttr(title)}"><div class="meta">${esc(s.chatName || '')} &bull; ${esc(s.sender || '')} &bull; ${esc(ts)}</div><div>${esc((s.text || '').slice(0, 250))}</div></div>`;
       }
       html += '</div>';
     }
@@ -1595,23 +1851,61 @@
     sel.innerHTML = '';
     (MODELS[p] || []).forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
     $('#s-key-row').style.display = (p === 'ollama') ? 'none' : '';
+    if (p === 'ollama') $('#s-key-env-note').style.display = 'none';
     const h = $('#s-hint'); h.style.display = ''; h.innerHTML = HINTS[p] || '';
   }
   $('#s-provider').addEventListener('change', updateModelOptions);
 
+  function applyKeyEnvHints(settings, keyHints) {
+    const sKey = $('#s-key');
+    const sNote = $('#s-key-env-note');
+    if (keyHints && keyHints.search === 'env' && settings && !settings.hasLlmApiKey && $('#s-provider').value !== 'ollama') {
+      if (sNote) sNote.style.display = 'block';
+      if (sKey) sKey.placeholder = 'Optional — server uses GROQ_API_KEY / LLM_API_KEY. Paste to override.';
+    } else {
+      if (sNote && $('#s-provider').value !== 'ollama') sNote.style.display = 'none';
+      if (sKey && $('#s-provider').value !== 'ollama') {
+        sKey.placeholder = 'Paste one key per line, or comma-separated. Multiple keys are rotated automatically.';
+      }
+    }
+    const ssKey = $('#ss-key');
+    const ssNote = $('#ss-key-env-note');
+    const ssP = settings?.summary_provider || 'same';
+    if (keyHints && keyHints.summary === 'env' && settings && !settings.hasSummaryApiKey && ssP !== 'same' && ssP !== 'ollama') {
+      if (ssNote) ssNote.style.display = 'block';
+      if (ssKey) ssKey.placeholder = 'Optional — server uses OLLAMA_CLOUD_API_KEY / SUMMARY_API_KEY. Paste to override.';
+    } else {
+      if (ssNote) ssNote.style.display = 'none';
+      if (ssKey) ssKey.placeholder = 'Paste one key per line, or comma-separated. Multiple keys are rotated automatically.';
+    }
+  }
+
   async function loadSettings() {
     try {
-      const { settings } = await fetch('/api/settings').then(r => r.json());
+      const { settings, keyHints } = await fetch('/api/settings').then(r => r.json());
+      settingsKeyState.hasLlm = !!settings.hasLlmApiKey;
+      settingsKeyState.hasSummary = !!settings.hasSummaryApiKey;
+      settingsKeyState.pendingClearLlm = false;
+      settingsKeyState.pendingClearSummary = false;
+      const sHint = $('#s-key-stored-hint');
+      const ssHint = $('#ss-key-stored-hint');
+      if (sHint) sHint.style.display = settingsKeyState.hasLlm ? 'block' : 'none';
+      if (ssHint) ssHint.style.display = settingsKeyState.hasSummary ? 'block' : 'none';
+      const sCm = $('#s-key-clear-msg');
+      const ssCm = $('#ss-key-clear-msg');
+      if (sCm) sCm.style.display = 'none';
+      if (ssCm) ssCm.style.display = 'none';
       if (settings.llm_provider) $('#s-provider').value = settings.llm_provider;
       updateModelOptions();
       if (settings.llm_model) $('#s-model').value = settings.llm_model;
-      if (settings.llm_api_key) $('#s-key').value = settings.llm_api_key.split(',').join('\n');
+      $('#s-key').value = '';
 
       if (settings.summary_provider) $('#ss-provider').value = settings.summary_provider;
       else $('#ss-provider').value = 'same';
       updateSummaryModelOptions();
       if (settings.summary_model) $('#ss-model').value = settings.summary_model;
-      if (settings.summary_api_key) $('#ss-key').value = settings.summary_api_key.split(',').join('\n');
+      $('#ss-key').value = '';
+      applyKeyEnvHints(settings, keyHints);
     } catch {}
     refreshDash();
   }
@@ -1621,18 +1915,40 @@
     return raw.split(/[\n,]+/).map(k => k.trim()).filter(Boolean).join(',');
   }
 
+  $('#s-key-clear')?.addEventListener('click', () => {
+    $('#s-key').value = '';
+    settingsKeyState.pendingClearLlm = true;
+    const sHint = $('#s-key-stored-hint');
+    const sCm = $('#s-key-clear-msg');
+    if (sHint) sHint.style.display = 'block';
+    if (sCm) sCm.style.display = 'inline';
+  });
+  $('#ss-key-clear')?.addEventListener('click', () => {
+    $('#ss-key').value = '';
+    settingsKeyState.pendingClearSummary = true;
+    const ssHint = $('#ss-key-stored-hint');
+    const ssCm = $('#ss-key-clear-msg');
+    if (ssHint) ssHint.style.display = 'block';
+    if (ssCm) ssCm.style.display = 'inline';
+  });
+
   $('#s-save').addEventListener('click', async () => {
-    const provider = $('#s-provider').value, apiKey = normaliseKeys($('#s-key').value), model = $('#s-model').value;
+    const provider = $('#s-provider').value, model = $('#s-model').value;
+    const keyInput = normaliseKeys($('#s-key').value);
+    const body = { provider, model };
+    if (keyInput) body.apiKey = keyInput;
+    else if (settingsKeyState.pendingClearLlm) body.apiKey = '';
+    else if (!settingsKeyState.hasLlm) body.apiKey = '';
     const isOllama = provider === 'ollama';
     $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> ${isOllama ? 'Starting Ollama...' : 'Connecting...'}`;
     $('#s-save').disabled = true;
     try {
-      const data = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey, model }) }).then(r => r.json());
+      const data = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
       if (data.healthy) $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
       else if (isOllama) $('#s-status').innerHTML = '<span class="health-dot fail"></span> Loading model... try again soon';
       else $('#s-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
     } catch (err) { $('#s-status').innerHTML = `<span class="health-dot fail"></span> ${esc(err.message)}`; }
-    finally { $('#s-save').disabled = false; }
+    finally { $('#s-save').disabled = false; void loadSettings(); }
   });
 
   // ── Summary Provider Settings ───────────────────────────────────
@@ -1640,6 +1956,7 @@
     const p = $('#ss-provider').value;
     const isSame = p === 'same';
     $('#ss-key-row').style.display = isSame || p === 'ollama' ? 'none' : '';
+    if (isSame || p === 'ollama') $('#ss-key-env-note').style.display = 'none';
     $('#ss-model-row').style.display = isSame ? 'none' : '';
     if (!isSame) {
       const sel = $('#ss-model');
@@ -1651,18 +1968,24 @@
 
   $('#ss-save').addEventListener('click', async () => {
     const provider = $('#ss-provider').value;
-    const apiKey = provider !== 'same' && provider !== 'ollama' ? normaliseKeys($('#ss-key').value) : '';
     const model = provider !== 'same' ? $('#ss-model').value : '';
     const isOllama = provider === 'ollama';
+    const body = { provider, model };
+    if (provider !== 'same' && provider !== 'ollama') {
+      const keyInput = normaliseKeys($('#ss-key').value);
+      if (keyInput) body.apiKey = keyInput;
+      else if (settingsKeyState.pendingClearSummary) body.apiKey = '';
+      else if (!settingsKeyState.hasSummary) body.apiKey = '';
+    }
     $('#ss-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> ${provider === 'same' ? 'Syncing...' : isOllama ? 'Starting Ollama...' : 'Connecting...'}`;
     $('#ss-save').disabled = true;
     try {
-      const data = await fetch('/api/settings/summary-provider', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey, model }) }).then(r => r.json());
+      const data = await fetch('/api/settings/summary-provider', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
       if (data.healthy) $('#ss-status').innerHTML = `<span class="health-dot ok"></span> Connected: ${esc(data.model)}`;
       else if (isOllama) $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Loading model... try again soon';
       else $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
     } catch (err) { $('#ss-status').innerHTML = `<span class="health-dot fail"></span> ${esc(err.message)}`; }
-    finally { $('#ss-save').disabled = false; }
+    finally { $('#ss-save').disabled = false; void loadSettings(); }
   });
 
   $('#gen-summaries').addEventListener('click', async () => {
@@ -1704,15 +2027,25 @@
       html: `<div class="ob-steps-list">
           <div class="ob-step-item"><div class="ob-step-num">1</div><div class="ob-step-text">Open a WhatsApp chat &rarr; tap <strong>&#8942; &rarr; More &rarr; Export chat</strong></div></div>
           <div class="ob-step-item"><div class="ob-step-num">2</div><div class="ob-step-text">Choose <strong>Without media</strong> (faster) or <strong>Include media</strong></div></div>
-          <div class="ob-step-item"><div class="ob-step-num">3</div><div class="ob-step-text">Save the <strong>.zip</strong> file &mdash; you'll upload it next</div></div>
+          <div class="ob-step-item"><div class="ob-step-num">3</div><div class="ob-step-text">Save the <strong>.zip</strong> file &mdash; email it to yourself for Gmail sync, or upload it in the next steps</div></div>
+        </div>`,
+    },
+    {
+      title: 'Sync from Gmail (optional)',
+      subtitle: 'Import exports you emailed to yourself',
+      html: `<p class="ob-desc">Email your WhatsApp export (.zip or .txt) to yourself, then connect Google to pull those attachments automatically. Access is read-only.</p>
+        <p id="ob-gmail-status" style="font-size:12px;color:var(--text2);margin-bottom:12px;min-height:18px;"></p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          <button type="button" class="btn btn-primary" id="ob-gmail-connect" style="padding:10px 18px;border-radius:8px;border:none;cursor:pointer;font-weight:600;">Connect Google</button>
+          <button type="button" class="btn btn-secondary" id="ob-gmail-sync" style="padding:10px 18px;border-radius:8px;cursor:pointer;">Sync now</button>
         </div>
-        <p class="ob-desc" style="margin-top:14px;font-size:12px;color:var(--text2);">Tip: Also check Google Drive for <code style="background:var(--hover);padding:2px 5px;border-radius:3px;font-size:11px;">WhatsApp Chat</code> backups.</p>`,
+        <p class="ob-desc" style="margin-top:14px;font-size:11px;color:var(--text2);">If the server is not configured for Google OAuth, use <strong>Next</strong> and upload files manually. Skip anytime.</p>`,
     },
     {
       title: 'Import & Search',
       subtitle: 'Drop your file and start asking',
       html: `<div class="ob-steps-list">
-          <div class="ob-step-item"><div class="ob-step-num">1</div><div class="ob-step-text">Click <strong>+</strong> in the sidebar or drag &amp; drop your .zip/.txt file</div></div>
+          <div class="ob-step-item"><div class="ob-step-num">1</div><div class="ob-step-text">Click <strong>+</strong> in the sidebar, use <strong>Gmail sync</strong>, or drag &amp; drop your .zip/.txt file</div></div>
           <div class="ob-step-item"><div class="ob-step-num">2</div><div class="ob-step-text">Wait for indexing &mdash; the AI builds a <strong>searchable index</strong> of every day's conversations</div></div>
           <div class="ob-step-item"><div class="ob-step-num">3</div><div class="ob-step-text">Ask anything in the <strong>search bar</strong> &mdash; "Who mentioned the trip?" "What was that restaurant name?"</div></div>
         </div>`,
@@ -1731,6 +2064,45 @@
   ];
 
   let obStep = 0;
+  (function gmailReturnParams() {
+    const sp = new URLSearchParams(window.location.search);
+    const gc = sp.get('gmail_connected') === '1';
+    const ge = sp.get('gmail_error');
+    const fromOb = sp.get('ob') === '1';
+    if (gc || ge) history.replaceState({}, '', window.location.pathname);
+    if (gc && fromOb && !localStorage.getItem('wa_onboarding_done')) obStep = 2;
+    if (ge) {
+      $('#imp-title').textContent = 'Gmail';
+      $('#imp-text').textContent = decodeURIComponent(String(ge).replace(/\+/g, ' '));
+      $('#import-result').classList.add('visible');
+      openOverlay('import');
+    } else if (gc && !ge) {
+      $('#imp-title').textContent = 'Gmail connected';
+      $('#imp-text').textContent = fromOb ? 'Use Sync now on this step, or tap Next to continue.' : 'Use Import → Sync from Gmail when you add new mailed exports.';
+      $('#import-result').classList.add('visible');
+      if (!fromOb) openOverlay('import');
+    }
+  })();
+
+  async function updateObGmailForOb() {
+    const el = $('#ob-gmail-status');
+    const btnSync = $('#ob-gmail-sync');
+    if (!el) return;
+    try {
+      const s = await fetch('/api/gmail/status').then(r => r.json());
+      if (!s.configured) {
+        el.textContent = 'Gmail sync is not configured on this server (missing OAuth credentials).';
+        if (btnSync) btnSync.disabled = true;
+        return;
+      }
+      if (btnSync) btnSync.disabled = !s.connected;
+      if (s.connected) el.textContent = `Connected${s.email ? ': ' + s.email : ''}. Tap Sync to import mailed WhatsApp exports.`;
+      else el.textContent = 'Not connected — tap Connect Google (read-only mailbox access).';
+    } catch {
+      el.textContent = '';
+    }
+  }
+
   function renderObStep() {
     const s = OB_STEPS[obStep];
     $('#ob-counter').textContent = `Step ${obStep + 1} of ${OB_STEPS.length}`;
@@ -1739,7 +2111,35 @@
     });
     $('#ob-body').innerHTML = `<h2>${s.title}</h2><div class="ob-subtitle">${s.subtitle}</div>${s.html}`;
     $('#ob-next').textContent = obStep === OB_STEPS.length - 1 ? 'Get Started' : 'Next';
+    if (obStep === 2) void updateObGmailForOb();
   }
+
+  $('#onboarding').addEventListener('click', (e) => {
+    const t = e.target;
+    if (!t || !t.id) return;
+    if (t.id === 'ob-gmail-connect') {
+      e.preventDefault();
+      connectGmail(true);
+    }
+    if (t.id === 'ob-gmail-sync') {
+      e.preventDefault();
+      const btn = t;
+      btn.disabled = true;
+      fetch('/api/gmail/sync', { method: 'POST' })
+        .then(async (r) => {
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || 'Sync failed');
+          const n = (data.results && data.results.length) || 0;
+          alert(`Imported ${n} file(s). Skipped ${data.skipped || 0} already imported.`);
+          refreshDash();
+        })
+        .catch((err) => alert(err.message))
+        .finally(() => {
+          btn.disabled = false;
+          void updateObGmailForOb();
+        });
+    }
+  });
 
   $('#ob-next').addEventListener('click', () => {
     if (obStep < OB_STEPS.length - 1) { obStep++; renderObStep(); }
@@ -1759,6 +2159,15 @@
 
   // ── Utils ──────────────────────────────────────────────────────────
   function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  /** Escape for double-quoted HTML attributes (data-chat-jid, etc.). */
+  function escAttr(s) {
+    if (s == null || s === '') return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/\r?\n/g, ' ');
+  }
   function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0; return Math.abs(h); }
 
   updateModelOptions();
