@@ -50,6 +50,10 @@ const config = {
    * Required for any public URL (e.g. Render) so strangers cannot read your DB or scan the WhatsApp QR.
    */
   webAccessToken: process.env.WEB_ACCESS_TOKEN || '',
+  /** Required for multi-tenant user accounts (`/api/auth/*`). If unset, app uses single `legacy-default` tenant (no login). */
+  jwtSecret: process.env.JWT_SECRET || '',
+  /** WhatsApp ingest + background jobs scope to this tenant when JWT auth is off (default `legacy-default`). */
+  defaultTenantId: (process.env.DEFAULT_TENANT_ID || 'legacy-default').trim(),
   /**
    * Defaults when settings table has no row yet (first run / new DB).
    * Search: Groq. Summary: Ollama Cloud (gpt-oss:20b on free tier when available).

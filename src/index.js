@@ -1,5 +1,7 @@
 import { mkdirSync } from 'fs';
 import config from './config.js';
+import { runWithTenant } from './storage/tenant-context.js';
+import { LEGACY_TENANT_ID } from './storage/tenant-constants.js';
 import Database from './storage/database.js';
 import SmartSearch from './search/smart-search.js';
 import MediaIndexService from './search/media-index-service.js';
@@ -26,11 +28,14 @@ async function main() {
 
   console.log('Initializing database...');
   const db = new Database();
-  applyLlmDefaultsIfUnset(db);
+  const defaultTenantId = config.defaultTenantId || LEGACY_TENANT_ID;
+  runWithTenant(defaultTenantId, () => applyLlmDefaultsIfUnset(db));
 
-  const savedProvider = db.getSetting('llm_provider') || config.defaultSearchProvider;
-  const savedKey = effectiveSearchApiKey(db);
-  const savedModel = db.getSetting('llm_model') || config.defaultSearchModel;
+  const { savedProvider, savedKey, savedModel } = runWithTenant(defaultTenantId, () => ({
+    savedProvider: db.getSetting('llm_provider') || config.defaultSearchProvider,
+    savedKey: effectiveSearchApiKey(db),
+    savedModel: db.getSetting('llm_model') || config.defaultSearchModel,
+  }));
 
   let provider = null;
   try {
@@ -40,11 +45,11 @@ async function main() {
   }
 
   let summaryProvider = provider;
-  const sumProvSetting = db.getSetting('summary_provider');
+  const sumProvSetting = runWithTenant(defaultTenantId, () => db.getSetting('summary_provider'));
   if (sumProvSetting && sumProvSetting !== 'same') {
     try {
-      const sumKey = effectiveSummaryApiKey(db);
-      const sumModel = db.getSetting('summary_model') || config.defaultSummaryModel;
+      const sumKey = runWithTenant(defaultTenantId, () => effectiveSummaryApiKey(db));
+      const sumModel = runWithTenant(defaultTenantId, () => db.getSetting('summary_model')) || config.defaultSummaryModel;
       summaryProvider = await createProvider(sumProvSetting, sumKey, sumModel || undefined);
       console.log(`Summary provider: ${sumProvSetting} (${summaryProvider.model})`);
     } catch (err) {
@@ -63,7 +68,7 @@ async function main() {
     db,
     getProvider: () => provider,
     onSuggestionsUpdated: ({ chatJid }) => {
-      webServer?._broadcast?.({ type: 'chat-action-items', data: { chatJid } });
+      webServer?._broadcast?.({ type: 'chat-action-items', data: { chatJid } }, defaultTenantId);
     },
   });
   const summaryService = new DailySummaryService({
@@ -85,15 +90,17 @@ async function main() {
     onProgress:(p)       => webServer.onWaProgress(p),
     onSearchQuery: async (query) => {
       try {
-        return await searchEngine.search(query, null);
+        return await runWithTenant(defaultTenantId, async () => searchEngine.search(query, null));
       } catch (e) {
         return { error: e.message };
       }
     },
     onDisconnected: () => console.log('[WA] Connection closed'),
     onMediaPath: (messageId, mediaPath) => {
-      db.updateMessageMediaPath(messageId, mediaPath);
-      mediaIndexService.scheduleProcess();
+      runWithTenant(defaultTenantId, () => {
+        db.updateMessageMediaPath(messageId, mediaPath);
+        mediaIndexService.scheduleProcess();
+      });
     },
   });
   webServer.setWaClient(waClient);
@@ -114,24 +121,37 @@ async function main() {
       if (healthy) {
         const pName = sumProvSetting && sumProvSetting !== 'same' ? sumProvSetting : savedProvider;
         console.log(`Summary LLM connected: ${pName} (${effectiveSumProvider.model})`);
-        const stats = db.getTotalStats();
+        const stats = runWithTenant(defaultTenantId, () => db.getTotalStats());
         if (stats.totalMessages > 0) {
           console.log('Generating daily summaries in background...');
-          summaryService.indexPendingDays().then(count => {
-            if (count > 0) console.log(`Generated ${count} daily summaries`);
-            else console.log('All summaries up to date');
-          }).catch(err => console.error('Summary error:', err.message));
+          void runWithTenant(defaultTenantId, async () => {
+            try {
+              const count = await summaryService.indexPendingDays();
+              if (count > 0) console.log(`Generated ${count} daily summaries`);
+              else console.log('All summaries up to date');
+            } catch (err) {
+              console.error('Summary error:', err.message);
+            }
+          });
         }
       }
     }).catch(err => console.log(`Summary LLM health check failed: ${err.message}`));
   }
 
   let summaryInterval = setInterval(async () => {
-    try { await summaryService.indexPendingDays(); } catch {}
+    try {
+      await runWithTenant(defaultTenantId, async () => {
+        await summaryService.indexPendingDays();
+      });
+    } catch { /* */ }
   }, 300_000);
 
   let mediaIndexInterval = setInterval(async () => {
-    try { await mediaIndexService.processPending(12); } catch {}
+    try {
+      await runWithTenant(defaultTenantId, async () => {
+        await mediaIndexService.processPending(12);
+      });
+    } catch { /* */ }
   }, 120_000);
 
   const shutdown = async () => {

@@ -612,8 +612,16 @@
   <div style="background:var(--sidebar-bg);max-width:420px;width:100%;padding:24px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
     <h2 style="margin-bottom:8px;font-size:18px;">Access token required</h2>
     <p style="font-size:13px;color:var(--text2);margin-bottom:16px;line-height:1.5;">The admin set <code>WEB_ACCESS_TOKEN</code> on the server (e.g. Render). Paste the same value here, or open the app once with <code>?access_token=…</code> in the URL (then bookmark).</p>
-    <input type="password" id="auth-token-input" autocomplete="off" placeholder="Access token" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:12px;font-size:14px;box-sizing:border-box;" />
+    <input type="password" id="auth-token-input" autocomplete="off" placeholder="Deploy access token (WEB_ACCESS_TOKEN)" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:12px;font-size:14px;box-sizing:border-box;" />
     <button type="button" class="btn btn-primary" id="auth-token-save" style="width:100%;padding:12px;border:none;border-radius:8px;background:var(--green);color:#fff;font-weight:600;cursor:pointer;">Continue</button>
+    <div id="jwt-login-block" style="display:none;border-top:1px solid var(--border);margin-top:16px;padding-top:16px;">
+      <h3 style="font-size:14px;margin-bottom:8px;">Account (JWT)</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:8px;">Required when the server sets <code>JWT_SECRET</code>. Same email/password as <code>/api/auth/register</code>.</p>
+      <input type="email" id="jwt-email" autocomplete="username" placeholder="Email" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;font-size:14px;box-sizing:border-box;" />
+      <input type="password" id="jwt-password" autocomplete="current-password" placeholder="Password" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;font-size:14px;box-sizing:border-box;" />
+      <button type="button" class="btn btn-primary" id="jwt-login-btn" style="width:100%;padding:12px;border:none;border-radius:8px;background:var(--teal);color:#fff;font-weight:600;cursor:pointer;">Sign in</button>
+      <p id="jwt-login-err" style="font-size:12px;color:var(--danger);margin-top:8px;"></p>
+    </div>
   </div>
 </div>
 <div id="app" class="app">
@@ -1006,21 +1014,23 @@
 
   const _origFetch = window.fetch.bind(window);
   window.fetch = async function(input, init) {
-    const tok = sessionStorage.getItem('web_access_token') || '';
+    const deployTok = sessionStorage.getItem('web_access_token') || '';
+    const jwtTok = sessionStorage.getItem('auth_jwt') || '';
     let urlStr = typeof input === 'string' ? input : (input && input.url);
     urlStr = urlStr != null ? String(urlStr) : '';
     const isOurApi = urlStr.startsWith('/api/') || (urlStr.includes('://') && urlStr.includes('/api/'));
-    if (tok && isOurApi) {
+    if (isOurApi && (deployTok || jwtTok)) {
       init = init ? { ...init } : {};
       const h = new Headers(init.headers || {});
-      if (!h.has('Authorization')) h.set('Authorization', 'Bearer ' + tok);
+      if (deployTok) h.set('X-Web-Access-Token', deployTok);
+      if (jwtTok) h.set('Authorization', 'Bearer ' + jwtTok);
       init.headers = h;
     }
     const res = await _origFetch(input, init);
     if (res.status === 401) {
       try {
         const j = await res.clone().json();
-        if (j && j.authRequired) {
+        if (j && (j.authRequired || j.needLogin)) {
           const gate = document.getElementById('auth-gate');
           if (gate) gate.style.display = 'flex';
         }
@@ -1262,8 +1272,13 @@
 
   // ── WebSocket ──────────────────────────────────────────────────────
   function connectWS() {
-    const tok = sessionStorage.getItem('web_access_token') || '';
-    const qs = tok ? '?access_token=' + encodeURIComponent(tok) : '';
+    const deploy = sessionStorage.getItem('web_access_token') || '';
+    const jwt = sessionStorage.getItem('auth_jwt') || '';
+    const sp = new URLSearchParams();
+    if (deploy) sp.set('access_token', deploy);
+    if (jwt) sp.set('token', jwt);
+    const q = sp.toString();
+    const qs = q ? '?' + q : '';
     const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + qs;
     ws = new WebSocket(wsUrl);
     ws.onmessage = e => {
@@ -1313,6 +1328,36 @@
         window.location.reload();
       });
       authIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveAuth.click(); });
+    }
+    fetch('/api/auth/status').then(r => r.json()).then((d) => {
+      const block = document.getElementById('jwt-login-block');
+      if (block && d && d.jwtAuthEnabled) block.style.display = 'block';
+    }).catch(() => {});
+    const jwtBtn = document.getElementById('jwt-login-btn');
+    const jwtErr = document.getElementById('jwt-login-err');
+    if (jwtBtn) {
+      jwtBtn.addEventListener('click', async () => {
+        const email = (document.getElementById('jwt-email')?.value || '').trim();
+        const password = document.getElementById('jwt-password')?.value || '';
+        if (jwtErr) jwtErr.textContent = '';
+        try {
+          const r = await _origFetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            if (jwtErr) jwtErr.textContent = j.error || 'Login failed';
+            return;
+          }
+          if (j.token) sessionStorage.setItem('auth_jwt', j.token);
+          if (gate) gate.style.display = 'none';
+          window.location.reload();
+        } catch (e) {
+          if (jwtErr) jwtErr.textContent = e.message || 'Login failed';
+        }
+      });
     }
   })();
 

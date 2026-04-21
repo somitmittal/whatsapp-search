@@ -4,6 +4,9 @@ import { dirname } from 'path';
 import config from '../config.js';
 import { buildSearchText } from '../search/fact-extract.js';
 import { segmentIntoThreads } from '../search/thread-segment.js';
+import { getCurrentTenantId } from './tenant-context.js';
+import { migrateMultiTenant } from './migrate-multi-tenant.js';
+import { LEGACY_TENANT_ID } from './tenant-constants.js';
 
 const require = createRequire(import.meta.url);
 const SQLite = require('better-sqlite3');
@@ -34,7 +37,9 @@ export default class Database {
     this._db.pragma('journal_mode = WAL');
     this._db.pragma('foreign_keys = ON');
     this._initSchema();
+    migrateMultiTenant(this._db);
     this._prepareStatements();
+    this._migrateChatActionItemsTable();
     this._migrateOllamaCloudModelSettings();
   }
 
@@ -216,7 +221,6 @@ export default class Database {
 
     this._migrateMediaAiIndexAndFts();
     this._migrateActionSuggestionsColumn();
-    this._migrateChatActionItemsTable();
     this._rebuildFtsIfEmpty();
   }
 
@@ -247,16 +251,17 @@ export default class Database {
       const migrated = this.getState('chat_action_items_migrated');
       if (!migrated) {
         const rows = this._db.prepare(
-          'SELECT chat_jid AS chatJid, message_id AS messageId, action_suggestions AS raw FROM messages WHERE action_suggestions IS NOT NULL AND trim(action_suggestions) NOT IN (\'\', \'[]\')',
-        ).all();
+          `SELECT chat_jid AS chatJid, message_id AS messageId, action_suggestions AS raw FROM messages
+           WHERE tenant_id = ? AND action_suggestions IS NOT NULL AND trim(action_suggestions) NOT IN ('', '[]')`,
+        ).all(LEGACY_TENANT_ID);
         const ins = this._db.prepare(`
-          INSERT OR REPLACE INTO chat_action_items (chat_jid, source_message_id, items_json, created_at)
-          VALUES (?, ?, ?, unixepoch())
+          INSERT OR REPLACE INTO chat_action_items (tenant_id, chat_jid, source_message_id, items_json, created_at)
+          VALUES (?, ?, ?, ?, unixepoch())
         `);
         for (const r of rows) {
           try {
             const arr = JSON.parse(r.raw);
-            if (Array.isArray(arr) && arr.length) ins.run(r.chatJid, r.messageId, JSON.stringify(arr));
+            if (Array.isArray(arr) && arr.length) ins.run(LEGACY_TENANT_ID, r.chatJid, r.messageId, JSON.stringify(arr));
           } catch { /* skip */ }
         }
         this.setState('chat_action_items_migrated', '1');
@@ -371,15 +376,15 @@ export default class Database {
   _prepareStatements() {
     this._stmtInsertMessage = this._db.prepare(`
       INSERT OR IGNORE INTO messages (
-        message_id, chat_jid, chat_name, sender, sender_jid,
+        tenant_id, message_id, chat_jid, chat_name, sender, sender_jid,
         text, media_type, media_path, media_caption, media_ai_index, timestamp
       ) VALUES (
-        @messageId, @chatJid, @chatName, @sender, @senderJid,
+        @tenantId, @messageId, @chatJid, @chatName, @sender, @senderJid,
         @text, @mediaType, @mediaPath, @mediaCaption, @mediaAiIndex, @timestamp
       )
     `);
     this._stmtSelectIdByMessageId = this._db.prepare(
-      'SELECT id FROM messages WHERE message_id = ?'
+      'SELECT id FROM messages WHERE tenant_id = ? AND message_id = ?'
     );
     this._stmtGetState = this._db.prepare('SELECT value FROM agent_state WHERE key = ?');
     this._stmtUpsertState = this._db.prepare(`
@@ -387,32 +392,34 @@ export default class Database {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `);
     this._stmtUpsertSummary = this._db.prepare(`
-      INSERT INTO daily_summaries (chat_jid, chat_name, date, summary, message_count)
-      VALUES (@chatJid, @chatName, @date, @summary, @messageCount)
-      ON CONFLICT(chat_jid, date) DO UPDATE SET
+      INSERT INTO daily_summaries (tenant_id, chat_jid, chat_name, date, summary, message_count)
+      VALUES (@tenantId, @chatJid, @chatName, @date, @summary, @messageCount)
+      ON CONFLICT(tenant_id, chat_jid, date) DO UPDATE SET
         summary = excluded.summary, chat_name = excluded.chat_name,
         message_count = excluded.message_count
     `);
-    this._stmtGetSetting = this._db.prepare('SELECT value FROM settings WHERE key = ?');
+    this._stmtGetSetting = this._db.prepare(
+      'SELECT value FROM tenant_settings WHERE tenant_id = ? AND key = ?',
+    );
     this._stmtUpsertSetting = this._db.prepare(`
-      INSERT INTO settings (key, value) VALUES (?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      INSERT INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)
+      ON CONFLICT(tenant_id, key) DO UPDATE SET value = excluded.value
     `);
   }
 
   // ── Settings ──────────────────────────────────────────────────────────
 
   getSetting(key) {
-    const row = this._stmtGetSetting.get(key);
+    const row = this._stmtGetSetting.get(getCurrentTenantId(), key);
     return row ? row.value : null;
   }
 
   setSetting(key, value) {
-    this._stmtUpsertSetting.run(key, String(value));
+    this._stmtUpsertSetting.run(getCurrentTenantId(), key, String(value));
   }
 
   getAllSettings() {
-    return this._db.prepare('SELECT key, value FROM settings').all()
+    return this._db.prepare('SELECT key, value FROM tenant_settings WHERE tenant_id = ?').all(getCurrentTenantId())
       .reduce((acc, r) => { acc[r.key] = r.value; return acc; }, {});
   }
 
@@ -422,12 +429,14 @@ export default class Database {
     messageId, chatJid, chatName = null, sender = null, senderJid = null,
     text = null, mediaType = null, mediaPath = null, mediaCaption = null, mediaAiIndex = null, timestamp,
   }) {
+    const tenantId = getCurrentTenantId();
     const info = this._stmtInsertMessage.run({
+      tenantId,
       messageId, chatJid, chatName, sender, senderJid,
       text, mediaType, mediaPath, mediaCaption, mediaAiIndex, timestamp,
     });
     if (info.changes > 0) return Number(info.lastInsertRowid);
-    const row = this._stmtSelectIdByMessageId.get(messageId);
+    const row = this._stmtSelectIdByMessageId.get(tenantId, messageId);
     return row ? row.id : Number(info.lastInsertRowid);
   }
 
@@ -435,10 +444,12 @@ export default class Database {
    * @returns {{ count: number, insertedMessageIds: string[] }}
    */
   insertMessageBatch(rows) {
+    const tenantId = getCurrentTenantId();
     const insertedMessageIds = [];
     const run = this._db.transaction((batch) => {
       for (const row of batch) {
         const info = this._stmtInsertMessage.run({
+          tenantId,
           messageId: row.messageId,
           chatJid: row.chatJid,
           chatName: row.chatName ?? null,
@@ -464,66 +475,73 @@ export default class Database {
    */
   propagateChatDisplayName(chatJid, chatName) {
     if (!chatJid || !chatName || !looksLikeContactDisplayName(chatName, chatJid)) return 0;
-    const r = this._db.prepare('UPDATE messages SET chat_name = ? WHERE chat_jid = ?').run(chatName, chatJid);
+    const t = getCurrentTenantId();
+    const r = this._db.prepare('UPDATE messages SET chat_name = ? WHERE tenant_id = ? AND chat_jid = ?').run(chatName, t, chatJid);
     return r.changes ?? 0;
   }
 
   updateMediaCaption(messageId, caption) {
-    this._db.prepare('UPDATE messages SET media_caption = ? WHERE message_id = ?')
-      .run(caption, messageId);
+    const t = getCurrentTenantId();
+    this._db.prepare('UPDATE messages SET media_caption = ? WHERE tenant_id = ? AND message_id = ?')
+      .run(caption, t, messageId);
   }
 
   updateMessageMediaPath(messageId, mediaPath) {
     if (!messageId) return 0;
-    const r = this._db.prepare('UPDATE messages SET media_path = ? WHERE message_id = ?')
-      .run(mediaPath, messageId);
+    const t = getCurrentTenantId();
+    const r = this._db.prepare('UPDATE messages SET media_path = ? WHERE tenant_id = ? AND message_id = ?')
+      .run(mediaPath, t, messageId);
     return r.changes ?? 0;
   }
 
   /** @param jsonStr JSON array string e.g. `["…","…"]` or `[]` after processing */
   updateMessageActionSuggestions(messageId, jsonStr) {
     if (!messageId) return 0;
-    const r = this._db.prepare('UPDATE messages SET action_suggestions = ? WHERE message_id = ?')
-      .run(jsonStr ?? '', messageId);
+    const t = getCurrentTenantId();
+    const r = this._db.prepare('UPDATE messages SET action_suggestions = ? WHERE tenant_id = ? AND message_id = ?')
+      .run(jsonStr ?? '', t, messageId);
     return r.changes ?? 0;
   }
 
   getMessageRowByMessageId(messageId) {
     if (!messageId) return null;
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
              sender, text, media_caption AS mediaCaption, timestamp
-      FROM messages WHERE message_id = ?
-    `).get(messageId);
+      FROM messages WHERE tenant_id = ? AND message_id = ?
+    `).get(t, messageId);
   }
 
   /** Per-chat action list; each row ties suggestions to a source message. */
   upsertChatActionItems(chatJid, sourceMessageId, itemsArray) {
     if (!chatJid || !sourceMessageId) return;
+    const t = getCurrentTenantId();
     const items = (itemsArray || []).map((x) => String(x || '').trim()).filter(Boolean);
     if (!items.length) {
-      this._db.prepare('DELETE FROM chat_action_items WHERE chat_jid = ? AND source_message_id = ?').run(chatJid, sourceMessageId);
+      this._db.prepare('DELETE FROM chat_action_items WHERE tenant_id = ? AND chat_jid = ? AND source_message_id = ?').run(t, chatJid, sourceMessageId);
       return;
     }
     this._db.prepare(`
-      INSERT INTO chat_action_items (chat_jid, source_message_id, items_json, created_at)
-      VALUES (?, ?, ?, unixepoch())
-      ON CONFLICT(chat_jid, source_message_id) DO UPDATE SET
+      INSERT INTO chat_action_items (tenant_id, chat_jid, source_message_id, items_json, created_at)
+      VALUES (?, ?, ?, ?, unixepoch())
+      ON CONFLICT(tenant_id, chat_jid, source_message_id) DO UPDATE SET
         items_json = excluded.items_json,
         created_at = unixepoch()
-    `).run(chatJid, sourceMessageId, JSON.stringify(items));
+    `).run(t, chatJid, sourceMessageId, JSON.stringify(items));
   }
 
   getChatActionItemsWithContext(chatJid) {
     if (!chatJid) return [];
+    const t = getCurrentTenantId();
     const rows = this._db.prepare(`
       SELECT c.source_message_id AS sourceMessageId, c.items_json AS itemsJson, c.created_at AS createdAt,
              m.text AS snippet, m.timestamp AS messageTs
       FROM chat_action_items c
-      LEFT JOIN messages m ON m.message_id = c.source_message_id AND m.chat_jid = c.chat_jid
-      WHERE c.chat_jid = ?
+      LEFT JOIN messages m ON m.tenant_id = c.tenant_id AND m.message_id = c.source_message_id AND m.chat_jid = c.chat_jid
+      WHERE c.tenant_id = ? AND c.chat_jid = ?
       ORDER BY c.created_at DESC
-    `).all(chatJid);
+    `).all(t, chatJid);
     return rows.map((r) => {
       let items = [];
       try {
@@ -546,8 +564,9 @@ export default class Database {
    */
   updateMediaAiIndex(messageId, text) {
     if (!messageId) return 0;
-    const r = this._db.prepare('UPDATE messages SET media_ai_index = ? WHERE message_id = ?')
-      .run(text ?? '', messageId);
+    const t = getCurrentTenantId();
+    const r = this._db.prepare('UPDATE messages SET media_ai_index = ? WHERE tenant_id = ? AND message_id = ?')
+      .run(text ?? '', t, messageId);
     return r.changes ?? 0;
   }
 
@@ -556,89 +575,100 @@ export default class Database {
    */
   getPendingMediaIndexJobs(limit = 12) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, message_id AS messageId, media_type AS mediaType, media_path AS mediaPath
       FROM messages
-      WHERE media_path IS NOT NULL AND trim(media_path) != ''
+      WHERE tenant_id = ?
+        AND media_path IS NOT NULL AND trim(media_path) != ''
         AND media_type IN ('image', 'audio', 'video', 'sticker')
         AND media_ai_index IS NULL
       ORDER BY timestamp DESC
       LIMIT ?
-    `).all(n);
+    `).all(t, n);
   }
 
   // ── Daily Summaries ───────────────────────────────────────────────────
 
   upsertDailySummary({ chatJid, chatName = null, date, summary, messageCount = 0 }) {
-    this._stmtUpsertSummary.run({ chatJid, chatName, date, summary, messageCount });
+    this._stmtUpsertSummary.run({
+      tenantId: getCurrentTenantId(), chatJid, chatName, date, summary, messageCount,
+    });
   }
 
   getDailySummaries(chatJid) {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, chat_jid AS chatJid, chat_name AS chatName,
              date, summary, message_count AS messageCount
-      FROM daily_summaries WHERE chat_jid = ? ORDER BY date ASC
-    `).all(chatJid);
+      FROM daily_summaries WHERE tenant_id = ? AND chat_jid = ? ORDER BY date ASC
+    `).all(t, chatJid);
   }
 
   getAllDailySummaries() {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, chat_jid AS chatJid, chat_name AS chatName,
              date, summary, message_count AS messageCount
-      FROM daily_summaries ORDER BY date ASC
-    `).all();
+      FROM daily_summaries WHERE tenant_id = ? ORDER BY date ASC
+    `).all(t);
   }
 
   countDailySummaries() {
-    return this._db.prepare('SELECT COUNT(*) AS c FROM daily_summaries').get()?.c || 0;
+    const t = getCurrentTenantId();
+    return this._db.prepare('SELECT COUNT(*) AS c FROM daily_summaries WHERE tenant_id = ?').get(t)?.c || 0;
   }
 
   getDailySummary(chatJid, date) {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, chat_jid AS chatJid, chat_name AS chatName,
              date, summary, message_count AS messageCount
       FROM daily_summaries
-      WHERE chat_jid = ? AND date = ?
-    `).get(chatJid, date);
+      WHERE tenant_id = ? AND chat_jid = ? AND date = ?
+    `).get(t, chatJid, date);
   }
 
   /** Recent days (chronological) — FTS-empty fallback without loading all rows. */
   getRecentDailySummaries(chatJid = null, limit = 32) {
     const safe = Math.max(1, Math.min(Number(limit) || 32, 200));
+    const t = getCurrentTenantId();
     if (chatJid) {
       const rows = this._db.prepare(`
         SELECT id, chat_jid AS chatJid, chat_name AS chatName,
                date, summary, message_count AS messageCount
         FROM daily_summaries
-        WHERE chat_jid = ?
+        WHERE tenant_id = ? AND chat_jid = ?
         ORDER BY date DESC
         LIMIT ?
-      `).all(chatJid, safe);
+      `).all(t, chatJid, safe);
       return rows.reverse();
     }
     const rows = this._db.prepare(`
       SELECT id, chat_jid AS chatJid, chat_name AS chatName,
              date, summary, message_count AS messageCount
       FROM daily_summaries
+      WHERE tenant_id = ?
       ORDER BY date DESC
       LIMIT ?
-    `).all(safe);
+    `).all(t, safe);
     return rows.reverse();
   }
 
   /** Recent threads (chronological order) without loading the full table — FTS-empty fallback. */
   getRecentThreadSummaries(chatJid = null, limit = 32) {
     const safe = Math.max(1, Math.min(Number(limit) || 32, 200));
+    const t = getCurrentTenantId();
     if (chatJid) {
       const rows = this._db.prepare(`
         SELECT id, chat_jid AS chatJid, chat_name AS chatName,
                thread_start AS threadStart, thread_end AS threadEnd,
                summary, message_count AS messageCount
         FROM thread_summaries
-        WHERE chat_jid = ?
+        WHERE tenant_id = ? AND chat_jid = ?
         ORDER BY thread_start DESC
         LIMIT ?
-      `).all(chatJid, safe);
+      `).all(t, chatJid, safe);
       return rows.reverse();
     }
     const rows = this._db.prepare(`
@@ -646,9 +676,10 @@ export default class Database {
              thread_start AS threadStart, thread_end AS threadEnd,
              summary, message_count AS messageCount
       FROM thread_summaries
+      WHERE tenant_id = ?
       ORDER BY thread_start DESC
       LIMIT ?
-    `).all(safe);
+    `).all(t, safe);
     return rows.reverse();
   }
 
@@ -678,22 +709,25 @@ export default class Database {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
     const cleaned = this._toFtsQuery(query);
     if (!cleaned) return [];
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT ds.id, ds.chat_jid AS chatJid, ds.chat_name AS chatName,
              ds.date, ds.summary, ds.message_count AS messageCount,
              bm25(summaries_fts) AS rank
       FROM summaries_fts
       INNER JOIN daily_summaries ds ON ds.id = summaries_fts.rowid
-      WHERE summaries_fts MATCH ?
+      WHERE ds.tenant_id = ?
+        AND summaries_fts MATCH ?
         AND (? IS NULL OR ds.chat_jid = ?)
       ORDER BY rank LIMIT ?
-    `).all(cleaned, chatJid, chatJid, safeLimit);
+    `).all(t, cleaned, chatJid, chatJid, safeLimit);
   }
 
   searchMessages(query, chatJid = null, limit = 20) {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 500));
     const cleaned = this._toFtsQuery(query);
     if (!cleaned) return [];
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
              m.chat_name AS chatName, m.sender, m.text,
@@ -702,35 +736,38 @@ export default class Database {
              m.timestamp, bm25(messages_fts) AS rank
       FROM messages_fts
       INNER JOIN messages m ON m.id = messages_fts.rowid
-      WHERE messages_fts MATCH ?
+      WHERE m.tenant_id = ?
+        AND messages_fts MATCH ?
         AND (? IS NULL OR m.chat_jid = ?)
       ORDER BY rank LIMIT ?
-    `).all(cleaned, chatJid, chatJid, safeLimit);
+    `).all(t, cleaned, chatJid, chatJid, safeLimit);
   }
 
   getMessagesForDay(chatJid, dateStr) {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_caption AS mediaCaption,
              media_ai_index AS mediaAiIndex, timestamp
       FROM messages
-      WHERE chat_jid = ? AND date(timestamp, 'unixepoch', 'localtime') = ?
+      WHERE tenant_id = ? AND chat_jid = ? AND date(timestamp, 'unixepoch', 'localtime') = ?
       ORDER BY timestamp ASC
-    `).all(chatJid, dateStr);
+    `).all(t, chatJid, dateStr);
   }
 
   getUnsummarizedDays(chatJid) {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT date(timestamp, 'unixepoch', 'localtime') AS date, COUNT(*) AS messageCount
       FROM messages
-      WHERE chat_jid = ?
+      WHERE tenant_id = ? AND chat_jid = ?
         AND date(timestamp, 'unixepoch', 'localtime') NOT IN (
-          SELECT date FROM daily_summaries WHERE chat_jid = ?
+          SELECT date FROM daily_summaries WHERE tenant_id = ? AND chat_jid = ?
         )
       GROUP BY date(timestamp, 'unixepoch', 'localtime')
       HAVING messageCount >= 1 ORDER BY date ASC
-    `).all(chatJid, chatJid);
+    `).all(t, chatJid, t, chatJid);
   }
 
   // ── General Queries ───────────────────────────────────────────────────
@@ -746,19 +783,21 @@ export default class Database {
 
   /** Distinct chat JIDs with at least one message (for WA name backfill). */
   getDistinctChatJids() {
-    const rows = this._db.prepare('SELECT DISTINCT chat_jid AS chatJid FROM messages').all();
+    const t = getCurrentTenantId();
+    const rows = this._db.prepare('SELECT DISTINCT chat_jid AS chatJid FROM messages WHERE tenant_id = ?').all(t);
     return rows.map((r) => r.chatJid).filter(Boolean);
   }
 
   getChatStats() {
+    const t = getCurrentTenantId();
     const rows = this._db.prepare(`
       SELECT chat_jid AS chatJid, chat_name AS chatName, sender, timestamp
-      FROM messages ORDER BY chat_jid ASC, timestamp ASC
-    `).all();
+      FROM messages WHERE tenant_id = ? ORDER BY chat_jid ASC, timestamp ASC
+    `).all(t);
 
     const summaryRows = this._db.prepare(`
-      SELECT chat_jid AS chatJid, COUNT(*) AS c FROM thread_summaries GROUP BY chat_jid
-    `).all();
+      SELECT chat_jid AS chatJid, COUNT(*) AS c FROM thread_summaries WHERE tenant_id = ? GROUP BY chat_jid
+    `).all(t);
     const summarizedByChat = new Map(summaryRows.map((r) => [r.chatJid, r.c]));
 
     const groups = new Map();
@@ -843,14 +882,15 @@ export default class Database {
   }
 
   getTotalStats() {
+    const t = getCurrentTenantId();
     const row = this._db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM messages) AS totalMessages,
-        (SELECT COUNT(DISTINCT chat_jid) FROM messages) AS totalChats,
-        (SELECT COUNT(*) FROM daily_summaries) AS dailySummaries,
-        (SELECT COUNT(*) FROM thread_summaries) AS threadSummaries,
-        (SELECT COUNT(*) FROM thread_facts) AS threadFacts
-    `).get();
+        (SELECT COUNT(*) FROM messages WHERE tenant_id = ?) AS totalMessages,
+        (SELECT COUNT(DISTINCT chat_jid) FROM messages WHERE tenant_id = ?) AS totalChats,
+        (SELECT COUNT(*) FROM daily_summaries WHERE tenant_id = ?) AS dailySummaries,
+        (SELECT COUNT(*) FROM thread_summaries WHERE tenant_id = ?) AS threadSummaries,
+        (SELECT COUNT(*) FROM thread_facts WHERE tenant_id = ?) AS threadFacts
+    `).get(t, t, t, t, t);
     return {
       totalMessages: row.totalMessages,
       totalChats: row.totalChats,
@@ -862,16 +902,17 @@ export default class Database {
   }
 
   getMessagesPaginated(chatJid, limit = 80, offset = 0) {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_path AS mediaPath,
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
              timestamp, indexed_at AS indexedAt
-      FROM messages WHERE chat_jid = ?
+      FROM messages WHERE tenant_id = ? AND chat_jid = ?
       ORDER BY timestamp DESC, id DESC
       LIMIT ? OFFSET ?
-    `).all(chatJid, Math.min(Number(limit) || 80, 500), Math.max(0, Number(offset) || 0));
+    `).all(t, chatJid, Math.min(Number(limit) || 80, 500), Math.max(0, Number(offset) || 0));
   }
 
   /**
@@ -880,26 +921,28 @@ export default class Database {
   getMessagesAroundMessageId(chatJid, messageId, limit = 200) {
     const safeLimit = Math.min(Math.max(Number(limit) || 200, 40), 500);
     const half = Math.floor(safeLimit / 2);
+    const t = getCurrentTenantId();
     const anchor = this._db.prepare(
-      'SELECT id, timestamp FROM messages WHERE chat_jid = ? AND message_id = ? LIMIT 1',
-    ).get(chatJid, messageId);
+      'SELECT id, timestamp FROM messages WHERE tenant_id = ? AND chat_jid = ? AND message_id = ? LIMIT 1',
+    ).get(t, chatJid, messageId);
     if (!anchor) return this.getMessagesPaginated(chatJid, safeLimit, 0);
 
     const rankRow = this._db.prepare(`
       SELECT COUNT(*) AS c FROM messages
-      WHERE chat_jid = ? AND (timestamp > ? OR (timestamp = ? AND id > ?))
-    `).get(chatJid, anchor.timestamp, anchor.timestamp, anchor.id);
+      WHERE tenant_id = ? AND chat_jid = ? AND (timestamp > ? OR (timestamp = ? AND id > ?))
+    `).get(t, chatJid, anchor.timestamp, anchor.timestamp, anchor.id);
     const newerCount = rankRow?.c ?? 0;
     const offset = Math.max(0, newerCount - half);
     return this.getMessagesPaginated(chatJid, safeLimit, offset);
   }
 
   getMediaMessages(chatJid = null, mediaType = null, limit = 50) {
+    const t = getCurrentTenantId();
     let sql = `SELECT id, message_id AS messageId, chat_jid AS chatJid,
       chat_name AS chatName, sender, text, media_type AS mediaType,
       media_caption AS mediaCaption, timestamp
-      FROM messages WHERE media_type IS NOT NULL`;
-    const params = [];
+      FROM messages WHERE tenant_id = ? AND media_type IS NOT NULL`;
+    const params = [t];
     if (chatJid) { sql += ' AND chat_jid = ?'; params.push(chatJid); }
     if (mediaType) { sql += ' AND media_type = ?'; params.push(mediaType); }
     sql += ' ORDER BY timestamp DESC LIMIT ?';
@@ -908,6 +951,7 @@ export default class Database {
   }
 
   getAllMessagesLight(chatJid = null, limit = 5000) {
+    const t = getCurrentTenantId();
     const hasContent = `(
            (text IS NOT NULL AND trim(text) != '')
            OR (media_caption IS NOT NULL AND trim(media_caption) != '')
@@ -919,22 +963,23 @@ export default class Database {
                 media_type AS mediaType, media_caption AS mediaCaption,
                 media_ai_index AS mediaAiIndex, timestamp
          FROM messages
-         WHERE chat_jid = ? AND ${hasContent}
+         WHERE tenant_id = ? AND chat_jid = ? AND ${hasContent}
          ORDER BY timestamp DESC LIMIT ?`
       : `SELECT id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
                 media_type AS mediaType, media_caption AS mediaCaption,
                 media_ai_index AS mediaAiIndex, timestamp
          FROM messages
-         WHERE ${hasContent}
+         WHERE tenant_id = ? AND ${hasContent}
          ORDER BY timestamp DESC LIMIT ?`;
     return chatJid
-      ? this._db.prepare(sql).all(chatJid, limit)
-      : this._db.prepare(sql).all(limit);
+      ? this._db.prepare(sql).all(t, chatJid, limit)
+      : this._db.prepare(sql).all(t, limit);
   }
 
   clearAllSummaries() {
-    const count = this._db.prepare('SELECT COUNT(*) AS c FROM daily_summaries').get()?.c || 0;
-    this._db.prepare('DELETE FROM daily_summaries').run();
+    const t = getCurrentTenantId();
+    const count = this._db.prepare('SELECT COUNT(*) AS c FROM daily_summaries WHERE tenant_id = ?').get(t)?.c || 0;
+    this._db.prepare('DELETE FROM daily_summaries WHERE tenant_id = ?').run(t);
     try {
       this._db.exec("INSERT INTO summaries_fts(summaries_fts) VALUES('rebuild')");
     } catch (err) {
@@ -946,96 +991,105 @@ export default class Database {
   // ── Thread Summaries ──────────────────────────────────────────────────
 
   upsertThreadSummary({ chatJid, chatName = null, threadStart, threadEnd, summary, messageCount = 0 }) {
+    const t = getCurrentTenantId();
     this._db.prepare(`
-      INSERT INTO thread_summaries (chat_jid, chat_name, thread_start, thread_end, summary, message_count)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(chat_jid, thread_start) DO UPDATE SET
+      INSERT INTO thread_summaries (tenant_id, chat_jid, chat_name, thread_start, thread_end, summary, message_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(tenant_id, chat_jid, thread_start) DO UPDATE SET
         summary = excluded.summary,
         thread_end = excluded.thread_end,
         message_count = excluded.message_count,
         chat_name = excluded.chat_name
-    `).run(chatJid, chatName, threadStart, threadEnd, summary, messageCount);
+    `).run(t, chatJid, chatName, threadStart, threadEnd, summary, messageCount);
   }
 
   getAllThreadSummaries() {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, chat_jid AS chatJid, chat_name AS chatName,
              thread_start AS threadStart, thread_end AS threadEnd,
              summary, message_count AS messageCount
-      FROM thread_summaries ORDER BY thread_start ASC
-    `).all();
+      FROM thread_summaries WHERE tenant_id = ? ORDER BY thread_start ASC
+    `).all(t);
   }
 
   countThreadSummaries() {
-    return this._db.prepare('SELECT COUNT(*) AS c FROM thread_summaries').get()?.c || 0;
+    const t = getCurrentTenantId();
+    return this._db.prepare('SELECT COUNT(*) AS c FROM thread_summaries WHERE tenant_id = ?').get(t)?.c || 0;
   }
 
   /** One thread row by natural key (for merging fact hits into the candidate pool). */
   getThreadSummary(chatJid, threadStart) {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, chat_jid AS chatJid, chat_name AS chatName,
              thread_start AS threadStart, thread_end AS threadEnd,
              summary, message_count AS messageCount
       FROM thread_summaries
-      WHERE chat_jid = ? AND thread_start = ?
-    `).get(chatJid, threadStart);
+      WHERE tenant_id = ? AND chat_jid = ? AND thread_start = ?
+    `).get(t, chatJid, threadStart);
   }
 
   /** Thread whose time range covers a message timestamp (for lexical message → thread expansion). */
   getThreadSummaryCoveringTimestamp(chatJid, timestamp) {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, chat_jid AS chatJid, chat_name AS chatName,
              thread_start AS threadStart, thread_end AS threadEnd,
              summary, message_count AS messageCount
       FROM thread_summaries
-      WHERE chat_jid = ? AND ? >= thread_start AND ? <= thread_end
+      WHERE tenant_id = ? AND chat_jid = ? AND ? >= thread_start AND ? <= thread_end
       LIMIT 1
-    `).get(chatJid, timestamp, timestamp);
+    `).get(t, chatJid, timestamp, timestamp);
   }
 
   getSummarizedThreadStarts(chatJid) {
+    const t = getCurrentTenantId();
     const rows = this._db.prepare(
-      'SELECT thread_start FROM thread_summaries WHERE chat_jid = ?'
-    ).all(chatJid);
+      'SELECT thread_start FROM thread_summaries WHERE tenant_id = ? AND chat_jid = ?',
+    ).all(t, chatJid);
     return new Set(rows.map(r => r.thread_start));
   }
 
   getMessagesByTimeRange(chatJid, startTs, endTs) {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_caption AS mediaCaption,
              media_ai_index AS mediaAiIndex, timestamp
       FROM messages
-      WHERE chat_jid = ? AND timestamp >= ? AND timestamp <= ?
+      WHERE tenant_id = ? AND chat_jid = ? AND timestamp >= ? AND timestamp <= ?
       ORDER BY timestamp ASC
-    `).all(chatJid, startTs, endTs);
+    `).all(t, chatJid, startTs, endTs);
   }
 
   getAllMessagesForChat(chatJid) {
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, text,
              media_type AS mediaType, media_caption AS mediaCaption,
              media_ai_index AS mediaAiIndex, timestamp
-      FROM messages WHERE chat_jid = ? ORDER BY timestamp ASC
-    `).all(chatJid);
+      FROM messages WHERE tenant_id = ? AND chat_jid = ? ORDER BY timestamp ASC
+    `).all(t, chatJid);
   }
 
   /** Replace all facts for one thread (after re-extraction). */
   replaceThreadFacts({ chatJid, chatName = null, threadStart, threadEnd, facts }) {
-    this._db.prepare('DELETE FROM thread_facts WHERE chat_jid = ? AND thread_start = ?').run(chatJid, threadStart);
+    const t = getCurrentTenantId();
+    this._db.prepare('DELETE FROM thread_facts WHERE tenant_id = ? AND chat_jid = ? AND thread_start = ?').run(t, chatJid, threadStart);
     if (!facts?.length) return 0;
     const ins = this._db.prepare(`
-      INSERT INTO thread_facts (chat_jid, chat_name, thread_start, thread_end, fact_type, payload_json, search_text)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO thread_facts (tenant_id, chat_jid, chat_name, thread_start, thread_end, fact_type, payload_json, search_text)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     let n = 0;
     for (const f of facts) {
       const factType = String(f.type || 'other').slice(0, 64);
       const payload = JSON.stringify(f);
       const st = f.search_text ? String(f.search_text) : buildSearchText(f);
-      ins.run(chatJid, chatName, threadStart, threadEnd, factType, payload, st);
+      ins.run(t, chatJid, chatName, threadStart, threadEnd, factType, payload, st);
       n++;
     }
     return n;
@@ -1045,6 +1099,7 @@ export default class Database {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 15, 100));
     const cleaned = this._toFtsQuery(query);
     if (!cleaned) return [];
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT tf.id, tf.chat_jid AS chatJid, tf.chat_name AS chatName,
              tf.thread_start AS threadStart, tf.thread_end AS threadEnd,
@@ -1052,15 +1107,17 @@ export default class Database {
              bm25(thread_facts_fts) AS rank
       FROM thread_facts_fts
       INNER JOIN thread_facts tf ON tf.id = thread_facts_fts.rowid
-      WHERE thread_facts_fts MATCH ?
+      WHERE tf.tenant_id = ?
+        AND thread_facts_fts MATCH ?
         AND (? IS NULL OR tf.chat_jid = ?)
       ORDER BY rank LIMIT ?
-    `).all(cleaned, chatJid, chatJid, safeLimit);
+    `).all(t, cleaned, chatJid, chatJid, safeLimit);
   }
 
   clearAllThreadFacts() {
-    const c = this._db.prepare('SELECT COUNT(*) AS n FROM thread_facts').get()?.n || 0;
-    this._db.prepare('DELETE FROM thread_facts').run();
+    const t = getCurrentTenantId();
+    const c = this._db.prepare('SELECT COUNT(*) AS n FROM thread_facts WHERE tenant_id = ?').get(t)?.n || 0;
+    this._db.prepare('DELETE FROM thread_facts WHERE tenant_id = ?').run(t);
     try {
       this._db.exec("INSERT INTO thread_facts_fts(thread_facts_fts) VALUES('rebuild')");
     } catch (err) {
@@ -1073,6 +1130,7 @@ export default class Database {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
     const cleaned = this._toFtsQuery(query);
     if (!cleaned) return [];
+    const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT ts.id, ts.chat_jid AS chatJid, ts.chat_name AS chatName,
              ts.thread_start AS threadStart, ts.thread_end AS threadEnd,
@@ -1080,15 +1138,17 @@ export default class Database {
              bm25(thread_summaries_fts) AS rank
       FROM thread_summaries_fts
       INNER JOIN thread_summaries ts ON ts.id = thread_summaries_fts.rowid
-      WHERE thread_summaries_fts MATCH ?
+      WHERE ts.tenant_id = ?
+        AND thread_summaries_fts MATCH ?
         AND (? IS NULL OR ts.chat_jid = ?)
       ORDER BY rank LIMIT ?
-    `).all(cleaned, chatJid, chatJid, safeLimit);
+    `).all(t, cleaned, chatJid, chatJid, safeLimit);
   }
 
   clearAllThreadSummaries() {
-    const count = this._db.prepare('SELECT COUNT(*) AS c FROM thread_summaries').get()?.c || 0;
-    this._db.prepare('DELETE FROM thread_summaries').run();
+    const t = getCurrentTenantId();
+    const count = this._db.prepare('SELECT COUNT(*) AS c FROM thread_summaries WHERE tenant_id = ?').get(t)?.c || 0;
+    this._db.prepare('DELETE FROM thread_summaries WHERE tenant_id = ?').run(t);
     try {
       this._db.exec("INSERT INTO thread_summaries_fts(thread_summaries_fts) VALUES('rebuild')");
     } catch (err) {
@@ -1099,13 +1159,14 @@ export default class Database {
   }
 
   deleteChat(chatJid) {
-    const msgCount = this._db.prepare('SELECT COUNT(*) AS c FROM messages WHERE chat_jid = ?').get(chatJid)?.c || 0;
-    this._db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(chatJid);
-    this._db.prepare('DELETE FROM daily_summaries WHERE chat_jid = ?').run(chatJid);
-    this._db.prepare('DELETE FROM thread_summaries WHERE chat_jid = ?').run(chatJid);
-    this._db.prepare('DELETE FROM thread_facts WHERE chat_jid = ?').run(chatJid);
+    const t = getCurrentTenantId();
+    const msgCount = this._db.prepare('SELECT COUNT(*) AS c FROM messages WHERE tenant_id = ? AND chat_jid = ?').get(t, chatJid)?.c || 0;
+    this._db.prepare('DELETE FROM messages WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
+    this._db.prepare('DELETE FROM daily_summaries WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
+    this._db.prepare('DELETE FROM thread_summaries WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
+    this._db.prepare('DELETE FROM thread_facts WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
     try {
-      this._db.prepare('DELETE FROM chat_action_items WHERE chat_jid = ?').run(chatJid);
+      this._db.prepare('DELETE FROM chat_action_items WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
     } catch { /* table may be missing on very old DBs */ }
     try {
       this._db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
@@ -1116,6 +1177,11 @@ export default class Database {
       console.error('[DB] FTS rebuild after delete failed:', err.message);
     }
     return msgCount;
+  }
+
+  /** Raw better-sqlite3 handle (e.g. auth routes for `tenants` table). */
+  getSqliteDatabase() {
+    return this._db;
   }
 
   close() {

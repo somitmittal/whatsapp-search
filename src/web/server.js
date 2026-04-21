@@ -3,6 +3,10 @@ import { createServer } from 'http';
 import { resolve } from 'path';
 import { randomBytes } from 'node:crypto';
 import config from '../config.js';
+import { runWithTenant, getCurrentTenantId } from '../storage/tenant-context.js';
+import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
+import { isJwtAuthEnabled, verifyTenantToken } from '../auth/jwt-util.js';
+import { registerAuthRoutes } from './auth-routes.js';
 import { importExportedChat, extractTextFromZip } from '../import/chat-import.js';
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
 import { createProvider, clearProviderCache, PROVIDER_META } from '../llm/provider.js';
@@ -48,10 +52,14 @@ export default class WebServer {
     /** @type {Map<string, { ts: number, onboarding: boolean }>} */
     this._gmailOAuthState = new Map();
 
+    /** Background WhatsApp + extension ingest is scoped to this tenant (see `DEFAULT_TENANT_ID`). */
+    this._waTenantId = config.defaultTenantId || LEGACY_TENANT_ID;
+
     /**
      * When set (e.g. Render secret `WEB_ACCESS_TOKEN`), all `/api/*` routes and WebSockets require
-     * `Authorization: Bearer <token>` or `?access_token=` (WS only). Prevents strangers on a public URL
-     * from reading your mirrored WhatsApp DB or scanning the QR. Still single-tenant: one WA session per process.
+     * `X-Web-Access-Token`, `Authorization: Bearer <deploy token>`, or `?access_token=` (WS).
+     * User JWT (when JWT_SECRET is set) uses the same `Authorization: Bearer` header — use `X-Web-Access-Token`
+     * for the deploy gate so Bearer can carry the login JWT.
      */
     this._webAccessToken = (config.webAccessToken || process.env.WEB_ACCESS_TOKEN || '').trim();
 
@@ -65,8 +73,24 @@ export default class WebServer {
 
   /** @returns {boolean} */
   _verifyWsClient(info) {
-    if (!this._webAccessToken) return true;
-    return this._requestHasValidAccessToken(info.req);
+    const req = info.req;
+    if (this._webAccessToken && !this._requestHasValidAccessToken(req)) return false;
+    if (isJwtAuthEnabled()) {
+      try {
+        const raw = req.url || '';
+        const qIdx = raw.indexOf('?');
+        const qs = qIdx === -1 ? '' : raw.slice(qIdx + 1);
+        const token = new URLSearchParams(qs).get('token');
+        const v = verifyTenantToken(token);
+        if (!v?.tenantId) return false;
+        req.tenantId = v.tenantId;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    req.tenantId = this._waTenantId;
+    return true;
   }
 
   /**
@@ -75,6 +99,8 @@ export default class WebServer {
    */
   _requestHasValidAccessToken(req) {
     if (!this._webAccessToken) return true;
+    const deploy = req.headers?.['x-web-access-token'];
+    if (deploy && deploy === this._webAccessToken) return true;
     const auth = req.headers?.authorization;
     if (auth && /^Bearer\s+(\S+)/i.test(auth)) {
       const t = auth.replace(/^Bearer\s+/i, '').trim();
@@ -178,71 +204,74 @@ export default class WebServer {
       this._extensionConnected = true;
       if (this._waClient?.syncResolvedNamesToDb) {
         setTimeout(() => {
-          this._waClient
-            .syncResolvedNamesToDb(this.db)
-            .then((n) => {
+          void runWithTenant(this._waTenantId, async () => {
+            try {
+              const n = await this._waClient.syncResolvedNamesToDb(this.db);
               if (n > 0) {
                 this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats() } });
               }
-            })
-            .catch((e) => {
+            } catch (e) {
               console.warn('[WA] syncResolvedNamesToDb:', e.message);
-            });
+            }
+          });
         }, 2000);
       }
       // Phone book / saved contact names come from WhatsApp app-state (`contactAction.fullName` → contacts.upsert)
       if (this._waClient?.refreshPhoneBookNamesInDb) {
         setTimeout(() => {
-          this._waClient
-            .refreshPhoneBookNamesInDb(this.db)
-            .then((n) => {
+          void runWithTenant(this._waTenantId, async () => {
+            try {
+              const n = await this._waClient.refreshPhoneBookNamesInDb(this.db);
               this._broadcast({
                 type: 'chat-names-refreshed',
                 data: { stats: this.db.getTotalStats(), rowsUpdated: n },
               });
-            })
-            .catch((e) => {
+            } catch (e) {
               console.warn('[WA] refreshPhoneBookNamesInDb:', e.message);
-            });
+            }
+          });
         }, 5500);
       }
     }
+    const stats = runWithTenant(this._waTenantId, () => this.db.getTotalStats());
     this._broadcast({
       type: 'wa-status',
-      data: { state, message, stats: this.db.getTotalStats() },
+      data: { state, message, stats },
     });
   }
 
   /** Called by WaClient when messages arrive (real-time or history). */
   onWaMessages(rows) {
-    const { count: inserted, insertedMessageIds } = this.db.insertMessageBatch(rows);
-    const lastNameByChat = new Map();
-    for (const r of rows || []) {
-      if (r?.chatJid && r?.chatName) lastNameByChat.set(r.chatJid, r.chatName);
-    }
-    for (const [chatJid, chatName] of lastNameByChat) {
-      if (this._waClient?.propagateDisplayNameForChat) {
-        void this._waClient.propagateDisplayNameForChat(this.db, chatJid, chatName).catch(() => {});
-      } else {
-        this.db.propagateChatDisplayName(chatJid, chatName);
+    runWithTenant(this._waTenantId, () => {
+      const { count: inserted, insertedMessageIds } = this.db.insertMessageBatch(rows);
+      const lastNameByChat = new Map();
+      for (const r of rows || []) {
+        if (r?.chatJid && r?.chatName) lastNameByChat.set(r.chatJid, r.chatName);
       }
-    }
-    if (inserted > 0) {
-      console.log(`[WA] Saved ${inserted} new messages`);
-      this._broadcast({ type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } });
-      this._mediaIndexService?.scheduleProcess?.();
-      this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
-    }
+      for (const [chatJid, chatName] of lastNameByChat) {
+        if (this._waClient?.propagateDisplayNameForChat) {
+          void this._waClient.propagateDisplayNameForChat(this.db, chatJid, chatName).catch(() => {});
+        } else {
+          this.db.propagateChatDisplayName(chatJid, chatName);
+        }
+      }
+      if (inserted > 0) {
+        console.log(`[WA] Saved ${inserted} new messages`);
+        this._broadcast({ type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } });
+        this._mediaIndexService?.scheduleProcess?.();
+        this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
+      }
+    });
   }
 
   /** Called by WaClient during history sync with progress info. */
   onWaProgress({ completed, total, messages }) {
-    this._broadcast({ type: 'sync-progress', data: { completed, total, messages } });
+    this._broadcast({ type: 'sync-progress', data: { completed, total, messages } }, this._waTenantId);
   }
 
   /** Called by DailySummaryService while indexing thread summaries per chat. */
   onSummaryProgress(data) {
-    this._broadcast({ type: 'summary-progress', data });
+    this._broadcast({ type: 'summary-progress', data }, this._waTenantId);
   }
 
   /** Merge static PROVIDER_META with live Ollama Cloud /api/tags when an API key is available. */
@@ -269,22 +298,25 @@ export default class WebServer {
   }
 
   _setupWebSocket() {
-    this._wss.on('connection', (ws) => {
+    this._wss.on('connection', (ws, req) => {
+      ws.tenantId = req.tenantId || this._waTenantId;
       this._clients.add(ws);
       ws.on('close', () => this._clients.delete(ws));
       ws.on('error', () => this._clients.delete(ws));
-      // Send current state immediately on connect
-      this._sendTo(ws, {
-        type: 'status',
-        data: { connected: this._extensionConnected, stats: this.db.getTotalStats() },
+      // Send current state immediately on connect (scoped DB via AsyncLocalStorage)
+      runWithTenant(ws.tenantId, () => {
+        this._sendTo(ws, {
+          type: 'status',
+          data: { connected: this._extensionConnected, stats: this.db.getTotalStats() },
+        });
+        this._sendTo(ws, {
+          type: 'wa-status',
+          data: { state: this._waState, message: this._waMessage, stats: this.db.getTotalStats() },
+        });
+        if (this._waQrDataUrl) {
+          this._sendTo(ws, { type: 'wa-qr', data: { qr: this._waQrDataUrl } });
+        }
       });
-      this._sendTo(ws, {
-        type: 'wa-status',
-        data: { state: this._waState, message: this._waMessage, stats: this.db.getTotalStats() },
-      });
-      if (this._waQrDataUrl) {
-        this._sendTo(ws, { type: 'wa-qr', data: { qr: this._waQrDataUrl } });
-      }
     });
   }
 
@@ -292,7 +324,7 @@ export default class WebServer {
     this._app.use((_req, res, next) => {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Web-Access-Token');
       if (_req.method === 'OPTIONS') return res.sendStatus(204);
       next();
     });
@@ -307,6 +339,32 @@ export default class WebServer {
       if (this._requestHasValidAccessToken(req)) return next();
       return res.status(401).json({ error: 'Unauthorized', authRequired: true });
     });
+
+    /** Per-request SQLite tenant (JWT sub) or default legacy tenant. */
+    this._app.use((req, res, next) => {
+      if (req.method === 'OPTIONS') return next();
+      const path = req.path || '';
+      if (!path.startsWith('/api/') || path === '/api/health' || path.startsWith('/api/auth/') || path === '/api/gmail/oauth/callback') {
+        return runWithTenant(LEGACY_TENANT_ID, () => next());
+      }
+      if (!isJwtAuthEnabled()) {
+        return runWithTenant(config.defaultTenantId || LEGACY_TENANT_ID, () => next());
+      }
+      const auth = req.headers?.authorization;
+      const token = auth && /^Bearer\s+(\S+)/i.exec(auth)?.[1];
+      const v = verifyTenantToken(token);
+      if (!v?.tenantId) {
+        return res.status(401).json({ error: 'Unauthorized', needLogin: true });
+      }
+      req.tenantId = v.tenantId;
+      return runWithTenant(v.tenantId, () => next());
+    });
+
+    registerAuthRoutes(this._app, this.db.getSqliteDatabase());
+
+    /** WhatsApp + Chrome extension ingest always map to the linked-device tenant partition. */
+    this._app.use('/api/wa', (req, res, next) => runWithTenant(this._waTenantId, () => next()));
+    this._app.use('/api/extension', (req, res, next) => runWithTenant(this._waTenantId, () => next()));
 
     // Render / load balancers: use Health Check Path = /health or /api/health
     this._app.get('/health', (_req, res) => res.status(200).type('text/plain').send('ok'));
@@ -352,7 +410,10 @@ export default class WebServer {
         const chatJid = decodeURIComponent(req.params.chatJid);
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const deleted = this.db.deleteChat(chatJid);
-        this._broadcast({ type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } });
+        this._broadcast(
+          { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
+          getCurrentTenantId(),
+        );
         return res.json({ ok: true, deleted });
       } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -454,10 +515,13 @@ export default class WebServer {
       }
       try {
         const rowsUpdated = await this._waClient.refreshPhoneBookNamesInDb(this.db);
-        this._broadcast({
-          type: 'chat-names-refreshed',
-          data: { stats: this.db.getTotalStats(), rowsUpdated },
-        });
+        this._broadcast(
+          {
+            type: 'chat-names-refreshed',
+            data: { stats: this.db.getTotalStats(), rowsUpdated },
+          },
+          this._waTenantId,
+        );
         res.json({ ok: true, rowsUpdated });
       } catch (err) {
         res.status(500).json({ error: err.message });
@@ -467,7 +531,10 @@ export default class WebServer {
     // ── Extension Sync Endpoints ──────────────────────────────────────
     this._app.post('/api/extension/chats', (req, res) => {
       this._extensionConnected = true;
-      this._broadcast({ type: 'status', data: { connected: true, stats: this.db.getTotalStats() } });
+      this._broadcast(
+        { type: 'status', data: { connected: true, stats: this.db.getTotalStats() } },
+        this._waTenantId,
+      );
       res.json({ ok: true });
     });
 
@@ -475,7 +542,10 @@ export default class WebServer {
       try {
         if (!this._extensionConnected) {
           this._extensionConnected = true;
-          this._broadcast({ type: 'status', data: { connected: true, stats: this.db.getTotalStats() } });
+          this._broadcast(
+            { type: 'status', data: { connected: true, stats: this.db.getTotalStats() } },
+            this._waTenantId,
+          );
         }
         const { messages } = req.body;
         if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages array required' });
@@ -496,7 +566,10 @@ export default class WebServer {
         const { count: inserted, insertedMessageIds } = this.db.insertMessageBatch(rows);
         if (inserted > 0) {
           console.log(`[Extension] Synced ${inserted} new messages`);
-          this._broadcast({ type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } });
+          this._broadcast(
+            { type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } },
+            this._waTenantId,
+          );
           this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
         }
 
@@ -658,6 +731,7 @@ export default class WebServer {
         onboarding: req.query.ob === '1',
         redirectUri,
         returnOrigin,
+        tenantId: getCurrentTenantId(),
       });
       const url = oauth2.generateAuthUrl({
         access_type: 'offline',
@@ -705,12 +779,19 @@ export default class WebServer {
           const q = `gmail_error=${encodeURIComponent('No refresh token — remove app access in Google Account → Security and try again.')}`;
           return res.redirect(appBase ? `${appBase}/?${q}` : `/?${q}`);
         }
-        this.db.setSetting('gmail_refresh_token', tokens.refresh_token);
+        const tid = pending.tenantId || LEGACY_TENANT_ID;
+        runWithTenant(tid, () => {
+          this.db.setSetting('gmail_refresh_token', tokens.refresh_token);
+        });
         oauth2.setCredentials(tokens);
         try {
           const gmail = google.gmail({ version: 'v1', auth: oauth2 });
           const prof = await gmail.users.getProfile({ userId: 'me' });
-          if (prof.data.emailAddress) this.db.setSetting('gmail_email', prof.data.emailAddress);
+          if (prof.data.emailAddress) {
+            runWithTenant(tid, () => {
+              this.db.setSetting('gmail_email', prof.data.emailAddress);
+            });
+          }
         } catch (e) {
           console.warn('[Gmail] getProfile:', e.message);
         }
@@ -739,7 +820,10 @@ export default class WebServer {
       oauth2.setCredentials({ refresh_token: refresh });
       try {
         const out = await syncWhatsAppExportsFromGmail(this.db, oauth2);
-        this._broadcast({ type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } });
+        this._broadcast(
+          { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
+          getCurrentTenantId(),
+        );
         this.summaryService.indexPendingDays().then((count) => {
           if (count > 0) console.log(`[Gmail sync] Generated ${count} daily summaries`);
         }).catch((err) => console.error('[Gmail sync] Summary error:', err.message));
@@ -767,9 +851,15 @@ export default class WebServer {
         const cleared = clearedDaily + clearedThread;
         console.log(`[Summaries] Cleared ${clearedDaily} daily + ${clearedThread} thread summaries (and thread facts) — regenerating...`);
         res.json({ cleared, status: 'regenerating' });
-        this.summaryService.indexPendingDays().then(count => {
+        const tid = getCurrentTenantId();
+        this.summaryService.indexPendingDays().then((count) => {
           console.log(`[Summaries] Regenerated ${count} thread summaries`);
-          this._broadcast({ type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } });
+          runWithTenant(tid, () => {
+            this._broadcast(
+              { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
+              tid,
+            );
+          });
         }).catch(err => console.error('Regeneration error:', err.message));
       } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -803,7 +893,10 @@ export default class WebServer {
           results.push({ chatName, ...result });
         }
 
-        this._broadcast({ type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } });
+        this._broadcast(
+          { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
+          getCurrentTenantId(),
+        );
 
         this.summaryService.indexPendingDays().then((count) => {
           if (count > 0) console.log(`Post-import: generated ${count} daily summaries`);
@@ -821,10 +914,16 @@ export default class WebServer {
   }
 
   _triggerSummaryGen() {
-    this.summaryService.indexPendingDays().then(count => {
+    const tid = getCurrentTenantId();
+    this.summaryService.indexPendingDays().then((count) => {
       if (count > 0) {
         console.log(`[Settings] Generated ${count} summaries`);
-        this._broadcast({ type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } });
+        runWithTenant(tid, () => {
+          this._broadcast(
+            { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
+            tid,
+          );
+        });
       }
     }).catch(err => console.error('[Settings] Summary gen error:', err.message));
   }
@@ -833,9 +932,15 @@ export default class WebServer {
     if (ws.readyState === 1) ws.send(JSON.stringify(msg));
   }
 
-  _broadcast(msg) {
+  /**
+   * Push to WebSocket clients for one tenant only (prevents cross-tenant leakage).
+   * @param {object} msg
+   * @param {string} [tenantId] defaults to WhatsApp pipeline tenant
+   */
+  _broadcast(msg, tenantId = this._waTenantId) {
     const payload = JSON.stringify(msg);
     for (const ws of this._clients) {
+      if (ws.tenantId !== tenantId) continue;
       if (ws.readyState === 1) ws.send(payload);
     }
   }
