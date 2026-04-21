@@ -21,6 +21,8 @@ const {
   isPnUser,
   ALL_WA_PATCH_NAMES,
   downloadMediaMessage,
+  extractMessageContent,
+  getContentType,
 } = require('@whiskeysockets/baileys');
 const QRCode   = require('qrcode');
 const P        = require('pino');
@@ -59,9 +61,9 @@ function saveCfg(d) {
   try { writeFileSync(CONFIG_FILE, JSON.stringify(d, null, 2)); } catch {}
 }
 
-function extractText(msg) {
-  if (!msg?.message) return '';
-  const m = msg.message;
+/** Plain text from an inner proto message (after unwrap of ephemeral / view-once). */
+function extractTextFromInner(m) {
+  if (!m) return '';
   return (
     m.conversation ||
     m.extendedTextMessage?.text ||
@@ -71,8 +73,29 @@ function extractText(msg) {
     m.buttonsResponseMessage?.selectedDisplayText ||
     m.listResponseMessage?.singleSelectReply?.selectedRowId ||
     m.templateButtonReplyMessage?.selectedDisplayText ||
+    m.liveLocationMessage?.caption ||
+    m.locationMessage?.name ||
+    m.contactMessage?.displayName ||
+    m.pollCreationMessage?.name ||
+    m.buttonsMessage?.contentText ||
+    m.listMessage?.description ||
+    m.templateMessage?.hydratedTemplate?.hydratedContentText ||
+    m.viewOnceMessage?.message?.imageMessage?.caption ||
     ''
   ) || '';
+}
+
+function extractText(msg) {
+  if (!msg?.message) return '';
+  const inner = extractMessageContent(msg.message) || msg.message;
+  return extractTextFromInner(inner);
+}
+
+function placeholderForUntracked(inner) {
+  const ct = getContentType(inner);
+  if (!ct) return '[message]';
+  const short = ct.replace(/Message$/, '').replace(/([A-Z])/g, ' $1').trim();
+  return `[${short || ct}]`;
 }
 
 function formatResult(result) {
@@ -750,13 +773,21 @@ export default class WaClient {
       const jid = msg.key.remoteJid;
       if (!jid || !msg.message) return null;
 
-      const text = extractText(msg);
-      const m    = msg.message;
-      const hasMedia = !!(m.imageMessage || m.videoMessage || m.audioMessage || m.documentMessage || m.stickerMessage);
-      if (!text && !hasMedia) return null;
+      const inner = extractMessageContent(msg.message) || msg.message;
+      let text = extractText(msg);
+      const hasMedia = !!(
+        inner.imageMessage ||
+        inner.videoMessage ||
+        inner.audioMessage ||
+        inner.documentMessage ||
+        inner.stickerMessage
+      );
+      if (!text && !hasMedia) {
+        text = placeholderForUntracked(inner);
+      }
 
       const mediaType = hasMedia
-        ? (m.imageMessage ? 'image' : m.videoMessage ? 'video' : m.audioMessage ? 'audio' : m.documentMessage ? 'document' : 'sticker')
+        ? (inner.imageMessage ? 'image' : inner.videoMessage ? 'video' : inner.audioMessage ? 'audio' : inner.documentMessage ? 'document' : 'sticker')
         : null;
 
       const senderJid  = msg.key.participant || (msg.key.fromMe ? this._ownerJid : jid);
@@ -778,7 +809,7 @@ export default class WaClient {
         text:         text || null,
         mediaType,
         mediaPath:    null,
-        mediaCaption: m.imageMessage?.caption || m.videoMessage?.caption || null,
+        mediaCaption: inner.imageMessage?.caption || inner.videoMessage?.caption || null,
         timestamp:    Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
       };
     } catch { return null; }

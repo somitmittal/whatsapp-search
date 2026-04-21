@@ -216,6 +216,7 @@ export default class Database {
 
     this._migrateMediaAiIndexAndFts();
     this._migrateActionSuggestionsColumn();
+    this._migrateChatActionItemsTable();
     this._rebuildFtsIfEmpty();
   }
 
@@ -227,6 +228,42 @@ export default class Database {
       console.log('[DB] Added messages.action_suggestions');
     } catch (e) {
       console.warn('[DB] action_suggestions column:', e.message);
+    }
+  }
+
+  _migrateChatActionItemsTable() {
+    try {
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS chat_action_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_jid TEXT NOT NULL,
+          source_message_id TEXT NOT NULL,
+          items_json TEXT NOT NULL,
+          created_at INTEGER DEFAULT (unixepoch()),
+          UNIQUE(chat_jid, source_message_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_action_items_jid ON chat_action_items(chat_jid);
+      `);
+      const migrated = this.getState('chat_action_items_migrated');
+      if (!migrated) {
+        const rows = this._db.prepare(
+          'SELECT chat_jid AS chatJid, message_id AS messageId, action_suggestions AS raw FROM messages WHERE action_suggestions IS NOT NULL AND trim(action_suggestions) NOT IN (\'\', \'[]\')',
+        ).all();
+        const ins = this._db.prepare(`
+          INSERT OR REPLACE INTO chat_action_items (chat_jid, source_message_id, items_json, created_at)
+          VALUES (?, ?, ?, unixepoch())
+        `);
+        for (const r of rows) {
+          try {
+            const arr = JSON.parse(r.raw);
+            if (Array.isArray(arr) && arr.length) ins.run(r.chatJid, r.messageId, JSON.stringify(arr));
+          } catch { /* skip */ }
+        }
+        this.setState('chat_action_items_migrated', '1');
+        if (rows.length) console.log(`[DB] Migrated ${rows.length} row(s) into chat_action_items`);
+      }
+    } catch (e) {
+      console.warn('[DB] chat_action_items:', e.message);
     }
   }
 
@@ -458,6 +495,49 @@ export default class Database {
              sender, text, media_caption AS mediaCaption, timestamp
       FROM messages WHERE message_id = ?
     `).get(messageId);
+  }
+
+  /** Per-chat action list; each row ties suggestions to a source message. */
+  upsertChatActionItems(chatJid, sourceMessageId, itemsArray) {
+    if (!chatJid || !sourceMessageId) return;
+    const items = (itemsArray || []).map((x) => String(x || '').trim()).filter(Boolean);
+    if (!items.length) {
+      this._db.prepare('DELETE FROM chat_action_items WHERE chat_jid = ? AND source_message_id = ?').run(chatJid, sourceMessageId);
+      return;
+    }
+    this._db.prepare(`
+      INSERT INTO chat_action_items (chat_jid, source_message_id, items_json, created_at)
+      VALUES (?, ?, ?, unixepoch())
+      ON CONFLICT(chat_jid, source_message_id) DO UPDATE SET
+        items_json = excluded.items_json,
+        created_at = unixepoch()
+    `).run(chatJid, sourceMessageId, JSON.stringify(items));
+  }
+
+  getChatActionItemsWithContext(chatJid) {
+    if (!chatJid) return [];
+    const rows = this._db.prepare(`
+      SELECT c.source_message_id AS sourceMessageId, c.items_json AS itemsJson, c.created_at AS createdAt,
+             m.text AS snippet, m.timestamp AS messageTs
+      FROM chat_action_items c
+      LEFT JOIN messages m ON m.message_id = c.source_message_id AND m.chat_jid = c.chat_jid
+      WHERE c.chat_jid = ?
+      ORDER BY c.created_at DESC
+    `).all(chatJid);
+    return rows.map((r) => {
+      let items = [];
+      try {
+        items = JSON.parse(r.itemsJson || '[]');
+      } catch { /* */ }
+      if (!Array.isArray(items) || !items.length) return null;
+      return {
+        sourceMessageId: r.sourceMessageId,
+        items,
+        createdAt: r.createdAt,
+        messageTimestamp: r.messageTs ?? null,
+        snippet: String(r.snippet || '').slice(0, 140),
+      };
+    }).filter(Boolean);
   }
 
   /**
@@ -694,6 +774,8 @@ export default class Database {
           peerHumanSenderName: null,
           /** First non–phone-only peer sender in chronological order (stable title when recent rows only have digits). */
           firstHumanPeerName: null,
+          /** Longest non-phone peer sender string in the chat (best pushName / saved name seen). */
+          bestHumanPeerName: null,
           senders: new Set(),
         });
       }
@@ -710,8 +792,12 @@ export default class Database {
       if (!isGroup && r.sender && r.sender !== 'You') {
         g.peerSenderName = r.sender;
         if (!looksLikePhoneOnly(r.sender)) {
+          const sn = r.sender.trim();
           g.peerHumanSenderName = r.sender;
           if (!g.firstHumanPeerName) g.firstHumanPeerName = r.sender;
+          if (!g.bestHumanPeerName || sn.length > g.bestHumanPeerName.length) {
+            g.bestHumanPeerName = sn;
+          }
         }
       }
     }
@@ -730,6 +816,7 @@ export default class Database {
       const title = isGroup
         ? (g.displayChatName || g.anyChatName || chatJid)
         : (g.displayChatName
+          || g.bestHumanPeerName
           || g.firstHumanPeerName
           || g.peerHumanSenderName
           || (looksLikePhoneOnly(g.anyChatName) ? null : g.anyChatName)
@@ -775,29 +862,16 @@ export default class Database {
   }
 
   getMessagesPaginated(chatJid, limit = 80, offset = 0) {
-    const rows = this._db.prepare(`
+    return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_path AS mediaPath,
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
-             action_suggestions AS actionSuggestionsRaw,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE chat_jid = ?
       ORDER BY timestamp DESC, id DESC
       LIMIT ? OFFSET ?
     `).all(chatJid, Math.min(Number(limit) || 80, 500), Math.max(0, Number(offset) || 0));
-    return rows.map((r) => {
-      const { actionSuggestionsRaw, ...rest } = r;
-      let actionSuggestions = null;
-      if (actionSuggestionsRaw) {
-        try {
-          actionSuggestions = JSON.parse(actionSuggestionsRaw);
-        } catch {
-          actionSuggestions = null;
-        }
-      }
-      return { ...rest, actionSuggestions };
-    });
   }
 
   /**
@@ -1030,6 +1104,9 @@ export default class Database {
     this._db.prepare('DELETE FROM daily_summaries WHERE chat_jid = ?').run(chatJid);
     this._db.prepare('DELETE FROM thread_summaries WHERE chat_jid = ?').run(chatJid);
     this._db.prepare('DELETE FROM thread_facts WHERE chat_jid = ?').run(chatJid);
+    try {
+      this._db.prepare('DELETE FROM chat_action_items WHERE chat_jid = ?').run(chatJid);
+    } catch { /* table may be missing on very old DBs */ }
     try {
       this._db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
       this._db.exec("INSERT INTO summaries_fts(summaries_fts) VALUES('rebuild')");

@@ -71,6 +71,31 @@
     }
     .sidebar-search input::placeholder { color: var(--text2); }
 
+    /* Per-chat follow-ups — below global AI search (visible on mobile; sidebar is hidden in chat view) */
+    .chat-action-items-bar {
+      display: none;
+      padding: 0 14px 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2, #f0f2f5);
+    }
+    .chat-action-items-bar details { font-size: 12px; color: var(--text2); }
+    .chat-action-items-bar summary {
+      cursor: pointer; font-weight: 600; color: var(--green-dark); list-style: none;
+      padding: 6px 0; user-select: none;
+    }
+    .chat-action-items-bar summary::-webkit-details-marker { display: none; }
+    .chat-action-items-bar .ai-group {
+      margin-top: 8px; padding-left: 4px; border-left: 2px solid rgba(0,168,132,0.35);
+    }
+    .chat-action-items-bar .ai-group-title {
+      font-size: 11px; color: var(--text2); margin-bottom: 4px; word-break: break-word;
+    }
+    .chat-action-items-bar .ai-group ul { margin: 0; padding-left: 16px; color: var(--text); font-size: 12px; }
+    .chat-action-items-bar .ai-group li { margin-bottom: 3px; }
+    .chat-action-items-bar .ai-jump {
+      display: inline-block; margin-top: 4px; font-size: 11px; color: var(--blue); cursor: pointer; text-decoration: underline;
+    }
+
     .chat-list { flex: 1; overflow-y: auto; scrollbar-width: thin; }
     .chat-item {
       display: flex; flex-wrap: wrap; align-items: center; padding: 10px 16px 8px; cursor: pointer;
@@ -583,6 +608,14 @@
   </style>
 </head>
 <body>
+<div id="auth-gate" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(17,27,33,0.92);align-items:center;justify-content:center;padding:24px;">
+  <div style="background:var(--sidebar-bg);max-width:420px;width:100%;padding:24px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+    <h2 style="margin-bottom:8px;font-size:18px;">Access token required</h2>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:16px;line-height:1.5;">The admin set <code>WEB_ACCESS_TOKEN</code> on the server (e.g. Render). Paste the same value here, or open the app once with <code>?access_token=…</code> in the URL (then bookmark).</p>
+    <input type="password" id="auth-token-input" autocomplete="off" placeholder="Access token" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:12px;font-size:14px;box-sizing:border-box;" />
+    <button type="button" class="btn btn-primary" id="auth-token-save" style="width:100%;padding:12px;border:none;border-radius:8px;background:var(--green);color:#fff;font-weight:600;cursor:pointer;">Continue</button>
+  </div>
+</div>
 <div id="app" class="app">
 
   <!-- Sidebar -->
@@ -657,6 +690,13 @@
       </select>
       <button class="search-go" id="q-btn">Search</button>
       <button class="search-clear-btn" id="q-clear">Back</button>
+    </div>
+
+    <div id="chat-action-items-bar" class="chat-action-items-bar">
+      <details id="action-items-details">
+        <summary id="action-items-summary">Suggested follow-ups</summary>
+        <div id="action-items-body"></div>
+      </details>
     </div>
 
     <div class="content-area" style="flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;">
@@ -952,6 +992,43 @@
 (function() {
   const $ = s => document.querySelector(s);
   const $$ = s => document.querySelectorAll(s);
+
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    const at = sp.get('access_token');
+    if (at) {
+      sessionStorage.setItem('web_access_token', at);
+      sp.delete('access_token');
+      const q = sp.toString();
+      window.history.replaceState({}, '', window.location.pathname + (q ? '?' + q : '') + window.location.hash);
+    }
+  } catch (e) { /* ignore */ }
+
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = async function(input, init) {
+    const tok = sessionStorage.getItem('web_access_token') || '';
+    let urlStr = typeof input === 'string' ? input : (input && input.url);
+    urlStr = urlStr != null ? String(urlStr) : '';
+    const isOurApi = urlStr.startsWith('/api/') || (urlStr.includes('://') && urlStr.includes('/api/'));
+    if (tok && isOurApi) {
+      init = init ? { ...init } : {};
+      const h = new Headers(init.headers || {});
+      if (!h.has('Authorization')) h.set('Authorization', 'Bearer ' + tok);
+      init.headers = h;
+    }
+    const res = await _origFetch(input, init);
+    if (res.status === 401) {
+      try {
+        const j = await res.clone().json();
+        if (j && j.authRequired) {
+          const gate = document.getElementById('auth-gate');
+          if (gate) gate.style.display = 'flex';
+        }
+      } catch (e) { /* ignore */ }
+    }
+    return res;
+  };
+
   let ws, chatData = [], activeChat = null, connected = false, searchActive = false;
   /** @type {Record<string, { pct: number, show: boolean }>} */
   let summaryProgressByJid = {};
@@ -1070,7 +1147,7 @@
     if (onboarding) params.set('ob', '1');
     let r;
     try {
-      r = await fetch(`/api/gmail/auth-url?${params.toString()}`);
+      r = await fetch(`/api/gmail/auth-url?${params.toString()}`, { credentials: 'same-origin' });
     } catch (e) {
       alert(e.message || 'Network error');
       return;
@@ -1101,7 +1178,7 @@
     const syncBtn = $('#gmail-btn-sync');
     syncBtn.disabled = true;
     try {
-      const r = await fetch('/api/gmail/sync', { method: 'POST' });
+      const r = await fetch('/api/gmail/sync', { method: 'POST', credentials: 'same-origin' });
       const data = await r.json();
       if (!r.ok) {
         $('#import-result').classList.add('visible');
@@ -1130,6 +1207,10 @@
   });
 
   function switchPanel() {
+    if (!activeChat) {
+      const aibar = $('#chat-action-items-bar');
+      if (aibar) aibar.style.display = 'none';
+    }
     // Search panel is now a slide-over — it doesn't replace the chat panel
     if (searchActive) {
       $('#panel-search').classList.add('visible');
@@ -1181,7 +1262,9 @@
 
   // ── WebSocket ──────────────────────────────────────────────────────
   function connectWS() {
-    const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host;
+    const tok = sessionStorage.getItem('web_access_token') || '';
+    const qs = tok ? '?access_token=' + encodeURIComponent(tok) : '';
+    const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + qs;
     ws = new WebSocket(wsUrl);
     ws.onmessage = e => {
       try {
@@ -1192,7 +1275,8 @@
           void refreshActiveChatMessages();
           if (_waState === 'READY') { /* keep welcome hidden */ }
         }
-        else if (msg.type === 'action-suggestions' && msg.data?.chatJid && msg.data.chatJid === activeChat) {
+        else if (msg.type === 'chat-action-items' && msg.data?.chatJid === activeChat) {
+          void loadActionItemsForChat(activeChat);
           void refreshActiveChatMessages();
         }
         else if (msg.type === 'chat-names-refreshed') { refreshDash(); }
@@ -1206,9 +1290,31 @@
         else if (msg.type === 'summary-progress') { handleSummaryProgress(msg.data); }
       } catch {}
     };
-    ws.onclose = () => setTimeout(connectWS, 3000);
+    ws.onclose = () => {
+      setTimeout(() => {
+        const g = document.getElementById('auth-gate');
+        if (g && g.style.display === 'flex') return;
+        connectWS();
+      }, 3000);
+    };
   }
   connectWS();
+
+  (function bindAuthGate() {
+    const saveAuth = $('#auth-token-save');
+    const authIn = $('#auth-token-input');
+    const gate = $('#auth-gate');
+    if (saveAuth && authIn) {
+      saveAuth.addEventListener('click', () => {
+        const v = (authIn.value || '').trim();
+        if (!v) return;
+        sessionStorage.setItem('web_access_token', v);
+        if (gate) gate.style.display = 'none';
+        window.location.reload();
+      });
+      authIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveAuth.click(); });
+    }
+  })();
 
   // ── WhatsApp connection UI ─────────────────────────────────────────
   let _waState = 'DISCONNECTED';
@@ -1585,6 +1691,7 @@
         renderChats(chatData.filter(c => !fq || (c.chatName || c.chatJid).toLowerCase().includes(fq)));
         renderCvContact(details, jid);
       }
+      void loadActionItemsForChat(jid);
     } catch {}
     setMobileChatOpen(true);
   }
@@ -1593,6 +1700,8 @@
     activeChat = null;
     searchActive = false;
     $('#panel-search').classList.remove('visible');
+    const aibar = $('#chat-action-items-bar');
+    if (aibar) aibar.style.display = 'none';
     $$('.chat-item').forEach(i => i.classList.remove('active'));
     setMobileChatOpen(false);
     switchPanel();
@@ -1627,11 +1736,7 @@
       const isFocus = focusStr && mid === focusStr;
       const focusCls = isFocus ? ' msg-focus' : '';
       const dataMid = mid ? ` data-message-id="${escAttr(mid)}"` : '';
-      const items = Array.isArray(m.actionSuggestions) ? m.actionSuggestions.filter(Boolean) : [];
-      const actionsHtml = (!out && items.length)
-        ? `<div class="action-suggestions"><div class="as-label">Suggested follow-ups</div><ul>${items.map((i) => `<li>${esc(String(i))}</li>`).join('')}</ul></div>`
-        : '';
-      html += `<div class="msg-block ${out ? 'out' : 'in'}"><div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<div class="time">${esc(ts)}</div></div>${actionsHtml}</div>`;
+      html += `<div class="msg-block ${out ? 'out' : 'in'}"><div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<div class="time">${esc(ts)}</div></div></div>`;
     }
     c.innerHTML = html;
     if (focusStr) {
@@ -1657,6 +1762,50 @@
       if (activeChat !== jid) return;
       renderMessages(msgs, jid);
     } catch {}
+  }
+
+  async function loadActionItemsForChat(jid) {
+    const wrap = $('#chat-action-items-bar');
+    const body = $('#action-items-body');
+    const sum = $('#action-items-summary');
+    const det = $('#action-items-details');
+    if (!wrap || !body) return;
+    if (!jid) {
+      wrap.style.display = 'none';
+      return;
+    }
+    try {
+      const rows = await fetch(`/api/chats/${encodeURIComponent(jid)}/action-items`).then((r) => r.json());
+      if (activeChat !== jid) return;
+      if (!rows || !rows.length) {
+        wrap.style.display = 'none';
+        return;
+      }
+      wrap.style.display = '';
+      const total = rows.reduce((n, r) => n + ((r.items && r.items.length) || 0), 0);
+      if (sum) sum.textContent = `Suggested follow-ups (${total})`;
+      body.innerHTML = rows.map((r) => {
+        const when = r.messageTimestamp
+          ? new Date(r.messageTimestamp * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+          : '';
+        const snip = (r.snippet || '').trim() || '(message)';
+        const items = (r.items || []).map((t) => `<li>${esc(String(t))}</li>`).join('');
+        return `<div class="ai-group">
+          <div class="ai-group-title">${when ? esc(when) + ' — ' : ''}${esc(snip)}</div>
+          <ul>${items}</ul>
+          <span class="ai-jump" data-mid="${escAttr(r.sourceMessageId)}">Jump to message</span>
+        </div>`;
+      }).join('');
+      body.querySelectorAll('.ai-jump').forEach((el) => {
+        el.addEventListener('click', () => {
+          const mid = el.getAttribute('data-mid');
+          if (mid && activeChat) void openChat(activeChat, mid);
+        });
+      });
+      if (det) det.open = true;
+    } catch {
+      wrap.style.display = 'none';
+    }
   }
 
   // ── Search ─────────────────────────────────────────────────────────
@@ -2115,17 +2264,18 @@
   }
 
   $('#onboarding').addEventListener('click', (e) => {
-    const t = e.target;
-    if (!t || !t.id) return;
-    if (t.id === 'ob-gmail-connect') {
+    const connectEl = e.target && e.target.closest && e.target.closest('#ob-gmail-connect');
+    const syncEl = e.target && e.target.closest && e.target.closest('#ob-gmail-sync');
+    if (connectEl) {
       e.preventDefault();
       connectGmail(true);
+      return;
     }
-    if (t.id === 'ob-gmail-sync') {
+    if (syncEl) {
       e.preventDefault();
-      const btn = t;
+      const btn = syncEl;
       btn.disabled = true;
-      fetch('/api/gmail/sync', { method: 'POST' })
+      fetch('/api/gmail/sync', { method: 'POST', credentials: 'same-origin' })
         .then(async (r) => {
           const data = await r.json();
           if (!r.ok) throw new Error(data.error || 'Sync failed');

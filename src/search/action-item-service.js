@@ -84,7 +84,7 @@ export default class ActionItemService {
     const row = this.db.getMessageRowByMessageId(messageId);
     if (!row) return;
     if (!isActionSuggestionCandidate(row)) {
-      this.db.updateMessageActionSuggestions(messageId, '[]');
+      this.db.upsertChatActionItems(row.chatJid, messageId, []);
       return;
     }
 
@@ -114,7 +114,7 @@ ${body.slice(0, 1800)}`;
       : [];
     const followUp = parsed?.followUp !== false;
     const out = followUp ? items : [];
-    this.db.updateMessageActionSuggestions(messageId, JSON.stringify(out));
+    this.db.upsertChatActionItems(row.chatJid, messageId, out);
     if (out.length) {
       console.log(`[ActionItems] ${messageId}: ${out.length} suggestion(s)`);
       this._onSuggestionsUpdated?.({ messageId, chatJid: row.chatJid });

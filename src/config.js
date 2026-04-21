@@ -45,6 +45,12 @@ const config = {
    */
   googleOauthPublicOrigins: process.env.GOOGLE_OAUTH_PUBLIC_ORIGINS || '',
   /**
+   * When set, all `/api/*` routes (except health + Gmail OAuth callback) and WebSockets require
+   * `Authorization: Bearer <WEB_ACCESS_TOKEN>` or `?access_token=` on the WebSocket URL.
+   * Required for any public URL (e.g. Render) so strangers cannot read your DB or scan the WhatsApp QR.
+   */
+  webAccessToken: process.env.WEB_ACCESS_TOKEN || '',
+  /**
    * Defaults when settings table has no row yet (first run / new DB).
    * Search: Groq. Summary: Ollama Cloud (gpt-oss:20b on free tier when available).
    * On Render, set `GROQ_API_KEY` and `OLLAMA_CLOUD_API_KEY` as secrets; users can paste their own keys in Settings to override.

@@ -63,7 +63,7 @@ async function main() {
     db,
     getProvider: () => provider,
     onSuggestionsUpdated: ({ chatJid }) => {
-      webServer?._broadcast?.({ type: 'action-suggestions', data: { chatJid } });
+      webServer?._broadcast?.({ type: 'chat-action-items', data: { chatJid } });
     },
   });
   const summaryService = new DailySummaryService({
@@ -147,6 +147,12 @@ async function main() {
   process.on('SIGTERM', shutdown);
 
   await webServer.start();
+
+  if ((process.env.RENDER || process.env.RENDER_EXTERNAL_URL) && !config.webAccessToken && !process.env.WEB_ACCESS_TOKEN) {
+    console.warn(
+      '\n[SECURITY] This app is running on Render without WEB_ACCESS_TOKEN. Anyone who can open the URL can see your chats and QR code. Add WEB_ACCESS_TOKEN (secret) in Environment and open the site with ?access_token=... once.\n',
+    );
+  }
 
   console.log('Starting WhatsApp client...');
   console.log('Scan the QR code at http://localhost:3000 to link your device\n');

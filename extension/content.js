@@ -7,7 +7,18 @@
 (function () {
   'use strict';
 
-  const SERVER_URL = 'http://localhost:3000';
+  const DEFAULT_SERVER_URL = 'http://localhost:3000';
+
+  async function getServerConfig() {
+    return new Promise((resolve) => {
+      chrome.storage.sync.get(['serverUrl', 'accessToken'], (r) => {
+        resolve({
+          base: (r.serverUrl || DEFAULT_SERVER_URL).replace(/\/$/, ''),
+          accessToken: (r.accessToken || '').trim(),
+        });
+      });
+    });
+  }
   const FLUSH_INTERVAL_MS = 3000;
   const FLUSH_BATCH_SIZE = 200;
   const WEBPACK_TIMEOUT_MS = 45000;
@@ -326,9 +337,12 @@
 
   async function sendToServer(path, data) {
     try {
-      const res = await fetch(`${SERVER_URL}${path}`, {
+      const { base, accessToken } = await getServerConfig();
+      const headers = { 'Content-Type': 'application/json' };
+      if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+      const res = await fetch(`${base}${path}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(data),
       });
       if (!res.ok) {

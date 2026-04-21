@@ -34,7 +34,6 @@ export default class WebServer {
 
     this._app = express();
     this._server = createServer(this._app);
-    this._wss = new WebSocketServer({ server: this._server });
     this._clients = new Set();
 
     this._extensionConnected = false;
@@ -49,8 +48,47 @@ export default class WebServer {
     /** @type {Map<string, { ts: number, onboarding: boolean }>} */
     this._gmailOAuthState = new Map();
 
+    /**
+     * When set (e.g. Render secret `WEB_ACCESS_TOKEN`), all `/api/*` routes and WebSockets require
+     * `Authorization: Bearer <token>` or `?access_token=` (WS only). Prevents strangers on a public URL
+     * from reading your mirrored WhatsApp DB or scanning the QR. Still single-tenant: one WA session per process.
+     */
+    this._webAccessToken = (config.webAccessToken || process.env.WEB_ACCESS_TOKEN || '').trim();
+
+    this._wss = new WebSocketServer({
+      server: this._server,
+      verifyClient: (info) => this._verifyWsClient(info),
+    });
     this._setupWebSocket();
     this._setupRoutes();
+  }
+
+  /** @returns {boolean} */
+  _verifyWsClient(info) {
+    if (!this._webAccessToken) return true;
+    return this._requestHasValidAccessToken(info.req);
+  }
+
+  /**
+   * @param {import('http').IncomingMessage} req
+   * @returns {boolean}
+   */
+  _requestHasValidAccessToken(req) {
+    if (!this._webAccessToken) return true;
+    const auth = req.headers?.authorization;
+    if (auth && /^Bearer\s+(\S+)/i.test(auth)) {
+      const t = auth.replace(/^Bearer\s+/i, '').trim();
+      if (t === this._webAccessToken) return true;
+    }
+    try {
+      const raw = req.url || '';
+      const qIdx = raw.indexOf('?');
+      const qs = qIdx === -1 ? '' : raw.slice(qIdx + 1);
+      const params = new URLSearchParams(qs);
+      const at = params.get('access_token');
+      if (at && at === this._webAccessToken) return true;
+    } catch { /* ignore */ }
+    return false;
   }
 
   /** Default callback URL when not using browser `origin` (must match an entry in Google Cloud Console). */
@@ -254,11 +292,21 @@ export default class WebServer {
     this._app.use((_req, res, next) => {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       if (_req.method === 'OPTIONS') return res.sendStatus(204);
       next();
     });
     this._app.use(express.json({ limit: '10mb' }));
+
+    this._app.use((req, res, next) => {
+      if (!this._webAccessToken) return next();
+      const path = req.path || '';
+      if (path === '/health' || path === '/api/health') return next();
+      if (!path.startsWith('/api/')) return next();
+      if (path === '/api/gmail/oauth/callback') return next();
+      if (this._requestHasValidAccessToken(req)) return next();
+      return res.status(401).json({ error: 'Unauthorized', authRequired: true });
+    });
 
     // Render / load balancers: use Health Check Path = /health or /api/health
     this._app.get('/health', (_req, res) => res.status(200).type('text/plain').send('ok'));
@@ -277,6 +325,15 @@ export default class WebServer {
 
     // ── Chat & Message APIs ───────────────────────────────────────────
     this._app.get('/api/chats', (_req, res) => res.json(this.db.getChatStats()));
+
+    this._app.get('/api/chats/:chatJid/action-items', (req, res) => {
+      try {
+        const chatJid = decodeURIComponent(req.params.chatJid);
+        res.json(this.db.getChatActionItemsWithContext(chatJid));
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
 
     this._app.get('/api/messages', (req, res) => {
       const chatJid = req.query.chatJid;
@@ -587,7 +644,21 @@ export default class WebServer {
       for (const [k, v] of this._gmailOAuthState) {
         if (now - v.ts > 15 * 60 * 1000) this._gmailOAuthState.delete(k);
       }
-      this._gmailOAuthState.set(state, { ts: now, onboarding: req.query.ob === '1', redirectUri });
+      const fromQuery = req.query?.origin ? this._isAllowedOAuthOrigin(String(req.query.origin)) : null;
+      const fromHeader = req.headers.origin ? this._isAllowedOAuthOrigin(req.headers.origin) : null;
+      let fromReferer = null;
+      if (req.headers.referer) {
+        try {
+          fromReferer = this._isAllowedOAuthOrigin(new URL(req.headers.referer).origin);
+        } catch { /* ignore */ }
+      }
+      const returnOrigin = fromQuery || fromHeader || fromReferer || '';
+      this._gmailOAuthState.set(state, {
+        ts: now,
+        onboarding: req.query.ob === '1',
+        redirectUri,
+        returnOrigin,
+      });
       const url = oauth2.generateAuthUrl({
         access_type: 'offline',
         prompt: 'consent',
@@ -602,7 +673,12 @@ export default class WebServer {
       if (err) {
         const desc = req.query.error_description;
         const msg = desc ? `${err}: ${desc}` : String(err);
-        return res.redirect(`/?gmail_error=${encodeURIComponent(msg)}`);
+        const pendingErr = req.query.state ? this._gmailOAuthState.get(String(req.query.state)) : null;
+        const base = (pendingErr?.returnOrigin || '').trim().replace(/\/$/, '');
+        const path = base
+          ? `${base}/?gmail_error=${encodeURIComponent(msg)}`
+          : `/?gmail_error=${encodeURIComponent(msg)}`;
+        return res.redirect(path);
       }
       const code = req.query.code;
       const state = req.query.state;
@@ -618,6 +694,7 @@ export default class WebServer {
 
       const redirectUri = pending.redirectUri || this._defaultGmailRedirectUri();
       const oauth2 = new google.auth.OAuth2(id, secret, redirectUri);
+      const appBase = (pending.returnOrigin || '').trim().replace(/\/$/, '');
 
       try {
         const { tokens } = await oauth2.getToken({
@@ -625,9 +702,8 @@ export default class WebServer {
           redirect_uri: redirectUri,
         });
         if (!tokens.refresh_token) {
-          return res.redirect(
-            `/?gmail_error=${encodeURIComponent('No refresh token — remove app access in Google Account → Security and try again.')}`,
-          );
+          const q = `gmail_error=${encodeURIComponent('No refresh token — remove app access in Google Account → Security and try again.')}`;
+          return res.redirect(appBase ? `${appBase}/?${q}` : `/?${q}`);
         }
         this.db.setSetting('gmail_refresh_token', tokens.refresh_token);
         oauth2.setCredentials(tokens);
@@ -640,10 +716,11 @@ export default class WebServer {
         }
       } catch (e) {
         console.error('[Gmail] token exchange:', e.message);
-        return res.redirect(`/?gmail_error=${encodeURIComponent(e.message)}`);
+        const q = `gmail_error=${encodeURIComponent(e.message)}`;
+        return res.redirect(appBase ? `${appBase}/?${q}` : `/?${q}`);
       }
 
-      let loc = '/?gmail_connected=1';
+      let loc = appBase ? `${appBase}/?gmail_connected=1` : '/?gmail_connected=1';
       if (pending.onboarding) loc += '&ob=1';
       return res.redirect(loc);
     });

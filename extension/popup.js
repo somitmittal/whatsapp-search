@@ -1,4 +1,24 @@
 document.addEventListener('DOMContentLoaded', () => {
+  const serverUrlEl = document.getElementById('server-url');
+  const accessTokenEl = document.getElementById('access-token');
+  const saveServerBtn = document.getElementById('save-server-btn');
+
+  chrome.storage.sync.get(['serverUrl', 'accessToken'], (r) => {
+    if (serverUrlEl) serverUrlEl.value = r.serverUrl || 'http://localhost:3000';
+    if (accessTokenEl) accessTokenEl.value = r.accessToken || '';
+  });
+
+  if (saveServerBtn) {
+    saveServerBtn.addEventListener('click', () => {
+      const serverUrl = (serverUrlEl && serverUrlEl.value || '').trim() || 'http://localhost:3000';
+      const accessToken = (accessTokenEl && accessTokenEl.value || '').trim();
+      chrome.storage.sync.set({ serverUrl, accessToken }, () => {
+        saveServerBtn.textContent = 'Saved';
+        setTimeout(() => { saveServerBtn.textContent = 'Save server settings'; }, 1500);
+      });
+    });
+  }
+
   const dot = document.getElementById('status-dot');
   const statusText = document.getElementById('status-text');
   const strategyBadge = document.getElementById('strategy-badge');
@@ -65,6 +85,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   openBtn.addEventListener('click', () => {
-    chrome.tabs.create({ url: 'http://localhost:3000' });
+    chrome.storage.sync.get(['serverUrl'], (r) => {
+      const u = (r.serverUrl || 'http://localhost:3000').trim();
+      chrome.tabs.create({ url: u });
+    });
   });
 });
