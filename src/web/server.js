@@ -2,6 +2,8 @@ import { createRequire } from 'module';
 import { createServer } from 'http';
 import { resolve } from 'path';
 import { randomBytes } from 'node:crypto';
+import { mkdirSync } from 'fs';
+import { join } from 'path';
 import config from '../config.js';
 import { runWithTenant, getCurrentTenantId } from '../storage/tenant-context.js';
 import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
@@ -9,6 +11,7 @@ import { isJwtAuthEnabled, verifyTenantToken } from '../auth/jwt-util.js';
 import { registerAuthRoutes } from './auth-routes.js';
 import { importExportedChat, extractTextFromZip } from '../import/chat-import.js';
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
+import WaClient from '../whatsapp/wa-client.js';
 import { createProvider, clearProviderCache, PROVIDER_META } from '../llm/provider.js';
 import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
 import {
@@ -40,28 +43,21 @@ export default class WebServer {
     this._server = createServer(this._app);
     this._clients = new Set();
 
-    this._extensionConnected = false;
-    this._syncStats = { syncing: false, total: 0, current: 0, totalMessages: 0 };
-
-    // WhatsApp QR / connection state
-    this._waState = 'DISCONNECTED'; // DISCONNECTED | QR_READY | LOADING | READY
-    this._waMessage = 'Not connected';
-    this._waQrDataUrl = null;
-    this._waClient = null; // set by index.js via setWaClient()
+    /**
+     * Per-tenant runtime state (prevents data/status leakage across users).
+     * @type {Map<string, {
+     *   extensionConnected: boolean,
+     *   waState: string,
+     *   waMessage: string,
+     *   waQrDataUrl: string | null,
+     *   waClient: any | null,
+     *   syncStats: { syncing: boolean, total: number, current: number, totalMessages: number }
+     * }>}
+     */
+    this._tenantState = new Map();
 
     /** @type {Map<string, { ts: number, onboarding: boolean }>} */
     this._gmailOAuthState = new Map();
-
-    /** Background WhatsApp + extension ingest is scoped to this tenant (see `DEFAULT_TENANT_ID`). */
-    this._waTenantId = config.defaultTenantId || LEGACY_TENANT_ID;
-
-    /**
-     * When set (e.g. Render secret `WEB_ACCESS_TOKEN`), all `/api/*` routes and WebSockets require
-     * `X-Web-Access-Token`, `Authorization: Bearer <deploy token>`, or `?access_token=` (WS).
-     * User JWT (when JWT_SECRET is set) uses the same `Authorization: Bearer` header — use `X-Web-Access-Token`
-     * for the deploy gate so Bearer can carry the login JWT.
-     */
-    this._webAccessToken = (config.webAccessToken || process.env.WEB_ACCESS_TOKEN || '').trim();
 
     this._wss = new WebSocketServer({
       server: this._server,
@@ -71,10 +67,31 @@ export default class WebServer {
     this._setupRoutes();
   }
 
+  _isPublicInternetDeploy() {
+    return process.env.RENDER === 'true' || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
+  }
+
+  _getTenantState(tenantId) {
+    const tid = tenantId || LEGACY_TENANT_ID;
+    let st = this._tenantState.get(tid);
+    if (!st) {
+      st = {
+        extensionConnected: false,
+        waState: 'DISCONNECTED',
+        waMessage: 'Not connected',
+        waQrDataUrl: null,
+        waClient: null,
+        syncStats: { syncing: false, total: 0, current: 0, totalMessages: 0 },
+      };
+      this._tenantState.set(tid, st);
+    }
+    return st;
+  }
+
   /** @returns {boolean} */
   _verifyWsClient(info) {
     const req = info.req;
-    if (this._webAccessToken && !this._requestHasValidAccessToken(req)) return false;
+    // If JWT is configured → multi-tenant websocket (requires token).
     if (isJwtAuthEnabled()) {
       try {
         const raw = req.url || '';
@@ -89,32 +106,9 @@ export default class WebServer {
         return false;
       }
     }
-    req.tenantId = this._waTenantId;
+    // Legacy mode (no JWT_SECRET): allow a single shared tenant locally.
+    req.tenantId = config.defaultTenantId || LEGACY_TENANT_ID;
     return true;
-  }
-
-  /**
-   * @param {import('http').IncomingMessage} req
-   * @returns {boolean}
-   */
-  _requestHasValidAccessToken(req) {
-    if (!this._webAccessToken) return true;
-    const deploy = req.headers?.['x-web-access-token'];
-    if (deploy && deploy === this._webAccessToken) return true;
-    const auth = req.headers?.authorization;
-    if (auth && /^Bearer\s+(\S+)/i.test(auth)) {
-      const t = auth.replace(/^Bearer\s+/i, '').trim();
-      if (t === this._webAccessToken) return true;
-    }
-    try {
-      const raw = req.url || '';
-      const qIdx = raw.indexOf('?');
-      const qs = qIdx === -1 ? '' : raw.slice(qIdx + 1);
-      const params = new URLSearchParams(qs);
-      const at = params.get('access_token');
-      if (at && at === this._webAccessToken) return true;
-    } catch { /* ignore */ }
-    return false;
   }
 
   /** Default callback URL when not using browser `origin` (must match an entry in Google Cloud Console). */
@@ -183,95 +177,107 @@ export default class WebServer {
     return !!this._gmailOAuth2Client();
   }
 
-  /** Called from index.js to give the server a reference to the WA client. */
-  setWaClient(waClient) {
-    this._waClient = waClient;
-  }
+  _ensureTenantWaClient(tenantId) {
+    const tid = tenantId || LEGACY_TENANT_ID;
+    const st = this._getTenantState(tid);
+    if (st.waClient) return st.waClient;
 
-  /** Called by WaClient when QR changes. */
-  onWaQr(dataUrl) {
-    this._waQrDataUrl = dataUrl;
-    this._waState = 'QR_READY';
-    this._broadcast({ type: 'wa-qr', data: { qr: dataUrl } });
-  }
+    const baseDir = join(config.dataDir, 'tenants', tid);
+    const authDir = join(baseDir, '.baileys_auth');
+    const cfgFile = join(baseDir, 'wa-config.json');
+    mkdirSync(baseDir, { recursive: true });
 
-  /** Called by WaClient on status changes. */
-  onWaStatus({ state, message }) {
-    this._waState = state;
-    this._waMessage = message;
-    if (state === 'READY') {
-      this._waQrDataUrl = null;
-      this._extensionConnected = true;
-      if (this._waClient?.syncResolvedNamesToDb) {
-        setTimeout(() => {
-          void runWithTenant(this._waTenantId, async () => {
-            try {
-              const n = await this._waClient.syncResolvedNamesToDb(this.db);
-              if (n > 0) {
-                this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats() } });
-              }
-            } catch (e) {
-              console.warn('[WA] syncResolvedNamesToDb:', e.message);
-            }
-          });
-        }, 2000);
-      }
-      // Phone book / saved contact names come from WhatsApp app-state (`contactAction.fullName` → contacts.upsert)
-      if (this._waClient?.refreshPhoneBookNamesInDb) {
-        setTimeout(() => {
-          void runWithTenant(this._waTenantId, async () => {
-            try {
-              const n = await this._waClient.refreshPhoneBookNamesInDb(this.db);
-              this._broadcast({
-                type: 'chat-names-refreshed',
-                data: { stats: this.db.getTotalStats(), rowsUpdated: n },
+    const waClient = new WaClient({
+      authDir,
+      configFile: cfgFile,
+      onQr: (dataUrl) => {
+        st.waQrDataUrl = dataUrl;
+        st.waState = 'QR_READY';
+        this._broadcast({ type: 'wa-qr', data: { qr: dataUrl } }, tid);
+      },
+      onReady: (info) => console.log(`[WA] Tenant ${tid} logged in as ${info.name || info.phone}`),
+      onStatus: ({ state, message }) => {
+        st.waState = state;
+        st.waMessage = message;
+        if (state === 'READY') {
+          st.waQrDataUrl = null;
+          st.extensionConnected = true;
+          if (waClient?.syncResolvedNamesToDb) {
+            setTimeout(() => {
+              void runWithTenant(tid, async () => {
+                try {
+                  const n = await waClient.syncResolvedNamesToDb(this.db);
+                  if (n > 0) this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats() } }, tid);
+                } catch (e) {
+                  console.warn('[WA] syncResolvedNamesToDb:', e.message);
+                }
               });
-            } catch (e) {
-              console.warn('[WA] refreshPhoneBookNamesInDb:', e.message);
-            }
-          });
-        }, 5500);
-      }
-    }
-    const stats = runWithTenant(this._waTenantId, () => this.db.getTotalStats());
-    this._broadcast({
-      type: 'wa-status',
-      data: { state, message, stats },
-    });
-  }
-
-  /** Called by WaClient when messages arrive (real-time or history). */
-  onWaMessages(rows) {
-    runWithTenant(this._waTenantId, () => {
-      const { count: inserted, insertedMessageIds } = this.db.insertMessageBatch(rows);
-      const lastNameByChat = new Map();
-      for (const r of rows || []) {
-        if (r?.chatJid && r?.chatName) lastNameByChat.set(r.chatJid, r.chatName);
-      }
-      for (const [chatJid, chatName] of lastNameByChat) {
-        if (this._waClient?.propagateDisplayNameForChat) {
-          void this._waClient.propagateDisplayNameForChat(this.db, chatJid, chatName).catch(() => {});
-        } else {
-          this.db.propagateChatDisplayName(chatJid, chatName);
+            }, 2000);
+          }
+          if (waClient?.refreshPhoneBookNamesInDb) {
+            setTimeout(() => {
+              void runWithTenant(tid, async () => {
+                try {
+                  const n = await waClient.refreshPhoneBookNamesInDb(this.db);
+                  this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats(), rowsUpdated: n } }, tid);
+                } catch (e) {
+                  console.warn('[WA] refreshPhoneBookNamesInDb:', e.message);
+                }
+              });
+            }, 5500);
+          }
         }
-      }
-      if (inserted > 0) {
-        console.log(`[WA] Saved ${inserted} new messages`);
-        this._broadcast({ type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } });
-        this._mediaIndexService?.scheduleProcess?.();
-        this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
-      }
+        const stats = runWithTenant(tid, () => this.db.getTotalStats());
+        this._broadcast({ type: 'wa-status', data: { state, message, stats } }, tid);
+      },
+      onProgress: ({ completed, total, messages }) => {
+        this._broadcast({ type: 'sync-progress', data: { completed, total, messages } }, tid);
+      },
+      onMessages: (rows) => {
+        runWithTenant(tid, () => {
+          const { count: inserted, insertedMessageIds } = this.db.insertMessageBatch(rows);
+          const lastNameByChat = new Map();
+          for (const r of rows || []) {
+            if (r?.chatJid && r?.chatName) lastNameByChat.set(r.chatJid, r.chatName);
+          }
+          for (const [chatJid, chatName] of lastNameByChat) {
+            if (waClient?.propagateDisplayNameForChat) {
+              void waClient.propagateDisplayNameForChat(this.db, chatJid, chatName).catch(() => {});
+            } else {
+              this.db.propagateChatDisplayName(chatJid, chatName);
+            }
+          }
+          if (inserted > 0) {
+            console.log(`[WA] Tenant ${tid} saved ${inserted} new messages`);
+            this._broadcast({ type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } }, tid);
+            this._mediaIndexService?.scheduleProcess?.();
+            this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
+          }
+        });
+      },
+      onSearchQuery: async (query) => {
+        try {
+          return await runWithTenant(tid, async () => this.searchEngine.search(query, null));
+        } catch (e) {
+          return { error: e.message };
+        }
+      },
+      onDisconnected: () => console.log(`[WA] Tenant ${tid} connection closed`),
+      onMediaPath: (messageId, mediaPath) => {
+        runWithTenant(tid, () => {
+          this.db.updateMessageMediaPath(messageId, mediaPath);
+          this._mediaIndexService?.scheduleProcess?.();
+        });
+      },
     });
-  }
 
-  /** Called by WaClient during history sync with progress info. */
-  onWaProgress({ completed, total, messages }) {
-    this._broadcast({ type: 'sync-progress', data: { completed, total, messages } }, this._waTenantId);
+    st.waClient = waClient;
+    return waClient;
   }
 
   /** Called by DailySummaryService while indexing thread summaries per chat. */
   onSummaryProgress(data) {
-    this._broadcast({ type: 'summary-progress', data }, this._waTenantId);
+    this._broadcast({ type: 'summary-progress', data }, getCurrentTenantId());
   }
 
   /** Merge static PROVIDER_META with live Ollama Cloud /api/tags when an API key is available. */
@@ -299,22 +305,23 @@ export default class WebServer {
 
   _setupWebSocket() {
     this._wss.on('connection', (ws, req) => {
-      ws.tenantId = req.tenantId || this._waTenantId;
+      ws.tenantId = req.tenantId;
       this._clients.add(ws);
       ws.on('close', () => this._clients.delete(ws));
       ws.on('error', () => this._clients.delete(ws));
       // Send current state immediately on connect (scoped DB via AsyncLocalStorage)
       runWithTenant(ws.tenantId, () => {
+        const st = this._getTenantState(ws.tenantId);
         this._sendTo(ws, {
           type: 'status',
-          data: { connected: this._extensionConnected, stats: this.db.getTotalStats() },
+          data: { connected: st.extensionConnected, stats: this.db.getTotalStats() },
         });
         this._sendTo(ws, {
           type: 'wa-status',
-          data: { state: this._waState, message: this._waMessage, stats: this.db.getTotalStats() },
+          data: { state: st.waState, message: st.waMessage, stats: this.db.getTotalStats() },
         });
-        if (this._waQrDataUrl) {
-          this._sendTo(ws, { type: 'wa-qr', data: { qr: this._waQrDataUrl } });
+        if (st.waQrDataUrl) {
+          this._sendTo(ws, { type: 'wa-qr', data: { qr: st.waQrDataUrl } });
         }
       });
     });
@@ -324,23 +331,13 @@ export default class WebServer {
     this._app.use((_req, res, next) => {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Web-Access-Token');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       if (_req.method === 'OPTIONS') return res.sendStatus(204);
       next();
     });
     this._app.use(express.json({ limit: '10mb' }));
 
-    this._app.use((req, res, next) => {
-      if (!this._webAccessToken) return next();
-      const path = req.path || '';
-      if (path === '/health' || path === '/api/health') return next();
-      if (!path.startsWith('/api/')) return next();
-      if (path === '/api/gmail/oauth/callback') return next();
-      if (this._requestHasValidAccessToken(req)) return next();
-      return res.status(401).json({ error: 'Unauthorized', authRequired: true });
-    });
-
-    /** Per-request SQLite tenant (JWT sub) or default legacy tenant. */
+    /** Per-request SQLite tenant (JWT sub). */
     this._app.use((req, res, next) => {
       if (req.method === 'OPTIONS') return next();
       const path = req.path || '';
@@ -362,9 +359,7 @@ export default class WebServer {
 
     registerAuthRoutes(this._app, this.db.getSqliteDatabase());
 
-    /** WhatsApp + Chrome extension ingest always map to the linked-device tenant partition. */
-    this._app.use('/api/wa', (req, res, next) => runWithTenant(this._waTenantId, () => next()));
-    this._app.use('/api/extension', (req, res, next) => runWithTenant(this._waTenantId, () => next()));
+    // WhatsApp + Chrome extension ingest are tenant-scoped via the JWT middleware above.
 
     // Render / load balancers: use Health Check Path = /health or /api/health
     this._app.get('/health', (_req, res) => res.status(200).type('text/plain').send('ok'));
@@ -374,9 +369,10 @@ export default class WebServer {
 
     // ── Status ────────────────────────────────────────────────────────
     this._app.get('/api/status', (_req, res) => {
+      const st = this._getTenantState(getCurrentTenantId());
       res.json({
-        connected: this._extensionConnected,
-        syncStatus: { ...this._syncStats },
+        connected: st.extensionConnected,
+        syncStatus: { ...st.syncStats },
         stats: this.db.getTotalStats(),
       });
     });
@@ -405,14 +401,40 @@ export default class WebServer {
       return res.json(this.db.getMessagesPaginated(chatJid, limit, offset));
     });
 
+    // ── While you were away (per chat) ───────────────────────────────
+    this._app.post('/api/chats/:chatJid/seen', (req, res) => {
+      try {
+        const chatJid = decodeURIComponent(req.params.chatJid || '');
+        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const ts = req.body?.ts != null ? Number(req.body.ts) : null;
+        const lastSeenTs = this.db.markChatSeen(chatJid, ts);
+        return res.json({ ok: true, lastSeenTs });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/chats/:chatJid/away-summary', (req, res) => {
+      try {
+        const chatJid = decodeURIComponent(req.params.chatJid || '');
+        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const limit = Math.min(parseInt(req.query.limit, 10) || 3, 10);
+        return res.json(this.db.getAwayThreadSummaries(chatJid, limit));
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
     this._app.delete('/api/chats/:chatJid', (req, res) => {
       try {
         const chatJid = decodeURIComponent(req.params.chatJid);
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const deleted = this.db.deleteChat(chatJid);
+        const tid = getCurrentTenantId();
+        const st = this._getTenantState(tid);
         this._broadcast(
-          { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
-          getCurrentTenantId(),
+          { type: 'status', data: { connected: st.extensionConnected, stats: this.db.getTotalStats() } },
+          tid,
         );
         return res.json({ ok: true, deleted });
       } catch (err) {
@@ -443,22 +465,37 @@ export default class WebServer {
       }
     });
 
+    // ── Contact directory sync (mobile app) ───────────────────────────
+    this._app.post('/api/contacts/sync', (req, res) => {
+      try {
+        const contacts = req.body?.contacts;
+        if (!Array.isArray(contacts)) return res.status(400).json({ error: 'contacts array required' });
+        const out = this.db.syncContactDirectory(contacts);
+        return res.json({ ok: true, ...out });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
     // ── WhatsApp Linked-Device Endpoints ─────────────────────────────
     this._app.get('/api/wa/status', (_req, res) => {
+      const st = this._getTenantState(getCurrentTenantId());
       res.json({
-        state: this._waState,
-        message: this._waMessage,
-        hasQr: !!this._waQrDataUrl,
+        state: st.waState,
+        message: st.waMessage,
+        hasQr: !!st.waQrDataUrl,
       });
     });
 
     this._app.get('/api/wa/qr', (_req, res) => {
+      const st = this._getTenantState(getCurrentTenantId());
+      const wa = st.waClient;
       // Always serve the freshest QR — from the live client if available
-      const liveQr = this._waClient?.latestQr;
-      const qr = liveQr || this._waQrDataUrl;
+      const liveQr = wa?.latestQr;
+      const qr = liveQr || st.waQrDataUrl;
       if (!qr) return res.status(404).json({ error: 'No QR available' });
       // Update cache too
-      if (liveQr) this._waQrDataUrl = liveQr;
+      if (liveQr) st.waQrDataUrl = liveQr;
       res.json({ qr });
     });
 
@@ -475,8 +512,9 @@ export default class WebServer {
           lastMessageTs: stats?.lastMessageTs ?? null,
           isGroup: chatJid.includes('@g.us'),
         };
-        const wa = this._waClient && typeof this._waClient.getChatDetails === 'function'
-          ? await this._waClient.getChatDetails(chatJid)
+        const st = this._getTenantState(getCurrentTenantId());
+        const wa = st.waClient && typeof st.waClient.getChatDetails === 'function'
+          ? await st.waClient.getChatDetails(chatJid)
           : null;
         return res.json({ ...local, ...(wa || {}) });
       } catch (err) {
@@ -485,21 +523,25 @@ export default class WebServer {
     });
 
     this._app.post('/api/wa/connect', async (_req, res) => {
-      if (!this._waClient) return res.status(503).json({ error: 'WA client not initialised' });
-      if (this._waState === 'READY') return res.json({ ok: true, state: 'READY' });
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      const wa = this._ensureTenantWaClient(tid);
+      if (st.waState === 'READY') return res.json({ ok: true, state: 'READY' });
       try {
         // start() is idempotent — safe to call again if disconnected
-        this._waClient.start().catch(err => console.error('[WA] Start error:', err.message));
-        res.json({ ok: true, state: this._waState });
+        wa.start().catch(err => console.error('[WA] Start error:', err.message));
+        res.json({ ok: true, state: st.waState });
       } catch (err) {
         res.status(500).json({ error: err.message });
       }
     });
 
     this._app.post('/api/wa/logout', async (_req, res) => {
-      if (!this._waClient) return res.status(503).json({ error: 'WA client not initialised' });
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
       try {
-        await this._waClient.logout();
+        await st.waClient.logout();
         res.json({ ok: true });
       } catch (err) {
         res.status(500).json({ error: err.message });
@@ -508,44 +550,54 @@ export default class WebServer {
 
     /** Re-fetch WhatsApp app state (contact / phone book names) and update indexed chat titles. */
     this._app.post('/api/wa/sync-contacts', async (_req, res) => {
-      if (!this._waClient) return res.status(503).json({ error: 'WA client not initialised' });
-      if (this._waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
-      if (typeof this._waClient.refreshPhoneBookNamesInDb !== 'function') {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+      if (st.waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
+      if (typeof st.waClient.refreshPhoneBookNamesInDb !== 'function') {
         return res.status(503).json({ error: 'Contact sync not available' });
       }
       try {
-        const rowsUpdated = await this._waClient.refreshPhoneBookNamesInDb(this.db);
-        this._broadcast(
-          {
-            type: 'chat-names-refreshed',
-            data: { stats: this.db.getTotalStats(), rowsUpdated },
-          },
-          this._waTenantId,
-        );
+        const rowsUpdated = await st.waClient.refreshPhoneBookNamesInDb(this.db);
+        this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats(), rowsUpdated } }, tid);
         res.json({ ok: true, rowsUpdated });
       } catch (err) {
         res.status(500).json({ error: err.message });
       }
     });
 
+    this._app.post('/api/wa/send', async (req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+      if (st.waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
+      const chatJid = req.body?.chatJid ? String(req.body.chatJid) : '';
+      const text = req.body?.text ? String(req.body.text) : '';
+      if (!chatJid || !text.trim()) return res.status(400).json({ error: 'chatJid and text required' });
+      try {
+        const sent = await st.waClient.sendText(chatJid, text);
+        return res.json({ ok: true, messageId: sent?.key?.id || null });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
     // ── Extension Sync Endpoints ──────────────────────────────────────
     this._app.post('/api/extension/chats', (req, res) => {
-      this._extensionConnected = true;
-      this._broadcast(
-        { type: 'status', data: { connected: true, stats: this.db.getTotalStats() } },
-        this._waTenantId,
-      );
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      st.extensionConnected = true;
+      this._broadcast({ type: 'status', data: { connected: true, stats: this.db.getTotalStats() } }, tid);
       res.json({ ok: true });
     });
 
     this._app.post('/api/extension/messages', (req, res) => {
       try {
-        if (!this._extensionConnected) {
-          this._extensionConnected = true;
-          this._broadcast(
-            { type: 'status', data: { connected: true, stats: this.db.getTotalStats() } },
-            this._waTenantId,
-          );
+        const tid = getCurrentTenantId();
+        const st = this._getTenantState(tid);
+        if (!st.extensionConnected) {
+          st.extensionConnected = true;
+          this._broadcast({ type: 'status', data: { connected: true, stats: this.db.getTotalStats() } }, tid);
         }
         const { messages } = req.body;
         if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages array required' });
@@ -568,7 +620,7 @@ export default class WebServer {
           console.log(`[Extension] Synced ${inserted} new messages`);
           this._broadcast(
             { type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } },
-            this._waTenantId,
+            getCurrentTenantId(),
           );
           this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
         }
@@ -735,7 +787,8 @@ export default class WebServer {
       });
       const url = oauth2.generateAuthUrl({
         access_type: 'offline',
-        prompt: 'consent',
+        // Better UX: use whichever Google account the user is already signed into, with explicit consent.
+        prompt: 'select_account consent',
         scope: [GMAIL_SCOPE],
         state,
       });
@@ -820,9 +873,11 @@ export default class WebServer {
       oauth2.setCredentials({ refresh_token: refresh });
       try {
         const out = await syncWhatsAppExportsFromGmail(this.db, oauth2);
+        const tid = getCurrentTenantId();
+        const st = this._getTenantState(tid);
         this._broadcast(
-          { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
-          getCurrentTenantId(),
+          { type: 'status', data: { connected: st.extensionConnected, stats: this.db.getTotalStats() } },
+          tid,
         );
         this.summaryService.indexPendingDays().then((count) => {
           if (count > 0) console.log(`[Gmail sync] Generated ${count} daily summaries`);
@@ -852,11 +907,12 @@ export default class WebServer {
         console.log(`[Summaries] Cleared ${clearedDaily} daily + ${clearedThread} thread summaries (and thread facts) — regenerating...`);
         res.json({ cleared, status: 'regenerating' });
         const tid = getCurrentTenantId();
+        const st = this._getTenantState(tid);
         this.summaryService.indexPendingDays().then((count) => {
           console.log(`[Summaries] Regenerated ${count} thread summaries`);
           runWithTenant(tid, () => {
             this._broadcast(
-              { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
+              { type: 'status', data: { connected: st.extensionConnected, stats: this.db.getTotalStats() } },
               tid,
             );
           });
@@ -893,9 +949,11 @@ export default class WebServer {
           results.push({ chatName, ...result });
         }
 
+        const tid = getCurrentTenantId();
+        const st = this._getTenantState(tid);
         this._broadcast(
-          { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
-          getCurrentTenantId(),
+          { type: 'status', data: { connected: st.extensionConnected, stats: this.db.getTotalStats() } },
+          tid,
         );
 
         this.summaryService.indexPendingDays().then((count) => {
@@ -915,12 +973,13 @@ export default class WebServer {
 
   _triggerSummaryGen() {
     const tid = getCurrentTenantId();
+    const st = this._getTenantState(tid);
     this.summaryService.indexPendingDays().then((count) => {
       if (count > 0) {
         console.log(`[Settings] Generated ${count} summaries`);
         runWithTenant(tid, () => {
           this._broadcast(
-            { type: 'status', data: { connected: this._extensionConnected, stats: this.db.getTotalStats() } },
+            { type: 'status', data: { connected: st.extensionConnected, stats: this.db.getTotalStats() } },
             tid,
           );
         });
@@ -935,9 +994,9 @@ export default class WebServer {
   /**
    * Push to WebSocket clients for one tenant only (prevents cross-tenant leakage).
    * @param {object} msg
-   * @param {string} [tenantId] defaults to WhatsApp pipeline tenant
+   * @param {string} tenantId
    */
-  _broadcast(msg, tenantId = this._waTenantId) {
+  _broadcast(msg, tenantId) {
     const payload = JSON.stringify(msg);
     for (const ws of this._clients) {
       if (ws.tenantId !== tenantId) continue;

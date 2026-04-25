@@ -23,12 +23,11 @@ const {
   downloadMediaMessage,
   extractMessageContent,
   getContentType,
+  areJidsSameUser,
 } = require('@whiskeysockets/baileys');
 const QRCode   = require('qrcode');
 const P        = require('pino');
 
-const AUTH_DIR         = join(config.dataDir, '.baileys_auth');
-const CONFIG_FILE      = join(config.dataDir, 'wa-config.json');
 const SEARCH_GROUP     = '🔍 WhatsApp Search';
 const BATCH_MS         = 2000;
 const SYNC_DONE_DELAY  = 8_000; // ms of silence after last history batch → mark READY
@@ -53,12 +52,12 @@ function extFromMime(mime) {
 }
 
 // ── tiny helpers ─────────────────────────────────────────────────────────────
-function loadCfg() {
-  try { if (existsSync(CONFIG_FILE)) return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch {}
+function loadCfg(configFile) {
+  try { if (configFile && existsSync(configFile)) return JSON.parse(readFileSync(configFile, 'utf8')); } catch {}
   return {};
 }
-function saveCfg(d) {
-  try { writeFileSync(CONFIG_FILE, JSON.stringify(d, null, 2)); } catch {}
+function saveCfg(configFile, d) {
+  try { if (configFile) writeFileSync(configFile, JSON.stringify(d, null, 2)); } catch {}
 }
 
 /** Plain text from an inner proto message (after unwrap of ephemeral / view-once). */
@@ -98,6 +97,19 @@ function placeholderForUntracked(inner) {
   return `[${short || ct}]`;
 }
 
+function looksLikePhoneOnlyName(str) {
+  if (!str || typeof str !== 'string') return false;
+  const d = str.replace(/\s/g, '').replace(/^\+/, '');
+  return /^\d{8,20}$/.test(d);
+}
+
+/** Public web UI URL (Render / override) or local dev. */
+function publicWebBaseUrl() {
+  const u = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_WEB_URL;
+  if (u) return String(u).replace(/\/$/, '');
+  return `http://localhost:${config.webPort}`;
+}
+
 function formatResult(result) {
   if (!result || result.error) return `❌ Search failed: ${result?.error || 'unknown error'}`;
   if (!result.answer && !result.sources?.length) return '🔍 No relevant messages found.';
@@ -117,7 +129,9 @@ function formatResult(result) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default class WaClient {
-  constructor({ onQr, onReady, onMessages, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath }) {
+  constructor({ authDir, configFile, onQr, onReady, onMessages, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath }) {
+    this._authDir = authDir || join(config.dataDir, '.baileys_auth');
+    this._configFile = configFile || join(config.dataDir, 'wa-config.json');
     this._onQr          = onQr;
     this._onReady       = onReady;
     this._onMessages    = onMessages;
@@ -144,6 +158,23 @@ export default class WaClient {
     this._mediaQueue    = [];
     this._mediaDraining = false;
     this._mediaLogger   = P({ level: 'silent' });
+    /** Outgoing search-reply message ids — skip when they echo back in messages.upsert (fromMe). */
+    this._searchReplyMsgIds = new Set();
+  }
+
+  _isSearchGroupJid(jid) {
+    return !!(this._searchGroupJid && jid && areJidsSameUser(jid, this._searchGroupJid));
+  }
+
+  /** Ignore our own notices/replies when they reappear in messages.upsert (fromMe on phone + linked device). */
+  _registerSearchGroupEchoSkip(messageId) {
+    if (!messageId) return;
+    this._searchReplyMsgIds.add(messageId);
+    while (this._searchReplyMsgIds.size > 200) {
+      const first = this._searchReplyMsgIds.values().next().value;
+      if (first) this._searchReplyMsgIds.delete(first);
+      else break;
+    }
   }
 
   get state()    { return this._state; }
@@ -151,7 +182,7 @@ export default class WaClient {
 
   async start() {
     if (this._sock || this._destroyed) return;
-    mkdirSync(AUTH_DIR, { recursive: true });
+    mkdirSync(this._authDir, { recursive: true });
     await this._connect();
   }
 
@@ -161,6 +192,15 @@ export default class WaClient {
     this._sock = null;
     this._setState('DISCONNECTED', 'Logged out');
     this._onDisconnected?.();
+  }
+
+  async sendText(chatJid, text) {
+    if (!this._sock) throw new Error('WhatsApp not connected');
+    if (!chatJid) throw new Error('chatJid required');
+    const t = String(text || '').trim();
+    if (!t) throw new Error('text required');
+    const sent = await this._sock.sendMessage(chatJid, { text: t });
+    return sent;
   }
 
   async destroy() {
@@ -177,7 +217,7 @@ export default class WaClient {
   async _connect() {
     if (this._destroyed) return;
 
-    const { state: authState, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { state: authState, saveCreds } = await useMultiFileAuthState(this._authDir);
 
     let version = [2, 3000, 1015901307];
     try {
@@ -210,7 +250,7 @@ export default class WaClient {
           const dataUrl = await QRCode.toDataURL(qr, { errorCorrectionLevel: 'M', margin: 2, width: 300 });
           this._latestQr = dataUrl;
           this._onQr?.(dataUrl);
-          console.log('[WA] QR ready — open http://localhost:3000 to scan');
+          console.log(`[WA] QR ready — open ${publicWebBaseUrl()} to scan`);
         } catch (e) { console.error('[WA] QR error:', e.message); }
       }
 
@@ -244,8 +284,12 @@ export default class WaClient {
         await this._ensureSearchGroup().catch(e => console.warn('[WA] Group error:', e.message));
 
         if (this._ownerJid) {
+          const web = publicWebBaseUrl();
           this._sock?.sendMessage(this._ownerJid, {
-            text: `✅ *WhatsApp Search connected!*\n\nHi ${name}! Your chat history is syncing.\n\nSearch via:\n• *Web*: http://localhost:3000\n• *WhatsApp*: message the _${SEARCH_GROUP}_ group`,
+            text:
+              `✅ *WhatsApp Search connected!*\n\n` +
+              `Hi ${name}! Your chat history is syncing. Now search through your chats using AI.\n\n` +
+              `${web}`,
           }).catch(() => {});
         }
       }
@@ -262,21 +306,29 @@ export default class WaClient {
         const jid = msg.key.remoteJid;
         if (!jid || !msg.message) continue;
 
-        // Search group query
-        if (this._searchGroupJid && jid === this._searchGroupJid && !msg.key.fromMe) {
+        // Search group: queries from phone are fromMe:true on linked device — do not use !fromMe
+        if (this._isSearchGroupJid(jid)) {
+          const mid = msg.key?.id;
+          if (mid && this._searchReplyMsgIds.has(mid)) {
+            this._searchReplyMsgIds.delete(mid);
+            continue;
+          }
           const query = extractText(msg).trim();
           if (!query) continue;
           console.log(`[WA] Search query: "${query}"`);
           try {
             const result = await this._onSearchQuery?.(query);
-            await this._sock.sendMessage(jid, { text: formatResult(result) });
+            const body = formatResult(result);
+            const sent = await this._sock.sendMessage(jid, { text: body });
+            if (sent?.key?.id) this._registerSearchGroupEchoSkip(sent.key.id);
           } catch (e) {
-            this._sock?.sendMessage(jid, { text: `❌ Error: ${e.message}` }).catch(() => {});
+            try {
+              const sent = await this._sock.sendMessage(jid, { text: `❌ Error: ${e.message}` });
+              if (sent?.key?.id) this._registerSearchGroupEchoSkip(sent.key.id);
+            } catch { /* */ }
           }
           continue;
         }
-        // Don't index bot's own replies to the search group
-        if (jid === this._searchGroupJid && msg.key.fromMe) continue;
 
         const row = this._msgToRow(msg);
         if (!row) continue;
@@ -307,12 +359,12 @@ export default class WaClient {
 
       for (const m of messages || []) {
         const jid = m.key?.remoteJid;
-        if (!jid || jid === this._searchGroupJid || !m.message) continue;
+        if (!jid || this._isSearchGroupJid(jid) || !m.message) continue;
         this._syncByChat.set(jid, (this._syncByChat.get(jid) || 0) + 1);
       }
 
       const rows = messages
-        .filter(m => m.message && m.key.remoteJid !== this._searchGroupJid)
+        .filter(m => m.message && !this._isSearchGroupJid(m.key.remoteJid))
         .map(m => this._msgToRow(m))
         .filter(Boolean);
 
@@ -320,7 +372,7 @@ export default class WaClient {
         this._onMessages?.(rows);
         for (const m of messages || []) {
           const jid = m.key?.remoteJid;
-          if (!jid || jid === this._searchGroupJid || !m.message) continue;
+          if (!jid || this._isSearchGroupJid(jid) || !m.message) continue;
           const row = this._msgToRow(m);
           if (row?.mediaType && MEDIA_FOR_INDEX.has(row.mediaType)) {
             this._queueMediaDownload(m, row);
@@ -564,7 +616,9 @@ export default class WaClient {
       void this._mirrorDisplayNameAcrossJids(jid, biz).catch(() => {});
       return biz;
     }
-    if (!msg.key.fromMe && msg.pushName) {
+    // Push name is often the best available label (esp. when phonebook names aren't accessible via WA APIs).
+    // Some multi-device events may mark messages as fromMe; don't rely on that flag here.
+    if (msg.pushName && !looksLikePhoneOnlyName(msg.pushName)) {
       this._chatNames.set(jid, msg.pushName);
       void this._mirrorDisplayNameAcrossJids(jid, msg.pushName).catch(() => {});
       return msg.pushName;
@@ -587,25 +641,33 @@ export default class WaClient {
     console.log(`[WA] Sync complete — ${this._totalMsgs} messages`);
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
     if (this._ownerJid && this._totalMsgs > 0) {
+      const web = publicWebBaseUrl();
       const groupHint = this._searchGroupJid ? `\n• *WhatsApp*: message the _${SEARCH_GROUP}_ group` : '';
       this._sock?.sendMessage(this._ownerJid, {
-        text: `🎉 *Sync complete!*\n\n📨 ${this._totalMsgs.toLocaleString()} messages indexed.\n\nSearch:\n• *Web*: http://localhost:3000${groupHint}`,
+        text:
+          `🎉 *Sync complete!*\n\n` +
+          `📨 ${this._totalMsgs.toLocaleString()} messages indexed.\n\n` +
+          `Search via:\n` +
+          `• *Web*: ${web}${groupHint}`,
       }).catch(() => {});
     }
   }
 
   // ── Search group ───────────────────────────────────────────────────────────
   async _ensureSearchGroup() {
-    const cfg = loadCfg();
+    const cfg = loadCfg(this._configFile);
 
     if (cfg.searchGroupJid) {
       try {
         await this._sock.groupMetadata(cfg.searchGroupJid);
         this._searchGroupJid = cfg.searchGroupJid;
         console.log(`[WA] Existing search group: ${cfg.searchGroupJid}`);
-        this._sock.sendMessage(this._searchGroupJid, {
-          text: `👋 *WhatsApp Search is active!*\n\nType any question here to search your chats.\nExample: _what was the most heated argument?_`,
-        }).catch(() => {});
+        try {
+          const sent = await this._sock.sendMessage(this._searchGroupJid, {
+            text: `👋 *WhatsApp Search is active!*\n\nType any question here to search your chats.\nExample: _what was the most heated argument?_`,
+          });
+          if (sent?.key?.id) this._registerSearchGroupEchoSkip(sent.key.id);
+        } catch { /* */ }
         return;
       } catch {}
     }
@@ -636,11 +698,14 @@ export default class WaClient {
 
     if (groupJid) {
       this._searchGroupJid = groupJid;
-      saveCfg({ ...cfg, searchGroupJid: groupJid });
+      saveCfg(this._configFile, { ...cfg, searchGroupJid: groupJid });
       console.log(`[WA] Search group created: ${groupJid}`);
-      this._sock.sendMessage(groupJid, {
-        text: `🎉 *WhatsApp Search group created!*\n\nThis is your private AI search assistant.\n\n*How to use:* Type any question here.\n\n_Examples:_\n• most heated argument\n• trip plans with Rahul\n• payment discussions last month`,
-      }).catch(() => {});
+      try {
+        const sent = await this._sock.sendMessage(groupJid, {
+          text: `🎉 *WhatsApp Search group created!*\n\nThis is your private AI search assistant.\n\n*How to use:* Type any question here.\n\n_Examples:_\n• most heated argument\n• trip plans with Rahul\n• payment discussions last month`,
+        });
+        if (sent?.key?.id) this._registerSearchGroupEchoSkip(sent.key.id);
+      } catch { /* */ }
     } else {
       console.warn('[WA] Could not create search group');
     }
@@ -798,7 +863,12 @@ export default class WaClient {
         this._nameFromChatMap(msg.key?.remoteJidAlt) ||
         senderJid?.split('@')[0] ||
         'Unknown';
-      const chatName   = this._resolveChatDisplayName(jid, msg);
+      let chatName   = this._resolveChatDisplayName(jid, msg);
+      // For 1:1 chats, WhatsApp often only gives a good name via pushName on an incoming message.
+      // If the resolved chat title is just a number but we have a human sender name, use that.
+      if (!isJidGroup(jid) && looksLikePhoneOnlyName(chatName) && senderName && senderName !== 'You' && !looksLikePhoneOnlyName(senderName)) {
+        chatName = senderName;
+      }
 
       return {
         messageId:    msg.key.id || `${msg.messageTimestamp}_${Math.random()}`,

@@ -7,7 +7,6 @@ import SmartSearch from './search/smart-search.js';
 import MediaIndexService from './search/media-index-service.js';
 import DailySummaryService from './search/daily-summary-service.js';
 import WebServer from './web/server.js';
-import WaClient from './whatsapp/wa-client.js';
 import ActionItemService from './search/action-item-service.js';
 import { createProvider } from './llm/provider.js';
 import {
@@ -16,7 +15,22 @@ import {
   effectiveSummaryApiKey,
 } from './llm/defaults.js';
 
+function assertJwtOnPublicHost() {
+  const onPublic =
+    process.env.RENDER === 'true' || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
+  const tok = (process.env.JWT_SECRET || config.jwtSecret || '').trim();
+  if (!onPublic || tok) return;
+  console.error(
+    '[FATAL] This instance is exposed on the public internet (Render) but JWT_SECRET is not set.\n' +
+      'Multi-tenant login is required on public deployments so each user only sees their own data.\n' +
+      'In Render → Environment, add JWT_SECRET (long random string), redeploy, then users can Register/Login on the same URL.',
+  );
+  process.exit(1);
+}
+
 async function main() {
+  assertJwtOnPublicHost();
+
   console.log('=================================');
   console.log('  WhatsApp Mirror');
   console.log('  Local AI Search + Chrome Extension');
@@ -81,30 +95,6 @@ async function main() {
   });
   webServer = new WebServer({ db, searchEngine, summaryService, mediaIndexService, actionItemService });
 
-  // ── WhatsApp Linked-Device client ───────────────────────────────
-  const waClient = new WaClient({
-    onQr:      (dataUrl) => webServer.onWaQr(dataUrl),
-    onReady:   (info)    => console.log(`[WA] Logged in as ${info.name || info.phone}`),
-    onMessages:(rows)    => webServer.onWaMessages(rows),
-    onStatus:  (s)       => webServer.onWaStatus(s),
-    onProgress:(p)       => webServer.onWaProgress(p),
-    onSearchQuery: async (query) => {
-      try {
-        return await runWithTenant(defaultTenantId, async () => searchEngine.search(query, null));
-      } catch (e) {
-        return { error: e.message };
-      }
-    },
-    onDisconnected: () => console.log('[WA] Connection closed'),
-    onMediaPath: (messageId, mediaPath) => {
-      runWithTenant(defaultTenantId, () => {
-        db.updateMessageMediaPath(messageId, mediaPath);
-        mediaIndexService.scheduleProcess();
-      });
-    },
-  });
-  webServer.setWaClient(waClient);
-
   if (provider) {
     provider.checkHealth().then(healthy => {
       if (healthy) {
@@ -168,17 +158,7 @@ async function main() {
 
   await webServer.start();
 
-  if ((process.env.RENDER || process.env.RENDER_EXTERNAL_URL) && !config.webAccessToken && !process.env.WEB_ACCESS_TOKEN) {
-    console.warn(
-      '\n[SECURITY] This app is running on Render without WEB_ACCESS_TOKEN. Anyone who can open the URL can see your chats and QR code. Add WEB_ACCESS_TOKEN (secret) in Environment and open the site with ?access_token=... once.\n',
-    );
-  }
-
-  console.log('Starting WhatsApp client...');
-  console.log('Scan the QR code at http://localhost:3000 to link your device\n');
-
-  // Start the WA client after the HTTP server is up so the QR can be served immediately
-  waClient.start().catch(err => console.error('[WA] Fatal start error:', err.message));
+  console.log('Server ready.');
 }
 
 main().catch(err => {

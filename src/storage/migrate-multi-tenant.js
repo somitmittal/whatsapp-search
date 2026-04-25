@@ -5,6 +5,8 @@
 import { LEGACY_TENANT_ID } from './tenant-constants.js';
 
 const MT_KEY = 'mt_v4_tenant_rows';
+const MT_KEY_AWAY = 'mt_v5_chat_last_seen';
+const MT_KEY_CONTACTS = 'mt_v6_contact_directory';
 
 function hasColumn(db, table, col) {
   try {
@@ -77,6 +79,53 @@ export function migrateMultiTenant(db) {
 
   run();
   console.log('[DB] Multi-tenant migration applied (' + MT_KEY + ').');
+}
+
+/**
+ * Per-tenant “last seen” marker for “while you were away” summaries.
+ * Safe to run on every open.
+ */
+export function migrateAwaySummaries(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_last_seen (
+      tenant_id TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      last_seen_ts INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, chat_jid)
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_last_seen_tenant ON chat_last_seen(tenant_id);
+  `);
+  try {
+    const row = db.prepare(`SELECT value FROM schema_migrations WHERE key = ?`).get(MT_KEY_AWAY);
+    if (row?.value === '1') return;
+  } catch { /* ignore */ }
+  try {
+    db.prepare(`INSERT OR REPLACE INTO schema_migrations (key, value) VALUES (?, '1')`).run(MT_KEY_AWAY);
+  } catch { /* ignore */ }
+}
+
+/**
+ * Per-tenant contact directory (hashed phone keys + encrypted names at rest).
+ * Safe to run on every open.
+ */
+export function migrateContactDirectory(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS contact_directory (
+      tenant_id TEXT NOT NULL,
+      phone_hash TEXT NOT NULL,
+      enc_name TEXT NOT NULL,
+      updated_at INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (tenant_id, phone_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contact_directory_tenant ON contact_directory(tenant_id);
+  `);
+  try {
+    const row = db.prepare(`SELECT value FROM schema_migrations WHERE key = ?`).get(MT_KEY_CONTACTS);
+    if (row?.value === '1') return;
+  } catch { /* ignore */ }
+  try {
+    db.prepare(`INSERT OR REPLACE INTO schema_migrations (key, value) VALUES (?, '1')`).run(MT_KEY_CONTACTS);
+  } catch { /* ignore */ }
 }
 
 function rebuildFtsAux(db) {

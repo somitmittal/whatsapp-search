@@ -44,15 +44,9 @@ const config = {
    * (e.g. custom domain). Localhost / 127.0.0.1 always allowed; `RENDER_EXTERNAL_URL` origin always allowed.
    */
   googleOauthPublicOrigins: process.env.GOOGLE_OAUTH_PUBLIC_ORIGINS || '',
-  /**
-   * When set, all `/api/*` routes (except health + Gmail OAuth callback) and WebSockets require
-   * `Authorization: Bearer <WEB_ACCESS_TOKEN>` or `?access_token=` on the WebSocket URL.
-   * Required for any public URL (e.g. Render) so strangers cannot read your DB or scan the WhatsApp QR.
-   */
-  webAccessToken: process.env.WEB_ACCESS_TOKEN || '',
-  /** Required for multi-tenant user accounts (`/api/auth/*`). If unset, app uses single `legacy-default` tenant (no login). */
+  /** Required for multi-tenant user accounts (`/api/auth/*`). MUST be set on any public deployment. */
   jwtSecret: process.env.JWT_SECRET || '',
-  /** WhatsApp ingest + background jobs scope to this tenant when JWT auth is off (default `legacy-default`). */
+  /** Legacy default tenant id (used only for non-auth local/dev flows). */
   defaultTenantId: (process.env.DEFAULT_TENANT_ID || 'legacy-default').trim(),
   /**
    * Defaults when settings table has no row yet (first run / new DB).

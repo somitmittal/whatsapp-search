@@ -5,8 +5,9 @@ import config from '../config.js';
 import { buildSearchText } from '../search/fact-extract.js';
 import { segmentIntoThreads } from '../search/thread-segment.js';
 import { getCurrentTenantId } from './tenant-context.js';
-import { migrateMultiTenant } from './migrate-multi-tenant.js';
+import { migrateAwaySummaries, migrateContactDirectory, migrateMultiTenant } from './migrate-multi-tenant.js';
 import { LEGACY_TENANT_ID } from './tenant-constants.js';
+import { decryptName, deriveTenantContactKey, encryptName, hashPhone, normalizePhone } from '../privacy/contact-directory.js';
 
 const require = createRequire(import.meta.url);
 const SQLite = require('better-sqlite3');
@@ -38,6 +39,8 @@ export default class Database {
     this._db.pragma('foreign_keys = ON');
     this._initSchema();
     migrateMultiTenant(this._db);
+    migrateAwaySummaries(this._db);
+    migrateContactDirectory(this._db);
     this._prepareStatements();
     this._migrateChatActionItemsTable();
     this._migrateOllamaCloudModelSettings();
@@ -405,6 +408,132 @@ export default class Database {
       INSERT INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)
       ON CONFLICT(tenant_id, key) DO UPDATE SET value = excluded.value
     `);
+
+    this._stmtUpsertChatLastSeen = this._db.prepare(`
+      INSERT INTO chat_last_seen (tenant_id, chat_jid, last_seen_ts)
+      VALUES (?, ?, ?)
+      ON CONFLICT(tenant_id, chat_jid) DO UPDATE SET last_seen_ts = excluded.last_seen_ts
+    `);
+    this._stmtGetChatLastSeen = this._db.prepare(
+      `SELECT last_seen_ts AS lastSeenTs FROM chat_last_seen WHERE tenant_id = ? AND chat_jid = ?`,
+    );
+    this._stmtGetThreadSummariesSince = this._db.prepare(`
+      SELECT chat_jid AS chatJid, chat_name AS chatName,
+             thread_start AS threadStart, thread_end AS threadEnd,
+             summary, message_count AS messageCount, created_at AS createdAt
+      FROM thread_summaries
+      WHERE tenant_id = ? AND chat_jid = ? AND thread_end > ?
+      ORDER BY thread_end DESC
+      LIMIT ?
+    `);
+
+    this._stmtUpsertContact = this._db.prepare(`
+      INSERT INTO contact_directory (tenant_id, phone_hash, enc_name, updated_at)
+      VALUES (?, ?, ?, unixepoch())
+      ON CONFLICT(tenant_id, phone_hash) DO UPDATE SET
+        enc_name = excluded.enc_name,
+        updated_at = unixepoch()
+    `);
+    this._stmtGetContactByHash = this._db.prepare(
+      'SELECT enc_name AS encName FROM contact_directory WHERE tenant_id = ? AND phone_hash = ?',
+    );
+  }
+
+  // ── Contacts (hashed at rest) ─────────────────────────────────────────
+
+  /**
+   * Upsert a list of contacts from a phone directory.
+   * @param {Array<{ name: string, phones: string[] }>} contacts
+   * @returns {{ inserted: number, updatedChats: number }}
+   */
+  syncContactDirectory(contacts) {
+    const t = getCurrentTenantId();
+    const key = deriveTenantContactKey(t);
+    let inserted = 0;
+    const run = this._db.transaction((rows) => {
+      for (const c of rows || []) {
+        const name = String(c?.name || '').trim();
+        if (!name) continue;
+        const enc = encryptName(key, name);
+        if (!enc) continue;
+        const phones = Array.isArray(c?.phones) ? c.phones : [];
+        for (const p of phones) {
+          const digits = normalizePhone(p);
+          if (!digits) continue;
+          const h = hashPhone(key, digits);
+          if (!h) continue;
+          const info = this._stmtUpsertContact.run(t, h, enc);
+          if (info?.changes) inserted += 1;
+        }
+      }
+    });
+    run(contacts || []);
+    const updatedChats = this.backfillChatNamesFromContactDirectory();
+    return { inserted, updatedChats };
+  }
+
+  /**
+   * Backfill chat_name for 1:1 chats where chat_name is missing/phone-only using the contact directory.
+   * Stores the plain display name in `messages.chat_name` for UX (directory itself stays encrypted+hashed).
+   */
+  backfillChatNamesFromContactDirectory(limitChats = 2500) {
+    const t = getCurrentTenantId();
+    const key = deriveTenantContactKey(t);
+    const rows = this._db.prepare(
+      `SELECT chat_jid AS chatJid, MAX(timestamp) AS lastTs
+       FROM messages
+       WHERE tenant_id = ?
+         AND chat_jid NOT LIKE '%@g.us'
+       GROUP BY chat_jid
+       ORDER BY lastTs DESC
+       LIMIT ?`,
+    ).all(t, Math.max(1, Math.min(Number(limitChats) || 2500, 10000)));
+
+    let updated = 0;
+    const upd = this._db.prepare('UPDATE messages SET chat_name = ? WHERE tenant_id = ? AND chat_jid = ?');
+    for (const r of rows) {
+      const chatJid = r.chatJid;
+      if (!chatJid) continue;
+      const digits = normalizePhone(String(chatJid).split('@')[0]);
+      if (!digits) continue;
+      const h = hashPhone(key, digits);
+      const enc = this._stmtGetContactByHash.get(t, h)?.encName || '';
+      if (!enc) continue;
+      const name = decryptName(key, enc);
+      if (!name) continue;
+      const info = upd.run(name, t, chatJid);
+      updated += info?.changes || 0;
+    }
+    if (updated > 0) console.log(`[DB] Backfilled chat_name from contact directory on ${updated} message row(s)`);
+    return updated;
+  }
+
+  // ── While-you-were-away ───────────────────────────────────────────────
+
+  markChatSeen(chatJid, ts = null) {
+    if (!chatJid) return 0;
+    const t = getCurrentTenantId();
+    const when = ts != null ? Number(ts) : Math.floor(Date.now() / 1000);
+    this._stmtUpsertChatLastSeen.run(t, chatJid, when);
+    return when;
+  }
+
+  getChatLastSeen(chatJid) {
+    if (!chatJid) return 0;
+    const t = getCurrentTenantId();
+    return this._stmtGetChatLastSeen.get(t, chatJid)?.lastSeenTs || 0;
+  }
+
+  getAwayThreadSummaries(chatJid, limit = 3) {
+    const t = getCurrentTenantId();
+    const lastSeen = this.getChatLastSeen(chatJid);
+    const rows = this._stmtGetThreadSummariesSince.all(
+      t,
+      chatJid,
+      lastSeen,
+      Math.max(1, Math.min(Number(limit) || 3, 10)),
+    );
+    return { lastSeenTs: lastSeen, summaries: rows || [] };
   }
 
   // ── Settings ──────────────────────────────────────────────────────────
