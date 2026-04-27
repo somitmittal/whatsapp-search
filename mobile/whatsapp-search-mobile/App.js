@@ -1,15 +1,15 @@
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, ActivityIndicator, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Contacts from 'expo-contacts';
 
+const SESSION_KEY = 'wa_session_id';
+
 export default function App() {
   const [baseUrl, setBaseUrl] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [sessionId, setSessionId] = useState(null);
   const [query, setQuery] = useState('');
-  const [jwt, setJwt] = useState(null);
   const [loading, setLoading] = useState(false);
   const [syncingContacts, setSyncingContacts] = useState(false);
   const [answer, setAnswer] = useState('');
@@ -19,9 +19,10 @@ export default function App() {
     (async () => {
       try {
         const savedBase = await AsyncStorage.getItem('baseUrl');
-        const savedJwt = await AsyncStorage.getItem('auth_jwt');
+        const saved = await AsyncStorage.getItem(SESSION_KEY);
+        await AsyncStorage.removeItem('auth_jwt');
         if (savedBase) setBaseUrl(savedBase);
-        if (savedJwt) setJwt(savedJwt);
+        if (saved) setSessionId(saved);
       } catch { /* ignore */ }
     })();
   }, []);
@@ -30,39 +31,44 @@ export default function App() {
     AsyncStorage.setItem('baseUrl', baseUrl || '').catch(() => {});
   }, [baseUrl]);
 
-  async function auth(path) {
-    if (!baseUrl?.startsWith('http')) return Alert.alert('Base URL', 'Enter a valid server URL (https://...)');
-    if (!email.includes('@') || password.length < 8) return Alert.alert('Login', 'Enter email + password (8+ chars).');
+  function bu() {
+    return (baseUrl || '').trim().replace(/\/$/, '');
+  }
+
+  async function ensureServerSession() {
+    const root = bu();
+    if (!root?.startsWith('http')) {
+      return Alert.alert('Base URL', 'Enter a valid server URL (https://...).');
+    }
     setLoading(true);
     try {
-      const r = await fetch(`${baseUrl}${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
+      const headers = {};
+      if (sessionId) headers['Authorization'] = `Bearer ${sessionId}`;
+      const r = await fetch(`${root}/api/auth/ensure`, { headers, credentials: 'include' });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.token) throw new Error(j?.error || 'Auth failed');
-      setJwt(j.token);
-      await AsyncStorage.setItem('auth_jwt', j.token);
+      if (!r.ok) throw new Error(j?.error || 'Could not get session. Is SESSION_SECRET (or JWT_SECRET) set on the server?');
+      if (!j?.sessionId) throw new Error('No session in response');
+      setSessionId(j.sessionId);
+      await AsyncStorage.setItem(SESSION_KEY, j.sessionId);
     } catch (e) {
-      Alert.alert('Auth error', e.message || 'Auth failed');
+      Alert.alert('Connect error', e.message || 'Failed');
     } finally {
       setLoading(false);
     }
   }
 
   async function doSearch() {
-    if (!jwt) return Alert.alert('Login required', 'Please login first.');
+    if (!sessionId) return Alert.alert('Connect first', 'Use Connect to get a server-issued session.');
     if (!query.trim()) return;
     setLoading(true);
     setAnswer('');
     setSources([]);
     try {
-      const r = await fetch(`${baseUrl}/api/search`, {
+      const r = await fetch(`${bu()}/api/search`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${jwt}`,
+          Authorization: `Bearer ${sessionId}`,
         },
         body: JSON.stringify({ query: query.trim(), chatJid: null, mediaType: null }),
       });
@@ -78,8 +84,7 @@ export default function App() {
   }
 
   async function syncContacts() {
-    if (!jwt) return Alert.alert('Login required', 'Please login first.');
-    if (!baseUrl?.startsWith('http')) return Alert.alert('Base URL', 'Enter a valid server URL (https://...)');
+    if (!sessionId) return Alert.alert('Connect first', 'Use Connect to get a server-issued session.');
     setSyncingContacts(true);
     try {
       const { status } = await Contacts.requestPermissionsAsync();
@@ -107,11 +112,11 @@ export default function App() {
         Alert.alert('No contacts', 'No contacts with phone numbers found.');
         return;
       }
-      const r = await fetch(`${baseUrl}/api/contacts/sync`, {
+      const r = await fetch(`${bu()}/api/contacts/sync`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${jwt}`,
+          Authorization: `Bearer ${sessionId}`,
         },
         body: JSON.stringify({ contacts: payload }),
       });
@@ -126,17 +131,25 @@ export default function App() {
   }
 
   async function logout() {
-    setJwt(null);
-    await AsyncStorage.removeItem('auth_jwt').catch(() => {});
+    if (sessionId) {
+      try {
+        await fetch(`${bu()}/api/auth/logout`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${sessionId}` },
+        });
+      } catch { /* ignore */ }
+    }
+    setSessionId(null);
+    await AsyncStorage.removeItem(SESSION_KEY).catch(() => {});
   }
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>WhatsApp Search</Text>
-        {jwt ? (
+        {sessionId ? (
           <TouchableOpacity onPress={logout}>
-            <Text style={styles.link}>Logout</Text>
+            <Text style={styles.link}>Clear session</Text>
           </TouchableOpacity>
         ) : null}
       </View>
@@ -150,26 +163,28 @@ export default function App() {
         style={styles.input}
       />
 
-      {!jwt ? (
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Login / Register</Text>
-          <TextInput value={email} onChangeText={setEmail} placeholder="Email" autoCapitalize="none" style={styles.input} />
-          <TextInput value={password} onChangeText={setPassword} placeholder="Password (8+ chars)" secureTextEntry style={styles.input} />
-          <View style={styles.row}>
-            <TouchableOpacity style={styles.btn} onPress={() => auth('/api/auth/login')} disabled={loading}>
-              <Text style={styles.btnText}>Login</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={() => auth('/api/auth/register')} disabled={loading}>
-              <Text style={[styles.btnText, styles.btnSecondaryText]}>Register</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : (
+      <View style={styles.card}>
+        <Text style={styles.hint}>
+          The server issues an opaque session (no password on the device). Use Connect, then search on the same tenant as
+          the web.
+        </Text>
+        <TouchableOpacity style={styles.btn} onPress={ensureServerSession} disabled={loading}>
+          <Text style={styles.btnText}>{sessionId ? 'Refresh session' : 'Connect'}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {sessionId ? (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>AI Search</Text>
           <View style={styles.row}>
-            <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={syncContacts} disabled={syncingContacts || loading}>
-              <Text style={[styles.btnText, styles.btnSecondaryText]}>{syncingContacts ? 'Syncing…' : 'Sync Contacts'}</Text>
+            <TouchableOpacity
+              style={[styles.btn, styles.btnSecondary]}
+              onPress={syncContacts}
+              disabled={syncingContacts || loading}
+            >
+              <Text style={[styles.btnText, styles.btnSecondaryText]}>
+                {syncingContacts ? 'Syncing…' : 'Sync Contacts'}
+              </Text>
             </TouchableOpacity>
           </View>
           <TextInput value={query} onChangeText={setQuery} placeholder="Ask anything about your chats…" style={styles.input} />
@@ -189,7 +204,7 @@ export default function App() {
             </View>
           ) : null}
         </View>
-      )}
+      ) : null}
 
       <StatusBar style="auto" />
     </SafeAreaView>
@@ -206,6 +221,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: '700', color: '#111b21' },
   link: { color: '#008069', fontWeight: '700' },
   label: { color: '#667781', fontSize: 12, marginBottom: 6 },
+  hint: { color: '#667781', fontSize: 12, lineHeight: 16, marginBottom: 10 },
   input: {
     backgroundColor: '#fff',
     borderWidth: 1,
@@ -216,7 +232,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginBottom: 10,
   },
-  card: { backgroundColor: '#fff', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#e9edef' },
+  card: { backgroundColor: '#fff', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#e9edef', marginBottom: 12 },
   cardTitle: { fontSize: 14, fontWeight: '700', marginBottom: 10, color: '#111b21' },
   row: { flexDirection: 'row', gap: 10 },
   btn: {

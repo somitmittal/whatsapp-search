@@ -650,19 +650,6 @@
   </style>
 </head>
 <body>
-<div id="auth-gate" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(17,27,33,0.92);align-items:center;justify-content:center;padding:24px;">
-  <div style="background:var(--sidebar-bg);max-width:440px;width:100%;padding:24px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
-    <h2 style="margin-bottom:8px;font-size:18px;">Sign in</h2>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Login (or register) to access your own chats and backups.</p>
-    <input type="email" id="jwt-email" autocomplete="username" placeholder="Email" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;font-size:14px;box-sizing:border-box;" />
-    <input type="password" id="jwt-password" autocomplete="current-password" placeholder="Password (8+ chars)" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;font-size:14px;box-sizing:border-box;" />
-    <div style="display:flex;gap:10px;">
-      <button type="button" class="btn btn-primary" id="jwt-login-btn" style="flex:1;padding:12px;border:none;border-radius:8px;background:var(--teal);color:#fff;font-weight:600;cursor:pointer;">Login</button>
-      <button type="button" class="btn btn-secondary" id="jwt-register-btn" style="flex:1;padding:12px;border:none;border-radius:8px;background:#fff;color:var(--teal);font-weight:600;cursor:pointer;border:1px solid var(--border);">Register</button>
-    </div>
-    <p id="jwt-login-err" style="font-size:12px;color:var(--danger);margin-top:10px;"></p>
-  </div>
-</div>
 <div id="app" class="app">
 
   <!-- Sidebar -->
@@ -1060,27 +1047,13 @@
 
   const _origFetch = window.fetch.bind(window);
   window.fetch = async function(input, init) {
-    const jwtTok = sessionStorage.getItem('auth_jwt') || '';
     let urlStr = typeof input === 'string' ? input : (input && input.url);
     urlStr = urlStr != null ? String(urlStr) : '';
     const isOurApi = urlStr.startsWith('/api/') || (urlStr.includes('://') && urlStr.includes('/api/'));
-    if (isOurApi && jwtTok) {
-      init = init ? { ...init } : {};
-      const h = new Headers(init.headers || {});
-      if (jwtTok) h.set('Authorization', 'Bearer ' + jwtTok);
-      init.headers = h;
+    if (isOurApi) {
+      init = init ? { ...init, credentials: init.credentials || 'include' } : { credentials: 'include' };
     }
-    const res = await _origFetch(input, init);
-    if (res.status === 401) {
-      try {
-        const j = await res.clone().json();
-        if (j && (j.needLogin || j.error === 'Unauthorized')) {
-          const gate = document.getElementById('auth-gate');
-          if (gate) gate.style.display = 'flex';
-        }
-      } catch (e) { /* ignore */ }
-    }
-    return res;
+    return _origFetch(input, init);
   };
 
   let ws, chatData = [], activeChat = null, connected = false, searchActive = false;
@@ -1322,12 +1295,7 @@
 
   // ── WebSocket ──────────────────────────────────────────────────────
   function connectWS() {
-    const jwt = sessionStorage.getItem('auth_jwt') || '';
-    const sp = new URLSearchParams();
-    if (jwt) sp.set('token', jwt);
-    const q = sp.toString();
-    const qs = q ? '?' + q : '';
-    const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + qs;
+    const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host;
     ws = new WebSocket(wsUrl);
     ws.onmessage = e => {
       try {
@@ -1353,50 +1321,9 @@
         else if (msg.type === 'summary-progress') { handleSummaryProgress(msg.data); }
       } catch {}
     };
-    ws.onclose = () => {
-      setTimeout(() => {
-        const g = document.getElementById('auth-gate');
-        if (g && g.style.display === 'flex') return;
-        connectWS();
-      }, 3000);
-    };
+    ws.onclose = () => { setTimeout(() => { connectWS(); }, 3000); };
   }
   connectWS();
-
-  (function bindAuthGate() {
-    const gate = $('#auth-gate');
-    const jwtBtn = document.getElementById('jwt-login-btn');
-    const regBtn = document.getElementById('jwt-register-btn');
-    const jwtErr = document.getElementById('jwt-login-err');
-    async function doAuth(path) {
-      const email = (document.getElementById('jwt-email')?.value || '').trim();
-      const password = document.getElementById('jwt-password')?.value || '';
-      if (jwtErr) jwtErr.textContent = '';
-      if (!email.includes('@') || String(password).length < 8) {
-        if (jwtErr) jwtErr.textContent = 'Enter a valid email and password (8+ chars).';
-        return;
-      }
-      try {
-        const r = await _origFetch(path, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password }),
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j?.token) {
-          if (jwtErr) jwtErr.textContent = j?.error || 'Auth failed';
-          return;
-        }
-        sessionStorage.setItem('auth_jwt', j.token);
-        if (gate) gate.style.display = 'none';
-        window.location.reload();
-      } catch (e) {
-        if (jwtErr) jwtErr.textContent = e.message || 'Auth failed';
-      }
-    }
-    if (jwtBtn) jwtBtn.addEventListener('click', () => doAuth('/api/auth/login'));
-    if (regBtn) regBtn.addEventListener('click', () => doAuth('/api/auth/register'));
-  })();
 
   // ── WhatsApp connection UI ─────────────────────────────────────────
   let _waState = 'DISCONNECTED';

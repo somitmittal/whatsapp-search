@@ -7,8 +7,11 @@ import { join } from 'path';
 import config from '../config.js';
 import { runWithTenant, getCurrentTenantId } from '../storage/tenant-context.js';
 import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
-import { isJwtAuthEnabled, verifyTenantToken } from '../auth/jwt-util.js';
+import { isJwtAuthEnabled } from '../auth/jwt-util.js';
+import { parse } from 'cookie';
+import cookieParser from 'cookie-parser';
 import { registerAuthRoutes } from './auth-routes.js';
+import { getSessionIdFromRequest, setSessionCookie, UserSessionService } from '../auth/user-session.js';
 import { importExportedChat, extractTextFromZip } from '../import/chat-import.js';
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
 import WaClient from '../whatsapp/wa-client.js';
@@ -38,6 +41,7 @@ export default class WebServer {
     this.summaryService = summaryService;
     this._mediaIndexService = mediaIndexService || null;
     this._actionItemService = actionItemService || null;
+    this._userSessions = new UserSessionService(this.db.getSqliteDatabase());
 
     this._app = express();
     this._server = createServer(this._app);
@@ -71,6 +75,11 @@ export default class WebServer {
     return process.env.RENDER === 'true' || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
   }
 
+  /** Set HttpOnly cookie `Secure` flag: true in production/HTTPS. */
+  _isSecureCookieDeployment() {
+    return this._isPublicInternetDeploy() || String(process.env.FORCE_SECURE_COOKIES || '').toLowerCase() === 'true';
+  }
+
   _getTenantState(tenantId) {
     const tid = tenantId || LEGACY_TENANT_ID;
     let st = this._tenantState.get(tid);
@@ -91,22 +100,16 @@ export default class WebServer {
   /** @returns {boolean} */
   _verifyWsClient(info) {
     const req = info.req;
-    // If JWT is configured → multi-tenant websocket (requires token).
     if (isJwtAuthEnabled()) {
-      try {
-        const raw = req.url || '';
-        const qIdx = raw.indexOf('?');
-        const qs = qIdx === -1 ? '' : raw.slice(qIdx + 1);
-        const token = new URLSearchParams(qs).get('token');
-        const v = verifyTenantToken(token);
-        if (!v?.tenantId) return false;
-        req.tenantId = v.tenantId;
-        return true;
-      } catch {
-        return false;
-      }
+      const cookies = parse(String(req.headers?.cookie || ''));
+      const sid = getSessionIdFromRequest({ cookies, headers: req.headers });
+      const row = sid ? this._userSessions.getById(sid) : null;
+      if (!row) return false;
+      this._userSessions.touch(sid);
+      req.tenantId = row.tenant_id;
+      req.waSessionId = sid;
+      return true;
     }
-    // Legacy mode (no JWT_SECRET): allow a single shared tenant locally.
     req.tenantId = config.defaultTenantId || LEGACY_TENANT_ID;
     return true;
   }
@@ -331,33 +334,46 @@ export default class WebServer {
     this._app.use((_req, res, next) => {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie');
       if (_req.method === 'OPTIONS') return res.sendStatus(204);
       next();
     });
+    this._app.use(cookieParser());
     this._app.use(express.json({ limit: '10mb' }));
 
-    /** Per-request SQLite tenant (JWT sub). */
+    /**
+     * Per-request tenant: httpOnly `ws.sid` cookie and/or `Authorization: Bearer` opaque sessionId (extension/mobile).
+     * No client-side password or JWT; identity is a server-issued session (WhatsApp-like single URL, isolated data).
+     */
     this._app.use((req, res, next) => {
       if (req.method === 'OPTIONS') return next();
       const path = req.path || '';
-      if (!path.startsWith('/api/') || path === '/api/health' || path.startsWith('/api/auth/') || path === '/api/gmail/oauth/callback') {
+      if (!path.startsWith('/api/') || path === '/api/health' || path === '/api/gmail/oauth/callback') {
         return runWithTenant(LEGACY_TENANT_ID, () => next());
       }
       if (!isJwtAuthEnabled()) {
         return runWithTenant(config.defaultTenantId || LEGACY_TENANT_ID, () => next());
       }
-      const auth = req.headers?.authorization;
-      const token = auth && /^Bearer\s+(\S+)/i.exec(auth)?.[1];
-      const v = verifyTenantToken(token);
-      if (!v?.tenantId) {
-        return res.status(401).json({ error: 'Unauthorized', needLogin: true });
+      const secure = this._isSecureCookieDeployment();
+      let sid = getSessionIdFromRequest(req);
+      let row = sid ? this._userSessions.getById(sid) : null;
+      if (row) {
+        this._userSessions.touch(sid);
+        req.tenantId = row.tenant_id;
+        req.waSessionId = sid;
+        return runWithTenant(req.tenantId, () => next());
       }
-      req.tenantId = v.tenantId;
-      return runWithTenant(v.tenantId, () => next());
+      const c = this._userSessions.createTenantWithSession();
+      req.tenantId = c.tenantId;
+      req.waSessionId = c.sessionId;
+      setSessionCookie(res, c.sessionId, { secure });
+      return runWithTenant(req.tenantId, () => next());
     });
 
-    registerAuthRoutes(this._app, this.db.getSqliteDatabase());
+    registerAuthRoutes(this._app, {
+      sessions: this._userSessions,
+      isSecureCookie: () => this._isSecureCookieDeployment(),
+    });
 
     // WhatsApp + Chrome extension ingest are tenant-scoped via the JWT middleware above.
 
@@ -1018,5 +1034,16 @@ export default class WebServer {
   stop() {
     this._wss.close();
     this._server.close();
+  }
+
+  /** Gracefully tear down all Baileys clients (e.g. SIGINT). */
+  async destroyAllWhatsAppClients() {
+    const tasks = [];
+    for (const st of this._tenantState.values()) {
+      if (st.waClient && typeof st.waClient.destroy === 'function') {
+        tasks.push(st.waClient.destroy().catch(() => {}));
+      }
+    }
+    await Promise.all(tasks);
   }
 }

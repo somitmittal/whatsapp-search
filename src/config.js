@@ -22,6 +22,13 @@ function loadEnv() {
 
 loadEnv();
 
+/**
+ * One long random string on the **server** (you never paste it in the app — it is not a “user JWT”).
+ * `SESSION_SECRET` (clear name) or `JWT_SECRET` (legacy) — used for: multi-tenant sessions, contact
+ * field encryption, and the public-URL safety check. Same value either way.
+ */
+const serverSecret = (process.env.SESSION_SECRET || process.env.JWT_SECRET || '').trim();
+
 const config = {
   dataDir: resolve(ROOT, process.env.DATA_DIR || './data'),
   mediaDir: resolve(ROOT, process.env.DATA_DIR || './data', 'media'),
@@ -44,8 +51,13 @@ const config = {
    * (e.g. custom domain). Localhost / 127.0.0.1 always allowed; `RENDER_EXTERNAL_URL` origin always allowed.
    */
   googleOauthPublicOrigins: process.env.GOOGLE_OAUTH_PUBLIC_ORIGINS || '',
-  /** Required for multi-tenant user accounts (`/api/auth/*`). MUST be set on any public deployment. */
-  jwtSecret: process.env.JWT_SECRET || '',
+  /**
+   * Same as env `SESSION_SECRET` or `JWT_SECRET` (either name works).
+   * This is a **server** secret, not a token the browser stores.
+   */
+  serverSecret,
+  /** @deprecated use `serverSecret` — same value. */
+  jwtSecret: serverSecret,
   /** Legacy default tenant id (used only for non-auth local/dev flows). */
   defaultTenantId: (process.env.DEFAULT_TENANT_ID || 'legacy-default').trim(),
   /**

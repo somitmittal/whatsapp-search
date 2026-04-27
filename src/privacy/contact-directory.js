@@ -1,16 +1,17 @@
 import crypto from 'node:crypto';
+import config from '../config.js';
 
-function getJwtSecret() {
-  return String(process.env.JWT_SECRET || '').trim();
+function getAppSecret() {
+  return String(config.serverSecret || '').trim();
 }
 
 /**
- * Derive a stable per-tenant key from JWT_SECRET (32 bytes).
+ * Derive a stable per-tenant key from the server secret (32 bytes).
  * This lets us store encrypted-at-rest contact names without keeping plaintext in SQLite.
  */
 export function deriveTenantContactKey(tenantId) {
-  const secret = getJwtSecret();
-  if (!secret) throw new Error('JWT_SECRET is required for contact sync encryption');
+  const secret = getAppSecret();
+  if (!secret) throw new Error('Set SESSION_SECRET (or JWT_SECRET) for contact sync encryption');
   return crypto
     .createHmac('sha256', Buffer.from(secret, 'utf8'))
     .update(`contacts:v1:${String(tenantId || '')}`)

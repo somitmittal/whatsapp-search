@@ -7,6 +7,7 @@ import { LEGACY_TENANT_ID } from './tenant-constants.js';
 const MT_KEY = 'mt_v4_tenant_rows';
 const MT_KEY_AWAY = 'mt_v5_chat_last_seen';
 const MT_KEY_CONTACTS = 'mt_v6_contact_directory';
+const MT_KEY_SESSIONS = 'mt_v7_user_sessions_tenants_nullable';
 
 function hasColumn(db, table, col) {
   try {
@@ -40,8 +41,8 @@ export function migrateMultiTenant(db) {
     );
     CREATE TABLE IF NOT EXISTS tenants (
       id TEXT PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
+      email TEXT UNIQUE,
+      password_hash TEXT,
       created_at INTEGER DEFAULT (unixepoch())
     );
     CREATE TABLE IF NOT EXISTS tenant_settings (
@@ -108,6 +109,56 @@ export function migrateAwaySummaries(db) {
  * Per-tenant contact directory (hashed phone keys + encrypted names at rest).
  * Safe to run on every open.
  */
+/**
+ * Server-side sessions (httpOnly cookie + user_sessions) and passwordless tenants.
+ * Safe to run on every open.
+ */
+export function migrateUserSessionsAndNullableTenants(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_tenant ON user_sessions(tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);
+  `);
+
+  let done = false;
+  try {
+    const row = db.prepare(`SELECT value FROM schema_migrations WHERE key = ?`).get(MT_KEY_SESSIONS);
+    done = row?.value === '1';
+  } catch {
+    /* schema_migrations may be missing; migrateMultiTenant creates it */
+  }
+  if (done) return;
+
+  const notNull = db.prepare(
+    `SELECT "notnull" AS n FROM pragma_table_info('tenants') WHERE name = 'email'`,
+  ).get();
+  if (notNull && Number(notNull.n) === 1) {
+    db.exec(`
+      CREATE TABLE tenants_new (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE,
+        password_hash TEXT,
+        created_at INTEGER DEFAULT (unixepoch())
+      );
+      INSERT INTO tenants_new (id, email, password_hash, created_at)
+        SELECT id, email, password_hash, created_at FROM tenants;
+      DROP TABLE tenants;
+      ALTER TABLE tenants_new RENAME TO tenants;
+    `);
+  }
+  try {
+    db.prepare(`INSERT OR REPLACE INTO schema_migrations (key, value) VALUES (?, '1')`).run(
+      MT_KEY_SESSIONS,
+    );
+  } catch { /* */ }
+  console.log('[DB] user_sessions + nullable tenant emails migration applied (' + MT_KEY_SESSIONS + ').');
+}
+
 export function migrateContactDirectory(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS contact_directory (

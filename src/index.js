@@ -18,12 +18,12 @@ import {
 function assertJwtOnPublicHost() {
   const onPublic =
     process.env.RENDER === 'true' || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
-  const tok = (process.env.JWT_SECRET || config.jwtSecret || '').trim();
+  const tok = (config.serverSecret || '').trim();
   if (!onPublic || tok) return;
   console.error(
-    '[FATAL] This instance is exposed on the public internet (Render) but JWT_SECRET is not set.\n' +
-      'Multi-tenant login is required on public deployments so each user only sees their own data.\n' +
-      'In Render → Environment, add JWT_SECRET (long random string), redeploy, then users can Register/Login on the same URL.',
+    '[FATAL] This instance is exposed on the public internet (Render) but no server secret is set.\n' +
+      'Add SESSION_SECRET (or JWT_SECRET) as a long random string in Render → Environment, then redeploy.\n' +
+      'This is a server key only (not a token for users) — it enables per-browser sessions and data isolation.',
   );
   process.exit(1);
 }
@@ -148,7 +148,7 @@ async function main() {
     console.log('\nShutting down...');
     clearInterval(summaryInterval);
     clearInterval(mediaIndexInterval);
-    await waClient.destroy();
+    await webServer.destroyAllWhatsAppClients();
     webServer.stop();
     db.close();
     process.exit(0);

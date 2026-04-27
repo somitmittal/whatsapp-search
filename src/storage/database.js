@@ -5,7 +5,12 @@ import config from '../config.js';
 import { buildSearchText } from '../search/fact-extract.js';
 import { segmentIntoThreads } from '../search/thread-segment.js';
 import { getCurrentTenantId } from './tenant-context.js';
-import { migrateAwaySummaries, migrateContactDirectory, migrateMultiTenant } from './migrate-multi-tenant.js';
+import {
+  migrateAwaySummaries,
+  migrateContactDirectory,
+  migrateMultiTenant,
+  migrateUserSessionsAndNullableTenants,
+} from './migrate-multi-tenant.js';
 import { LEGACY_TENANT_ID } from './tenant-constants.js';
 import { decryptName, deriveTenantContactKey, encryptName, hashPhone, normalizePhone } from '../privacy/contact-directory.js';
 
@@ -39,6 +44,7 @@ export default class Database {
     this._db.pragma('foreign_keys = ON');
     this._initSchema();
     migrateMultiTenant(this._db);
+    migrateUserSessionsAndNullableTenants(this._db);
     migrateAwaySummaries(this._db);
     migrateContactDirectory(this._db);
     this._prepareStatements();

@@ -109,8 +109,8 @@
     <div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;">
       <div style="font-size:11px;font-weight:600;color:#667781;margin-bottom:6px;">Search server (must match extension host permission)</div>
       <input type="text" id="server-url" placeholder="http://localhost:3000" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px;box-sizing:border-box;margin-bottom:8px;" />
-      <div style="font-size:11px;font-weight:600;color:#667781;margin-bottom:6px;">Login required (JWT)</div>
-      <input type="password" id="access-token" placeholder="Optional" autocomplete="off" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px;box-sizing:border-box;margin-bottom:8px;" />
+      <div style="font-size:11px;font-weight:600;color:#667781;margin-bottom:6px;">Server session (when SESSION_SECRET is set)</div>
+      <input type="password" id="access-token" placeholder="sessionId from GET /api/auth/ensure" autocomplete="off" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px;box-sizing:border-box;margin-bottom:8px;" />
       <button class="btn secondary" id="save-server-btn" type="button">Save server settings</button>
     </div>
   </div>
