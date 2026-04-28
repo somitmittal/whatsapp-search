@@ -650,6 +650,16 @@
   </style>
 </head>
 <body>
+<div class="confirm-overlay" id="tab-lock-overlay">
+  <div class="confirm-box" style="max-width:520px;">
+    <h4>Already open in another tab</h4>
+    <p id="tab-lock-msg">WhatsApp Search is active in another tab/window. For best results, keep only one active tab.</p>
+    <div class="confirm-actions">
+      <button class="btn-cancel" id="tab-lock-back">Go back</button>
+      <button class="btn-danger" id="tab-lock-takeover">Use here</button>
+    </div>
+  </div>
+</div>
 <div id="app" class="app">
 
   <!-- Sidebar -->
@@ -811,6 +821,14 @@
           </svg>
           <h2>WhatsApp Search</h2>
           <p>Select a chat from the left, or search your chats with AI.<br>Click <strong>+</strong> to import more chat exports.</p>
+          <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px;">
+            <button class="btn btn-primary" id="btn-restore-backup" type="button" style="min-width:220px;">
+              Restore from WhatsApp Backup
+            </button>
+            <button class="btn btn-secondary" id="btn-link-whatsapp" type="button" style="min-width:220px;">
+              Link WhatsApp (Live Sync)
+            </button>
+          </div>
           <div class="lock-note">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
             Your messages stay on your device. Only search queries go to the AI you choose.
@@ -871,21 +889,27 @@
         </button>
         <div class="overlay-header-text">
           <h2>Add chats</h2>
-          <p class="overlay-header-sub">Load a WhatsApp export from Gmail, or upload .zip / .txt files</p>
+          <p class="overlay-header-sub">Restore from any WhatsApp export (.zip / .txt) — Gmail is optional</p>
         </div>
       </div>
       <div class="overlay-body">
-        <p style="font-size:13px;color:var(--text2);margin:0 0 14px 0;line-height:1.45;">Bring in <strong>exported</strong> chats only (not crypt14 phone backups). Use Gmail if you emailed the export to yourself; otherwise drop files below.</p>
+        <p style="font-size:13px;color:var(--text2);margin:0 0 14px 0;line-height:1.45;">
+          Restore from <strong>exported</strong> chats (<code>.zip</code> / <code>.txt</code>) saved anywhere on your device (Downloads / Drive / Files, etc.).
+          Gmail is just a convenience if you emailed the export to yourself. Encrypted phone backups (crypt14 / Drive backups) are not supported.
+        </p>
         <div class="import-guide" id="gmail-import-section" style="border:1px solid rgba(0,168,132,0.35);">
-          <h3>From Gmail (WhatsApp export)</h3>
-          <p style="font-size:13px;color:var(--text);margin:0 0 8px 0;">Tap <strong>Load WhatsApp Backup</strong> to sign in with Google and choose an account. We only request <strong>Gmail read-only</strong> access to find <code>WhatsApp Chat …</code> export attachments you emailed to yourself and import them into your chats.</p>
+          <h3>Optional: From Gmail (if you emailed the export)</h3>
+          <p style="font-size:13px;color:var(--text);margin:0 0 8px 0;">
+            Tap <strong>Load WhatsApp Backup</strong> to sign in with Google and choose an account. We only request <strong>Gmail read-only</strong> access to find
+            <code>WhatsApp Chat …</code> export attachments you emailed to yourself and import them.
+          </p>
           <p id="gmail-import-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;"></p>
           <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
             <button class="btn btn-primary" type="button" id="gmail-btn-load">Load WhatsApp Backup</button>
             <button class="btn btn-secondary" type="button" id="gmail-btn-disconnect" style="display:none;">Disconnect</button>
           </div>
           <ol style="margin:0;padding-left:18px;font-size:12px;color:var(--text2);"><li>On your phone: <strong>Export chat</strong> &rarr; email the <strong>.zip</strong> or <strong>.txt</strong> to yourself.</li><li>Here: tap <strong>Load WhatsApp Backup</strong> and pick your Google account.</li></ol>
-          <p class="warn-text" style="margin-top:10px;">&#9888; This feature requires server setup for Google OAuth (<code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code>). Encrypted phone backups (crypt14 / Drive backups) are not supported.</p>
+          <p class="warn-text" style="margin-top:10px;">&#9888; Requires server setup for Google OAuth (<code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code>).</p>
         </div>
         <h3 style="font-size:14px;font-weight:600;margin:18px 0 10px 0;color:var(--text);">Or upload files</h3>
         <div class="drop-zone" id="drop-zone">
@@ -1095,12 +1119,97 @@
   $('#menu-settings').addEventListener('click', () => { closeMenu(); openOverlay('settings'); loadSettings(); });
   $('#close-import').addEventListener('click', () => closeOverlay('import'));
   $('#close-settings').addEventListener('click', () => closeOverlay('settings'));
+  $('#btn-restore-backup')?.addEventListener('click', () => {
+    openOverlay('import');
+    setTimeout(() => {
+      const sec = document.getElementById('gmail-import-section');
+      if (sec && typeof sec.scrollIntoView === 'function') sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  });
+  $('#btn-link-whatsapp')?.addEventListener('click', async () => {
+    try { await fetch('/api/wa/connect', { method: 'POST' }); } catch {}
+    openOverlay('settings');
+    loadSettings();
+  });
 
   $('#btn-menu').addEventListener('click', (e) => {
     e.stopPropagation();
     $('#sidebar-menu').classList.toggle('open');
   });
   document.addEventListener('click', () => closeAllMenus());
+
+  // ── Single-tab lock (WhatsApp Web style) ────────────────────────────
+  (function singleTabLock() {
+    const KEY = 'wa_search_active_tab_v1';
+    const HEARTBEAT_MS = 1200;
+    const STALE_MS = 4000;
+    const tabId = Math.random().toString(16).slice(2) + Date.now().toString(16);
+    let isOwner = false;
+    let hb = null;
+    const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('wa-search-tab-lock') : null;
+
+    function readLock() {
+      try { return JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { return null; }
+    }
+    function writeLock(obj) {
+      try { localStorage.setItem(KEY, JSON.stringify(obj)); } catch {}
+    }
+    function showLockOverlay(show) {
+      const ov = document.getElementById('tab-lock-overlay');
+      if (!ov) return;
+      ov.classList.toggle('open', !!show);
+    }
+    function becomeOwner() {
+      isOwner = true;
+      writeLock({ tabId, ts: Date.now() });
+      showLockOverlay(false);
+      if (hb) clearInterval(hb);
+      hb = setInterval(() => {
+        if (!isOwner) return;
+        writeLock({ tabId, ts: Date.now() });
+      }, HEARTBEAT_MS);
+      bc?.postMessage({ type: 'owner', tabId });
+    }
+    function relinquish() {
+      isOwner = false;
+      if (hb) clearInterval(hb);
+      hb = null;
+    }
+    function check() {
+      const cur = readLock();
+      const now = Date.now();
+      if (!cur || !cur.tabId || (now - (cur.ts || 0)) > STALE_MS) {
+        becomeOwner();
+        return;
+      }
+      if (cur.tabId === tabId) {
+        isOwner = true;
+        showLockOverlay(false);
+        return;
+      }
+      relinquish();
+      showLockOverlay(true);
+    }
+
+    // initial acquire
+    check();
+    setInterval(check, 1500);
+
+    bc?.addEventListener('message', (e) => {
+      const m = e.data || {};
+      if (m.type === 'owner' && m.tabId && m.tabId !== tabId) {
+        // Another tab took over
+        if (isOwner) relinquish();
+        showLockOverlay(true);
+      }
+    });
+
+    document.getElementById('tab-lock-takeover')?.addEventListener('click', () => becomeOwner());
+    document.getElementById('tab-lock-back')?.addEventListener('click', () => {
+      // Keep overlay; user can close the tab.
+      showLockOverlay(true);
+    });
+  })();
 
   function closeMenu() { $('#sidebar-menu').classList.remove('open'); }
   function closeChatMenu() { $('#chat-menu').classList.remove('open'); }
@@ -1301,6 +1410,10 @@
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === 'status') { connected = msg.data.connected; refreshDash(); }
+        else if (msg.type === 'session-switched') {
+          // Server rebound this session to a different tenant (WhatsApp identity restore).
+          window.location.reload();
+        }
         else if (msg.type === 'new-messages') {
           refreshDash();
           void refreshActiveChatMessages();
@@ -1475,8 +1588,23 @@
   }
 
   // Fetch initial WA state on load
-  fetch('/api/wa/status').then(r => r.json()).then(d => updateWaUI(d)).catch(() => {});
-  fetch('/api/wa/qr').then(r => r.json()).then(d => { if (d.qr) showQr(d.qr); }).catch(() => {});
+  (async function bootstrapWhatsAppLinking() {
+    try {
+      const st = await fetch('/api/wa/status').then(r => r.json());
+      updateWaUI(st);
+
+      // If not connected yet, kick off linking automatically so the QR appears without extra clicks.
+      if (st && (st.state === 'DISCONNECTED' || st.state === 'LOADING') && !st.hasQr) {
+        try { await fetch('/api/wa/connect', { method: 'POST' }); } catch { /* ignore */ }
+      }
+
+      // Try to load QR immediately; showQr() will keep a safety-net poll.
+      const d = await fetch('/api/wa/qr').then(r => r.json());
+      if (d && d.qr) showQr(d.qr);
+    } catch {
+      /* ignore */
+    }
+  })();
 
   // Logout button
   $('#wa-logout-btn').addEventListener('click', async () => {
@@ -1605,11 +1733,38 @@
     });
   }
 
+  function formatPhoneLikeName(nameOrJid) {
+    const raw = String(nameOrJid || '').trim();
+    if (!raw) return '';
+    // Extract digits from either a chat name or a JID local-part.
+    const digits = raw.split('@')[0].replace(/[^\d]/g, '');
+    if (digits.length < 8 || digits.length > 15) return raw;
+    // If we can infer a country code, format as +CC NNNNNNNNNN (last 10 digits as national number).
+    if (digits.length > 10) {
+      const cc = digits.slice(0, digits.length - 10);
+      const national = digits.slice(-10);
+      return `+${cc} ${national}`;
+    }
+    // Otherwise just add a plus for readability.
+    return `+${digits}`;
+  }
+
+  function displayChatTitle(chatJid, chatName) {
+    const n = String(chatName || '').trim();
+    // If we only have a phone-number-ish label, show it in a readable +CC form.
+    if (n && /^[+\d\s()-]{8,20}$/.test(n) && n.replace(/[^\d]/g, '').length >= 8) {
+      const digits = n.replace(/[^\d]/g, '');
+      if (/^\d{8,20}$/.test(digits)) return formatPhoneLikeName(digits);
+    }
+    if (!n) return formatPhoneLikeName(chatJid);
+    return n;
+  }
+
   function renderChats(chats) {
     const c = $('#chat-list');
     if (!chats.length) { c.innerHTML = '<div class="sidebar-empty">No chats yet.<br>Click <strong>+</strong> to import.</div>'; return; }
     c.innerHTML = chats.map(ch => {
-      const n = ch.chatName || ch.chatJid;
+      const n = displayChatTitle(ch.chatJid, ch.chatName || ch.chatJid);
       const isGroup = ch.chatJid?.includes('@g.us') || (ch.participantCount > 2);
       const pct = ch.searchIndexPct ?? 0;
       const sumT = ch.summarizedThreads ?? 0;
@@ -1694,7 +1849,7 @@
       clearSearch();
     }
     const ch = chatData.find(c => c.chatJid === jid);
-    const n = ch?.chatName || jid;
+    const n = displayChatTitle(jid, ch?.chatName || jid);
     const isGroup = jid.includes('@g.us') || (ch?.participantCount > 2);
     $('#cv-name').textContent = n;
     $('#cv-info').textContent = isGroup
@@ -1718,7 +1873,8 @@
       if (activeChat !== jid) return;
       renderMessages(msgs, jid, focusMessageId);
       if (details && activeChat === jid) {
-        const display = details.subject || details.chatName || details.displayName || n;
+        const displayRaw = details.subject || details.chatName || details.displayName || n;
+        const display = displayChatTitle(jid, displayRaw);
         $('#cv-name').textContent = display;
         $('#cv-avatar').textContent = display.charAt(0).toUpperCase() + (display.charAt(1) || '').toUpperCase();
         const row = chatData.find(c => c.chatJid === jid);

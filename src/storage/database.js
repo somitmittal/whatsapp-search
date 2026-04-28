@@ -9,6 +9,8 @@ import {
   migrateAwaySummaries,
   migrateContactDirectory,
   migrateMultiTenant,
+  migrateSessionTransfers,
+  migrateWhatsAppIdentities,
   migrateUserSessionsAndNullableTenants,
 } from './migrate-multi-tenant.js';
 import { LEGACY_TENANT_ID } from './tenant-constants.js';
@@ -45,6 +47,8 @@ export default class Database {
     this._initSchema();
     migrateMultiTenant(this._db);
     migrateUserSessionsAndNullableTenants(this._db);
+    migrateSessionTransfers(this._db);
+    migrateWhatsAppIdentities(this._db);
     migrateAwaySummaries(this._db);
     migrateContactDirectory(this._db);
     this._prepareStatements();

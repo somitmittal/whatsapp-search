@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import { resolve } from 'path';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'fs';
+import { renameSync, existsSync } from 'fs';
 import { join } from 'path';
 import config from '../config.js';
 import { runWithTenant, getCurrentTenantId } from '../storage/tenant-context.js';
@@ -23,12 +24,14 @@ import {
   keyHints,
   publicSettingsFromDb,
 } from '../llm/defaults.js';
+import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
 
 const require = createRequire(import.meta.url);
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const multer = require('multer');
 const { google } = require('googleapis');
+const QRCode = require('qrcode');
 
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
@@ -90,6 +93,7 @@ export default class WebServer {
         waMessage: 'Not connected',
         waQrDataUrl: null,
         waClient: null,
+        sessionId: null,
         syncStats: { syncing: false, total: 0, current: 0, totalMessages: 0 },
       };
       this._tenantState.set(tid, st);
@@ -198,7 +202,19 @@ export default class WebServer {
         st.waState = 'QR_READY';
         this._broadcast({ type: 'wa-qr', data: { qr: dataUrl } }, tid);
       },
-      onReady: (info) => console.log(`[WA] Tenant ${tid} logged in as ${info.name || info.phone}`),
+      onReady: async (info) => {
+        console.log(`[WA] Tenant ${tid} logged in as ${info.name || info.phone}`);
+        try {
+          const ownerJid = waClient?._ownerJid || (info?.phone ? `${info.phone}@s.whatsapp.net` : '');
+          await this._maybeBindSessionToWhatsAppIdentity({
+            currentTenantId: tid,
+            sessionId: st.sessionId,
+            ownerJid,
+          });
+        } catch (e) {
+          console.warn('[WA] identity bind:', e.message);
+        }
+      },
       onStatus: ({ state, message }) => {
         st.waState = state;
         st.waMessage = message;
@@ -278,6 +294,73 @@ export default class WebServer {
     return waClient;
   }
 
+  _tenantBaseDir(tid) {
+    return join(config.dataDir, 'tenants', String(tid || LEGACY_TENANT_ID));
+  }
+
+  _moveTenantAuth(fromTid, toTid) {
+    try {
+      const fromBase = this._tenantBaseDir(fromTid);
+      const toBase = this._tenantBaseDir(toTid);
+      const fromAuth = join(fromBase, '.baileys_auth');
+      const toAuth = join(toBase, '.baileys_auth');
+      const fromCfg = join(fromBase, 'wa-config.json');
+      const toCfg = join(toBase, 'wa-config.json');
+
+      if (existsSync(fromAuth)) {
+        // If destination already exists, back it up.
+        if (existsSync(toAuth)) {
+          const bak = `${toAuth}.bak-${Date.now()}`;
+          renameSync(toAuth, bak);
+        }
+        renameSync(fromAuth, toAuth);
+      }
+      if (existsSync(fromCfg)) {
+        if (existsSync(toCfg)) {
+          const bak = `${toCfg}.bak-${Date.now()}`;
+          renameSync(toCfg, bak);
+        }
+        renameSync(fromCfg, toCfg);
+      }
+    } catch (e) {
+      console.warn('[WA] auth move:', e.message);
+    }
+  }
+
+  async _maybeBindSessionToWhatsAppIdentity({ currentTenantId, sessionId, ownerJid }) {
+    if (!isJwtAuthEnabled()) return;
+    if (!sessionId) return;
+    if (!ownerJid) return;
+    const waHash = hashWhatsAppOwnerId(ownerJid);
+    const sql = this.db.getSqliteDatabase();
+    const now = Math.floor(Date.now() / 1000);
+    sql.prepare('DELETE FROM wa_identities WHERE tenant_id IS NULL').run();
+
+    const existing = sql.prepare('SELECT wa_hash, tenant_id FROM wa_identities WHERE wa_hash = ?').get(waHash);
+    if (!existing) {
+      sql.prepare(
+        'INSERT INTO wa_identities (wa_hash, tenant_id, created_at, updated_at) VALUES (?,?,?,?)',
+      ).run(waHash, currentTenantId, now, now);
+      return;
+    }
+    const canonicalTenant = existing.tenant_id;
+    if (!canonicalTenant || canonicalTenant === currentTenantId) {
+      // refresh timestamp
+      sql.prepare('UPDATE wa_identities SET updated_at = ? WHERE wa_hash = ?').run(now, waHash);
+      return;
+    }
+
+    // Switch this session to canonical tenant and ask the browser to reload.
+    sql.prepare('UPDATE user_sessions SET tenant_id = ? WHERE id = ?').run(canonicalTenant, sessionId);
+    sql.prepare('UPDATE wa_identities SET updated_at = ? WHERE wa_hash = ?').run(now, waHash);
+
+    // Move newly-scanned Baileys auth into the canonical tenant dir so reconnects work.
+    this._moveTenantAuth(currentTenantId, canonicalTenant);
+
+    // Notify old-tenant websocket clients to reload; cookie now points to canonical tenant.
+    this._broadcast({ type: 'session-switched', data: { toTenantId: canonicalTenant } }, currentTenantId);
+  }
+
   /** Called by DailySummaryService while indexing thread summaries per chat. */
   onSummaryProgress(data) {
     this._broadcast({ type: 'summary-progress', data }, getCurrentTenantId());
@@ -354,6 +437,10 @@ export default class WebServer {
       if (!isJwtAuthEnabled()) {
         return runWithTenant(config.defaultTenantId || LEGACY_TENANT_ID, () => next());
       }
+      // Claim endpoints must be accessible without creating a brand-new tenant implicitly.
+      if (path === '/api/session/transfer/claim') {
+        return runWithTenant(LEGACY_TENANT_ID, () => next());
+      }
       const secure = this._isSecureCookieDeployment();
       let sid = getSessionIdFromRequest(req);
       let row = sid ? this._userSessions.getById(sid) : null;
@@ -361,11 +448,14 @@ export default class WebServer {
         this._userSessions.touch(sid);
         req.tenantId = row.tenant_id;
         req.waSessionId = sid;
+        // Remember which session owns this tenant (used for WA identity binding on connect).
+        this._getTenantState(req.tenantId).sessionId = sid;
         return runWithTenant(req.tenantId, () => next());
       }
       const c = this._userSessions.createTenantWithSession();
       req.tenantId = c.tenantId;
       req.waSessionId = c.sessionId;
+      this._getTenantState(req.tenantId).sessionId = c.sessionId;
       setSessionCookie(res, c.sessionId, { secure });
       return runWithTenant(req.tenantId, () => next());
     });
@@ -391,6 +481,58 @@ export default class WebServer {
         syncStatus: { ...st.syncStats },
         stats: this.db.getTotalStats(),
       });
+    });
+
+    // ── Session transfer (WhatsApp Web–style “link this device”) ──────
+    this._app.post('/api/session/transfer/start', async (_req, res) => {
+      try {
+        const token = randomBytes(18).toString('hex'); // short-ish but unguessable
+        const tenantId = getCurrentTenantId();
+        const now = Math.floor(Date.now() / 1000);
+        const expires = now + 5 * 60;
+        const sql = this.db.getSqliteDatabase();
+        // best-effort cleanup
+        sql.prepare('DELETE FROM session_transfers WHERE expires_at < ?').run(now);
+        sql.prepare('INSERT INTO session_transfers (token, tenant_id, created_at, expires_at) VALUES (?,?,?,?)')
+          .run(token, tenantId, now, expires);
+        const payload = JSON.stringify({ t: token });
+        const qr = await QRCode.toDataURL(payload, { errorCorrectionLevel: 'M', margin: 2, width: 280 });
+        return res.json({ ok: true, token, expiresAt: expires, qr });
+      } catch (e) {
+        return res.status(500).json({ error: e.message });
+      }
+    });
+
+    this._app.post('/api/session/transfer/claim', (req, res) => {
+      if (!isJwtAuthEnabled()) return res.status(503).json({ error: 'Server sessions are not enabled.' });
+      const raw = req.body?.token || req.body?.t || '';
+      let token = '';
+      try {
+        const parsed = typeof raw === 'string' ? raw : JSON.stringify(raw);
+        if (parsed && parsed.trim().startsWith('{')) {
+          const j = JSON.parse(parsed);
+          token = String(j?.t || '').trim();
+        } else {
+          token = String(raw || '').trim();
+        }
+      } catch {
+        token = String(raw || '').trim();
+      }
+      if (!token) return res.status(400).json({ error: 'token required' });
+
+      const sql = this.db.getSqliteDatabase();
+      const now = Math.floor(Date.now() / 1000);
+      const row = sql.prepare('SELECT token, tenant_id, expires_at FROM session_transfers WHERE token = ?').get(token);
+      if (!row) return res.status(404).json({ error: 'Invalid or expired code' });
+      if (row.expires_at < now) {
+        sql.prepare('DELETE FROM session_transfers WHERE token = ?').run(token);
+        return res.status(404).json({ error: 'Invalid or expired code' });
+      }
+      // Consume token and mint a new session id for same tenant.
+      sql.prepare('DELETE FROM session_transfers WHERE token = ?').run(token);
+      const sid = this._userSessions.create(row.tenant_id);
+      setSessionCookie(res, sid, { secure: this._isSecureCookieDeployment() });
+      return res.json({ ok: true, sessionId: sid, tenantId: row.tenant_id });
     });
 
     // ── Chat & Message APIs ───────────────────────────────────────────

@@ -8,6 +8,8 @@ const MT_KEY = 'mt_v4_tenant_rows';
 const MT_KEY_AWAY = 'mt_v5_chat_last_seen';
 const MT_KEY_CONTACTS = 'mt_v6_contact_directory';
 const MT_KEY_SESSIONS = 'mt_v7_user_sessions_tenants_nullable';
+const MT_KEY_SESSION_TRANSFERS = 'mt_v8_session_transfers';
+const MT_KEY_WA_IDENTITIES = 'mt_v9_wa_identities';
 
 function hasColumn(db, table, col) {
   try {
@@ -157,6 +159,53 @@ export function migrateUserSessionsAndNullableTenants(db) {
     );
   } catch { /* */ }
   console.log('[DB] user_sessions + nullable tenant emails migration applied (' + MT_KEY_SESSIONS + ').');
+}
+
+/**
+ * One-time “link this device” tokens to restore a tenant on a new browser/device.
+ * Safe to run on every open.
+ */
+export function migrateSessionTransfers(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_transfers (
+      token TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_transfers_expires ON session_transfers(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_session_transfers_tenant ON session_transfers(tenant_id);
+  `);
+  try {
+    const row = db.prepare(`SELECT value FROM schema_migrations WHERE key = ?`).get(MT_KEY_SESSION_TRANSFERS);
+    if (row?.value === '1') return;
+  } catch { /* ignore */ }
+  try {
+    db.prepare(`INSERT OR REPLACE INTO schema_migrations (key, value) VALUES (?, '1')`).run(MT_KEY_SESSION_TRANSFERS);
+  } catch { /* ignore */ }
+}
+
+/**
+ * Map WhatsApp account → canonical tenant.
+ * Safe to run on every open.
+ */
+export function migrateWhatsAppIdentities(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wa_identities (
+      wa_hash TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_wa_identities_tenant ON wa_identities(tenant_id);
+  `);
+  try {
+    const row = db.prepare(`SELECT value FROM schema_migrations WHERE key = ?`).get(MT_KEY_WA_IDENTITIES);
+    if (row?.value === '1') return;
+  } catch { /* ignore */ }
+  try {
+    db.prepare(`INSERT OR REPLACE INTO schema_migrations (key, value) VALUES (?, '1')`).run(MT_KEY_WA_IDENTITIES);
+  } catch { /* ignore */ }
 }
 
 export function migrateContactDirectory(db) {

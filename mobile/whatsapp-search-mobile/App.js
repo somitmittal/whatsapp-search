@@ -12,6 +12,8 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [syncingContacts, setSyncingContacts] = useState(false);
+  const [contactsPerm, setContactsPerm] = useState('undetermined'); // undetermined | granted | denied
+  const [contactsPreview, setContactsPreview] = useState([]);
   const [answer, setAnswer] = useState('');
   const [sources, setSources] = useState([]);
 
@@ -30,6 +32,15 @@ export default function App() {
   useEffect(() => {
     AsyncStorage.setItem('baseUrl', baseUrl || '').catch(() => {});
   }, [baseUrl]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const p = await Contacts.getPermissionsAsync();
+        setContactsPerm(p?.status || 'undetermined');
+      } catch { /* ignore */ }
+    })();
+  }, []);
 
   function bu() {
     return (baseUrl || '').trim().replace(/\/$/, '');
@@ -88,8 +99,9 @@ export default function App() {
     setSyncingContacts(true);
     try {
       const { status } = await Contacts.requestPermissionsAsync();
+      setContactsPerm(status || 'undetermined');
       if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Allow Contacts permission to sync names.');
+        Alert.alert('Permission needed', 'Allow Contacts permission to sync names and show contact names.');
         return;
       }
       const res = await Contacts.getContactsAsync({
@@ -128,6 +140,32 @@ export default function App() {
     } finally {
       setSyncingContacts(false);
     }
+  }
+
+  async function requestContactsPermissionAndPreview() {
+    try {
+      const { status } = await Contacts.requestPermissionsAsync();
+      setContactsPerm(status || 'undetermined');
+      if (status !== 'granted') return;
+      const res = await Contacts.getContactsAsync({
+        fields: [Contacts.Fields.PhoneNumbers],
+        pageSize: 200,
+        pageOffset: 0,
+      });
+      const data = Array.isArray(res.data) ? res.data : [];
+      const preview = [];
+      for (const c of data) {
+        const name = (c.name || '').trim();
+        if (!name) continue;
+        const phones = (c.phoneNumbers || [])
+          .map((p) => (p?.number || '').trim())
+          .filter(Boolean);
+        if (!phones.length) continue;
+        preview.push({ name, phone: phones[0] });
+        if (preview.length >= 8) break;
+      }
+      setContactsPreview(preview);
+    } catch { /* ignore */ }
   }
 
   async function logout() {
@@ -173,20 +211,54 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {sessionId ? (
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>AI Search</Text>
-          <View style={styles.row}>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Contacts (Phone book)</Text>
+        <Text style={styles.hint}>
+          If you allow access, we can sync contact names to improve chat name display. Your server stores phones hashed and
+          names encrypted at rest.
+        </Text>
+        <View style={styles.row}>
+          <TouchableOpacity
+            style={[styles.btn, styles.btnSecondary]}
+            onPress={requestContactsPermissionAndPreview}
+            disabled={loading}
+          >
+            <Text style={[styles.btnText, styles.btnSecondaryText]}>
+              {contactsPerm === 'granted' ? 'Show contacts' : 'Allow Contacts'}
+            </Text>
+          </TouchableOpacity>
+          {sessionId ? (
             <TouchableOpacity
               style={[styles.btn, styles.btnSecondary]}
               onPress={syncContacts}
               disabled={syncingContacts || loading}
             >
               <Text style={[styles.btnText, styles.btnSecondaryText]}>
-                {syncingContacts ? 'Syncing…' : 'Sync Contacts'}
+                {syncingContacts ? 'Syncing…' : 'Sync to server'}
               </Text>
             </TouchableOpacity>
+          ) : null}
+        </View>
+        {contactsPerm !== 'granted' ? (
+          <Text style={[styles.hint, { marginTop: 10 }]}>
+            Permission status: {String(contactsPerm || 'undetermined')}
+          </Text>
+        ) : null}
+        {contactsPreview.length ? (
+          <View style={{ marginTop: 10 }}>
+            <Text style={styles.sourcesTitle}>Preview</Text>
+            {contactsPreview.map((c, idx) => (
+              <Text key={idx} style={styles.sourceLine}>
+                • {c.name} — {c.phone}
+              </Text>
+            ))}
           </View>
+        ) : null}
+      </View>
+
+      {sessionId ? (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>AI Search</Text>
           <TextInput value={query} onChangeText={setQuery} placeholder="Ask anything about your chats…" style={styles.input} />
           <TouchableOpacity style={styles.btn} onPress={doSearch} disabled={loading}>
             <Text style={styles.btnText}>Search</Text>

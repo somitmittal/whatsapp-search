@@ -103,6 +103,20 @@ function looksLikePhoneOnlyName(str) {
   return /^\d{8,20}$/.test(d);
 }
 
+function normalizeNameForCompare(s) {
+  return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isProbablyOwnName(pushName, ownerName) {
+  const a = normalizeNameForCompare(pushName);
+  const b = normalizeNameForCompare(ownerName);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a === 'you') return true;
+  if (a.startsWith('you ')) return true;
+  return false;
+}
+
 /** Public web UI URL (Render / override) or local dev. */
 function publicWebBaseUrl() {
   const u = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_WEB_URL;
@@ -145,6 +159,7 @@ export default class WaClient {
     this._state         = 'DISCONNECTED';
     this._latestQr      = null;
     this._ownerJid      = null;
+    this._ownerName     = null;
     this._searchGroupJid = null;
     this._chatNames     = new Map();   // jid → display name
     /** Messages received per chat during current history sync (for UI progress). */
@@ -271,6 +286,7 @@ export default class WaClient {
       if (connection === 'open') {
         const user = this._sock.user;
         const name = user?.name || user?.verifiedName || user?.id?.split(':')[0] || 'unknown';
+        this._ownerName = name || null;
         this._ownerJid = user?.id ? jidNormalizedUser(user.id) : null;
         console.log(`[WA] ✅ Connected as ${name}`);
         this._onReady?.({ name, phone: this._ownerJid?.split('@')[0] });
@@ -619,9 +635,12 @@ export default class WaClient {
     // Push name is often the best available label (esp. when phonebook names aren't accessible via WA APIs).
     // Some multi-device events may mark messages as fromMe; don't rely on that flag here.
     if (msg.pushName && !looksLikePhoneOnlyName(msg.pushName)) {
-      this._chatNames.set(jid, msg.pushName);
-      void this._mirrorDisplayNameAcrossJids(jid, msg.pushName).catch(() => {});
-      return msg.pushName;
+      // Never label a 1:1 chat with *our own* profile name (some multi-device/fromMe events report our name here).
+      if (!isProbablyOwnName(msg.pushName, this._ownerName)) {
+        this._chatNames.set(jid, msg.pushName);
+        void this._mirrorDisplayNameAcrossJids(jid, msg.pushName).catch(() => {});
+        return msg.pushName;
+      }
     }
     const cached = this._nameFromChatMap(jid);
     if (cached) return cached;
@@ -781,10 +800,29 @@ export default class WaClient {
   async _enrichRowWithMedia(msg, row) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return row;
     try {
-      const buffer = await downloadMediaMessage(msg, 'buffer', {}, {
+      const download = async (m) => downloadMediaMessage(m, 'buffer', {}, {
         logger: this._mediaLogger,
-        reuploadRequest: (m) => this._sock.updateMediaMessage(m),
+        reuploadRequest: (x) => this._sock.updateMediaMessage(x),
       });
+
+      let buffer;
+      try {
+        buffer = await download(msg);
+      } catch (e1) {
+        const m = String(e1?.message || '');
+        // Common failure: the direct mmg.whatsapp.net URL in older messages is expired.
+        // Force a refresh of the media message from WhatsApp and retry once.
+        if (m.includes('Failed to fetch stream') || m.includes('Status code: 403') || m.includes('Status code: 401')) {
+          try {
+            const refreshed = await this._sock.updateMediaMessage(msg);
+            buffer = await download(refreshed || msg);
+          } catch (e2) {
+            throw e2;
+          }
+        } else {
+          throw e1;
+        }
+      }
       if (row.mediaType === 'video' && buffer.length > MAX_VIDEO_BYTES) {
         console.warn(`[WA] skip large video (${buffer.length} bytes)`);
         return row;
@@ -804,7 +842,9 @@ export default class WaClient {
       writeFileSync(fullPath, buffer);
       return { ...row, mediaPath: fullPath };
     } catch (e) {
-      console.warn(`[WA] media download ${row.messageId}:`, e.message);
+      // Avoid spamming full signed URLs (they're ephemeral and noisy in logs)
+      const msgText = String(e?.message || 'media download failed');
+      console.warn(`[WA] media download ${row.messageId}:`, msgText.replace(/https?:\/\/\S+/g, '<url>'));
       return row;
     }
   }
