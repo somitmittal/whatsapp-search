@@ -15,6 +15,8 @@ import {
 } from './migrate-multi-tenant.js';
 import { LEGACY_TENANT_ID } from './tenant-constants.js';
 import { decryptName, deriveTenantContactKey, encryptName, hashPhone, normalizePhone } from '../privacy/contact-directory.js';
+import { groupStatusBroadcastRows } from '../status/status-feed.js';
+import { STATUS_BROADCAST_JID, sidebarTabForJid } from '../whatsapp/jid-filters.js';
 
 const require = createRequire(import.meta.url);
 const SQLite = require('better-sqlite3');
@@ -234,7 +236,84 @@ export default class Database {
 
     this._migrateMediaAiIndexAndFts();
     this._migrateActionSuggestionsColumn();
+    this._migrateReactionsJsonAndDedupe();
     this._rebuildFtsIfEmpty();
+  }
+
+  _migrateReactionsJsonAndDedupe() {
+    try {
+      const cols = this._db.prepare('PRAGMA table_info(messages)').all();
+      if (!cols.some((c) => c.name === 'reactions_json')) {
+        this._db.exec('ALTER TABLE messages ADD COLUMN reactions_json TEXT');
+        console.log('[DB] Added messages.reactions_json');
+      }
+    } catch (e) {
+      console.warn('[DB] reactions_json column:', e.message);
+    }
+    try {
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS wa_reaction_dedupe (
+          tenant_id TEXT NOT NULL,
+          reaction_msg_id TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, reaction_msg_id)
+        );
+      `);
+    } catch (e) {
+      console.warn('[DB] wa_reaction_dedupe:', e.message);
+    }
+  }
+
+  /**
+   * Merge one reaction ack into `messages.reactions_json` (flat emoji → count).
+   * Ignores empty emoji (removals) and duplicate reaction message ids.
+   * @returns {Record<string, number>|null} updated counts, or null if skipped / no row
+   */
+  mergeReactionEvent(chatJid, messageId, emoji, reactionMsgId) {
+    if (!chatJid || !messageId || !emoji?.trim() || !reactionMsgId) return null;
+    const t = getCurrentTenantId();
+    const e = String(emoji).trim();
+    if (!e) return null;
+    const insDedupe = this._db.prepare(
+      'INSERT OR IGNORE INTO wa_reaction_dedupe (tenant_id, reaction_msg_id) VALUES (?, ?)',
+    );
+    const rowFind = this._db.prepare(`
+      SELECT id, reactions_json AS reactionsJson FROM messages
+      WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?
+      LIMIT 1
+    `);
+    const rowFindLoose = this._db.prepare(`
+      SELECT id, reactions_json AS reactionsJson FROM messages
+      WHERE tenant_id = ? AND message_id = ?
+      LIMIT 1
+    `);
+    const upd = this._db.prepare('UPDATE messages SET reactions_json = ? WHERE id = ?');
+
+    const run = this._db.transaction(() => {
+      const d = insDedupe.run(t, reactionMsgId);
+      if (!d.changes) return null;
+
+      let row = rowFind.get(t, chatJid, messageId);
+      if (!row) row = rowFindLoose.get(t, messageId);
+      if (!row) return null;
+
+      let counts = {};
+      try {
+        counts = row.reactionsJson ? JSON.parse(row.reactionsJson) : {};
+      } catch {
+        counts = {};
+      }
+      if (typeof counts !== 'object' || counts === null || Array.isArray(counts)) counts = {};
+      counts[e] = (Number(counts[e]) || 0) + 1;
+      upd.run(JSON.stringify(counts), row.id);
+      return counts;
+    });
+
+    try {
+      return run();
+    } catch (err) {
+      console.warn('[DB] mergeReactionEvent:', err.message);
+      return null;
+    }
   }
 
   _migrateActionSuggestionsColumn() {
@@ -604,7 +683,7 @@ export default class Database {
         if (info.changes > 0 && row.messageId) insertedMessageIds.push(row.messageId);
       }
     });
-    run(rows);
+    run(rows || []);
     return { count: insertedMessageIds.length, insertedMessageIds };
   }
 
@@ -720,7 +799,7 @@ export default class Database {
       FROM messages
       WHERE tenant_id = ?
         AND media_path IS NOT NULL AND trim(media_path) != ''
-        AND media_type IN ('image', 'audio', 'video', 'sticker')
+        AND media_type IN ('image', 'audio', 'video', 'sticker', 'document')
         AND media_ai_index IS NULL
       ORDER BY timestamp DESC
       LIMIT ?
@@ -870,7 +949,7 @@ export default class Database {
     return this._db.prepare(`
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
              m.chat_name AS chatName, m.sender, m.text,
-             m.media_type AS mediaType, m.media_caption AS mediaCaption,
+             m.media_type AS mediaType, m.media_path AS mediaPath, m.media_caption AS mediaCaption,
              m.media_ai_index AS mediaAiIndex,
              m.timestamp, bm25(messages_fts) AS rank
       FROM messages_fts
@@ -887,7 +966,7 @@ export default class Database {
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
-             text, media_type AS mediaType, media_caption AS mediaCaption,
+             text, media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
              media_ai_index AS mediaAiIndex, timestamp
       FROM messages
       WHERE tenant_id = ? AND chat_jid = ? AND date(timestamp, 'unixepoch', 'localtime') = ?
@@ -962,7 +1041,11 @@ export default class Database {
       if (r.chatName) {
         g.anyChatName = r.chatName;
         if (looksLikeContactDisplayName(r.chatName, r.chatJid)) {
-          g.displayChatName = r.chatName;
+          const cn = String(r.chatName).trim();
+          // Prefer the longest human-looking title (rows often alternate phone vs saved name).
+          if (!g.displayChatName || cn.length > g.displayChatName.length) {
+            g.displayChatName = cn;
+          }
         }
       }
       if (r.sender) g.senders.add(r.sender);
@@ -1004,6 +1087,8 @@ export default class Database {
       out.push({
         chatJid,
         chatName: title,
+        /** `chat` = DMs & groups; `feed` = Status, broadcasts, newsletters (lower AI summary priority). */
+        sidebarTab: sidebarTabForJid(chatJid),
         messageCount: g.messages.length,
         participantCount: g.senders.size,
         lastMessageTs,
@@ -1047,11 +1132,36 @@ export default class Database {
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_path AS mediaPath,
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
+             reactions_json AS reactionsJson,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE tenant_id = ? AND chat_jid = ?
       ORDER BY timestamp DESC, id DESC
       LIMIT ? OFFSET ?
     `).all(t, chatJid, Math.min(Number(limit) || 80, 500), Math.max(0, Number(offset) || 0));
+  }
+
+  /**
+   * Same as getMessagesPaginated but merge rows indexed under multiple JIDs (e.g. @lid vs @s.whatsapp.net).
+   */
+  getMessagesPaginatedForJids(chatJids, limit = 80, offset = 0) {
+    const jids = [...new Set((chatJids || []).filter(Boolean))];
+    if (jids.length === 0) return [];
+    if (jids.length === 1) return this.getMessagesPaginated(jids[0], limit, offset);
+    const t = getCurrentTenantId();
+    const lim = Math.min(Number(limit) || 80, 500);
+    const off = Math.max(0, Number(offset) || 0);
+    const ph = jids.map(() => '?').join(',');
+    return this._db.prepare(`
+      SELECT id, message_id AS messageId, chat_jid AS chatJid,
+             chat_name AS chatName, sender, sender_jid AS senderJid,
+             text, media_type AS mediaType, media_path AS mediaPath,
+             media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
+             reactions_json AS reactionsJson,
+             timestamp, indexed_at AS indexedAt
+      FROM messages WHERE tenant_id = ? AND chat_jid IN (${ph})
+      ORDER BY timestamp DESC, id DESC
+      LIMIT ? OFFSET ?
+    `).all(t, ...jids, lim, off);
   }
 
   /**
@@ -1075,6 +1185,31 @@ export default class Database {
     return this.getMessagesPaginated(chatJid, safeLimit, offset);
   }
 
+  /**
+   * Jump-to-message across merged LID + phone JIDs for one contact.
+   */
+  getMessagesAroundMessageIdForJids(chatJids, messageId, limit = 200) {
+    const safeLimit = Math.min(Math.max(Number(limit) || 200, 40), 500);
+    const half = Math.floor(safeLimit / 2);
+    const jids = [...new Set((chatJids || []).filter(Boolean))];
+    if (jids.length === 0) return [];
+    if (jids.length === 1) return this.getMessagesAroundMessageId(jids[0], messageId, safeLimit);
+    const t = getCurrentTenantId();
+    const ph = jids.map(() => '?').join(',');
+    const anchor = this._db.prepare(`
+      SELECT id, timestamp FROM messages
+      WHERE tenant_id = ? AND message_id = ? AND chat_jid IN (${ph}) LIMIT 1
+    `).get(t, messageId, ...jids);
+    if (!anchor) return this.getMessagesPaginatedForJids(jids, safeLimit, 0);
+    const rankRow = this._db.prepare(`
+      SELECT COUNT(*) AS c FROM messages
+      WHERE tenant_id = ? AND chat_jid IN (${ph}) AND (timestamp > ? OR (timestamp = ? AND id > ?))
+    `).get(t, ...jids, anchor.timestamp, anchor.timestamp, anchor.id);
+    const newerCount = rankRow?.c ?? 0;
+    const offset = Math.max(0, newerCount - half);
+    return this.getMessagesPaginatedForJids(jids, safeLimit, offset);
+  }
+
   getMediaMessages(chatJid = null, mediaType = null, limit = 50) {
     const t = getCurrentTenantId();
     let sql = `SELECT id, message_id AS messageId, chat_jid AS chatJid,
@@ -1089,6 +1224,51 @@ export default class Database {
     return this._db.prepare(sql).all(...params);
   }
 
+  /** WhatsApp Status / Stories: grouped stacks from indexed `status@broadcast` messages. */
+  getStatusBroadcastFeed(limitPeers = 80) {
+    const t = getCurrentTenantId();
+    const rows = this._db.prepare(`
+      SELECT message_id AS messageId, sender, sender_jid AS senderJid,
+             text, media_type AS mediaType, media_path AS mediaPath,
+             media_caption AS mediaCaption, timestamp
+      FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+      ORDER BY timestamp ASC
+    `).all(t, STATUS_BROADCAST_JID);
+    return groupStatusBroadcastRows(rows, limitPeers);
+  }
+
+  /** Lookup for serving downloaded media bytes (path validated against media dir in HTTP layer). */
+  getMessageMediaRecord(messageId) {
+    if (!messageId) return null;
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT message_id AS messageId, media_path AS mediaPath, media_type AS mediaType
+      FROM messages WHERE tenant_id = ? AND message_id = ?
+    `).get(t, messageId);
+  }
+
+  /**
+   * For reactions / quoted send: load the exact row (chat must match) or any row with that id (LID/PN merge).
+   * @returns {object | null}
+   */
+  getMessageForActions(chatJid, messageId) {
+    if (!messageId) return null;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT message_id AS messageId, chat_jid AS chatJid, sender, sender_jid AS senderJid,
+             text, media_type AS mediaType, media_caption AS mediaCaption, timestamp
+      FROM messages WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?
+    `).get(t, chatJid, messageId);
+    if (row) return row;
+    return this._db.prepare(`
+      SELECT message_id AS messageId, chat_jid AS chatJid, sender, sender_jid AS senderJid,
+             text, media_type AS mediaType, media_caption AS mediaCaption, timestamp
+      FROM messages WHERE tenant_id = ? AND message_id = ?
+      LIMIT 1
+    `).get(t, messageId);
+  }
+
   getAllMessagesLight(chatJid = null, limit = 5000) {
     const t = getCurrentTenantId();
     const hasContent = `(
@@ -1099,13 +1279,13 @@ export default class Database {
          )`;
     const sql = chatJid
       ? `SELECT id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
-                media_type AS mediaType, media_caption AS mediaCaption,
+                media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
                 media_ai_index AS mediaAiIndex, timestamp
          FROM messages
          WHERE tenant_id = ? AND chat_jid = ? AND ${hasContent}
          ORDER BY timestamp DESC LIMIT ?`
       : `SELECT id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
-                media_type AS mediaType, media_caption AS mediaCaption,
+                media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
                 media_ai_index AS mediaAiIndex, timestamp
          FROM messages
          WHERE tenant_id = ? AND ${hasContent}
@@ -1113,6 +1293,54 @@ export default class Database {
     return chatJid
       ? this._db.prepare(sql).all(t, chatJid, limit)
       : this._db.prepare(sql).all(t, limit);
+  }
+
+  /**
+   * Group messages with media, detected links, and documents for the chat attachments UI.
+   */
+  getChatAttachmentsGrouped(chatJid, rowLimit = 1200) {
+    const safe = Math.max(50, Math.min(Number(rowLimit) || 1200, 5000));
+    const t = getCurrentTenantId();
+    const rows = this._db.prepare(`
+      SELECT message_id AS messageId, sender, text, media_type AS mediaType, media_path AS mediaPath,
+             media_caption AS mediaCaption, timestamp
+      FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `).all(t, chatJid, safe);
+
+    const urlRe = /https?:\/\/[^\s<>"')\]}]+/gi;
+    const mediaKinds = new Set(['image', 'video', 'sticker', 'audio']);
+    const media = [];
+    const docs = [];
+    const links = [];
+    const seenLink = new Set();
+
+    for (const r of rows) {
+      const mt = r.mediaType || '';
+      if (mediaKinds.has(mt)) media.push(r);
+      else if (mt === 'document') docs.push(r);
+
+      const hay = `${r.text || ''}\n${r.mediaCaption || ''}`;
+      let m;
+      const re = new RegExp(urlRe.source, 'gi');
+      while ((m = re.exec(hay))) {
+        let u = m[0].replace(/[.,;:!?)]+$/, '');
+        u = u.replace(/\]+$/g, '');
+        if (u.length < 8 || seenLink.has(u)) continue;
+        seenLink.add(u);
+        links.push({
+          messageId: r.messageId,
+          sender: r.sender,
+          url: u,
+          timestamp: r.timestamp,
+          snippet: (r.text || r.mediaCaption || '').slice(0, 160),
+        });
+      }
+    }
+
+    return { media, docs, links };
   }
 
   clearAllSummaries() {
@@ -1195,7 +1423,7 @@ export default class Database {
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
-             text, media_type AS mediaType, media_caption AS mediaCaption,
+             text, media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
              media_ai_index AS mediaAiIndex, timestamp
       FROM messages
       WHERE tenant_id = ? AND chat_jid = ? AND timestamp >= ? AND timestamp <= ?
@@ -1208,7 +1436,7 @@ export default class Database {
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, text,
-             media_type AS mediaType, media_caption AS mediaCaption,
+             media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
              media_ai_index AS mediaAiIndex, timestamp
       FROM messages WHERE tenant_id = ? AND chat_jid = ? ORDER BY timestamp ASC
     `).all(t, chatJid);

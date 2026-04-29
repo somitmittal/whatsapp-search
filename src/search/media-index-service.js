@@ -1,5 +1,13 @@
+import { createRequire } from 'module';
 import { readFileSync } from 'fs';
-import { extname } from 'path';
+import { basename, extname } from 'path';
+
+const require = createRequire(import.meta.url);
+/** Lazy-load pdf-parse (CommonJS) for PDF text extraction — searchable without vision LLM. */
+function parsePdf(buffer) {
+  const fn = require('pdf-parse');
+  return fn(buffer);
+}
 
 function guessMimeForFile(mediaType, filePath) {
   const ext = extname(filePath || '').toLowerCase();
@@ -13,6 +21,7 @@ function guessMimeForFile(mediaType, filePath) {
   if (ext === '.png') return 'image/png';
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
   if (ext === '.mp4') return 'video/mp4';
+  if (ext === '.pdf') return 'application/pdf';
   return 'image/jpeg';
 }
 
@@ -24,8 +33,8 @@ function isUnsupportedProviderOutput(text) {
 }
 
 /**
- * Background caption + transcription for downloaded media so FTS / fuzzy search can find
- * image, sticker, and audio content by meaning or spoken words.
+ * Background caption + transcription + PDF text extraction so FTS / fuzzy search can find
+ * images, audio, stickers, and document contents (PDF body + filenames).
  */
 export default class MediaIndexService {
   constructor({ db, getProvider }) {
@@ -56,15 +65,13 @@ export default class MediaIndexService {
 
   async processPending(limit = 8) {
     if (this._running) return 0;
-    const provider = this._activeProvider();
-    if (!provider || typeof provider.caption !== 'function') return 0;
 
     this._running = true;
     let done = 0;
     try {
       const jobs = this._db.getPendingMediaIndexJobs(limit);
       for (const job of jobs) {
-        const ok = await this._indexOne(provider, job);
+        const ok = await this._indexOne(job);
         if (ok) done += 1;
       }
     } finally {
@@ -76,7 +83,28 @@ export default class MediaIndexService {
     return done;
   }
 
-  async _indexOne(provider, job) {
+  /**
+   * PDF and non-PDF docs: extract text where possible; always include basename for FTS.
+   */
+  async _indexDocument(messageId, mediaPath, buffer) {
+    const fn = basename(mediaPath || '');
+    const ext = extname(mediaPath || '').toLowerCase();
+    let body = '';
+    if (ext === '.pdf' && buffer?.length) {
+      try {
+        const data = await parsePdf(buffer);
+        body = String(data?.text || '').replace(/\s+/g, ' ').trim();
+      } catch (e) {
+        console.warn(`[MediaIndex] PDF parse ${messageId}:`, e.message);
+      }
+    }
+    const combined = [fn, body].filter(Boolean).join('\n').trim().slice(0, 12000);
+    this._db.updateMediaAiIndex(messageId, combined || fn || '');
+    return true;
+  }
+
+  async _indexOne(job) {
+    const provider = this._activeProvider();
     const { messageId, mediaType, mediaPath } = job;
     if (!messageId || !mediaPath) {
       this._db.updateMediaAiIndex(messageId, '');
@@ -93,6 +121,15 @@ export default class MediaIndexService {
       buffer = readFileSync(mediaPath);
     } catch (e) {
       console.warn(`[MediaIndex] read ${mediaPath}:`, e.message);
+      this._db.updateMediaAiIndex(messageId, '');
+      return false;
+    }
+
+    if (mediaType === 'document') {
+      return this._indexDocument(messageId, mediaPath, buffer);
+    }
+
+    if (!provider || typeof provider.caption !== 'function') {
       this._db.updateMediaAiIndex(messageId, '');
       return false;
     }

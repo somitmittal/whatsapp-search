@@ -1,6 +1,6 @@
 import { createRequire } from 'module';
 import { createServer } from 'http';
-import { resolve } from 'path';
+import { relative, resolve } from 'path';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'fs';
 import { renameSync, existsSync } from 'fs';
@@ -36,6 +36,53 @@ const QRCode = require('qrcode');
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+/** Never expose raw filesystem paths to the browser — only `hasMediaFile` + `/api/message-media`. */
+function sanitizeClientMessage(m) {
+  if (!m || typeof m !== 'object') return m;
+  const o = { ...m };
+  if (o.mediaPath) {
+    o.hasMediaFile = true;
+    delete o.mediaPath;
+  }
+  return o;
+}
+
+function sanitizeMessageList(list) {
+  if (!Array.isArray(list)) return list;
+  return list.map(sanitizeClientMessage);
+}
+
+function assertPathUnderMediaRoot(absFilePath) {
+  const file = resolve(absFilePath);
+  const root = resolve(config.mediaDir);
+  const rel = relative(root, file);
+  if (!rel || rel.startsWith('..') || rel.includes('..')) return null;
+  if (!existsSync(file)) return null;
+  return file;
+}
+
+function contentTypeForMediaFile(filePath) {
+  const ext = (String(filePath).split('.').pop() || '').toLowerCase();
+  const map = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    mp3: 'audio/mpeg',
+    ogg: 'audio/ogg',
+    opus: 'audio/opus',
+    aac: 'audio/aac',
+    m4a: 'audio/mp4',
+    wav: 'audio/wav',
+    pdf: 'application/pdf',
+  };
+  return map[ext] || 'application/octet-stream';
+}
 
 export default class WebServer {
   constructor({ db, searchEngine, summaryService, mediaIndexService, actionItemService }) {
@@ -288,6 +335,29 @@ export default class WebServer {
           this._mediaIndexService?.scheduleProcess?.();
         });
       },
+      onReaction: (payload) => {
+        runWithTenant(tid, () => {
+          const counts = this.db.mergeReactionEvent(
+            payload.chatJid,
+            payload.messageId,
+            payload.emoji,
+            payload.reactionMsgId,
+          );
+          if (counts) {
+            this._broadcast(
+              {
+                type: 'message-reaction',
+                data: {
+                  chatJid: payload.chatJid,
+                  messageId: payload.messageId,
+                  counts,
+                },
+              },
+              tid,
+            );
+          }
+        });
+      },
     });
 
     st.waClient = waClient;
@@ -353,6 +423,23 @@ export default class WebServer {
     // Switch this session to canonical tenant and ask the browser to reload.
     sql.prepare('UPDATE user_sessions SET tenant_id = ? WHERE id = ?').run(canonicalTenant, sessionId);
     sql.prepare('UPDATE wa_identities SET updated_at = ? WHERE wa_hash = ?').run(now, waHash);
+
+    // MUST stop Baileys before renaming `.baileys_auth` — moving creds while the socket / saveCreds is active
+    // corrupts the session and typically yields immediate disconnect (408) right after scanning QR.
+    const st = this._getTenantState(currentTenantId);
+    const wa = st.waClient;
+    if (wa && typeof wa.destroy === 'function') {
+      try {
+        await wa.destroy();
+      } catch (e) {
+        console.warn('[WA] destroy before auth move:', e.message);
+      }
+    }
+    st.waClient = null;
+    st.waQrDataUrl = null;
+    st.waState = 'DISCONNECTED';
+    st.waMessage = 'Switching workspace…';
+    await new Promise((r) => setTimeout(r, 400));
 
     // Move newly-scanned Baileys auth into the canonical tenant dir so reconnects work.
     this._moveTenantAuth(currentTenantId, canonicalTenant);
@@ -536,7 +623,22 @@ export default class WebServer {
     });
 
     // ── Chat & Message APIs ───────────────────────────────────────────
-    this._app.get('/api/chats', (_req, res) => res.json(this.db.getChatStats()));
+    this._app.get('/api/chats', async (_req, res) => {
+      let stats = this.db.getChatStats();
+      try {
+        const st = this._getTenantState(getCurrentTenantId());
+        const wa = st?.waClient;
+        if (wa && typeof wa.overlayResolvedChatNames === 'function') {
+          stats = wa.overlayResolvedChatNames(stats);
+        }
+        if (wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
+          stats = await wa.mergeLinkedPersonalChatStats(stats);
+        }
+      } catch (_) {
+        /* keep DB-only titles */
+      }
+      res.json(stats);
+    });
 
     this._app.get('/api/chats/:chatJid/action-items', (req, res) => {
       try {
@@ -547,16 +649,62 @@ export default class WebServer {
       }
     });
 
-    this._app.get('/api/messages', (req, res) => {
+    this._app.get('/api/messages', async (req, res) => {
       const chatJid = req.query.chatJid;
       if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
       const limit = Math.min(parseInt(req.query.limit, 10) || 80, 500);
       const offset = parseInt(req.query.offset, 10) || 0;
       const focusMessageId = typeof req.query.focusMessageId === 'string' ? req.query.focusMessageId.trim() : '';
-      if (focusMessageId) {
-        return res.json(this.db.getMessagesAroundMessageId(chatJid, focusMessageId, limit));
+      let jids = [chatJid];
+      try {
+        const st = this._getTenantState(getCurrentTenantId());
+        const wa = st?.waClient;
+        if (wa && typeof wa.getLinked1on1Jids === 'function') {
+          jids = await wa.getLinked1on1Jids(chatJid);
+        }
+      } catch (_) {
+        /* single jid */
       }
-      return res.json(this.db.getMessagesPaginated(chatJid, limit, offset));
+      const unique = [...new Set(jids)].filter(Boolean);
+      try {
+        if (focusMessageId) {
+          if (unique.length <= 1) {
+            return res.json(sanitizeMessageList(this.db.getMessagesAroundMessageId(chatJid, focusMessageId, limit)));
+          }
+          return res.json(sanitizeMessageList(this.db.getMessagesAroundMessageIdForJids(unique, focusMessageId, limit)));
+        }
+        if (unique.length <= 1) {
+          return res.json(sanitizeMessageList(this.db.getMessagesPaginated(chatJid, limit, offset)));
+        }
+        return res.json(sanitizeMessageList(this.db.getMessagesPaginatedForJids(unique, limit, offset)));
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/wa/status-feed', (_req, res) => {
+      try {
+        return res.json(this.db.getStatusBroadcastFeed(80));
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/message-media', (req, res) => {
+      try {
+        const messageId = String(req.query.messageId || '').trim();
+        if (!messageId) return res.status(400).json({ error: 'messageId is required' });
+        const row = this.db.getMessageMediaRecord(messageId);
+        const rawPath = row?.mediaPath ? String(row.mediaPath).trim() : '';
+        if (!rawPath) return res.status(404).json({ error: 'No media for this message' });
+        const safe = assertPathUnderMediaRoot(rawPath);
+        if (!safe) return res.status(403).json({ error: 'Invalid media path' });
+        res.setHeader('Content-Type', contentTypeForMediaFile(safe));
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        return res.sendFile(safe);
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
     });
 
     // ── While you were away (per chat) ───────────────────────────────
@@ -572,12 +720,45 @@ export default class WebServer {
       }
     });
 
+    /** Queue AI thread-summary indexing for this chat before others (same tenant). Prefer POST body — see /api/summaries/priority-chat. */
+    this._app.post('/api/chats/:chatJid/priority-index', (req, res) => {
+      try {
+        const chatJid = decodeURIComponent(req.params.chatJid || '');
+        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const tid = getCurrentTenantId();
+        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        void runWithTenant(tid, async () => {
+          try {
+            await this.summaryService.indexPendingDays();
+          } catch (err) {
+            console.error('[priority-index]', err.message);
+          }
+        });
+        return res.json({ ok: true, priorityChatJid: chatJid });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
     this._app.get('/api/chats/:chatJid/away-summary', (req, res) => {
       try {
         const chatJid = decodeURIComponent(req.params.chatJid || '');
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const limit = Math.min(parseInt(req.query.limit, 10) || 3, 10);
         return res.json(this.db.getAwayThreadSummaries(chatJid, limit));
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    /** Media, documents, and extracted URLs for the chat attachments panel. */
+    this._app.get('/api/chats/:chatJid/attachments', (req, res) => {
+      try {
+        const chatJid = decodeURIComponent(req.params.chatJid || '');
+        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const rowLimit = Math.min(parseInt(req.query.limit, 10) || 1200, 5000);
+        const data = this.db.getChatAttachmentsGrouped(chatJid, rowLimit);
+        return res.json(data);
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -731,10 +912,40 @@ export default class WebServer {
       if (st.waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
       const chatJid = req.body?.chatJid ? String(req.body.chatJid) : '';
       const text = req.body?.text ? String(req.body.text) : '';
+      const quotedMessageId = typeof req.body?.quotedMessageId === 'string' ? req.body.quotedMessageId.trim() : '';
       if (!chatJid || !text.trim()) return res.status(400).json({ error: 'chatJid and text required' });
       try {
-        const sent = await st.waClient.sendText(chatJid, text);
+        let quotedRow = null;
+        if (quotedMessageId) {
+          quotedRow = this.db.getMessageForActions(chatJid, quotedMessageId);
+          if (!quotedRow) {
+            return res.status(404).json({ error: 'Quoted message not found in this chat' });
+          }
+        }
+        const sent = await st.waClient.sendText(chatJid, text, { quotedRow });
         return res.json({ ok: true, messageId: sent?.key?.id || null });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/wa/react', async (req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+      if (st.waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
+      const chatJid = req.body?.chatJid ? String(req.body.chatJid) : '';
+      const messageId = typeof req.body?.messageId === 'string' ? req.body.messageId.trim() : '';
+      const emoji = req.body?.emoji != null ? String(req.body.emoji) : '';
+      if (!chatJid || !messageId) return res.status(400).json({ error: 'chatJid and messageId required' });
+      try {
+        const row = this.db.getMessageForActions(chatJid, messageId);
+        if (!row) return res.status(404).json({ error: 'Message not found' });
+        if (typeof st.waClient.sendEmojiReaction !== 'function') {
+          return res.status(503).json({ error: 'Reactions not available' });
+        }
+        await st.waClient.sendEmojiReaction(chatJid, row, emoji);
+        return res.json({ ok: true });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1052,6 +1263,26 @@ export default class WebServer {
       try {
         const count = await this.summaryService.indexPendingDays();
         return res.json({ generated: count });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    /** Index this chat before others for AI thread summaries (JSON body avoids JID-in-URL / router edge cases). */
+    this._app.post('/api/summaries/priority-chat', (req, res) => {
+      try {
+        const chatJid = String(req.body?.chatJid ?? '').trim();
+        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const tid = getCurrentTenantId();
+        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        void runWithTenant(tid, async () => {
+          try {
+            await this.summaryService.indexPendingDays();
+          } catch (err) {
+            console.error('[summaries/priority-chat]', err.message);
+          }
+        });
+        return res.json({ ok: true, priorityChatJid: chatJid });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }

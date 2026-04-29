@@ -1,3 +1,4 @@
+import { basename } from 'path';
 import Fuse from 'fuse.js';
 
 const MAX_THREADS = 8;
@@ -67,12 +68,25 @@ function dedupeById(messages) {
   return Array.from(seen.values());
 }
 
-/** Prefer body text; else user caption + AI index (vision / transcript) for display and search snippets. */
+function mediaFileHint(m) {
+  try {
+    const p = m.mediaPath || m.media_path;
+    if (!p) return '';
+    const b = basename(String(p));
+    return b ? b.replace(/_/g, ' ') : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Prefer body text; else user caption + AI index (vision / transcript / PDF) for display and search snippets. */
 function displayMessageText(m) {
   const t = m.text?.trim();
   if (t) return m.text;
   const bits = [m.mediaCaption, m.mediaAiIndex].filter((x) => x && String(x).trim());
   if (bits.length) return `[${m.mediaType || 'media'}] ${bits.join(' · ')}`;
+  const hint = mediaFileHint(m);
+  if (hint) return `[${m.mediaType || 'file'}] ${hint}`;
   return `[${m.mediaType || 'media'}]`;
 }
 
@@ -406,15 +420,20 @@ export default class SmartSearch {
   }
 
   _fuzzySearch(query, chatJid) {
-    const messages = this._db.getAllMessagesLight(chatJid, 5000);
+    const raw = this._db.getAllMessagesLight(chatJid, 5000);
+    const messages = raw.map((m) => ({
+      ...m,
+      mediaFileHint: mediaFileHint(m),
+    }));
     if (messages.length === 0) return [];
 
     const fuse = new Fuse(messages, {
       keys: [
-        { name: 'text', weight: 0.55 },
-        { name: 'sender', weight: 0.12 },
+        { name: 'text', weight: 0.42 },
+        { name: 'sender', weight: 0.1 },
         { name: 'mediaCaption', weight: 0.12 },
-        { name: 'mediaAiIndex', weight: 0.21 },
+        { name: 'mediaAiIndex', weight: 0.22 },
+        { name: 'mediaFileHint', weight: 0.14 },
       ],
       threshold: 0.4,
       distance: 200,

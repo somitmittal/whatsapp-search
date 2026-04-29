@@ -1,5 +1,8 @@
 import { FACT_EXTRACTION_PROMPT, parseFactsFromLlm } from './fact-extract.js';
 import { segmentIntoThreads } from './thread-segment.js';
+import { isWhatsAppLowPriorityFeed } from '../whatsapp/jid-filters.js';
+import { getCurrentTenantId } from '../storage/tenant-context.js';
+import { prioritizeChatFirst } from './priority-chat-queue.js';
 /** Messages per LLM call — keeps prompts bounded and allows parallel segment work. */
 const SUMMARY_CHUNK_CLOUD = 200;
 const SUMMARY_CHUNK_LOCAL = 150;
@@ -85,6 +88,18 @@ export default class DailySummaryService {
     this._onProgress = onProgress ?? null;
     this._running = false;
     this._aborted = false; // reserved for explicit cancel (future)
+    /** @type {Map<string, string>} tenantId → chatJid to process first on next run */
+    this._priorityChatJidByTenant = new Map();
+  }
+
+  /**
+   * Prefer indexing this chat before others (same tenant). Consumed after that chat is processed once.
+   * @param {string} tenantId
+   * @param {string} chatJid
+   */
+  setPriorityChatForTenant(tenantId, chatJid) {
+    if (!tenantId || !chatJid) return;
+    this._priorityChatJidByTenant.set(String(tenantId), String(chatJid));
   }
 
   /** Split a message array into consecutive chunks of at most `size` messages. */
@@ -213,6 +228,24 @@ export default class DailySummaryService {
         workQueue.push({ chatJid, chatName, pending });
       }
 
+      // Real chats first; Status / broadcasts / newsletters last (same LLM budget, better UX).
+      workQueue.sort((a, b) => {
+        const fa = isWhatsAppLowPriorityFeed(a.chatJid) ? 1 : 0;
+        const fb = isWhatsAppLowPriorityFeed(b.chatJid) ? 1 : 0;
+        return fa - fb;
+      });
+
+      const tid = getCurrentTenantId();
+      const preferred = this._priorityChatJidByTenant.get(String(tid));
+      if (preferred) {
+        const hasPreferred = workQueue.some((w) => w.chatJid === preferred);
+        if (!hasPreferred) {
+          this._priorityChatJidByTenant.delete(String(tid));
+        } else if (prioritizeChatFirst(workQueue, preferred)) {
+          console.log(`[Summaries] User requested "${preferred}" first`);
+        }
+      }
+
       const chatsTotal = workQueue.length;
       let totalGenerated = 0;
 
@@ -230,6 +263,7 @@ export default class DailySummaryService {
       });
 
       let chatIndex = 0;
+      let clearedPreferred = false;
       for (const { chatJid, chatName, pending } of workQueue) {
         chatIndex += 1;
         console.log(`[Summaries] ${chatName || chatJid}: ${pending.length} unsummarized threads (${chatIndex}/${chatsTotal} chats)`);
@@ -317,6 +351,11 @@ export default class DailySummaryService {
           chatComplete: chatFinished,
           active: false,
         });
+
+        if (!clearedPreferred && preferred && chatJid === preferred) {
+          this._priorityChatJidByTenant.delete(String(tid));
+          clearedPreferred = true;
+        }
       }
 
       if (totalGenerated > 0) {

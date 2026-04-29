@@ -32,7 +32,7 @@ const SEARCH_GROUP     = '🔍 WhatsApp Search';
 const BATCH_MS         = 2000;
 const SYNC_DONE_DELAY  = 8_000; // ms of silence after last history batch → mark READY
 
-const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker']);
+const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
 const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
 
 function safeJidDir(jid) {
@@ -63,7 +63,7 @@ function saveCfg(configFile, d) {
 /** Plain text from an inner proto message (after unwrap of ephemeral / view-once). */
 function extractTextFromInner(m) {
   if (!m) return '';
-  return (
+  let t = (
     m.conversation ||
     m.extendedTextMessage?.text ||
     m.imageMessage?.caption ||
@@ -82,6 +82,9 @@ function extractTextFromInner(m) {
     m.viewOnceMessage?.message?.imageMessage?.caption ||
     ''
   ) || '';
+  const docFn = m.documentMessage?.fileName ? String(m.documentMessage.fileName).trim() : '';
+  if (docFn && !t.includes(docFn)) t = t ? `${t} ${docFn}` : docFn;
+  return t;
 }
 
 function extractText(msg) {
@@ -143,7 +146,7 @@ function formatResult(result) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default class WaClient {
-  constructor({ authDir, configFile, onQr, onReady, onMessages, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath }) {
+  constructor({ authDir, configFile, onQr, onReady, onMessages, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction }) {
     this._authDir = authDir || join(config.dataDir, '.baileys_auth');
     this._configFile = configFile || join(config.dataDir, 'wa-config.json');
     this._onQr          = onQr;
@@ -154,6 +157,7 @@ export default class WaClient {
     this._onSearchQuery = onSearchQuery;
     this._onDisconnected = onDisconnected;
     this._onMediaPath   = onMediaPath;
+    this._onReaction    = onReaction;
 
     this._sock          = null;
     this._state         = 'DISCONNECTED';
@@ -175,6 +179,15 @@ export default class WaClient {
     this._mediaLogger   = P({ level: 'silent' });
     /** Outgoing search-reply message ids — skip when they echo back in messages.upsert (fromMe). */
     this._searchReplyMsgIds = new Set();
+
+    /** Serialize connects — parallel _connect() calls used to create overlapping Baileys sockets → disconnect loop. */
+    this._connectSeq = Promise.resolve();
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    this._reconnectTimer = null;
+    /** Increments on each non-logout close; reset when `connection === 'open'`. */
+    this._reconnectAttempt = 0;
+    /** Throttle `SYNCING` status lines so history batches don’t spam WebSocket/UI. */
+    this._lastSyncingUiAt = 0;
   }
 
   _isSearchGroupJid(jid) {
@@ -203,25 +216,88 @@ export default class WaClient {
 
   async logout() {
     this._destroyed = true;
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
     try { await this._sock?.logout(); } catch {}
     this._sock = null;
     this._setState('DISCONNECTED', 'Logged out');
     this._onDisconnected?.();
   }
 
-  async sendText(chatJid, text) {
+  /** @param {{ quotedRow?: object }} [options] Optional quoted message row from DB for replies. */
+  async sendText(chatJid, text, options = {}) {
     if (!this._sock) throw new Error('WhatsApp not connected');
     if (!chatJid) throw new Error('chatJid required');
     const t = String(text || '').trim();
     if (!t) throw new Error('text required');
-    const sent = await this._sock.sendMessage(chatJid, { text: t });
-    return sent;
+    const { quotedRow } = options;
+    if (quotedRow) {
+      const quoted = this._buildQuotedProto(quotedRow, chatJid);
+      return await this._sock.sendMessage(chatJid, { text: t }, { quoted });
+    }
+    return await this._sock.sendMessage(chatJid, { text: t });
+  }
+
+  /** React to a chat or status message (`statusJidList` set for `status@broadcast`). */
+  async sendEmojiReaction(chatJid, row, emoji) {
+    if (!this._sock) throw new Error('WhatsApp not connected');
+    if (!row?.messageId) throw new Error('message row required');
+    const key = this._buildReactionKey(row, chatJid);
+    const e = String(emoji ?? '');
+    const opts = {};
+    if (chatJid === 'status@broadcast' && row.senderJid && this._ownerJid) {
+      opts.statusJidList = [jidNormalizedUser(row.senderJid), this._ownerJid];
+    }
+    return await this._sock.sendMessage(
+      chatJid,
+      { react: { text: e, key } },
+      opts,
+    );
+  }
+
+  _buildReactionKey(row, chatJid) {
+    const fromMe = row.sender === 'You';
+    const key = {
+      remoteJid: row.chatJid,
+      id: row.messageId,
+      fromMe,
+    };
+    if (isJidGroup(chatJid) && !fromMe && row.senderJid) {
+      key.participant = jidNormalizedUser(row.senderJid);
+    }
+    if (chatJid === 'status@broadcast' && row.senderJid) {
+      key.participant = jidNormalizedUser(row.senderJid);
+      key.fromMe = false;
+    }
+    return key;
+  }
+
+  _buildQuotedProto(row, destChatJid) {
+    const fromMe = row.sender === 'You';
+    const key = {
+      remoteJid: row.chatJid,
+      id: row.messageId,
+      fromMe,
+    };
+    if (isJidGroup(destChatJid) && !fromMe && row.senderJid) {
+      key.participant = jidNormalizedUser(row.senderJid);
+    }
+    let snippet = String(row.text || row.mediaCaption || '').trim();
+    if (!snippet) {
+      snippet = row.mediaType ? `[${row.mediaType}]` : '\u200b';
+    }
+    return {
+      key,
+      message: { conversation: snippet.slice(0, 1024) },
+    };
   }
 
   async destroy() {
     this._destroyed = true;
     clearTimeout(this._flushTimer);
     clearTimeout(this._syncDoneTimer);
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
     this._mediaQueue.length = 0;
     try { this._sock?.end?.(new Error('destroy')); } catch {}
     this._sock = null;
@@ -229,10 +305,29 @@ export default class WaClient {
   }
 
   // ── Core connection ────────────────────────────────────────────────────────
+  /**
+   * Single-flight connect: `/api/wa/connect`, reconnect timers, and pairing must not run `_buildSocket` in parallel.
+   */
   async _connect() {
+    if (this._destroyed) return;
+    if (this._sock) return;
+
+    const run = async () => {
+      if (this._destroyed) return;
+      if (this._sock) return;
+      await this._buildSocket();
+    };
+
+    this._connectSeq = this._connectSeq.catch(() => {}).then(run);
+    return this._connectSeq;
+  }
+
+  async _buildSocket() {
     if (this._destroyed) return;
 
     const { state: authState, saveCreds } = await useMultiFileAuthState(this._authDir);
+    if (this._destroyed) return;
+    if (this._sock) return;
 
     let version = [2, 3000, 1015901307];
     try {
@@ -271,19 +366,34 @@ export default class WaClient {
 
       if (connection === 'close') {
         const code = lastDisconnect?.error?.output?.statusCode;
+        const boomMsg = lastDisconnect?.error?.message || '';
         const loggedOut = code === DisconnectReason.loggedOut || code === 401;
-        console.log(`[WA] Closed — code=${code}, loggedOut=${loggedOut}`);
+        console.log(`[WA] Closed — code=${code}, loggedOut=${loggedOut}${boomMsg ? ` — ${boomMsg}` : ''}`);
         this._sock = null;
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
         if (loggedOut || this._destroyed) {
+          this._reconnectAttempt = 0;
           this._setState('DISCONNECTED', 'Logged out — rescan QR to reconnect');
           this._onDisconnected?.();
         } else {
-          this._setState('LOADING', 'Reconnecting…');
-          setTimeout(() => this._connect(), 5000);
+          const attempt = this._reconnectAttempt;
+          this._reconnectAttempt = Math.min(attempt + 1, 12);
+          const delayMs = Math.min(5000 * Math.pow(1.6, attempt), 120000);
+          console.log(`[WA] Reconnect in ${Math.round(delayMs / 1000)}s (attempt ${this._reconnectAttempt})`);
+          this._setState('LOADING', `Reconnecting in ${Math.round(delayMs / 1000)}s…`);
+          this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            void this._connect();
+          }, delayMs);
         }
       }
 
       if (connection === 'open') {
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
+        this._reconnectAttempt = 0;
+        this._lastSyncingUiAt = 0;
         const user = this._sock.user;
         const name = user?.name || user?.verifiedName || user?.id?.split(':')[0] || 'unknown';
         this._ownerName = name || null;
@@ -354,6 +464,23 @@ export default class WaClient {
       if (rows.length) this._enqueueBatch(rows);
     });
 
+    /** Incoming emoji reactions — aggregated per message in DB + UI via WebSocket. */
+    this._sock.ev.on('messages.reaction', (updates) => {
+      for (const u of updates || []) {
+        const target = u.key;
+        const reactionBody = u.reaction;
+        if (!target?.remoteJid || !target?.id || !reactionBody) continue;
+        const emoji = reactionBody.text != null ? String(reactionBody.text) : '';
+        const reactionMsgId = reactionBody.key?.id ? String(reactionBody.key.id) : '';
+        this._onReaction?.({
+          chatJid: target.remoteJid,
+          messageId: String(target.id),
+          emoji,
+          reactionMsgId,
+        });
+      }
+    });
+
     // ── History sync (fires in one or more batches) ───────────────────────
     this._sock.ev.on('messaging-history.set', async ({ chats, messages, contacts }) => {
       try {
@@ -401,7 +528,11 @@ export default class WaClient {
           messages: this._totalMsgs,
           byChat: Object.fromEntries(this._syncByChat),
         });
-        this._setState('SYNCING', `Syncing… ${this._totalMsgs.toLocaleString()} messages received`);
+        const now = Date.now();
+        if (now - this._lastSyncingUiAt >= 1200) {
+          this._lastSyncingUiAt = now;
+          this._setState('SYNCING', `Syncing… ${this._totalMsgs.toLocaleString()} messages received`);
+        }
         console.log(`[WA] History batch: +${rows.length} msgs (total ${this._totalMsgs})`);
       }
 
@@ -797,6 +928,113 @@ export default class WaClient {
     }
   }
 
+  /**
+   * Apply in-memory titles (contact events, pushName, LID↔PN mirroring) on top of DB chat stats
+   * so the sidebar list matches the chat header and WhatsApp — `/api/chats` uses this.
+   */
+  overlayResolvedChatNames(stats) {
+    if (!Array.isArray(stats) || !stats.length) return stats;
+    return stats.map((row) => {
+      const jid = row.chatJid;
+      if (!jid) return row;
+      const resolved = this._nameFromChatMap(jid);
+      if (!resolved || looksLikePhoneOnlyName(resolved)) return row;
+      return { ...row, chatName: resolved };
+    });
+  }
+
+  /**
+   * Resolve LID ↔ phone-number JID for one 1:1 contact so APIs can query merged history.
+   */
+  async getLinked1on1Jids(jid) {
+    if (!jid || isJidGroup(jid)) return [jid];
+    const lm = this._sock?.signalRepository?.lidMapping;
+    if (!lm) return [jidNormalizedUser(jid) || jid];
+    const out = new Set();
+    try {
+      const n = jidNormalizedUser(jid) || jid;
+      out.add(n);
+      if (isLidUser(jid)) {
+        const pn = await lm.getPNForLID(jid);
+        if (pn) out.add(jidNormalizedUser(pn));
+      } else if (isPnUser(jid) || jid?.endsWith?.('@hosted')) {
+        const lids = await lm.getLIDsForPNs([jid]);
+        const lid = lids?.[0]?.lid;
+        if (lid) out.add(jidNormalizedUser(lid));
+      }
+    } catch (_) {
+      /* mapping optional */
+    }
+    return [...out];
+  }
+
+  _pickBetterChatTitle(a, b) {
+    const x = String(a || '').trim();
+    const y = String(b || '').trim();
+    const px = looksLikePhoneOnlyName(x);
+    const py = looksLikePhoneOnlyName(y);
+    if (px && !py) return y;
+    if (!px && py) return x;
+    return x.length >= y.length ? x : y;
+  }
+
+  /**
+   * Combine sidebar rows that refer to the same person (indexed under @lid and @s.whatsapp.net).
+   */
+  async mergeLinkedPersonalChatStats(stats) {
+    if (!Array.isArray(stats) || !stats.length) return stats;
+    const lm = this._sock?.signalRepository?.lidMapping;
+    if (!lm) return stats;
+
+    const resolveCanonical = async (jid) => {
+      if (!jid || isJidGroup(jid)) return jid;
+      try {
+        if (isLidUser(jid)) {
+          const pn = await lm.getPNForLID(jid);
+          if (pn) return jidNormalizedUser(pn);
+        }
+        return jidNormalizedUser(jid) || jid;
+      } catch {
+        return jid;
+      }
+    };
+
+    const merged = new Map();
+    for (const row of stats) {
+      const canon = await resolveCanonical(row.chatJid);
+      const existing = merged.get(canon);
+      if (!existing) {
+        merged.set(canon, { ...row, chatJid: canon });
+        continue;
+      }
+      const a = existing;
+      const b = row;
+      const mc = (a.messageCount || 0) + (b.messageCount || 0);
+      const lastTs = Math.max(a.lastMessageTs || 0, b.lastMessageTs || 0);
+      const sumT = (a.summarizedThreads || 0) + (b.summarizedThreads || 0);
+      const totT = (a.totalThreads || 0) + (b.totalThreads || 0);
+      const searchIndexPct =
+        totT === 0 ? 100 : Math.min(100, Math.round((sumT / totT) * 100));
+      const aiSearchReady = sumT > 0;
+      const aiSearchComplete = totT === 0 ? true : sumT >= totT;
+      merged.set(canon, {
+        ...a,
+        chatJid: canon,
+        chatName: this._pickBetterChatTitle(a.chatName, b.chatName),
+        sidebarTab: (a.sidebarTab === 'feed' || b.sidebarTab === 'feed') ? 'feed' : 'chat',
+        messageCount: mc,
+        lastMessageTs: lastTs,
+        summarizedThreads: sumT,
+        totalThreads: totT,
+        searchIndexPct,
+        aiSearchReady,
+        aiSearchComplete,
+        participantCount: Math.max(a.participantCount || 0, b.participantCount || 0),
+      });
+    }
+    return [...merged.values()].sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
+  }
+
   async _enrichRowWithMedia(msg, row) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return row;
     try {
@@ -833,6 +1071,7 @@ export default class WaClient {
         m.videoMessage?.mimetype ||
         m.audioMessage?.mimetype ||
         m.stickerMessage?.mimetype ||
+        m.documentMessage?.mimetype ||
         'application/octet-stream';
       const ext = extFromMime(mime);
       const dir = join(config.mediaDir, safeJidDir(row.chatJid));
@@ -919,7 +1158,12 @@ export default class WaClient {
         text:         text || null,
         mediaType,
         mediaPath:    null,
-        mediaCaption: inner.imageMessage?.caption || inner.videoMessage?.caption || null,
+        mediaCaption:
+          inner.imageMessage?.caption ||
+          inner.videoMessage?.caption ||
+          inner.documentMessage?.caption ||
+          (inner.documentMessage?.fileName ? String(inner.documentMessage.fileName).trim() : null) ||
+          null,
         timestamp:    Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
       };
     } catch { return null; }
