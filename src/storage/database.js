@@ -17,19 +17,15 @@ import { LEGACY_TENANT_ID } from './tenant-constants.js';
 import { decryptName, deriveTenantContactKey, encryptName, hashPhone, normalizePhone } from '../privacy/contact-directory.js';
 import { groupStatusBroadcastRows } from '../status/status-feed.js';
 import { STATUS_BROADCAST_JID, sidebarTabForJid } from '../whatsapp/jid-filters.js';
+import { isPlausibleHumanChatTitle } from '../whatsapp/chat-display-name.js';
+import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 
 const require = createRequire(import.meta.url);
 const SQLite = require('better-sqlite3');
 
 /** True if `name` is a better sidebar title than the bare JID local part (avoids last-outgoing-msg wiping the label). */
 function looksLikeContactDisplayName(name, chatJid) {
-  if (!name || !chatJid) return false;
-  const local = String(chatJid).split('@')[0];
-  if (name === local) return false;
-  const digitsOnly = String(name).replace(/\s/g, '').replace(/^\+/, '');
-  const localDigits = local.replace(/^\+/, '');
-  if (/^\d{8,16}$/.test(digitsOnly) && digitsOnly === localDigits) return false;
-  return true;
+  return isPlausibleHumanChatTitle(name, chatJid);
 }
 
 /** True if the string is only a phone number (no letters) — poor sidebar title vs push names / saved names. */
@@ -712,6 +708,16 @@ export default class Database {
     return r.changes ?? 0;
   }
 
+  /** Chat JID for a message id (WebSocket media-ready, etc.). */
+  getMessageChatJid(messageId) {
+    if (!messageId) return null;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(
+      'SELECT chat_jid AS chatJid FROM messages WHERE tenant_id = ? AND message_id = ? LIMIT 1',
+    ).get(t, messageId);
+    return row?.chatJid || null;
+  }
+
   /** @param jsonStr JSON array string e.g. `["…","…"]` or `[]` after processing */
   updateMessageActionSuggestions(messageId, jsonStr) {
     if (!messageId) return 0;
@@ -795,7 +801,8 @@ export default class Database {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();
     return this._db.prepare(`
-      SELECT id, message_id AS messageId, media_type AS mediaType, media_path AS mediaPath
+      SELECT id, message_id AS messageId, media_type AS mediaType, media_path AS mediaPath,
+             media_caption AS mediaCaption, text AS text
       FROM messages
       WHERE tenant_id = ?
         AND media_path IS NOT NULL AND trim(media_path) != ''
@@ -1052,7 +1059,9 @@ export default class Database {
       const isGroup = r.chatJid.endsWith('@g.us');
       if (!isGroup && r.sender && r.sender !== 'You') {
         g.peerSenderName = r.sender;
-        if (!looksLikePhoneOnly(r.sender)) {
+        const humanPeer =
+          !looksLikePhoneOnly(r.sender) && isPlausibleHumanChatTitle(r.sender, r.chatJid);
+        if (humanPeer) {
           const sn = r.sender.trim();
           g.peerHumanSenderName = r.sender;
           if (!g.firstHumanPeerName) g.firstHumanPeerName = r.sender;
@@ -1137,7 +1146,7 @@ export default class Database {
       FROM messages WHERE tenant_id = ? AND chat_jid = ?
       ORDER BY timestamp DESC, id DESC
       LIMIT ? OFFSET ?
-    `).all(t, chatJid, Math.min(Number(limit) || 80, 500), Math.max(0, Number(offset) || 0));
+    `).all(t, chatJid, Math.min(Number(limit) || 80, MAX_MESSAGES_PAGE), Math.max(0, Number(offset) || 0));
   }
 
   /**
@@ -1148,7 +1157,7 @@ export default class Database {
     if (jids.length === 0) return [];
     if (jids.length === 1) return this.getMessagesPaginated(jids[0], limit, offset);
     const t = getCurrentTenantId();
-    const lim = Math.min(Number(limit) || 80, 500);
+    const lim = Math.min(Number(limit) || 80, MAX_MESSAGES_PAGE);
     const off = Math.max(0, Number(offset) || 0);
     const ph = jids.map(() => '?').join(',');
     return this._db.prepare(`
@@ -1168,7 +1177,7 @@ export default class Database {
    * Loads a window of messages so `messageId` appears near the middle (for “jump to source”).
    */
   getMessagesAroundMessageId(chatJid, messageId, limit = 200) {
-    const safeLimit = Math.min(Math.max(Number(limit) || 200, 40), 500);
+    const safeLimit = Math.min(Math.max(Number(limit) || 200, 40), MAX_MESSAGES_PAGE);
     const half = Math.floor(safeLimit / 2);
     const t = getCurrentTenantId();
     const anchor = this._db.prepare(
@@ -1189,7 +1198,7 @@ export default class Database {
    * Jump-to-message across merged LID + phone JIDs for one contact.
    */
   getMessagesAroundMessageIdForJids(chatJids, messageId, limit = 200) {
-    const safeLimit = Math.min(Math.max(Number(limit) || 200, 40), 500);
+    const safeLimit = Math.min(Math.max(Number(limit) || 200, 40), MAX_MESSAGES_PAGE);
     const half = Math.floor(safeLimit / 2);
     const jids = [...new Set((chatJids || []).filter(Boolean))];
     if (jids.length === 0) return [];

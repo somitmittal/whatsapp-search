@@ -25,6 +25,7 @@ import {
   publicSettingsFromDb,
 } from '../llm/defaults.js';
 import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
+import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 
 const require = createRequire(import.meta.url);
 const express = require('express');
@@ -41,10 +42,12 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 function sanitizeClientMessage(m) {
   if (!m || typeof m !== 'object') return m;
   const o = { ...m };
+  const hadPath = !!(o.mediaPath && String(o.mediaPath).trim());
   if (o.mediaPath) {
     o.hasMediaFile = true;
     delete o.mediaPath;
   }
+  o.mediaPending = !!(o.mediaType && !hadPath);
   return o;
 }
 
@@ -332,6 +335,11 @@ export default class WebServer {
       onMediaPath: (messageId, mediaPath) => {
         runWithTenant(tid, () => {
           this.db.updateMessageMediaPath(messageId, mediaPath);
+          const chatJid = this.db.getMessageChatJid(messageId);
+          this._broadcast(
+            { type: 'message-media-ready', data: { messageId: String(messageId), chatJid } },
+            tid,
+          );
           this._mediaIndexService?.scheduleProcess?.();
         });
       },
@@ -652,7 +660,7 @@ export default class WebServer {
     this._app.get('/api/messages', async (req, res) => {
       const chatJid = req.query.chatJid;
       if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
-      const limit = Math.min(parseInt(req.query.limit, 10) || 80, 500);
+      const limit = Math.min(parseInt(req.query.limit, 10) || 80, MAX_MESSAGES_PAGE);
       const offset = parseInt(req.query.offset, 10) || 0;
       const focusMessageId = typeof req.query.focusMessageId === 'string' ? req.query.focusMessageId.trim() : '';
       let jids = [chatJid];

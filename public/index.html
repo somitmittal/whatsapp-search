@@ -301,6 +301,15 @@
       border-radius: 8px;
     }
     .msg-media-audio { width: min(260px, 80vw); margin-top: 4px; }
+    .msg-media-pdf {
+      width: min(360px, 92vw);
+      min-height: 280px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--panel2, #f0f2f5);
+    }
+    .msg-media-doc { color: var(--accent, #1a73e8); font-weight: 500; text-decoration: underline; }
+    .media-pending { opacity: 0.85; font-style: italic; }
     .media-wrap { display: block; }
     .media-cap { display: block; margin-top: 6px; font-size: 13px; color: inherit; opacity: 0.95; }
 
@@ -1889,6 +1898,9 @@
         else if (msg.type === 'sync-progress') { updateSyncProgress(msg.data); }
         else if (msg.type === 'summary-progress') { handleSummaryProgress(msg.data); }
         else if (msg.type === 'message-reaction' && msg.data) { applyIncomingReactionToDom(msg.data); }
+        else if (msg.type === 'message-media-ready' && msg.data?.chatJid === activeChat) {
+          void refreshActiveChatMessages();
+        }
       } catch {}
     };
     ws.onclose = () => { setTimeout(() => { connectWS(); }, 3000); };
@@ -2802,8 +2814,8 @@
     if (shouldHideComposerForJid(jid)) clearReplyTarget();
     try {
       const msgUrl = focusMessageId
-        ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200&focusMessageId=${encodeURIComponent(focusMessageId)}`
-        : `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200`;
+        ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(focusMessageId)}`
+        : `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000`;
       const [msgs, details] = await Promise.all([
         fetch(msgUrl).then(r => r.json()),
         fetch(`/api/wa/chat-details?chatJid=${encodeURIComponent(jid)}`).then(r => r.ok ? r.json() : null),
@@ -2902,6 +2914,17 @@
         body = `<span class="media-wrap"><video class="msg-media-vid" src="${escAttr(mediaUrl)}" controls playsinline preload="metadata"></video>${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
       } else if (mediaUrl && m.mediaType === 'audio') {
         body = `<span class="media-wrap"><audio class="msg-media-audio" src="${escAttr(mediaUrl)}" controls preload="metadata"></audio>${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+      } else if (mediaUrl && m.mediaType === 'document') {
+        const joint = `${m.mediaCaption || ''} ${m.text || ''}`.toLowerCase();
+        const isPdf = joint.includes('.pdf');
+        const label = esc((m.mediaCaption || m.text || 'Document').trim() || 'Document');
+        if (isPdf) {
+          body = `<span class="media-wrap"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe>${cap ? `<span class="media-cap">${cap}</span>` : `<span class="media-cap">${label}</span>`}</span>`;
+        } else {
+          body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(mediaUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+        }
+      } else if (m.mediaPending && m.mediaType) {
+        body = `<span class="media-badge media-pending">Loading ${esc(m.mediaType)}…${cap ? ' ' + cap : ''}</span>`;
       } else if (m.mediaType && (!m.text || String(m.text).startsWith('['))) {
         body = `<span class="media-badge">[${esc(m.mediaType)}]${cap ? ' ' + cap : ''}</span>`;
       } else {
@@ -2946,7 +2969,7 @@
     const jid = activeChat;
     if (!jid) return;
     try {
-      const msgs = await fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200`).then((r) => r.json());
+      const msgs = await fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000`).then((r) => r.json());
       if (activeChat !== jid) return;
       renderMessages(msgs, jid);
     } catch {}

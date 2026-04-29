@@ -8,6 +8,16 @@ import { createRequire } from 'module';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import config from '../config.js';
+import {
+  fallbackTitleForOneOnOneJid,
+  formatPhoneLocalPart,
+  isPlausibleHumanChatTitle,
+  looksLikeOpaqueNumericId,
+  looksLikePhoneDigitsOnly,
+  looksLikeUrlOrSocialJunk,
+  pickBetterChatTitle,
+  sanitizePeerSenderName,
+} from './chat-display-name.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -98,12 +108,6 @@ function placeholderForUntracked(inner) {
   if (!ct) return '[message]';
   const short = ct.replace(/Message$/, '').replace(/([A-Z])/g, ' $1').trim();
   return `[${short || ct}]`;
-}
-
-function looksLikePhoneOnlyName(str) {
-  if (!str || typeof str !== 'string') return false;
-  const d = str.replace(/\s/g, '').replace(/^\+/, '');
-  return /^\d{8,20}$/.test(d);
 }
 
 function normalizeNameForCompare(s) {
@@ -572,8 +576,10 @@ export default class WaClient {
 
   async _applyDisplayName(jid, label) {
     if (!jid || !label) return;
-    this._chatNames.set(jid, label);
-    await this._mirrorDisplayNameAcrossJids(jid, label);
+    const s = String(label).trim();
+    if (!s || looksLikeUrlOrSocialJunk(s) || looksLikeOpaqueNumericId(s)) return;
+    this._chatNames.set(jid, s);
+    await this._mirrorDisplayNameAcrossJids(jid, s);
   }
 
   /**
@@ -584,6 +590,7 @@ export default class WaClient {
     if (!label || typeof label !== 'string') return;
     const s = label.trim();
     if (!s) return;
+    if (looksLikeUrlOrSocialJunk(s) || looksLikeOpaqueNumericId(s)) return;
     const seen = new Set();
     for (const jid of jids) {
       if (!jid || seen.has(jid)) continue;
@@ -633,6 +640,7 @@ export default class WaClient {
         const name = details?.chatName || details?.displayName;
         const bare = jid.split('@')[0] || '';
         if (!name || name === bare) continue;
+        if (!isPlausibleHumanChatTitle(name, jid)) continue;
         rowsUpdated += await this._propagateChatNameToDb(db, jid, name);
       } catch (_) { /* ignore per-chat */ }
     }
@@ -740,14 +748,15 @@ export default class WaClient {
    */
   _resolveChatDisplayName(jid, msg) {
     if (isJidGroup(jid)) {
-      return this._nameFromChatMap(jid) || jid.split('@')[0];
+      const gn = this._nameFromChatMap(jid);
+      if (gn && isPlausibleHumanChatTitle(gn, jid)) return gn;
+      return jid.split('@')[0];
     }
-    const bare = jid.split('@')[0];
     // PN ⇄ LID: paired JID on the key (see Baileys decodeMessageNode / messages-recv mapping)
     const alts = [msg.key?.remoteJidAlt, msg.key?.participantAlt].filter(Boolean);
     for (const alt of alts) {
       const label = this._nameFromChatMap(alt);
-      if (label) {
+      if (label && isPlausibleHumanChatTitle(label, jid)) {
         this._chatNames.set(jid, label);
         try {
           const norm = jidNormalizedUser(jid);
@@ -758,14 +767,14 @@ export default class WaClient {
       }
     }
     const biz = msg.verifiedBizName;
-    if (biz) {
+    if (biz && isPlausibleHumanChatTitle(biz, jid)) {
       this._chatNames.set(jid, biz);
       void this._mirrorDisplayNameAcrossJids(jid, biz).catch(() => {});
       return biz;
     }
     // Push name is often the best available label (esp. when phonebook names aren't accessible via WA APIs).
     // Some multi-device events may mark messages as fromMe; don't rely on that flag here.
-    if (msg.pushName && !looksLikePhoneOnlyName(msg.pushName)) {
+    if (msg.pushName && !looksLikePhoneDigitsOnly(msg.pushName) && isPlausibleHumanChatTitle(msg.pushName, jid)) {
       // Never label a 1:1 chat with *our own* profile name (some multi-device/fromMe events report our name here).
       if (!isProbablyOwnName(msg.pushName, this._ownerName)) {
         this._chatNames.set(jid, msg.pushName);
@@ -774,8 +783,8 @@ export default class WaClient {
       }
     }
     const cached = this._nameFromChatMap(jid);
-    if (cached) return cached;
-    return bare;
+    if (cached && isPlausibleHumanChatTitle(cached, jid)) return cached;
+    return fallbackTitleForOneOnOneJid(jid);
   }
 
   // ── Sync-done gate ─────────────────────────────────────────────────────────
@@ -896,9 +905,13 @@ export default class WaClient {
         }
       } catch (_) {}
     }
+    const displayName =
+      cachedName && isPlausibleHumanChatTitle(cachedName, jid)
+        ? cachedName
+        : (isJidGroup(jid) ? jid.split('@')[0] : fallbackTitleForOneOnOneJid(jid));
     const base = {
       chatJid: jid,
-      displayName: cachedName || jid.split('@')[0],
+      displayName,
       isGroup: isJidGroup(jid),
     };
     if (!this._sock) {
@@ -910,7 +923,7 @@ export default class WaClient {
         return {
           ...base,
           waConnected: true,
-          subject: meta.subject || base.displayName,
+          subject: (meta.subject && isPlausibleHumanChatTitle(meta.subject, jid) ? meta.subject : null) || base.displayName,
           description: meta.desc || '',
           participantCount: meta.participants?.length ?? 0,
           owner: meta.owner || null,
@@ -921,7 +934,7 @@ export default class WaClient {
         ...base,
         waConnected: true,
         phone,
-        chatName: cachedName || base.displayName,
+        chatName: displayName,
       };
     } catch (e) {
       return { ...base, waConnected: true, error: e.message };
@@ -938,7 +951,8 @@ export default class WaClient {
       const jid = row.chatJid;
       if (!jid) return row;
       const resolved = this._nameFromChatMap(jid);
-      if (!resolved || looksLikePhoneOnlyName(resolved)) return row;
+      if (!resolved || looksLikePhoneDigitsOnly(resolved)) return row;
+      if (!isPlausibleHumanChatTitle(resolved, jid)) return row;
       return { ...row, chatName: resolved };
     });
   }
@@ -966,16 +980,6 @@ export default class WaClient {
       /* mapping optional */
     }
     return [...out];
-  }
-
-  _pickBetterChatTitle(a, b) {
-    const x = String(a || '').trim();
-    const y = String(b || '').trim();
-    const px = looksLikePhoneOnlyName(x);
-    const py = looksLikePhoneOnlyName(y);
-    if (px && !py) return y;
-    if (!px && py) return x;
-    return x.length >= y.length ? x : y;
   }
 
   /**
@@ -1020,7 +1024,7 @@ export default class WaClient {
       merged.set(canon, {
         ...a,
         chatJid: canon,
-        chatName: this._pickBetterChatTitle(a.chatName, b.chatName),
+        chatName: pickBetterChatTitle(a.chatName, b.chatName, canon),
         sidebarTab: (a.sidebarTab === 'feed' || b.sidebarTab === 'feed') ? 'feed' : 'chat',
         messageCount: mc,
         lastMessageTs: lastTs,
@@ -1142,10 +1146,17 @@ export default class WaClient {
         this._nameFromChatMap(msg.key?.remoteJidAlt) ||
         senderJid?.split('@')[0] ||
         'Unknown';
+      const snClean = sanitizePeerSenderName(senderName, jid);
+      if (snClean) senderName = snClean;
+      else if (senderJid?.endsWith?.('@s.whatsapp.net')) {
+        senderName = formatPhoneLocalPart(senderJid.split('@')[0]);
+      } else {
+        senderName = senderJid?.split('@')[0] || 'Unknown';
+      }
       let chatName   = this._resolveChatDisplayName(jid, msg);
       // For 1:1 chats, WhatsApp often only gives a good name via pushName on an incoming message.
       // If the resolved chat title is just a number but we have a human sender name, use that.
-      if (!isJidGroup(jid) && looksLikePhoneOnlyName(chatName) && senderName && senderName !== 'You' && !looksLikePhoneOnlyName(senderName)) {
+      if (!isJidGroup(jid) && looksLikePhoneDigitsOnly(chatName) && senderName && senderName !== 'You' && !looksLikePhoneDigitsOnly(senderName)) {
         chatName = senderName;
       }
 

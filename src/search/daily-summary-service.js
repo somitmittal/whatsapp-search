@@ -228,11 +228,22 @@ export default class DailySummaryService {
         workQueue.push({ chatJid, chatName, pending });
       }
 
-      // Real chats first; Status / broadcasts / newsletters last (same LLM budget, better UX).
+      const chatMeta = new Map(chats.map((c) => [c.chatJid, c]));
+      const indexScore = (chatJid) => {
+        const c = chatMeta.get(chatJid);
+        if (!c) return 0;
+        const lm = c.lastMessageTs || 0;
+        const n = Math.max(1, c.messageCount || 0);
+        return lm * Math.log1p(n);
+      };
+
+      // Real chats first; Status / broadcasts / newsletters last.
+      // Within each tier: frequent + recent chats first so active threads get indexed before rate limits bite tail chats.
       workQueue.sort((a, b) => {
         const fa = isWhatsAppLowPriorityFeed(a.chatJid) ? 1 : 0;
         const fb = isWhatsAppLowPriorityFeed(b.chatJid) ? 1 : 0;
-        return fa - fb;
+        if (fa !== fb) return fa - fb;
+        return indexScore(b.chatJid) - indexScore(a.chatJid);
       });
 
       const tid = getCurrentTenantId();

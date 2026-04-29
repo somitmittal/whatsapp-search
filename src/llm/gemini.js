@@ -74,18 +74,23 @@ export default class GeminiProvider {
   }
 
   async caption(imageBase64, mimeType = 'image/jpeg') {
+    const isVideo = String(mimeType || '').startsWith('video/');
+    const prompt = isVideo
+      ? 'Describe this video in detail for search indexing: visible scenes, actions, text on screen, people, objects, locations, and spoken dialogue if audible.'
+      : 'Describe this image in detail for search indexing. Include all visible text, objects, people, locations, activities, colors, and any other notable details.';
     const body = {
       contents: [{
         parts: [
-          { text: 'Describe this image in detail for search indexing. Include all visible text, objects, people, locations, activities, colors, and any other notable details.' },
+          { text: prompt },
           { inline_data: { mime_type: mimeType, data: imageBase64 } },
         ],
       }],
-      generationConfig: { maxOutputTokens: 512 },
+      generationConfig: { maxOutputTokens: isVideo ? 768 : 512 },
     };
 
+    const timeout = isVideo ? 120_000 : TIMEOUT_MS;
     const res = await this._fetchWithFallback(
-      `/models/${this._model}:generateContent`, 'POST', body, TIMEOUT_MS,
+      `/models/${this._model}:generateContent`, 'POST', body, timeout,
     );
     const data = await res.json();
     return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';

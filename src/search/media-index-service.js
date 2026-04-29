@@ -33,8 +33,30 @@ function isUnsupportedProviderOutput(text) {
 }
 
 /**
+ * Searchable text when vision/transcription APIs are unavailable or return nothing.
+ * Uses WhatsApp caption, non-placeholder message text, filename, and media type.
+ */
+export function buildFallbackMediaIndex(job) {
+  const fn = basename(job.mediaPath || '');
+  const cap = String(job.mediaCaption || '').trim();
+  const rawText = String(job.text || '').trim();
+  const txt = rawText && !/^\[[\w\s]+\]$/.test(rawText) ? rawText : '';
+  const type = job.mediaType ? String(job.mediaType) : '';
+  const parts = [cap, txt, fn].filter(Boolean);
+  let s = parts.join(' ').trim();
+  if (!s && fn) s = `${type ? `${type} ` : ''}${fn}`.trim();
+  if (!s && type) s = `[${type}]`;
+  return s.slice(0, 8000);
+}
+
+/** Providers where raw video bytes work with the same multimodal endpoint as images. */
+function providerSupportsInlineVideoCaption(provider) {
+  return provider?.name === 'gemini';
+}
+
+/**
  * Background caption + transcription + PDF text extraction so FTS / fuzzy search can find
- * images, audio, stickers, and document contents (PDF body + filenames).
+ * images, video, audio, stickers, and documents (PDF body + filenames).
  */
 export default class MediaIndexService {
   constructor({ db, getProvider }) {
@@ -63,7 +85,7 @@ export default class MediaIndexService {
     }, 1500);
   }
 
-  async processPending(limit = 8) {
+  async processPending(limit = 12) {
     if (this._running) return 0;
 
     this._running = true;
@@ -84,9 +106,9 @@ export default class MediaIndexService {
   }
 
   /**
-   * PDF and non-PDF docs: extract text where possible; always include basename for FTS.
+   * PDF and non-PDF docs: extract text where possible; always include basename + caption for FTS.
    */
-  async _indexDocument(messageId, mediaPath, buffer) {
+  async _indexDocument(messageId, mediaPath, buffer, mediaCaption = '') {
     const fn = basename(mediaPath || '');
     const ext = extname(mediaPath || '').toLowerCase();
     let body = '';
@@ -98,20 +120,18 @@ export default class MediaIndexService {
         console.warn(`[MediaIndex] PDF parse ${messageId}:`, e.message);
       }
     }
-    const combined = [fn, body].filter(Boolean).join('\n').trim().slice(0, 12000);
-    this._db.updateMediaAiIndex(messageId, combined || fn || '');
+    const cap = String(mediaCaption || '').trim();
+    const combined = [cap, fn, body].filter(Boolean).join('\n').trim().slice(0, 12000);
+    this._db.updateMediaAiIndex(messageId, combined || fn || cap || '');
     return true;
   }
 
   async _indexOne(job) {
     const provider = this._activeProvider();
     const { messageId, mediaType, mediaPath } = job;
-    if (!messageId || !mediaPath) {
-      this._db.updateMediaAiIndex(messageId, '');
-      return false;
-    }
+    const fallback = buildFallbackMediaIndex(job);
 
-    if (mediaType === 'video') {
+    if (!messageId || !mediaPath) {
       this._db.updateMediaAiIndex(messageId, '');
       return false;
     }
@@ -121,44 +141,58 @@ export default class MediaIndexService {
       buffer = readFileSync(mediaPath);
     } catch (e) {
       console.warn(`[MediaIndex] read ${mediaPath}:`, e.message);
+      if (fallback) {
+        this._db.updateMediaAiIndex(messageId, fallback);
+        return true;
+      }
       this._db.updateMediaAiIndex(messageId, '');
       return false;
     }
 
     if (mediaType === 'document') {
-      return this._indexDocument(messageId, mediaPath, buffer);
-    }
-
-    if (!provider || typeof provider.caption !== 'function') {
-      this._db.updateMediaAiIndex(messageId, '');
-      return false;
+      return this._indexDocument(messageId, mediaPath, buffer, job.mediaCaption);
     }
 
     const b64 = buffer.toString('base64');
     const mime = guessMimeForFile(mediaType, mediaPath);
 
+    let aiText = '';
+
     try {
-      let text = '';
       if (mediaType === 'audio') {
-        if (typeof provider.transcribeAudio === 'function') {
-          text = await provider.transcribeAudio(b64, mime);
+        if (provider && typeof provider.transcribeAudio === 'function') {
+          aiText = await provider.transcribeAudio(b64, mime);
         }
-      } else {
-        text = await provider.caption(b64, mime);
+      } else if (mediaType === 'video') {
+        if (providerSupportsInlineVideoCaption(provider) && typeof provider.caption === 'function') {
+          aiText = await provider.caption(b64, mime);
+        }
+      } else if ((mediaType === 'image' || mediaType === 'sticker') && provider && typeof provider.caption === 'function') {
+        aiText = await provider.caption(b64, mime);
       }
-
-      if (isUnsupportedProviderOutput(text)) {
-        this._db.updateMediaAiIndex(messageId, '');
-        return false;
-      }
-
-      const cleaned = String(text).trim().slice(0, 8000);
-      this._db.updateMediaAiIndex(messageId, cleaned);
-      return true;
     } catch (e) {
       console.warn(`[MediaIndex] LLM ${messageId}:`, e.message);
+    }
+
+    if (isUnsupportedProviderOutput(aiText)) {
+      aiText = '';
+    } else {
+      aiText = String(aiText || '').trim();
+    }
+
+    let finalText = (aiText || '').trim();
+    const fb = (fallback || '').trim();
+    if (fb && !finalText.includes(fb.slice(0, Math.min(80, fb.length)))) {
+      finalText = finalText ? `${finalText}\n${fb}` : fb;
+    }
+    finalText = finalText.trim().slice(0, 12000);
+
+    if (!finalText) {
       this._db.updateMediaAiIndex(messageId, '');
       return false;
     }
+
+    this._db.updateMediaAiIndex(messageId, finalText);
+    return true;
   }
 }

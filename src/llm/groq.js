@@ -1,5 +1,16 @@
 const BASE_URL = 'https://api.groq.com/openai/v1';
 const TIMEOUT_MS = 60_000;
+const ASR_TIMEOUT_MS = 120_000;
+
+function mimeToAudioFilenameExt(mimeType) {
+  const m = String(mimeType || '').toLowerCase();
+  if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
+  if (m.includes('wav')) return 'wav';
+  if (m.includes('mp4') || m.includes('m4a') || m.includes('audio/mp4')) return 'm4a';
+  if (m.includes('webm')) return 'webm';
+  if (m.includes('flac')) return 'flac';
+  return 'ogg';
+}
 
 /** Parse one or more API keys from a comma/newline-separated string. */
 function parseKeys(raw) {
@@ -70,8 +81,62 @@ export default class GroqProvider {
     return '[Image captioning not supported via Groq — use Gemini or OpenAI for media]';
   }
 
-  async transcribeAudio(_audioBase64, _mimeType) {
-    return '[Audio transcription available via Groq Whisper — not yet integrated]';
+  /**
+   * Groq Whisper (OpenAI-compatible `/audio/transcriptions`).
+   * Voice notes / audio clips up to provider max size (typically 25 MB).
+   */
+  async transcribeAudio(audioBase64, mimeType = 'audio/ogg') {
+    if (!this._keys.length) return '';
+    let buf;
+    try {
+      buf = Buffer.from(audioBase64, 'base64');
+    } catch {
+      return '';
+    }
+    if (buf.length < 32) return '';
+
+    const ext = mimeToAudioFilenameExt(mimeType);
+    const keyCount = this._keys.length || 1;
+
+    for (let attempt = 0; attempt < keyCount + 1; attempt++) {
+      const key = this._nextKey();
+      if (!key) return '';
+
+      const form = new FormData();
+      form.append('file', new Blob([buf]), `audio.${ext}`);
+      form.append('model', 'whisper-large-v3-turbo');
+      form.append('response_format', 'json');
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS);
+      try {
+        const res = await fetch(`${BASE_URL}/audio/transcriptions`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}` },
+          body: form,
+          signal: controller.signal,
+        });
+        if (res.status === 429 && attempt < keyCount) {
+          console.log('[Groq ASR] 429, rotating key…');
+          continue;
+        }
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(`Groq ASR ${res.status}: ${text.slice(0, 200)}`);
+        }
+        const data = await res.json();
+        return String(data?.text || '').trim();
+      } catch (err) {
+        if (attempt < keyCount && (err.name === 'AbortError' || `${err.message}`.includes('429'))) {
+          continue;
+        }
+        console.warn('[Groq ASR]', err.message);
+        return '';
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return '';
   }
 
   /**
