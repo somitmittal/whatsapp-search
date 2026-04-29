@@ -12,6 +12,7 @@ import {
   fallbackTitleForOneOnOneJid,
   formatPhoneLocalPart,
   isPlausibleHumanChatTitle,
+  looksLikeLidFallbackContactLabel,
   looksLikeOpaqueNumericId,
   looksLikePhoneDigitsOnly,
   looksLikeUrlOrSocialJunk,
@@ -129,6 +130,17 @@ function publicWebBaseUrl() {
   const u = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_WEB_URL;
   if (u) return String(u).replace(/\/$/, '');
   return `http://localhost:${config.webPort}`;
+}
+
+/** When the stored title is the LID placeholder "Contact (…)" but the row is keyed by phone JID, show +CC …. */
+function replaceLidPlaceholderWithPn(canonJid, chatName) {
+  if (
+    looksLikeLidFallbackContactLabel(chatName)
+    && (canonJid.endsWith('@s.whatsapp.net') || canonJid.endsWith('@hosted'))
+  ) {
+    return formatPhoneLocalPart(canonJid.split('@')[0]);
+  }
+  return chatName;
 }
 
 function formatResult(result) {
@@ -887,9 +899,10 @@ export default class WaClient {
   }
 
   /**
-   * Live metadata (groups + contacts) when the socket is up. Falls back to minimal info on error.
+   * Same title resolution as chat header: direct cache + LID↔PN cross-lookup (names often live on the paired JID).
+   * Returns null if no plausible saved/business title — caller falls back to group id chunk or phone-style label.
    */
-  async getChatDetails(jid) {
+  async _resolveContactTitleFromCache(jid) {
     if (!jid) return null;
     let cachedName = this._nameFromChatMap(jid);
     const lm = this._sock?.signalRepository?.lidMapping;
@@ -905,9 +918,19 @@ export default class WaClient {
         }
       } catch (_) {}
     }
+    if (cachedName && isPlausibleHumanChatTitle(cachedName, jid)) return cachedName;
+    return null;
+  }
+
+  /**
+   * Live metadata (groups + contacts) when the socket is up. Falls back to minimal info on error.
+   */
+  async getChatDetails(jid) {
+    if (!jid) return null;
+    const resolvedTitle = await this._resolveContactTitleFromCache(jid);
     const displayName =
-      cachedName && isPlausibleHumanChatTitle(cachedName, jid)
-        ? cachedName
+      resolvedTitle
+        ? resolvedTitle
         : (isJidGroup(jid) ? jid.split('@')[0] : fallbackTitleForOneOnOneJid(jid));
     const base = {
       chatJid: jid,
@@ -944,17 +967,32 @@ export default class WaClient {
   /**
    * Apply in-memory titles (contact events, pushName, LID↔PN mirroring) on top of DB chat stats
    * so the sidebar list matches the chat header and WhatsApp — `/api/chats` uses this.
+   * Async: must mirror getChatDetails / _resolveContactTitleFromCache (LID↔PN), not only _nameFromChatMap(jid).
    */
-  overlayResolvedChatNames(stats) {
+  async overlayResolvedChatNames(stats) {
     if (!Array.isArray(stats) || !stats.length) return stats;
-    return stats.map((row) => {
+    const out = [];
+    for (const row of stats) {
       const jid = row.chatJid;
-      if (!jid) return row;
-      const resolved = this._nameFromChatMap(jid);
-      if (!resolved || looksLikePhoneDigitsOnly(resolved)) return row;
-      if (!isPlausibleHumanChatTitle(resolved, jid)) return row;
-      return { ...row, chatName: resolved };
-    });
+      if (!jid) {
+        out.push(row);
+        continue;
+      }
+      const resolved = await this._resolveContactTitleFromCache(jid);
+      if (resolved) {
+        out.push({ ...row, chatName: resolved });
+        continue;
+      }
+      let next = row;
+      if (
+        (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@hosted'))
+        && looksLikeLidFallbackContactLabel(row.chatName)
+      ) {
+        next = { ...row, chatName: replaceLidPlaceholderWithPn(jid, row.chatName) };
+      }
+      out.push(next);
+    }
+    return out;
   }
 
   /**
@@ -1008,7 +1046,11 @@ export default class WaClient {
       const canon = await resolveCanonical(row.chatJid);
       const existing = merged.get(canon);
       if (!existing) {
-        merged.set(canon, { ...row, chatJid: canon });
+        merged.set(canon, {
+          ...row,
+          chatJid: canon,
+          chatName: replaceLidPlaceholderWithPn(canon, row.chatName),
+        });
         continue;
       }
       const a = existing;
@@ -1021,10 +1063,11 @@ export default class WaClient {
         totT === 0 ? 100 : Math.min(100, Math.round((sumT / totT) * 100));
       const aiSearchReady = sumT > 0;
       const aiSearchComplete = totT === 0 ? true : sumT >= totT;
+      const mergedName = replaceLidPlaceholderWithPn(canon, pickBetterChatTitle(a.chatName, b.chatName, canon));
       merged.set(canon, {
         ...a,
         chatJid: canon,
-        chatName: pickBetterChatTitle(a.chatName, b.chatName, canon),
+        chatName: mergedName,
         sidebarTab: (a.sidebarTab === 'feed' || b.sidebarTab === 'feed') ? 'feed' : 'chat',
         messageCount: mc,
         lastMessageTs: lastTs,

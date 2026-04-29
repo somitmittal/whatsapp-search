@@ -88,12 +88,21 @@ function contentTypeForMediaFile(filePath) {
 }
 
 export default class WebServer {
-  constructor({ db, searchEngine, summaryService, mediaIndexService, actionItemService }) {
+  constructor({
+    db,
+    searchEngine,
+    summaryService,
+    mediaIndexService,
+    actionItemService,
+    reloadMediaIndexProvider,
+  }) {
     this.db = db;
     this.searchEngine = searchEngine;
     this.summaryService = summaryService;
     this._mediaIndexService = mediaIndexService || null;
     this._actionItemService = actionItemService || null;
+    /** @type {(() => Promise<{ healthy?: boolean, provider?: string, model?: string }|void>)|null} */
+    this._reloadMediaIndexProvider = reloadMediaIndexProvider || null;
     this._userSessions = new UserSessionService(this.db.getSqliteDatabase());
 
     this._app = express();
@@ -637,7 +646,7 @@ export default class WebServer {
         const st = this._getTenantState(getCurrentTenantId());
         const wa = st?.waClient;
         if (wa && typeof wa.overlayResolvedChatNames === 'function') {
-          stats = wa.overlayResolvedChatNames(stats);
+          stats = await wa.overlayResolvedChatNames(stats);
         }
         if (wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
           stats = await wa.mergeLinkedPersonalChatStats(stats);
@@ -1045,7 +1054,7 @@ export default class WebServer {
         const healthy = await instance.checkHealth();
 
         this.searchEngine.setProvider(instance);
-        this._mediaIndexService?.setProvider?.(instance);
+        await this._reloadMediaIndexProvider?.();
 
         this.summaryService.setFallbackProvider(instance);
         const sumP = this.db.getSetting('summary_provider');
@@ -1098,6 +1107,44 @@ export default class WebServer {
         if (healthy) { this._triggerSummaryGen(); }
 
         return res.json({ ok: true, healthy, provider: sp, model: instance.model });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/settings/media-index', async (req, res) => {
+      try {
+        const { provider, apiKey, model } = req.body;
+
+        if (provider === 'same') {
+          this.db.setSetting('media_index_provider', 'same');
+          this.db.setSetting('media_index_api_key', '');
+          this.db.setSetting('media_index_model', '');
+          clearProviderCache();
+          const meta = await this._reloadMediaIndexProvider?.();
+          return res.json({
+            ok: true,
+            healthy: meta?.healthy ?? false,
+            provider: 'same',
+            model: meta?.model || '',
+          });
+        }
+
+        if (provider) this.db.setSetting('media_index_provider', provider);
+        if (Object.prototype.hasOwnProperty.call(req.body, 'apiKey')) {
+          this.db.setSetting('media_index_api_key', apiKey ?? '');
+        }
+        if (model) this.db.setSetting('media_index_model', model);
+
+        clearProviderCache();
+
+        const meta = await this._reloadMediaIndexProvider?.();
+        return res.json({
+          ok: true,
+          healthy: meta?.healthy ?? false,
+          provider: meta?.provider ?? provider ?? config.defaultMediaIndexProvider,
+          model: meta?.model || '',
+        });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }

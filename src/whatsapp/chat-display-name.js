@@ -18,6 +18,16 @@ export function looksLikeOpaqueNumericId(s) {
   return t.length >= 12;
 }
 
+/**
+ * WhatsApp placeholder when a 1:1 chat is keyed by @lid and no phone title is known yet.
+ * Must not beat a real formatted phone number in pickBetterChatTitle / sidebar.
+ */
+export function looksLikeLidFallbackContactLabel(s) {
+  const t = String(s || '').trim();
+  if (!t) return false;
+  return /^contact\s*\(\s*[\d\s]{1,14}\s*\)\s*$/i.test(t);
+}
+
 export function looksLikePhoneDigitsOnly(str) {
   if (!str || typeof str !== 'string') return false;
   const d = str.replace(/\s/g, '').replace(/^\+/, '');
@@ -56,6 +66,7 @@ export function isPlausibleHumanChatTitle(name, chatJid) {
   if (!name || typeof name !== 'string') return false;
   const t = name.trim();
   if (t.length < 2) return false;
+  if (looksLikeLidFallbackContactLabel(t)) return false;
   if (looksLikeUrlOrSocialJunk(t)) return false;
   if (looksLikeOpaqueNumericId(t)) return false;
   const local = String(chatJid || '').split('@')[0];
@@ -70,6 +81,7 @@ function titlePreferenceRank(s, chatJid) {
   if (!s || !String(s).trim()) return 0;
   const t = String(s).trim();
   if (looksLikeUrlOrSocialJunk(t) || looksLikeOpaqueNumericId(t)) return 0;
+  if (looksLikeLidFallbackContactLabel(t)) return 0;
   if (looksLikePhoneDigitsOnly(t)) return 1;
   if (isPlausibleHumanChatTitle(t, chatJid)) return 3;
   return 2;

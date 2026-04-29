@@ -13,6 +13,7 @@ import {
   applyLlmDefaultsIfUnset,
   effectiveSearchApiKey,
   effectiveSummaryApiKey,
+  effectiveMediaIndexApiKey,
 } from './llm/defaults.js';
 
 function assertJwtOnPublicHost() {
@@ -58,6 +59,9 @@ async function main() {
     console.log('No LLM configured yet. Configure one in Settings at http://localhost:3000');
   }
 
+  /** Searchable descriptions for images / video / audio (FTS) — default Gemini 2.5 Flash when key present. */
+  let mediaIndexProvider = provider;
+
   let summaryProvider = provider;
   const sumProvSetting = runWithTenant(defaultTenantId, () => db.getSetting('summary_provider'));
   if (sumProvSetting && sumProvSetting !== 'same') {
@@ -75,8 +79,57 @@ async function main() {
   const searchEngine = new SmartSearch(db, provider);
   const mediaIndexService = new MediaIndexService({
     db,
-    getProvider: () => provider,
+    getProvider: () => mediaIndexProvider,
   });
+
+  async function reloadMediaIndexProvider() {
+    const storedMip = runWithTenant(defaultTenantId, () => (db.getSetting('media_index_provider') || '').trim());
+    const mip = storedMip === '' ? config.defaultMediaIndexProvider : storedMip;
+    const storedMim = runWithTenant(defaultTenantId, () => (db.getSetting('media_index_model') || '').trim());
+    const mim = storedMim === '' ? config.defaultMediaIndexModel : storedMim;
+    const mik = runWithTenant(defaultTenantId, () => effectiveMediaIndexApiKey(db));
+    const searchP = provider;
+
+    if (!searchP) {
+      mediaIndexProvider = null;
+      mediaIndexService.setProvider(null);
+      return { healthy: false, provider: mip, model: '' };
+    }
+
+    if (!mik || mip === 'same') {
+      mediaIndexProvider = searchP;
+      mediaIndexService.setProvider(mediaIndexProvider);
+      let healthy = false;
+      try {
+        healthy = await mediaIndexProvider.checkHealth();
+      } catch {}
+      console.log(`Media index LLM: same as search (${mediaIndexProvider.model})`);
+      return { healthy, provider: 'same', model: mediaIndexProvider.model || '' };
+    }
+
+    try {
+      mediaIndexProvider = await createProvider(mip, mik, mim || undefined);
+      mediaIndexService.setProvider(mediaIndexProvider);
+      let healthy = false;
+      try {
+        healthy = await mediaIndexProvider.checkHealth();
+      } catch {}
+      console.log(`Media index LLM: ${mip} (${mediaIndexProvider.model})`);
+      return { healthy, provider: mip, model: mediaIndexProvider.model || '' };
+    } catch (err) {
+      console.warn(`Media index LLM (${mip}) failed: ${err.message} — using search LLM`);
+      mediaIndexProvider = searchP;
+      mediaIndexService.setProvider(mediaIndexProvider);
+      let healthy = false;
+      try {
+        healthy = await mediaIndexProvider.checkHealth();
+      } catch {}
+      return { healthy, provider: 'same', model: mediaIndexProvider.model || '' };
+    }
+  }
+
+  await reloadMediaIndexProvider();
+
   let webServer;
   const actionItemService = new ActionItemService({
     db,
@@ -93,7 +146,14 @@ async function main() {
       if (webServer) webServer.onSummaryProgress(data);
     },
   });
-  webServer = new WebServer({ db, searchEngine, summaryService, mediaIndexService, actionItemService });
+  webServer = new WebServer({
+    db,
+    searchEngine,
+    summaryService,
+    mediaIndexService,
+    actionItemService,
+    reloadMediaIndexProvider,
+  });
 
   if (provider) {
     provider.checkHealth().then(healthy => {

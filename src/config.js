@@ -70,6 +70,13 @@ const config = {
     process.env.LLM_MODEL || process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
   defaultSummaryProvider: 'ollama_cloud',
   defaultSummaryModel: process.env.SUMMARY_MODEL || 'gpt-oss:20b',
+  /**
+   * Vision + audio transcription for FTS media indexing (`media_ai_index`).
+   * Separate from Search — uses Gemini by default when any Gemini env key is set (see `geminiKeysFromEnv` in defaults.js) or DB `media_index_api_key`.
+   */
+  defaultMediaIndexProvider: (process.env.MEDIA_INDEX_PROVIDER || 'gemini').trim(),
+  defaultMediaIndexModel:
+    (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim(),
 };
 
 export default config;

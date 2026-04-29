@@ -578,6 +578,12 @@
       display: flex;
       justify-content: flex-end;
     }
+    .attach-card-meta {
+      font-size: 11px;
+      color: var(--text2);
+      padding: 6px 10px 2px;
+      line-height: 1.35;
+    }
     .attach-card-actions button {
       font-size: 12px;
       border: none;
@@ -655,8 +661,16 @@
     .bubble.out { background: var(--msg-out); align-self: flex-end; border-top-right-radius: 0; }
     .bubble .sender { font-size: 12.5px; font-weight: 500; margin-bottom: 2px; }
     .bubble .text { font-size: 14px; white-space: pre-wrap; }
-    .bubble .time { font-size: 11px; color: var(--text2); text-align: right; margin-top: 2px; }
+    .bubble .time { font-size: 11px; color: var(--text2); text-align: right; margin-top: 4px; line-height: 1.25; }
+    .bubble:has(.msg-media-datetime) .time { display: none; }
     .bubble .media-badge { font-size: 12px; color: var(--text2); font-style: italic; }
+    .msg-media-datetime {
+      display: block;
+      font-size: 11px;
+      color: var(--text2);
+      margin-top: 6px;
+      line-height: 1.3;
+    }
 
     .msg-block {
       display: flex; flex-direction: column; max-width: 72%; margin: 3px 0;
@@ -1406,6 +1420,27 @@
           <div id="ss-hint" style="font-size:11px;color:var(--text2);margin-top:4px;">Default: Ollama Cloud with <code>gpt-oss:20b</code> (set <code>OLLAMA_CLOUD_API_KEY</code> on Render). Choose &ldquo;Same as Search&rdquo; to use only Groq.</div>
         </div>
         <div class="setting-group">
+          <h3>Media indexing</h3>
+          <p>Vision + audio transcription so images, video, and voice notes are searchable (FTS). Separate from Search — default <strong>Gemini 2.5 Flash</strong> when a Google key is set.</p>
+          <div class="setting-row"><label>Provider</label>
+            <select id="smi-provider">
+              <option value="gemini" selected>Google Gemini</option>
+              <option value="same">Same as Search</option>
+              <option value="openai">OpenAI</option>
+              <option value="claude">Anthropic Claude</option>
+              <option value="grok">Grok / xAI</option>
+            </select>
+          </div>
+          <div class="setting-row" id="smi-key-row" style="align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><div style="flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;">
+            <textarea id="smi-key" rows="3" placeholder="Paste Gemini / OpenAI key… Multiple keys comma or newline separated." style="width:100%;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea>
+            <p id="smi-key-stored-hint" class="env-key-note" style="display:none;margin:0;"><span>A key is saved locally. Paste to replace, or <button type="button" id="smi-key-clear" style="background:none;border:none;color:var(--blue);cursor:pointer;padding:0;font:inherit;text-decoration:underline;">remove stored key</button>.</span><span id="smi-key-clear-msg" style="display:none;"><br><strong>Save Media Indexing</strong> to remove the stored key.</span></p>
+          </div></div>
+          <p id="smi-key-env-note" class="env-key-note" style="display:none;">Using server env: <code>GEMINI_API_KEY</code> (comma/newline list), <code>GEMINI_API_KEYS</code>, <code>GEMINI_API_KEY_1</code>…<code>_24</code>, or <code>MEDIA_INDEX_API_KEY</code>. Paste above to override.</p>
+          <div class="setting-row" id="smi-model-row"><label>Model</label><select id="smi-model"></select></div>
+          <div class="setting-row" style="gap:12px;"><button class="btn btn-secondary" id="smi-save">Save Media Indexing</button><span id="smi-status"></span></div>
+          <div id="smi-hint" style="font-size:11px;color:var(--text2);margin-top:4px;">Recommended: Gemini — supports images, short video inline, and audio via the same API. Groq search stays fast for text.</div>
+        </div>
+        <div class="setting-group">
           <h3>WhatsApp Connection</h3>
           <p>Link your phone as a WhatsApp Web device. Scan once — session is saved automatically.</p>
           <div class="setting-row" style="margin-bottom:8px;">
@@ -1539,7 +1574,14 @@
   /** Per-chat message counts during WhatsApp history sync (from server). */
   let waSyncByChat = {};
   /** Whether DB holds a user API key (GET /api/settings — raw keys are never sent). */
-  let settingsKeyState = { hasLlm: false, hasSummary: false, pendingClearLlm: false, pendingClearSummary: false };
+  let settingsKeyState = {
+    hasLlm: false,
+    hasSummary: false,
+    hasMediaIndex: false,
+    pendingClearLlm: false,
+    pendingClearSummary: false,
+    pendingClearMediaIndex: false,
+  };
 
   // Ollama local vs cloud: same first 5 tags (see src/llm/ollama-model-lists.js). Hydrated from /api/settings when possible.
   const MODELS = {
@@ -2138,6 +2180,38 @@
   }
   refreshDash();
 
+  /** Message `timestamp` from API is unix seconds; tolerate accidental ms */
+  function messageTimestampToDate(ts) {
+    if (ts == null || ts === '') return null;
+    const n = Number(ts);
+    if (!Number.isFinite(n)) return null;
+    const sec = n > 1e12 ? Math.round(n / 1000) : Math.round(n);
+    const d = new Date(sec * 1000);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  /** Sticky date headings between message groups */
+  function formatChatDateSeparator(d) {
+    return d.toLocaleDateString(undefined, {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  }
+
+  /** Footer + media stamp — full date + time (locale) */
+  function formatChatBubbleDateTime(d) {
+    return d.toLocaleString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
+
   function formatDate(ts) {
     if (!ts) return '';
     const d = new Date(ts * 1000);
@@ -2235,6 +2309,10 @@
     return `+${digits}`;
   }
 
+  function looksLikeLidFallbackContactLabel(s) {
+    return /^contact\s*\(\s*[\d\s]{1,14}\s*\)\s*$/i.test(String(s || '').trim());
+  }
+
   function displayChatTitle(chatJid, chatName) {
     const jid = String(chatJid || '').trim();
     const raw = String(chatName || '').trim();
@@ -2245,6 +2323,10 @@
     }
 
     const pnUser = jid.endsWith('@s.whatsapp.net');
+    const hostedUser = jid.endsWith('@hosted');
+    if ((pnUser || hostedUser) && looksLikeLidFallbackContactLabel(raw)) {
+      return formatPhoneLikeName(jid);
+    }
     const localPart = jid.split('@')[0] || '';
     const localDigits = localPart.replace(/[^\d]/g, '');
 
@@ -2710,6 +2792,8 @@
           const mid = escAttr(row.messageId || '');
           const u = row.messageId ? `/api/message-media?messageId=${encodeURIComponent(row.messageId)}` : '';
           const mt = row.mediaType || '';
+          const dd = messageTimestampToDate(row.timestamp);
+          const attWhen = dd ? esc(formatChatBubbleDateTime(dd)) : '';
           let inner = '';
           if (mt === 'audio') {
             inner = `<div class="attach-card-audio">Voice message</div><audio class="status-slide-audio" src="${escAttr(u)}" controls></audio>`;
@@ -2718,7 +2802,7 @@
           } else {
             inner = `<img class="status-slide-img" src="${escAttr(u)}" alt="">`;
           }
-          return `<div class="attach-card">${inner}<div class="attach-card-actions"><button type="button" class="attach-open-msg" data-mid="${mid}">Show in chat</button></div></div>`;
+          return `<div class="attach-card">${inner}${attWhen ? `<div class="attach-card-meta">${attWhen}</div>` : ''}<div class="attach-card-actions"><button type="button" class="attach-open-msg" data-mid="${mid}">Show in chat</button></div></div>`;
         }).join('') + '</div>';
       }
     } else if (tab === 'links') {
@@ -2887,14 +2971,22 @@
     if (!msgs.length) { c.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2);">No messages</div>'; return; }
     const isGroup = jid.includes('@g.us');
     let html = '', lastDate = '';
-    const sorted = [...msgs].sort((a, b) => a.timestamp - b.timestamp);
+    const sorted = [...msgs].sort((a, b) => {
+      const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
+      const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
+      return ta - tb;
+    });
     const focusStr = focusMessageId != null ? String(focusMessageId) : '';
     for (const m of sorted) {
-      const d = new Date(m.timestamp * 1000);
-      const ds = d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase();
-      if (ds !== lastDate) { html += `<div class="date-sep"><span>${esc(ds)}</span></div>`; lastDate = ds; }
+      const d = messageTimestampToDate(m.timestamp);
+      const ds = d ? formatChatDateSeparator(d) : '';
+      const dsKey = d ? d.toDateString() : '';
+      if (dsKey && dsKey !== lastDate) {
+        html += `<div class="date-sep"><span>${esc(ds)}</span></div>`;
+        lastDate = dsKey;
+      }
       const out = m.sender === 'You';
-      const ts = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+      const ts = d ? formatChatBubbleDateTime(d) : '';
       let sender = '';
       if (!out && m.sender) {
         if (isGroup || jid === 'status@broadcast') {
@@ -2909,24 +3001,24 @@
       const mediaUrl = mid && m.hasMediaFile ? mediaUrlForMessage(mid) : '';
       let body = '';
       if (mediaUrl && (m.mediaType === 'image' || m.mediaType === 'sticker')) {
-        body = `<span class="media-wrap"><img class="msg-media-img" src="${escAttr(mediaUrl)}" alt="" loading="lazy">${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+        body = `<span class="media-wrap"><img class="msg-media-img" src="${escAttr(mediaUrl)}" alt="" loading="lazy">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
       } else if (mediaUrl && m.mediaType === 'video') {
-        body = `<span class="media-wrap"><video class="msg-media-vid" src="${escAttr(mediaUrl)}" controls playsinline preload="metadata"></video>${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+        body = `<span class="media-wrap"><video class="msg-media-vid" src="${escAttr(mediaUrl)}" controls playsinline preload="metadata"></video>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
       } else if (mediaUrl && m.mediaType === 'audio') {
-        body = `<span class="media-wrap"><audio class="msg-media-audio" src="${escAttr(mediaUrl)}" controls preload="metadata"></audio>${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+        body = `<span class="media-wrap"><audio class="msg-media-audio" src="${escAttr(mediaUrl)}" controls preload="metadata"></audio>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
       } else if (mediaUrl && m.mediaType === 'document') {
         const joint = `${m.mediaCaption || ''} ${m.text || ''}`.toLowerCase();
         const isPdf = joint.includes('.pdf');
         const label = esc((m.mediaCaption || m.text || 'Document').trim() || 'Document');
         if (isPdf) {
-          body = `<span class="media-wrap"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe>${cap ? `<span class="media-cap">${cap}</span>` : `<span class="media-cap">${label}</span>`}</span>`;
+          body = `<span class="media-wrap"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : `<span class="media-cap">${label}</span>`}</span>`;
         } else {
-          body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(mediaUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+          body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(mediaUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
         }
       } else if (m.mediaPending && m.mediaType) {
-        body = `<span class="media-badge media-pending">Loading ${esc(m.mediaType)}…${cap ? ' ' + cap : ''}</span>`;
+        body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-pending">Loading ${esc(m.mediaType)}…${cap ? ' ' + cap : ''}</span></span>`;
       } else if (m.mediaType && (!m.text || String(m.text).startsWith('['))) {
-        body = `<span class="media-badge">[${esc(m.mediaType)}]${cap ? ' ' + cap : ''}</span>`;
+        body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge">[${esc(m.mediaType)}]${cap ? ' ' + cap : ''}</span></span>`;
       } else {
         body = `<span class="text">${esc(m.text || '')}</span>`;
       }
@@ -2947,7 +3039,7 @@
           <button type="button" class="wa-tb" data-wa-react="🙏" title="React">🙏</button>
           <button type="button" class="wa-tb wa-tb-reply" data-wa-reply="1" data-reply-preview="${escAttr(previewTxt)}" title="Reply">↩︎</button>
         </div>` : '';
-      html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr}>${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<div class="time">${esc(ts)}</div></div>${rxHtml}</div>`;
+      html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr}>${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<div class="time">${ts ? esc(ts) : '—'}</div></div>${rxHtml}</div>`;
     }
     c.innerHTML = html;
     if (focusStr) {
@@ -3335,6 +3427,16 @@
       if (ssNote) ssNote.style.display = 'none';
       if (ssKey) ssKey.placeholder = 'Paste one key per line, or comma-separated. Multiple keys are rotated automatically.';
     }
+    const smiKey = $('#smi-key');
+    const smiNote = $('#smi-key-env-note');
+    const smiP = (settings && settings.media_index_provider) || 'gemini';
+    if (keyHints && keyHints.mediaIndex === 'env' && settings && !settings.hasMediaIndexApiKey && smiP !== 'same') {
+      if (smiNote) smiNote.style.display = 'block';
+      if (smiKey) smiKey.placeholder = 'Optional — server uses GEMINI_API_KEY / MEDIA_INDEX_API_KEY. Paste to override.';
+    } else {
+      if (smiNote) smiNote.style.display = 'none';
+      if (smiKey) smiKey.placeholder = 'Paste Gemini / OpenAI key… Multiple keys comma or newline separated.';
+    }
   }
 
   async function loadSettings() {
@@ -3342,16 +3444,22 @@
       const { settings, keyHints } = await fetch('/api/settings').then(r => r.json());
       settingsKeyState.hasLlm = !!settings.hasLlmApiKey;
       settingsKeyState.hasSummary = !!settings.hasSummaryApiKey;
+      settingsKeyState.hasMediaIndex = !!settings.hasMediaIndexApiKey;
       settingsKeyState.pendingClearLlm = false;
       settingsKeyState.pendingClearSummary = false;
+      settingsKeyState.pendingClearMediaIndex = false;
       const sHint = $('#s-key-stored-hint');
       const ssHint = $('#ss-key-stored-hint');
+      const smiHint = $('#smi-key-stored-hint');
       if (sHint) sHint.style.display = settingsKeyState.hasLlm ? 'block' : 'none';
       if (ssHint) ssHint.style.display = settingsKeyState.hasSummary ? 'block' : 'none';
+      if (smiHint) smiHint.style.display = settingsKeyState.hasMediaIndex ? 'block' : 'none';
       const sCm = $('#s-key-clear-msg');
       const ssCm = $('#ss-key-clear-msg');
+      const smiCm = $('#smi-key-clear-msg');
       if (sCm) sCm.style.display = 'none';
       if (ssCm) ssCm.style.display = 'none';
+      if (smiCm) smiCm.style.display = 'none';
       if (settings.llm_provider) $('#s-provider').value = settings.llm_provider;
       updateModelOptions();
       if (settings.llm_model) $('#s-model').value = settings.llm_model;
@@ -3363,6 +3471,14 @@
       if (settings.summary_model) $('#ss-model').value = settings.summary_model;
       else if ($('#ss-provider').value === 'ollama_cloud') $('#ss-model').value = 'gpt-oss:20b';
       $('#ss-key').value = '';
+
+      if (settings.media_index_provider) $('#smi-provider').value = settings.media_index_provider;
+      else $('#smi-provider').value = 'gemini';
+      updateSmiModelOptions();
+      if (settings.media_index_model) $('#smi-model').value = settings.media_index_model;
+      else if ($('#smi-provider').value === 'gemini') $('#smi-model').value = 'gemini-2.5-flash';
+      $('#smi-key').value = '';
+
       applyKeyEnvHints(settings, keyHints);
     } catch {}
     refreshDash();
@@ -3388,6 +3504,14 @@
     const ssCm = $('#ss-key-clear-msg');
     if (ssHint) ssHint.style.display = 'block';
     if (ssCm) ssCm.style.display = 'inline';
+  });
+  $('#smi-key-clear')?.addEventListener('click', () => {
+    $('#smi-key').value = '';
+    settingsKeyState.pendingClearMediaIndex = true;
+    const smiHint = $('#smi-key-stored-hint');
+    const smiCm = $('#smi-key-clear-msg');
+    if (smiHint) smiHint.style.display = 'block';
+    if (smiCm) smiCm.style.display = 'inline';
   });
 
   $('#s-save').addEventListener('click', async () => {
@@ -3423,6 +3547,45 @@
     }
   }
   $('#ss-provider').addEventListener('change', updateSummaryModelOptions);
+
+  function updateSmiModelOptions() {
+    const p = $('#smi-provider').value;
+    const isSame = p === 'same';
+    $('#smi-key-row').style.display = isSame ? 'none' : '';
+    if (isSame) $('#smi-key-env-note').style.display = 'none';
+    $('#smi-model-row').style.display = isSame ? 'none' : '';
+    if (!isSame) {
+      const sel = $('#smi-model');
+      sel.innerHTML = '';
+      (MODELS[p] || []).forEach(m => {
+        const o = document.createElement('option');
+        o.value = m;
+        o.textContent = m;
+        sel.appendChild(o);
+      });
+    }
+  }
+  $('#smi-provider').addEventListener('change', updateSmiModelOptions);
+
+  $('#smi-save').addEventListener('click', async () => {
+    const provider = $('#smi-provider').value;
+    const model = provider !== 'same' ? $('#smi-model').value : '';
+    const body = { provider, model };
+    if (provider !== 'same') {
+      const keyInput = normaliseKeys($('#smi-key').value);
+      if (keyInput) body.apiKey = keyInput;
+      else if (settingsKeyState.pendingClearMediaIndex) body.apiKey = '';
+      else if (!settingsKeyState.hasMediaIndex) body.apiKey = '';
+    }
+    $('#smi-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> Connecting…`;
+    $('#smi-save').disabled = true;
+    try {
+      const data = await fetch('/api/settings/media-index', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+      if (data.healthy) $('#smi-status').innerHTML = `<span class="health-dot ok"></span> ${esc(data.provider === 'same' ? 'Same as search' : data.model)}`;
+      else $('#smi-status').innerHTML = '<span class="health-dot fail"></span> Check API key or pick Same as Search';
+    } catch (err) { $('#smi-status').innerHTML = `<span class="health-dot fail"></span> ${esc(err.message)}`; }
+    finally { $('#smi-save').disabled = false; void loadSettings(); }
+  });
 
   $('#ss-save').addEventListener('click', async () => {
     const provider = $('#ss-provider').value;

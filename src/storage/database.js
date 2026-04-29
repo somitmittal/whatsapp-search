@@ -17,7 +17,11 @@ import { LEGACY_TENANT_ID } from './tenant-constants.js';
 import { decryptName, deriveTenantContactKey, encryptName, hashPhone, normalizePhone } from '../privacy/contact-directory.js';
 import { groupStatusBroadcastRows } from '../status/status-feed.js';
 import { STATUS_BROADCAST_JID, sidebarTabForJid } from '../whatsapp/jid-filters.js';
-import { isPlausibleHumanChatTitle } from '../whatsapp/chat-display-name.js';
+import {
+  formatPhoneLocalPart,
+  isPlausibleHumanChatTitle,
+  looksLikeLidFallbackContactLabel,
+} from '../whatsapp/chat-display-name.js';
 import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 
 const require = createRequire(import.meta.url);
@@ -614,7 +618,7 @@ export default class Database {
     const lastSeen = this.getChatLastSeen(chatJid);
     const rows = this._stmtGetThreadSummariesSince.all(
       t,
-      chatJid,
+    chatJid,
       lastSeen,
       Math.max(1, Math.min(Number(limit) || 3, 10)),
     );
@@ -1083,16 +1087,25 @@ export default class Database {
       const lastMessageTs = g.messages.length ? g.messages[g.messages.length - 1].timestamp : 0;
       const isGroup = chatJid.endsWith('@g.us');
       // 1:1: do not let a numeric chat_name (stored on every row) hide the peer's pushName on incoming msgs.
-      const title = isGroup
+      let title = isGroup
         ? (g.displayChatName || g.anyChatName || chatJid)
         : (g.displayChatName
           || g.bestHumanPeerName
           || g.firstHumanPeerName
           || g.peerHumanSenderName
-          || (looksLikePhoneOnly(g.anyChatName) ? null : g.anyChatName)
+          || ((looksLikePhoneOnly(g.anyChatName) || looksLikeLidFallbackContactLabel(g.anyChatName))
+            ? null
+            : g.anyChatName)
           || g.peerSenderName
           || g.anyChatName
           || chatJid);
+      if (
+        !isGroup
+        && (chatJid.endsWith('@s.whatsapp.net') || chatJid.endsWith('@hosted'))
+        && looksLikeLidFallbackContactLabel(title)
+      ) {
+        title = formatPhoneLocalPart(chatJid.split('@')[0]);
+      }
       out.push({
         chatJid,
         chatName: title,
@@ -1316,7 +1329,7 @@ export default class Database {
       FROM messages
       WHERE tenant_id = ? AND chat_jid = ?
       ORDER BY timestamp DESC
-      LIMIT ?
+        LIMIT ?
     `).all(t, chatJid, safe);
 
     const urlRe = /https?:\/\/[^\s<>"')\]}]+/gi;
