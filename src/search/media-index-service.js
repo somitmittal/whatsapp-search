@@ -59,13 +59,22 @@ function providerSupportsInlineVideoCaption(provider) {
  * images, video, audio, stickers, and documents (PDF body + filenames).
  */
 export default class MediaIndexService {
-  constructor({ db, getProvider }) {
+  constructor({ db, getProvider, getPriorityChatJid = null }) {
     this._db = db;
     this._getProvider = getProvider;
+    /** @type {(() => string|null)|null} */
+    this._getPriorityChatJid = typeof getPriorityChatJid === 'function' ? getPriorityChatJid : null;
     /** Set from WebServer when `/api/settings` updates the search LLM (same as SmartSearch). */
     this._overrideProvider = null;
     this._scheduled = null;
     this._running = false;
+    /** Exit current batch early so the next run picks jobs for the user’s priority chat first. */
+    this._preemptRequested = false;
+  }
+
+  /** Call when the user picks a priority chat (same as thread-summary priority). */
+  notePriorityChange() {
+    this._preemptRequested = true;
   }
 
   setProvider(provider) {
@@ -86,21 +95,34 @@ export default class MediaIndexService {
   }
 
   async processPending(limit = 12) {
-    if (this._running) return 0;
+    if (this._running) {
+      this._preemptRequested = true;
+      return 0;
+    }
 
     this._running = true;
     let done = 0;
+    let brokeEarly = false;
     try {
-      const jobs = this._db.getPendingMediaIndexJobs(limit);
+      const prio = this._getPriorityChatJid?.() ?? null;
+      const jobs = this._db.getPendingMediaIndexJobs(limit, prio);
       for (const job of jobs) {
+        if (this._preemptRequested) {
+          brokeEarly = true;
+          break;
+        }
         const ok = await this._indexOne(job);
         if (ok) done += 1;
       }
     } finally {
+      this._preemptRequested = false;
       this._running = false;
     }
     if (done > 0) {
       console.log(`[MediaIndex] Indexed ${done} media item(s)`);
+    }
+    if (brokeEarly) {
+      this.scheduleProcess();
     }
     return done;
   }

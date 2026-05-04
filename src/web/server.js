@@ -285,32 +285,38 @@ export default class WebServer {
       onStatus: ({ state, message }) => {
         st.waState = state;
         st.waMessage = message;
+        if (state === 'QR_READY' || state === 'DISCONNECTED' || state === 'LOADING') {
+          st.waReadyHooksDone = false;
+        }
         if (state === 'READY') {
           st.waQrDataUrl = null;
           st.extensionConnected = true;
-          if (waClient?.syncResolvedNamesToDb) {
-            setTimeout(() => {
-              void runWithTenant(tid, async () => {
-                try {
-                  const n = await waClient.syncResolvedNamesToDb(this.db);
-                  if (n > 0) this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats() } }, tid);
-                } catch (e) {
-                  console.warn('[WA] syncResolvedNamesToDb:', e.message);
-                }
-              });
-            }, 2000);
-          }
-          if (waClient?.refreshPhoneBookNamesInDb) {
-            setTimeout(() => {
-              void runWithTenant(tid, async () => {
-                try {
-                  const n = await waClient.refreshPhoneBookNamesInDb(this.db);
-                  this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats(), rowsUpdated: n } }, tid);
-                } catch (e) {
-                  console.warn('[WA] refreshPhoneBookNamesInDb:', e.message);
-                }
-              });
-            }, 5500);
+          if (!st.waReadyHooksDone) {
+            st.waReadyHooksDone = true;
+            if (waClient?.syncResolvedNamesToDb) {
+              setTimeout(() => {
+                void runWithTenant(tid, async () => {
+                  try {
+                    const n = await waClient.syncResolvedNamesToDb(this.db);
+                    if (n > 0) this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats() } }, tid);
+                  } catch (e) {
+                    console.warn('[WA] syncResolvedNamesToDb:', e.message);
+                  }
+                });
+              }, 2000);
+            }
+            if (config.waAutoAppStateResync && waClient?.refreshPhoneBookNamesInDb) {
+              setTimeout(() => {
+                void runWithTenant(tid, async () => {
+                  try {
+                    const n = await waClient.refreshPhoneBookNamesInDb(this.db);
+                    this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats(), rowsUpdated: n } }, tid);
+                  } catch (e) {
+                    console.warn('[WA] refreshPhoneBookNamesInDb:', e.message);
+                  }
+                });
+              }, 5500);
+            }
           }
         }
         const stats = runWithTenant(tid, () => this.db.getTotalStats());
@@ -765,6 +771,7 @@ export default class WebServer {
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const tid = getCurrentTenantId();
         this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this._mediaIndexService?.notePriorityChange?.();
         void runWithTenant(tid, async () => {
           try {
             await this.summaryService.indexPendingDays();
@@ -1378,6 +1385,7 @@ export default class WebServer {
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const tid = getCurrentTenantId();
         this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this._mediaIndexService?.notePriorityChange?.();
         void runWithTenant(tid, async () => {
           try {
             await this.summaryService.indexPendingDays();

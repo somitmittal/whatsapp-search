@@ -43,8 +43,8 @@ const P        = require('pino');
 
 const SEARCH_GROUP     = '🔍 WhatsApp Search';
 const BATCH_MS         = 2000;
-/** Silence after last `messaging-history.set` batch before marking READY (Baileys may pause between batches). */
-const SYNC_DONE_DELAY  = 2_500;
+/** Silence after last `messaging-history.set` batch before final “sync complete” (Baileys may pause between batches). */
+const SYNC_DONE_DELAY  = 1_200;
 
 const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
 const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
@@ -218,6 +218,8 @@ export default class WaClient {
     this._reconnectAttempt = 0;
     /** Throttle `SYNCING` status lines so history batches don’t spam WebSocket/UI. */
     this._lastSyncingUiAt = 0;
+    /** First time we have DB-visible history (or live traffic) while `SYNCING` → switch UI to `READY` immediately; history may continue in background. */
+    this._uiPromotedAfterFirstHistoryBatch = false;
   }
 
   _isSearchGroupJid(jid) {
@@ -375,7 +377,7 @@ export default class WaClient {
       generateHighQualityLinkPreview: false,
       // Linked-device history depth is still capped by WhatsApp servers (often ~few months of rolling sync).
       // See fetchOlderHistoryFromPhone + POST /api/wa/fetch-older-history and chat export import for more.
-      syncFullHistory: true,
+      syncFullHistory: config.waSyncFullHistory,
       /**
        * Linked-device label on your phone (Settings → Linked devices).
        * Do **not** use "Chrome" here — WhatsApp surfaces that in OS notifications as
@@ -439,6 +441,7 @@ export default class WaClient {
         this._setState('SYNCING', 'Loading chat history…');
         this._historyDone = false;
         this._totalMsgs = 0;
+        this._uiPromotedAfterFirstHistoryBatch = false;
 
         // Fallback if no history batches (unusual) — don’t block connect on search-group setup
         this._armSyncDoneTimer(12_000);
@@ -497,7 +500,10 @@ export default class WaClient {
         const enriched = await this._enrichRowWithMedia(msg, row);
         rows.push(enriched);
       }
-      if (rows.length) this._enqueueBatch(rows);
+      if (rows.length) {
+        this._enqueueBatch(rows);
+        this._promoteUiWhileHistoryContinues();
+      }
     });
 
     /** Incoming emoji reactions — aggregated per message in DB + UI via WebSocket. */
@@ -570,8 +576,11 @@ export default class WaClient {
         const now = Date.now();
         if (now - this._lastSyncingUiAt >= 1200) {
           this._lastSyncingUiAt = now;
-          this._setState('SYNCING', `Syncing… ${this._totalMsgs.toLocaleString()} messages received`);
+          if (!this._uiPromotedAfterFirstHistoryBatch) {
+            this._setState('SYNCING', `Syncing… ${this._totalMsgs.toLocaleString()} messages received`);
+          }
         }
+        this._promoteUiWhileHistoryContinues();
         console.log(`[WA] History batch: +${rows.length} msgs (total ${this._totalMsgs})`);
       }
 
@@ -823,6 +832,21 @@ export default class WaClient {
   }
 
   // ── Sync-done gate ─────────────────────────────────────────────────────────
+  /**
+   * As soon as we have indexed data, mark linked device `READY` so the web UI can load chats.
+   * WhatsApp may keep sending `messaging-history.set` for a long time; we do not block the UI for that.
+   */
+  _promoteUiWhileHistoryContinues() {
+    if (this._state !== 'SYNCING' || this._uiPromotedAfterFirstHistoryBatch) return;
+    this._uiPromotedAfterFirstHistoryBatch = true;
+    const n = this._totalMsgs;
+    const msg =
+      n > 0
+        ? `${n.toLocaleString()} messages · still syncing…`
+        : 'Connected — history still loading…';
+    this._setState('READY', msg);
+  }
+
   _armSyncDoneTimer(ms) {
     clearTimeout(this._syncDoneTimer);
     this._syncDoneTimer = setTimeout(() => this._finishSync(), ms);
@@ -1113,7 +1137,17 @@ export default class WaClient {
         participantCount: Math.max(a.participantCount || 0, b.participantCount || 0),
       });
     }
-    return [...merged.values()].sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
+    const rank = (c) => {
+      const lm = c.lastMessageTs || 0;
+      const n = Math.max(1, c.messageCount || 0);
+      return lm * Math.log1p(n);
+    };
+    return [...merged.values()].sort((a, b) => {
+      const ra = rank(a);
+      const rb = rank(b);
+      if (rb !== ra) return rb - ra;
+      return (b.lastMessageTs || 0) - (a.lastMessageTs || 0);
+    });
   }
 
   async _enrichRowWithMedia(msg, row) {

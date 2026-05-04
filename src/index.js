@@ -1,6 +1,6 @@
 import { mkdirSync } from 'fs';
 import config from './config.js';
-import { runWithTenant } from './storage/tenant-context.js';
+import { runWithTenant, getCurrentTenantId } from './storage/tenant-context.js';
 import { LEGACY_TENANT_ID } from './storage/tenant-constants.js';
 import Database from './storage/database.js';
 import SmartSearch from './search/smart-search.js';
@@ -77,9 +77,18 @@ async function main() {
   }
 
   const searchEngine = new SmartSearch(db, provider);
+  const summaryService = new DailySummaryService({
+    db,
+    provider: summaryProvider,
+    fallbackProvider: summaryProvider !== provider ? provider : null,
+    onProgress: (data) => {
+      if (webServer) webServer.onSummaryProgress(data);
+    },
+  });
   const mediaIndexService = new MediaIndexService({
     db,
     getProvider: () => mediaIndexProvider,
+    getPriorityChatJid: () => summaryService.getPriorityChatForTenant(getCurrentTenantId()),
   });
 
   async function reloadMediaIndexProvider() {
@@ -136,14 +145,6 @@ async function main() {
     getProvider: () => provider,
     onSuggestionsUpdated: ({ chatJid }) => {
       webServer?._broadcast?.({ type: 'chat-action-items', data: { chatJid } }, defaultTenantId);
-    },
-  });
-  const summaryService = new DailySummaryService({
-    db,
-    provider: summaryProvider,
-    fallbackProvider: summaryProvider !== provider ? provider : null,
-    onProgress: (data) => {
-      if (webServer) webServer.onSummaryProgress(data);
     },
   });
   webServer = new WebServer({
@@ -219,6 +220,12 @@ async function main() {
   await webServer.start();
 
   console.log('Server ready.');
+  if (!config.waSyncFullHistory) {
+    console.log('[WA] WA_SYNC_FULL_HISTORY disabled — less linked-device sync traffic; less chat history on first connect.');
+  }
+  if (config.waAutoAppStateResync) {
+    console.log('[WA] WA_AUTO_APP_STATE_RESYNC enabled — auto app-state sync after connect (more phone notifications).');
+  }
 }
 
 main().catch(err => {

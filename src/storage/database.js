@@ -981,12 +981,29 @@ export default class Database {
 
   /**
    * Rows with downloaded media that still need caption/transcribe (media_ai_index IS NULL).
+   * When `priorityChatJid` is set, rows in that chat are ordered before others (same global newest-first within each tier).
    */
-  getPendingMediaIndexJobs(limit = 12) {
+  getPendingMediaIndexJobs(limit = 12, priorityChatJid = null) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();
+    const prio = priorityChatJid && String(priorityChatJid).trim()
+      ? String(priorityChatJid).trim()
+      : null;
+    if (prio) {
+      return this._db.prepare(`
+        SELECT id, message_id AS messageId, chat_jid AS chatJid, media_type AS mediaType, media_path AS mediaPath,
+               media_caption AS mediaCaption, text AS text
+        FROM messages
+        WHERE tenant_id = ?
+          AND media_path IS NOT NULL AND trim(media_path) != ''
+          AND media_type IN ('image', 'audio', 'video', 'sticker', 'document')
+          AND media_ai_index IS NULL
+        ORDER BY CASE WHEN chat_jid = ? THEN 0 ELSE 1 END, timestamp DESC
+        LIMIT ?
+      `).all(t, prio, n);
+    }
     return this._db.prepare(`
-      SELECT id, message_id AS messageId, media_type AS mediaType, media_path AS mediaPath,
+      SELECT id, message_id AS messageId, chat_jid AS chatJid, media_type AS mediaType, media_path AS mediaPath,
              media_caption AS mediaCaption, text AS text
       FROM messages
       WHERE tenant_id = ?
@@ -1307,7 +1324,18 @@ export default class Database {
     }
     if (currentJid && g) out.push(finalizeChat(currentJid, g));
 
-    out.sort((a, b) => b.lastMessageTs - a.lastMessageTs);
+    /** Recency × log(volume): active one-to-one and group chats float above stale low-traffic threads. */
+    const chatListRank = (c) => {
+      const lm = c.lastMessageTs || 0;
+      const n = Math.max(1, c.messageCount || 0);
+      return lm * Math.log1p(n);
+    };
+    out.sort((a, b) => {
+      const ra = chatListRank(a);
+      const rb = chatListRank(b);
+      if (rb !== ra) return rb - ra;
+      return (b.lastMessageTs || 0) - (a.lastMessageTs || 0);
+    });
     return out;
   }
 

@@ -77,6 +77,24 @@ const config = {
   defaultMediaIndexProvider: (process.env.MEDIA_INDEX_PROVIDER || 'gemini').trim(),
   defaultMediaIndexModel:
     (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim(),
+
+  /**
+   * Baileys linked-device history: `true` (default) pulls more history on connect — more phone “syncing” alerts.
+   * Set `WA_SYNC_FULL_HISTORY=false` for fewer alerts; use chat export + “fetch older” / live messages for depth.
+   */
+  waSyncFullHistory: (() => {
+    const v = String(process.env.WA_SYNC_FULL_HISTORY ?? '').trim().toLowerCase();
+    if (v === '0' || v === 'false' || v === 'no') return false;
+    return true;
+  })(),
+  /**
+   * If true, after each READY we auto-run `resyncAppState` + phone-book refresh (heavy; extra sync traffic/notifications).
+   * Default false — use Settings → “Refresh contact names” or `POST /api/wa/sync-contacts` when you want names updated.
+   * Set `WA_AUTO_APP_STATE_RESYNC=1` to restore automatic refresh (old behavior).
+   */
+  waAutoAppStateResync: ['1', 'true', 'yes'].includes(
+    String(process.env.WA_AUTO_APP_STATE_RESYNC ?? '').trim().toLowerCase(),
+  ),
 };
 
 export default config;

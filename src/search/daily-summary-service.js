@@ -88,8 +88,20 @@ export default class DailySummaryService {
     this._onProgress = onProgress ?? null;
     this._running = false;
     this._aborted = false; // reserved for explicit cancel (future)
+    /** Cooperative stop: next batch boundary exits early so a higher-priority chat can run. */
+    this._preemptRequested = false;
     /** @type {Map<string, string>} tenantId → chatJid to process first on next run */
     this._priorityChatJidByTenant = new Map();
+  }
+
+  /**
+   * Active priority chat for a tenant (media indexing order), if any.
+   * @param {string} tenantId
+   * @returns {string|null}
+   */
+  getPriorityChatForTenant(tenantId) {
+    if (!tenantId) return null;
+    return this._priorityChatJidByTenant.get(String(tenantId)) ?? null;
   }
 
   /**
@@ -200,7 +212,8 @@ export default class DailySummaryService {
   async indexPendingDays() {
     if (this._running) {
       this._restartPending = true;
-      console.log('[Summaries] Already running — another pass will run when the current one finishes');
+      this._preemptRequested = true;
+      console.log('[Summaries] Already running — current pass will yield for priority / queued restart');
       return 0;
     }
 
@@ -212,6 +225,7 @@ export default class DailySummaryService {
 
     this._running = true;
     this._restartPending = false;
+    this._preemptRequested = false;
 
     try {
       const chats = this._db.getChatStats();
@@ -275,7 +289,13 @@ export default class DailySummaryService {
 
       let chatIndex = 0;
       let clearedPreferred = false;
-      for (const { chatJid, chatName, pending } of workQueue) {
+      summaryPass: for (const { chatJid, chatName, pending } of workQueue) {
+        if (this._preemptRequested) {
+          this._preemptRequested = false;
+          this._restartPending = true;
+          console.log('[Summaries] Preempted before chat — restarting with updated priority');
+          break summaryPass;
+        }
         chatIndex += 1;
         console.log(`[Summaries] ${chatName || chatJid}: ${pending.length} unsummarized threads (${chatIndex}/${chatsTotal} chats)`);
 
@@ -294,6 +314,12 @@ export default class DailySummaryService {
         let consecutiveFailures = 0;
 
         for (let batchStart = 0; batchStart < pending.length; ) {
+          if (this._preemptRequested) {
+            this._preemptRequested = false;
+            this._restartPending = true;
+            console.log('[Summaries] Preempted between thread batches — restarting with updated priority');
+            break summaryPass;
+          }
           const activeProvider = await this._pickProvider();
           if (!activeProvider) {
             console.log('[Summaries] Provider became unavailable — pausing');
@@ -346,6 +372,12 @@ export default class DailySummaryService {
           });
 
           batchStart += concurrency;
+          if (this._preemptRequested) {
+            this._preemptRequested = false;
+            this._restartPending = true;
+            console.log('[Summaries] Preempted after thread batch — restarting with updated priority');
+            break summaryPass;
+          }
           if (batchStart < pending.length) await sleep(delayMs);
         }
 

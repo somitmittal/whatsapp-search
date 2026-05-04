@@ -1654,6 +1654,17 @@
   };
 
   let ws, chatData = [], activeChat = null, connected = false, searchActive = false;
+  /** Smaller pages when loading *older* history (after the first full window). */
+  const CHAT_PAGE = 80;
+  /** First open: request up to server max (`MAX_MESSAGES_PAGE`); server clamps. */
+  const INITIAL_CHAT_MESSAGES_LIMIT = 50000;
+  let chatMessagesOffset = 0;
+  let chatHasMoreLocal = true;
+  let chatLoadingOlder = false;
+  let chatOldestAnchorTs = null;
+  let chatPhoneFetchAttempted = false;
+  /** Set when `openChat` used jump-to-message; disables scroll-older pagination. */
+  let activeFocusMessageId = null;
   const SEARCH_INPUT_PLACEHOLDER_DEFAULT = 'Ask AI anything about your chats...';
   let cvTab = 'chat';
   let attachmentsPayload = null;
@@ -2103,9 +2114,16 @@
         }
         else if (msg.type === 'chat-names-refreshed') { refreshDash(); }
         else if (msg.type === 'wa-status') {
-          updateWaUI(msg.data);
-          if (msg.data.state === 'READY') { clearInterval(_qrPollTimer); }
-          if (msg.data.stats) refreshDash();
+          // Load chat list from SQLite *before* routing UI — reconnect shows saved history instantly (no wait for phone sync).
+          if (msg.data.stats) {
+            void refreshDash().then(() => {
+              updateWaUI(msg.data);
+              if (msg.data.state === 'READY') clearInterval(_qrPollTimer);
+            });
+          } else {
+            updateWaUI(msg.data);
+            if (msg.data.state === 'READY') clearInterval(_qrPollTimer);
+          }
         }
         else if (msg.type === 'wa-qr') { showQr(msg.data.qr); }
         else if (msg.type === 'sync-progress') { updateSyncProgress(msg.data); }
@@ -2304,6 +2322,7 @@
   // Fetch initial WA state on load
   (async function bootstrapWhatsAppLinking() {
     try {
+      await refreshDash();
       const st = await fetch('/api/wa/status').then(r => r.json());
       updateWaUI(st);
 
@@ -3150,8 +3169,15 @@
     if (focusMessageId) {
       searchActive = false;
       $('#panel-search').classList.remove('visible');
+      activeFocusMessageId = focusMessageId;
     } else {
       clearSearch();
+      activeFocusMessageId = null;
+      chatMessagesOffset = 0;
+      chatHasMoreLocal = true;
+      chatLoadingOlder = false;
+      chatOldestAnchorTs = null;
+      chatPhoneFetchAttempted = false;
     }
     const ch = chatData.find(c => c.chatJid === jid);
     if (ch && (ch.sidebarTab || 'chat') !== sidebarListTab) {
@@ -3177,13 +3203,29 @@
     try {
       const msgUrl = focusMessageId
         ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(focusMessageId)}`
-        : `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000`;
+        : `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${INITIAL_CHAT_MESSAGES_LIMIT}&offset=0`;
       const [msgs, details] = await Promise.all([
         fetch(msgUrl).then(r => r.json()),
         fetch(`/api/wa/chat-details?chatJid=${encodeURIComponent(jid)}`).then(r => r.ok ? r.json() : null),
       ]);
       if (activeChat !== jid) return;
       renderMessages(msgs, jid, focusMessageId);
+      if (!focusMessageId && msgs.length) {
+        const sorted = [...msgs].sort((a, b) => {
+          const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
+          const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
+          return ta - tb;
+        });
+        chatOldestAnchorTs = sorted[0].timestamp;
+        chatMessagesOffset = msgs.length;
+        const chRow = chatData.find((c) => c.chatJid === jid);
+        const loaded = msgs.length;
+        if (typeof chRow?.messageCount === 'number') {
+          chatHasMoreLocal = loaded < chRow.messageCount;
+        } else {
+          chatHasMoreLocal = loaded >= INITIAL_CHAT_MESSAGES_LIMIT;
+        }
+      }
       if (details && activeChat === jid) {
         const displayRaw = details.subject || details.chatName || details.displayName || n;
         const display = displayChatTitle(jid, displayRaw);
@@ -3201,6 +3243,12 @@
       void loadActionItemsForChat(jid);
       void loadAwaySummaryForChat(jid);
       void fetchChatAttachments(jid);
+      fetch('/api/summaries/priority-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ chatJid: jid }),
+      }).catch(() => {});
     } catch {}
     // Mark chat as seen for “while you were away”.
     fetch(`/api/chats/${encodeURIComponent(jid)}/seen`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
@@ -3225,6 +3273,7 @@
     $('#btn-mobile-chat-back').addEventListener('click', () => {
     clearReplyTarget();
     activeChat = null;
+    activeFocusMessageId = null;
     cvTab = 'chat';
     attachmentsPayload = null;
     const te = $('#cv-tabs');
@@ -3246,18 +3295,15 @@
     switchPanel();
   });
 
-  function renderMessages(msgs, jid, focusMessageId = null) {
-    const c = $('#cv-messages');
-    if (!msgs.length) { c.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2);">No messages</div>'; return; }
+  function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelowTs) {
     const isGroup = jid.includes('@g.us');
     let html = '', lastDate = '';
-    const sorted = [...msgs].sort((a, b) => {
-      const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
-      const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
-      return ta - tb;
-    });
+    if (anchorBelowTs != null && anchorBelowTs !== '') {
+      const ad = messageTimestampToDate(anchorBelowTs);
+      lastDate = ad ? ad.toDateString() : '';
+    }
     const focusStr = focusMessageId != null ? String(focusMessageId) : '';
-    for (const m of sorted) {
+    for (const m of sortedAsc) {
       const d = messageTimestampToDate(m.timestamp);
       const ds = d ? formatChatDateSeparator(d) : '';
       const dsKey = d ? d.toDateString() : '';
@@ -3329,7 +3375,20 @@
         </div>` : '';
       html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr}>${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<div class="time">${ts ? esc(ts) : '—'}</div></div>${rxHtml}</div>`;
     }
+    return html;
+  }
+
+  function renderMessages(msgs, jid, focusMessageId = null) {
+    const c = $('#cv-messages');
+    if (!msgs.length) { c.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2);">No messages</div>'; return; }
+    const sorted = [...msgs].sort((a, b) => {
+      const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
+      const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
+      return ta - tb;
+    });
+    const html = buildChatMessagesHtml(sorted, jid, focusMessageId, null);
     c.innerHTML = html;
+    const focusStr = focusMessageId != null ? String(focusMessageId) : '';
     if (focusStr) {
       const target = [...c.querySelectorAll('.bubble[data-message-id]')].find(
         el => el.getAttribute('data-message-id') === focusStr
@@ -3345,13 +3404,93 @@
     }
   }
 
+  async function loadOlderChatPage() {
+    const jid = activeChat;
+    if (!jid || chatLoadingOlder || activeFocusMessageId) return;
+    if (!chatHasMoreLocal) {
+      if (!chatPhoneFetchAttempted) {
+        chatPhoneFetchAttempted = true;
+        try {
+          await fetch('/api/wa/fetch-older-history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ chatJid: jid, count: 50 }),
+          });
+        } catch { /* optional phone sync */ }
+      }
+      return;
+    }
+    chatLoadingOlder = true;
+    try {
+      const rows = await fetch(
+        `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${CHAT_PAGE}&offset=${chatMessagesOffset}`,
+      ).then((r) => r.json());
+      if (activeChat !== jid) return;
+      if (!rows.length) {
+        chatHasMoreLocal = false;
+        return;
+      }
+      const sortedAsc = [...rows].sort((a, b) => {
+        const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
+        const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
+        return ta - tb;
+      });
+      const c = $('#cv-messages');
+      const oldH = c.scrollHeight;
+      const oldTop = c.scrollTop;
+      const frag = buildChatMessagesHtml(sortedAsc, jid, null, chatOldestAnchorTs);
+      c.insertAdjacentHTML('afterbegin', frag);
+      c.scrollTop = c.scrollHeight - oldH + oldTop;
+      chatMessagesOffset += rows.length;
+      chatOldestAnchorTs = sortedAsc[0]?.timestamp ?? chatOldestAnchorTs;
+      if (rows.length < CHAT_PAGE) chatHasMoreLocal = false;
+      const ch = chatData.find((x) => x.chatJid === jid);
+      if (ch && typeof ch.messageCount === 'number' && chatMessagesOffset >= ch.messageCount) {
+        chatHasMoreLocal = false;
+      }
+    } catch { /* ignore */ } finally {
+      chatLoadingOlder = false;
+    }
+  }
+
   async function refreshActiveChatMessages() {
     const jid = activeChat;
     if (!jid) return;
+    if (activeFocusMessageId) {
+      try {
+        const msgs = await fetch(
+          `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(activeFocusMessageId)}`,
+        ).then((r) => r.json());
+        if (activeChat !== jid) return;
+        renderMessages(msgs, jid, activeFocusMessageId);
+      } catch {}
+      return;
+    }
     try {
-      const msgs = await fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000`).then((r) => r.json());
+      const lim = Math.max(chatMessagesOffset || INITIAL_CHAT_MESSAGES_LIMIT, INITIAL_CHAT_MESSAGES_LIMIT);
+      const msgs = await fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${lim}&offset=0`).then((r) => r.json());
       if (activeChat !== jid) return;
       renderMessages(msgs, jid);
+      const sorted = [...msgs].sort((a, b) => {
+        const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
+        const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
+        return ta - tb;
+      });
+      if (sorted.length) {
+        chatOldestAnchorTs = sorted[0].timestamp;
+        chatMessagesOffset = sorted.length;
+        const ch = chatData.find((x) => x.chatJid === jid);
+        if (typeof ch?.messageCount === 'number') {
+          chatHasMoreLocal = chatMessagesOffset < ch.messageCount;
+        } else {
+          chatHasMoreLocal = sorted.length >= INITIAL_CHAT_MESSAGES_LIMIT;
+        }
+      } else {
+        chatOldestAnchorTs = null;
+        chatMessagesOffset = 0;
+        chatHasMoreLocal = false;
+      }
     } catch {}
   }
 
@@ -3476,6 +3615,20 @@
     if (e.key === 'Enter') { e.preventDefault(); sendCurrentMessage(); }
   });
   $('#reply-to-clear')?.addEventListener('click', clearReplyTarget);
+  let cvOlderScrollArmed = true;
+  $('#cv-messages')?.addEventListener('scroll', () => {
+    if (!activeChat || activeFocusMessageId || chatLoadingOlder || !chatHasMoreLocal) return;
+    const el = $('#cv-messages');
+    if (el.scrollTop > 100) {
+      cvOlderScrollArmed = true;
+      return;
+    }
+    if (!cvOlderScrollArmed) return;
+    cvOlderScrollArmed = false;
+    void loadOlderChatPage().finally(() => {
+      setTimeout(() => { cvOlderScrollArmed = true; }, 400);
+    });
+  }, { passive: true });
   $('#cv-messages')?.addEventListener('click', async (e) => {
     const aiBtn = e.target.closest('[data-wa-ai-search]');
     if (aiBtn) {
