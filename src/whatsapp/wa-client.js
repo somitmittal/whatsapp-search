@@ -43,7 +43,8 @@ const P        = require('pino');
 
 const SEARCH_GROUP     = '🔍 WhatsApp Search';
 const BATCH_MS         = 2000;
-const SYNC_DONE_DELAY  = 8_000; // ms of silence after last history batch → mark READY
+/** Silence after last `messaging-history.set` batch before marking READY (Baileys may pause between batches). */
+const SYNC_DONE_DELAY  = 2_500;
 
 const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
 const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
@@ -435,10 +436,10 @@ export default class WaClient {
         this._historyDone = false;
         this._totalMsgs = 0;
 
-        // Set a fallback timer — mark READY after 15s even if sync events don't fire
-        this._armSyncDoneTimer(15_000);
+        // Fallback if no history batches (unusual) — don’t block connect on search-group setup
+        this._armSyncDoneTimer(12_000);
 
-        await this._ensureSearchGroup().catch(e => console.warn('[WA] Group error:', e.message));
+        void this._ensureSearchGroup().catch((e) => console.warn('[WA] Group error:', e.message));
 
         if (this._ownerJid) {
           const web = publicWebBaseUrl();

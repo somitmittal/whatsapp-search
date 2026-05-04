@@ -2125,6 +2125,22 @@
   let _qrPollTimer = null;
   let _lastQrDataUrl = null;
 
+  /**
+   * Once the first history messages are in the DB, show the normal empty welcome (chat list in sidebar is useful)
+   * instead of the full-screen “syncing” panel — history may still load in the background until READY.
+   */
+  function adjustSyncingMainPanel() {
+    if (_waState !== 'SYNCING') return;
+    const emptyMain = $('#panel-empty').classList.contains('visible');
+    if (!emptyMain) return;
+    const hasChats = chatData && chatData.length > 0;
+    if (!hasChats) return;
+    $('#welcome-qr').style.display = 'none';
+    $('#welcome-default').style.display = '';
+    $('#sync-progress-panel').style.display = 'none';
+    $('#wqr-loading').style.display = 'none';
+  }
+
   function updateWaUI({ state, message }) {
     _waState = state;
     const dot = $('#wa-dot');
@@ -2175,9 +2191,17 @@
       }
     } else if (state === 'SYNCING') {
       $('#welcome-qr').style.display = 'none';
-      $('#welcome-default').style.display = 'none';
       $('#wqr-loading').style.display = 'none';
-      $('#sync-progress-panel').style.display = isEmptyPanel ? '' : 'none';
+      if (isEmptyPanel && hasChats) {
+        $('#welcome-default').style.display = '';
+        $('#sync-progress-panel').style.display = 'none';
+      } else if (isEmptyPanel && !hasChats) {
+        $('#welcome-default').style.display = 'none';
+        $('#sync-progress-panel').style.display = '';
+      } else {
+        $('#welcome-default').style.display = 'none';
+        $('#sync-progress-panel').style.display = 'none';
+      }
     } else if (state === 'QR_READY') {
       $('#sync-progress-panel').style.display = 'none';
       if (isEmptyPanel || !hasChats) {
@@ -2242,9 +2266,17 @@
     const msgN = messages ?? 0;
     $('#sync-msgs').textContent = msgN.toLocaleString() + ' messages';
     $('#sync-detail').textContent = hasTotal ? `${completed} of ${total} chats` : 'Receiving history…';
-    $('#sync-progress-panel').style.display = '';
-    $('#welcome-qr').style.display = 'none';
-    $('#welcome-default').style.display = 'none';
+    const emptyMain = $('#panel-empty').classList.contains('visible');
+    const hasChats = chatData && chatData.length > 0;
+    const hasIndexed = hasChats || (typeof messages === 'number' && messages > 0);
+    if (_waState === 'SYNCING' && emptyMain && hasIndexed) {
+      $('#welcome-default').style.display = '';
+      $('#sync-progress-panel').style.display = 'none';
+    } else if (_waState === 'SYNCING' && emptyMain && !hasIndexed) {
+      $('#sync-progress-panel').style.display = '';
+      $('#welcome-qr').style.display = 'none';
+      $('#welcome-default').style.display = 'none';
+    }
   }
 
   function applyWaSyncBars() {
@@ -2323,6 +2355,7 @@
       ]);
       chatData = chats;
       renderChatsFromState();
+      adjustSyncingMainPanel();
       await refreshStatusFeed();
       const s = status.stats;
       $('#stat-msgs').textContent = s.totalMessages.toLocaleString();
