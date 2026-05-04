@@ -1,10 +1,9 @@
 import { createRequire } from 'module';
 import { createServer } from 'http';
-import { relative, resolve } from 'path';
+import { basename, join, relative, resolve } from 'path';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'fs';
 import { renameSync, existsSync } from 'fs';
-import { join } from 'path';
 import config from '../config.js';
 import { runWithTenant, getCurrentTenantId } from '../storage/tenant-context.js';
 import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
@@ -85,6 +84,15 @@ function contentTypeForMediaFile(filePath) {
     pdf: 'application/pdf',
   };
   return map[ext] || 'application/octet-stream';
+}
+
+/** Safe single-line filename for Content-Disposition (ASCII; avoids CRLF / quotes). */
+function attachmentFilenameFromPath(absPath, fallbackMessageId) {
+  let base = basename(String(absPath || ''));
+  if (!base || base === '.' || base === '..') {
+    base = `whatsapp-media-${String(fallbackMessageId || 'file').slice(0, 40)}`;
+  }
+  return base.replace(/[^\x20-\x7E]/g, '_').replace(/["\\\r\n]/g, '_').slice(0, 180) || 'download.bin';
 }
 
 export default class WebServer {
@@ -359,6 +367,10 @@ export default class WebServer {
             payload.messageId,
             payload.emoji,
             payload.reactionMsgId,
+            {
+              groupingKey: payload.groupingKey,
+              reactionKey: payload.reactionKey,
+            },
           );
           if (counts) {
             this._broadcast(
@@ -716,8 +728,17 @@ export default class WebServer {
         if (!rawPath) return res.status(404).json({ error: 'No media for this message' });
         const safe = assertPathUnderMediaRoot(rawPath);
         if (!safe) return res.status(403).json({ error: 'Invalid media path' });
+        const q = req.query || {};
+        const wantDownload =
+          q.download === '1' ||
+          q.download === 'true' ||
+          String(q.disposition || '').toLowerCase() === 'attachment';
         res.setHeader('Content-Type', contentTypeForMediaFile(safe));
         res.setHeader('Cache-Control', 'private, max-age=3600');
+        if (wantDownload) {
+          const fname = attachmentFilenameFromPath(safe, messageId);
+          res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+        }
         return res.sendFile(safe);
       } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -919,6 +940,33 @@ export default class WebServer {
         res.json({ ok: true, rowsUpdated });
       } catch (err) {
         res.status(500).json({ error: err.message });
+      }
+    });
+
+    /**
+     * Ask the paired phone for older messages before our oldest stored row (Baileys PDO on-demand sync).
+     * Initial linked-device sync is still limited by WhatsApp; this may need repeating or full exports for years of history.
+     */
+    this._app.post('/api/wa/fetch-older-history', async (req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      const wa = st?.waClient;
+      if (!wa || typeof wa.fetchOlderHistoryFromPhone !== 'function') {
+        return res.status(409).json({ error: 'WhatsApp not connected' });
+      }
+      if (st.waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
+      const chatJid = String(req.body?.chatJid || '').trim();
+      if (!chatJid) return res.status(400).json({ error: 'chatJid required' });
+      const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || 50));
+      try {
+        const anchorRow = this.db.getOldestMessageAnchor(chatJid);
+        if (!anchorRow?.messageId) {
+          return res.status(400).json({ error: 'No messages indexed for this chat yet' });
+        }
+        const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid, ...anchorRow }, count);
+        res.json({ ok: true, requestId: requestId ?? null });
+      } catch (err) {
+        res.status(500).json({ error: err.message || String(err) });
       }
     });
 

@@ -23,6 +23,7 @@ import {
   looksLikeLidFallbackContactLabel,
 } from '../whatsapp/chat-display-name.js';
 import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
+import { reactionParticipantSlotKey } from '../whatsapp/reaction-counts.js';
 
 const require = createRequire(import.meta.url);
 const SQLite = require('better-sqlite3');
@@ -53,6 +54,7 @@ export default class Database {
     migrateWhatsAppIdentities(this._db);
     migrateAwaySummaries(this._db);
     migrateContactDirectory(this._db);
+    this._ensureMessagesTenantChatTsIndex();
     this._prepareStatements();
     this._migrateChatActionItemsTable();
     this._migrateOllamaCloudModelSettings();
@@ -237,7 +239,34 @@ export default class Database {
     this._migrateMediaAiIndexAndFts();
     this._migrateActionSuggestionsColumn();
     this._migrateReactionsJsonAndDedupe();
+    this._migrateContactPayloadColumn();
     this._rebuildFtsIfEmpty();
+  }
+
+  /** Speeds up getChatStats() and per-chat timeline queries (tenant-scoped ordered scan). */
+  _ensureMessagesTenantChatTsIndex() {
+    try {
+      const cols = this._db.prepare('PRAGMA table_info(messages)').all();
+      if (!cols.some((c) => c.name === 'tenant_id')) return;
+      this._db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_messages_tenant_chat_ts
+        ON messages(tenant_id, chat_jid, timestamp)
+      `);
+    } catch (e) {
+      console.warn('[DB] idx_messages_tenant_chat_ts:', e.message);
+    }
+  }
+
+  _migrateContactPayloadColumn() {
+    try {
+      const cols = this._db.prepare('PRAGMA table_info(messages)').all();
+      if (!cols.some((c) => c.name === 'contact_payload')) {
+        this._db.exec('ALTER TABLE messages ADD COLUMN contact_payload TEXT');
+        console.log('[DB] Added messages.contact_payload');
+      }
+    } catch (e) {
+      console.warn('[DB] contact_payload column:', e.message);
+    }
   }
 
   _migrateReactionsJsonAndDedupe() {
@@ -261,18 +290,37 @@ export default class Database {
     } catch (e) {
       console.warn('[DB] wa_reaction_dedupe:', e.message);
     }
+    try {
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS wa_reaction_slot (
+          tenant_id TEXT NOT NULL,
+          message_id TEXT NOT NULL,
+          slot_key TEXT NOT NULL,
+          last_emoji TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, message_id, slot_key)
+        );
+      `);
+    } catch (e) {
+      console.warn('[DB] wa_reaction_slot:', e.message);
+    }
   }
 
   /**
    * Merge one reaction ack into `messages.reactions_json` (flat emoji → count).
-   * Ignores empty emoji (removals) and duplicate reaction message ids.
-   * @returns {Record<string, number>|null} updated counts, or null if skipped / no row
+   * Uses per-participant slots so emoji changes and removals adjust counts correctly.
+   * @param {string} chatJid
+   * @param {string} messageId — target message id
+   * @param {string} emoji — empty when reaction removed (Baileys: reaction.text falsey)
+   * @param {string} reactionMsgId — id of the reaction message (dedupe)
+   * @param {{ groupingKey?: string, reactionKey?: { participant?: string|null, fromMe?: boolean|null } }} [meta]
+   * @returns {Record<string, number>|null} updated counts, or null if skipped / no row / no-op
    */
-  mergeReactionEvent(chatJid, messageId, emoji, reactionMsgId) {
-    if (!chatJid || !messageId || !emoji?.trim() || !reactionMsgId) return null;
+  mergeReactionEvent(chatJid, messageId, emoji, reactionMsgId, meta = {}) {
+    if (!chatJid || !messageId || !reactionMsgId) return null;
     const t = getCurrentTenantId();
-    const e = String(emoji).trim();
-    if (!e) return null;
+    const newEmoji = emoji != null ? String(emoji).trim() : '';
+    const slotKey = reactionParticipantSlotKey(meta.groupingKey, meta.reactionKey);
+
     const insDedupe = this._db.prepare(
       'INSERT OR IGNORE INTO wa_reaction_dedupe (tenant_id, reaction_msg_id) VALUES (?, ?)',
     );
@@ -286,7 +334,30 @@ export default class Database {
       WHERE tenant_id = ? AND message_id = ?
       LIMIT 1
     `);
+    const selSlot = this._db.prepare(`
+      SELECT last_emoji AS lastEmoji FROM wa_reaction_slot
+      WHERE tenant_id = ? AND message_id = ? AND slot_key = ?
+      LIMIT 1
+    `);
+    const delSlot = this._db.prepare(
+      'DELETE FROM wa_reaction_slot WHERE tenant_id = ? AND message_id = ? AND slot_key = ?',
+    );
+    const insSlot = this._db.prepare(`
+      INSERT INTO wa_reaction_slot (tenant_id, message_id, slot_key, last_emoji)
+      VALUES (?, ?, ?, ?)
+    `);
     const upd = this._db.prepare('UPDATE messages SET reactions_json = ? WHERE id = ?');
+
+    const parseCounts = (raw) => {
+      let counts = {};
+      try {
+        counts = raw ? JSON.parse(raw) : {};
+      } catch {
+        counts = {};
+      }
+      if (typeof counts !== 'object' || counts === null || Array.isArray(counts)) counts = {};
+      return counts;
+    };
 
     const run = this._db.transaction(() => {
       const d = insDedupe.run(t, reactionMsgId);
@@ -296,14 +367,36 @@ export default class Database {
       if (!row) row = rowFindLoose.get(t, messageId);
       if (!row) return null;
 
-      let counts = {};
-      try {
-        counts = row.reactionsJson ? JSON.parse(row.reactionsJson) : {};
-      } catch {
-        counts = {};
+      const counts = parseCounts(row.reactionsJson);
+      const slotRow = selSlot.get(t, messageId, slotKey);
+      const oldEmoji = slotRow?.lastEmoji != null ? String(slotRow.lastEmoji).trim() : '';
+
+      let changed = false;
+
+      if (oldEmoji) {
+        const next = (Number(counts[oldEmoji]) || 0) - 1;
+        if (next <= 0) {
+          if (counts[oldEmoji] !== undefined) changed = true;
+          delete counts[oldEmoji];
+        } else if (counts[oldEmoji] !== next) {
+          counts[oldEmoji] = next;
+          changed = true;
+        }
       }
-      if (typeof counts !== 'object' || counts === null || Array.isArray(counts)) counts = {};
-      counts[e] = (Number(counts[e]) || 0) + 1;
+
+      if (newEmoji) {
+        const prev = Number(counts[newEmoji]) || 0;
+        counts[newEmoji] = prev + 1;
+        changed = true;
+        delSlot.run(t, messageId, slotKey);
+        insSlot.run(t, messageId, slotKey, newEmoji);
+      } else {
+        delSlot.run(t, messageId, slotKey);
+        if (oldEmoji) changed = true;
+      }
+
+      if (!changed) return null;
+
       upd.run(JSON.stringify(counts), row.id);
       return counts;
     });
@@ -313,6 +406,63 @@ export default class Database {
     } catch (err) {
       console.warn('[DB] mergeReactionEvent:', err.message);
       return null;
+    }
+  }
+
+  /**
+   * Replace slot rows for a message (after history sync). Does not touch counts — pair with UPDATE reactions_json.
+   * @param {string} messageId
+   * @param {Array<{ groupingKey?: string|null, reactionKey?: object, text?: string|null }>} slots
+   */
+  replaceReactionSlotsForMessage(messageId, slots) {
+    if (!messageId) return;
+    const t = getCurrentTenantId();
+    const delAll = this._db.prepare(
+      'DELETE FROM wa_reaction_slot WHERE tenant_id = ? AND message_id = ?',
+    );
+    const ins = this._db.prepare(`
+      INSERT INTO wa_reaction_slot (tenant_id, message_id, slot_key, last_emoji)
+      VALUES (?, ?, ?, ?)
+    `);
+    try {
+      delAll.run(t, messageId);
+      for (const s of slots || []) {
+        const te = s?.text != null ? String(s.text).trim() : '';
+        if (!te) continue;
+        const sk = reactionParticipantSlotKey(s.groupingKey, s.reactionKey);
+        ins.run(t, messageId, sk, te);
+      }
+    } catch (e) {
+      console.warn('[DB] replaceReactionSlotsForMessage:', e.message);
+    }
+  }
+
+  /**
+   * Apply reactions + slots from a synced WA row when the message already existed (INSERT OR IGNORE).
+   * @param {object} row — must include messageId; optional reactionsJson (string), reactionSlots (array)
+   */
+  applySyncedMessageReactions(messageId, row) {
+    if (!messageId || !row) return;
+    const t = getCurrentTenantId();
+    const hasSlots = row.reactionSlots !== undefined;
+    const hasJson = row.reactionsJson != null;
+    if (!hasSlots && !hasJson) return;
+
+    try {
+      if (hasSlots) {
+        this.replaceReactionSlotsForMessage(messageId, row.reactionSlots || []);
+      }
+      if (hasJson) {
+        this._db
+          .prepare('UPDATE messages SET reactions_json = ? WHERE tenant_id = ? AND message_id = ?')
+          .run(row.reactionsJson, t, messageId);
+      } else if (hasSlots && (!row.reactionSlots || row.reactionSlots.length === 0)) {
+        this._db
+          .prepare('UPDATE messages SET reactions_json = NULL WHERE tenant_id = ? AND message_id = ?')
+          .run(t, messageId);
+      }
+    } catch (e) {
+      console.warn('[DB] applySyncedMessageReactions:', e.message);
     }
   }
 
@@ -469,10 +619,10 @@ export default class Database {
     this._stmtInsertMessage = this._db.prepare(`
       INSERT OR IGNORE INTO messages (
         tenant_id, message_id, chat_jid, chat_name, sender, sender_jid,
-        text, media_type, media_path, media_caption, media_ai_index, timestamp
+        text, media_type, media_path, media_caption, media_ai_index, timestamp, reactions_json, contact_payload
       ) VALUES (
         @tenantId, @messageId, @chatJid, @chatName, @sender, @senderJid,
-        @text, @mediaType, @mediaPath, @mediaCaption, @mediaAiIndex, @timestamp
+        @text, @mediaType, @mediaPath, @mediaCaption, @mediaAiIndex, @timestamp, @reactionsJson, @contactPayload
       )
     `);
     this._stmtSelectIdByMessageId = this._db.prepare(
@@ -646,12 +796,15 @@ export default class Database {
   insertMessage({
     messageId, chatJid, chatName = null, sender = null, senderJid = null,
     text = null, mediaType = null, mediaPath = null, mediaCaption = null, mediaAiIndex = null, timestamp,
+    reactionsJson = null, contactPayload = null,
   }) {
     const tenantId = getCurrentTenantId();
     const info = this._stmtInsertMessage.run({
       tenantId,
       messageId, chatJid, chatName, sender, senderJid,
       text, mediaType, mediaPath, mediaCaption, mediaAiIndex, timestamp,
+      reactionsJson,
+      contactPayload,
     });
     if (info.changes > 0) return Number(info.lastInsertRowid);
     const row = this._stmtSelectIdByMessageId.get(tenantId, messageId);
@@ -679,8 +832,20 @@ export default class Database {
           mediaCaption: row.mediaCaption ?? null,
           mediaAiIndex: row.mediaAiIndex ?? null,
           timestamp: row.timestamp,
+          reactionsJson: row.reactionsJson ?? null,
+          contactPayload: row.contactPayload ?? null,
         });
-        if (info.changes > 0 && row.messageId) insertedMessageIds.push(row.messageId);
+        const hasRx = row.reactionsJson != null || row.reactionSlots !== undefined;
+        if (info.changes > 0 && row.messageId) {
+          insertedMessageIds.push(row.messageId);
+          if (hasRx) {
+            if (row.reactionSlots !== undefined) {
+              this.replaceReactionSlotsForMessage(row.messageId, row.reactionSlots || []);
+            }
+          }
+        } else if (info.changes === 0 && row.messageId && hasRx) {
+          this.applySyncedMessageReactions(row.messageId, row);
+        }
       }
     });
     run(rows || []);
@@ -720,6 +885,22 @@ export default class Database {
       'SELECT chat_jid AS chatJid FROM messages WHERE tenant_id = ? AND message_id = ? LIMIT 1',
     ).get(t, messageId);
     return row?.chatJid || null;
+  }
+
+  /**
+   * Oldest stored row for Baileys `fetchMessageHistory` (on-demand history before that message).
+   */
+  getOldestMessageAnchor(chatJid) {
+    if (!chatJid) return null;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT message_id AS messageId, timestamp,
+             CASE WHEN sender = 'You' THEN 1 ELSE 0 END AS fromMe
+      FROM messages WHERE tenant_id = ? AND chat_jid = ?
+      ORDER BY timestamp ASC, id ASC
+      LIMIT 1
+    `).get(t, chatJid);
+    return row || null;
   }
 
   /** @param jsonStr JSON array string e.g. `["…","…"]` or `[]` after processing */
@@ -961,7 +1142,7 @@ export default class Database {
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
              m.chat_name AS chatName, m.sender, m.text,
              m.media_type AS mediaType, m.media_path AS mediaPath, m.media_caption AS mediaCaption,
-             m.media_ai_index AS mediaAiIndex,
+             m.media_ai_index AS mediaAiIndex, m.contact_payload AS contactPayload,
              m.timestamp, bm25(messages_fts) AS rank
       FROM messages_fts
       INNER JOIN messages m ON m.id = messages_fts.rowid
@@ -1019,41 +1200,33 @@ export default class Database {
 
   getChatStats() {
     const t = getCurrentTenantId();
-    const rows = this._db.prepare(`
-      SELECT chat_jid AS chatJid, chat_name AS chatName, sender, timestamp
-      FROM messages WHERE tenant_id = ? ORDER BY chat_jid ASC, timestamp ASC
-    `).all(t);
-
     const summaryRows = this._db.prepare(`
       SELECT chat_jid AS chatJid, COUNT(*) AS c FROM thread_summaries WHERE tenant_id = ? GROUP BY chat_jid
     `).all(t);
     const summarizedByChat = new Map(summaryRows.map((r) => [r.chatJid, r.c]));
 
-    const groups = new Map();
-    for (const r of rows) {
-      if (!groups.has(r.chatJid)) {
-        groups.set(r.chatJid, {
-          messages: [],
-          anyChatName: null,
-          displayChatName: null,
-          /** For 1:1 chats: latest non-"You" sender (often phone if pushName missing). */
-          peerSenderName: null,
-          /** Latest peer sender that is not phone-only (push name / business name). */
-          peerHumanSenderName: null,
-          /** First non–phone-only peer sender in chronological order (stable title when recent rows only have digits). */
-          firstHumanPeerName: null,
-          /** Longest non-phone peer sender string in the chat (best pushName / saved name seen). */
-          bestHumanPeerName: null,
-          senders: new Set(),
-        });
-      }
-      const g = groups.get(r.chatJid);
+    const stmt = this._db.prepare(`
+      SELECT chat_jid AS chatJid, chat_name AS chatName, sender, timestamp
+      FROM messages WHERE tenant_id = ? ORDER BY chat_jid ASC, timestamp ASC
+    `);
+
+    const emptyGroup = () => ({
+      messages: [],
+      anyChatName: null,
+      displayChatName: null,
+      peerSenderName: null,
+      peerHumanSenderName: null,
+      firstHumanPeerName: null,
+      bestHumanPeerName: null,
+      senders: new Set(),
+    });
+
+    const ingestRow = (g, r) => {
       g.messages.push({ timestamp: r.timestamp });
       if (r.chatName) {
         g.anyChatName = r.chatName;
         if (looksLikeContactDisplayName(r.chatName, r.chatJid)) {
           const cn = String(r.chatName).trim();
-          // Prefer the longest human-looking title (rows often alternate phone vs saved name).
           if (!g.displayChatName || cn.length > g.displayChatName.length) {
             g.displayChatName = cn;
           }
@@ -1074,10 +1247,9 @@ export default class Database {
           }
         }
       }
-    }
+    };
 
-    const out = [];
-    for (const [chatJid, g] of groups) {
+    const finalizeChat = (chatJid, g) => {
       const threads = segmentIntoThreads(g.messages);
       const totalThreads = threads.length;
       let summarizedThreads = summarizedByChat.get(chatJid) || 0;
@@ -1086,7 +1258,6 @@ export default class Database {
         totalThreads === 0 ? 100 : Math.min(100, Math.round((summarizedThreads / totalThreads) * 100));
       const lastMessageTs = g.messages.length ? g.messages[g.messages.length - 1].timestamp : 0;
       const isGroup = chatJid.endsWith('@g.us');
-      // 1:1: do not let a numeric chat_name (stored on every row) hide the peer's pushName on incoming msgs.
       let title = isGroup
         ? (g.displayChatName || g.anyChatName || chatJid)
         : (g.displayChatName
@@ -1106,10 +1277,9 @@ export default class Database {
       ) {
         title = formatPhoneLocalPart(chatJid.split('@')[0]);
       }
-      out.push({
+      return {
         chatJid,
         chatName: title,
-        /** `chat` = DMs & groups; `feed` = Status, broadcasts, newsletters (lower AI summary priority). */
         sidebarTab: sidebarTabForJid(chatJid),
         messageCount: g.messages.length,
         participantCount: g.senders.size,
@@ -1117,12 +1287,26 @@ export default class Database {
         totalThreads,
         summarizedThreads,
         searchIndexPct,
-        /** At least one thread summary exists — hierarchical AI search can use this chat. */
         aiSearchReady: summarizedThreads > 0,
-        /** All segments that qualify for summaries have been summarized. */
         aiSearchComplete: totalThreads === 0 ? true : summarizedThreads >= totalThreads,
-      });
+      };
+    };
+
+    const out = [];
+    let currentJid = null;
+    let g = null;
+
+    for (const r of stmt.iterate(t)) {
+      if (!r.chatJid) continue;
+      if (r.chatJid !== currentJid) {
+        if (currentJid && g) out.push(finalizeChat(currentJid, g));
+        currentJid = r.chatJid;
+        g = emptyGroup();
+      }
+      ingestRow(g, r);
     }
+    if (currentJid && g) out.push(finalizeChat(currentJid, g));
+
     out.sort((a, b) => b.lastMessageTs - a.lastMessageTs);
     return out;
   }
@@ -1154,7 +1338,7 @@ export default class Database {
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_path AS mediaPath,
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
-             reactions_json AS reactionsJson,
+             reactions_json AS reactionsJson, contact_payload AS contactPayload,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE tenant_id = ? AND chat_jid = ?
       ORDER BY timestamp DESC, id DESC
@@ -1178,7 +1362,7 @@ export default class Database {
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_path AS mediaPath,
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
-             reactions_json AS reactionsJson,
+             reactions_json AS reactionsJson, contact_payload AS contactPayload,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE tenant_id = ? AND chat_jid IN (${ph})
       ORDER BY timestamp DESC, id DESC

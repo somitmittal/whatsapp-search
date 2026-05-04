@@ -19,6 +19,8 @@ import {
   pickBetterChatTitle,
   sanitizePeerSenderName,
 } from './chat-display-name.js';
+import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
+import { buildContactPayloadFromInner } from './contact-card.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -71,6 +73,16 @@ function saveCfg(configFile, d) {
   try { if (configFile) writeFileSync(configFile, JSON.stringify(d, null, 2)); } catch {}
 }
 
+function summarizeContactsArrayMessage(cam) {
+  if (!cam || typeof cam !== 'object') return '';
+  const title = cam.displayName != null ? String(cam.displayName).trim() : '';
+  const n = Array.isArray(cam.contacts) ? cam.contacts.length : 0;
+  if (title && n) return `${title} (${n} contacts)`;
+  if (title) return title;
+  if (n) return `${n} contact${n !== 1 ? 's' : ''}`;
+  return '';
+}
+
 /** Plain text from an inner proto message (after unwrap of ephemeral / view-once). */
 function extractTextFromInner(m) {
   if (!m) return '';
@@ -86,6 +98,7 @@ function extractTextFromInner(m) {
     m.liveLocationMessage?.caption ||
     m.locationMessage?.name ||
     m.contactMessage?.displayName ||
+    summarizeContactsArrayMessage(m.contactsArrayMessage) ||
     m.pollCreationMessage?.name ||
     m.buttonsMessage?.contentText ||
     m.listMessage?.description ||
@@ -359,6 +372,8 @@ export default class WaClient {
       auth: authState,
       printQRInTerminal: false,
       generateHighQualityLinkPreview: false,
+      // Linked-device history depth is still capped by WhatsApp servers (often ~few months of rolling sync).
+      // See fetchOlderHistoryFromPhone + POST /api/wa/fetch-older-history and chat export import for more.
       syncFullHistory: true,
       // Present as an ordinary browser to WhatsApp's servers
       browser: ['WhatsApp Search', 'Chrome', '124.0.0'],
@@ -487,12 +502,15 @@ export default class WaClient {
         const reactionBody = u.reaction;
         if (!target?.remoteJid || !target?.id || !reactionBody) continue;
         const emoji = reactionBody.text != null ? String(reactionBody.text) : '';
-        const reactionMsgId = reactionBody.key?.id ? String(reactionBody.key.id) : '';
+        const reactionMsgId = u.reaction?.key?.id ? String(u.reaction.key.id) : '';
+        if (!reactionMsgId) continue;
         this._onReaction?.({
           chatJid: target.remoteJid,
           messageId: String(target.id),
           emoji,
           reactionMsgId,
+          groupingKey: reactionBody.groupingKey != null ? String(reactionBody.groupingKey) : '',
+          reactionKey: u.reaction?.key || null,
         });
       }
     });
@@ -971,18 +989,22 @@ export default class WaClient {
    */
   async overlayResolvedChatNames(stats) {
     if (!Array.isArray(stats) || !stats.length) return stats;
-    const out = [];
-    for (const row of stats) {
+    const uniqueJids = [...new Set(stats.map((row) => row.chatJid).filter(Boolean))];
+    const resolvedMap = new Map();
+    await Promise.all(
+      uniqueJids.map(async (jid) => {
+        try {
+          resolvedMap.set(jid, await this._resolveContactTitleFromCache(jid));
+        } catch {
+          resolvedMap.set(jid, null);
+        }
+      }),
+    );
+    return stats.map((row) => {
       const jid = row.chatJid;
-      if (!jid) {
-        out.push(row);
-        continue;
-      }
-      const resolved = await this._resolveContactTitleFromCache(jid);
-      if (resolved) {
-        out.push({ ...row, chatName: resolved });
-        continue;
-      }
+      if (!jid) return row;
+      const resolved = resolvedMap.get(jid);
+      if (resolved) return { ...row, chatName: resolved };
       let next = row;
       if (
         (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@hosted'))
@@ -990,9 +1012,8 @@ export default class WaClient {
       ) {
         next = { ...row, chatName: replaceLidPlaceholderWithPn(jid, row.chatName) };
       }
-      out.push(next);
-    }
-    return out;
+      return next;
+    });
   }
 
   /**
@@ -1041,9 +1062,17 @@ export default class WaClient {
       }
     };
 
+    const uniqueJids = [...new Set(stats.map((r) => r.chatJid).filter(Boolean))];
+    const canonByJid = new Map();
+    await Promise.all(
+      uniqueJids.map(async (jid) => {
+        canonByJid.set(jid, await resolveCanonical(jid));
+      }),
+    );
+
     const merged = new Map();
     for (const row of stats) {
-      const canon = await resolveCanonical(row.chatJid);
+      const canon = canonByJid.get(row.chatJid) ?? row.chatJid;
       const existing = merged.get(canon);
       if (!existing) {
         merged.set(canon, {
@@ -1165,7 +1194,28 @@ export default class WaClient {
       if (!jid || !msg.message) return null;
 
       const inner = extractMessageContent(msg.message) || msg.message;
+      let rxPayload = null;
+      if (Array.isArray(msg.reactions)) {
+        const rxList = msg.reactions;
+        const rxCounts = aggregateReactionCountsFromProtoList(rxList);
+        rxPayload = {
+          reactionsJson: rxCounts ? JSON.stringify(rxCounts) : null,
+          reactionSlots: rxList
+            .filter((r) => r?.text != null && String(r.text).trim())
+            .map((r) => ({
+              groupingKey: r.groupingKey,
+              reactionKey: r.key || null,
+              text: r.text,
+            })),
+        };
+      }
       let text = extractText(msg);
+      const contactBundle = buildContactPayloadFromInner(inner);
+      if (contactBundle?.summaryText) {
+        text = contactBundle.summaryText;
+      }
+      const contactPayload = contactBundle ? JSON.stringify(contactBundle.payload) : null;
+
       const hasMedia = !!(
         inner.imageMessage ||
         inner.videoMessage ||
@@ -1173,7 +1223,7 @@ export default class WaClient {
         inner.documentMessage ||
         inner.stickerMessage
       );
-      if (!text && !hasMedia) {
+      if (!text && !hasMedia && !contactPayload) {
         text = placeholderForUntracked(inner);
       }
 
@@ -1219,7 +1269,29 @@ export default class WaClient {
           (inner.documentMessage?.fileName ? String(inner.documentMessage.fileName).trim() : null) ||
           null,
         timestamp:    Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
+        contactPayload,
+        ...(rxPayload || {}),
       };
     } catch { return null; }
+  }
+
+  /**
+   * Ask the primary phone for older messages before `anchor` (Baileys PDO history sync on demand).
+   * WhatsApp may still cap depth; repeat later or use exported chats for a full offline archive.
+   */
+  async fetchOlderHistoryFromPhone(anchor, count = 50) {
+    if (!this._sock?.fetchMessageHistory) throw new Error('WhatsApp not connected');
+    const { chatJid, messageId, timestamp, fromMe } = anchor || {};
+    if (!chatJid || !messageId) throw new Error('Missing chat anchor');
+    let ts = Number(timestamp);
+    if (!Number.isFinite(ts) || ts <= 0) throw new Error('Invalid anchor timestamp');
+    if (ts < 1e12) ts *= 1000;
+    const key = {
+      remoteJid: chatJid,
+      id: String(messageId),
+      fromMe: Boolean(fromMe),
+    };
+    const n = Math.min(100, Math.max(1, Math.floor(Number(count) || 50)));
+    return this._sock.fetchMessageHistory(n, key, ts);
   }
 }

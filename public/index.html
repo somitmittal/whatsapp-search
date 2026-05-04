@@ -225,6 +225,17 @@
     }
     #status-viewer-title { font-weight: 600; font-size: 16px; }
     #status-viewer-meta { font-size: 12px; opacity: 0.85; }
+    .status-viewer-dl {
+      flex-shrink: 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+      text-decoration: none;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.14);
+    }
+    .status-viewer-dl:hover { background: rgba(255,255,255,0.22); color: #fff; }
     /** Middle column only — tap zones must not cover the close button or reaction row. */
     .status-viewer-body {
       flex: 1;
@@ -310,7 +321,7 @@
     }
     .msg-media-doc { color: var(--accent, #1a73e8); font-weight: 500; text-decoration: underline; }
     .media-pending { opacity: 0.85; font-style: italic; }
-    .media-wrap { display: block; }
+    .media-wrap { display: block; max-width: 100%; }
     .media-cap { display: block; margin-top: 6px; font-size: 13px; color: inherit; opacity: 0.95; }
 
     .chat-list { flex: 1; overflow-y: auto; scrollbar-width: thin; }
@@ -439,7 +450,10 @@
     .menu-item.danger svg { color: var(--danger); }
 
     /* Chat-header dropdown */
-    .chat-header-actions { position: relative; display: flex; gap: 2px; }
+    .chat-header-actions { position: relative; display: flex; gap: 2px; align-items: center; }
+    .cv-ai-search-btn { color: #5b21b6; }
+    .cv-ai-search-btn:hover { background: rgba(147, 51, 234, 0.12); color: #4c1d95; }
+    .cv-ai-search-btn svg { display: block; }
     .chat-menu-dropdown {
       display: none; position: absolute; top: 36px; right: 0;
       background: #fff; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);
@@ -475,6 +489,7 @@
     .global-search {
       background: var(--header-bg); padding: 8px 12px;
       display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); z-index: 3;
+      flex-shrink: 0;
     }
     .global-search .gs-wrap { flex: 1 1 160px; min-width: 0; position: relative; display: flex; align-items: center; }
     .global-search .gs-wrap svg { position: absolute; left: 12px; width: 16px; height: 16px; color: var(--text2); pointer-events: none; }
@@ -505,6 +520,8 @@
       display: inline-flex;
       align-items: center;
       gap: 8px;
+      flex-shrink: 0;
+      min-width: min-content;
     }
     .search-go:hover { filter: brightness(0.98); }
     .search-go:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -577,6 +594,9 @@
       padding: 8px;
       display: flex;
       justify-content: flex-end;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
     }
     .attach-card-meta {
       font-size: 11px;
@@ -661,6 +681,41 @@
     .bubble.out { background: var(--msg-out); align-self: flex-end; border-top-right-radius: 0; }
     .bubble .sender { font-size: 12.5px; font-weight: 500; margin-bottom: 2px; }
     .bubble .text { font-size: 14px; white-space: pre-wrap; }
+    .msg-contact-card {
+      font-size: 14px;
+      line-height: 1.45;
+      padding: 10px 12px;
+      background: rgba(11, 168, 132, 0.08);
+      border-radius: 8px;
+      border: 1px solid rgba(11, 168, 132, 0.22);
+      max-width: min(340px, 100%);
+      text-align: left;
+    }
+    .msg-contact-entry + .msg-contact-entry {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .msg-contact-name { font-weight: 700; color: var(--text); margin-bottom: 6px; }
+    .msg-contact-row { font-size: 13px; margin-top: 4px; color: var(--text); word-break: break-word; }
+    .msg-contact-k { display: inline-block; min-width: 52px; color: var(--text2); font-size: 12px; margin-right: 6px; vertical-align: top; }
+    .msg-contact-row a { color: var(--accent, #1a73e8); }
+    .msg-contact-raw { margin-top: 8px; font-size: 12px; color: var(--text2); }
+    .msg-contact-pre {
+      margin: 8px 0 0;
+      padding: 8px;
+      background: var(--input-bg, #f0f2f5);
+      border-radius: 6px;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .bubble.out .msg-contact-card {
+      background: rgba(255, 255, 255, 0.42);
+      border-color: rgba(255, 255, 255, 0.55);
+    }
     .bubble .time { font-size: 11px; color: var(--text2); text-align: right; margin-top: 4px; line-height: 1.25; }
     .bubble:has(.msg-media-datetime) .time { display: none; }
     .bubble .media-badge { font-size: 12px; color: var(--text2); font-style: italic; }
@@ -671,6 +726,17 @@
       margin-top: 6px;
       line-height: 1.3;
     }
+    .msg-media-actions {
+      display: block;
+      margin-top: 8px;
+      font-size: 12px;
+    }
+    .msg-media-dl, .attach-dl {
+      color: var(--green-dark);
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .msg-media-dl:hover, .attach-dl:hover { text-decoration: underline; }
 
     .msg-block {
       display: flex; flex-direction: column; max-width: 72%; margin: 3px 0;
@@ -689,12 +755,21 @@
       gap: 2px;
       align-items: center;
       z-index: 4;
+      background: transparent;
+      border: none;
+      padding: 0;
+      max-width: 100%;
+    }
+    .bubble-toolbar-reacts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2px;
+      align-items: center;
       background: rgba(255,255,255,0.97);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 2px 4px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      max-width: 100%;
     }
     .msg-block.out .bubble-toolbar { left: auto; right: 0; }
     .wa-tb {
@@ -709,6 +784,15 @@
     }
     .wa-tb:hover { background: var(--hover); }
     .wa-tb-reply { font-size: 14px; color: var(--text2); }
+    .wa-tb-ai {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #5b21b6;
+      flex-shrink: 0;
+    }
+    .wa-tb-ai:hover { background: rgba(147, 51, 234, 0.12); color: #4c1d95; }
+    .wa-tb-ai svg { flex-shrink: 0; }
     .bubble-reactions {
       display: flex;
       flex-wrap: wrap;
@@ -731,13 +815,14 @@
     }
     .rx-chip .rx-n { font-size: 11px; color: var(--text2); font-weight: 600; }
 
+    /* Message actions (AI context, reactions, reply): one strip; hidden until hover on desktop */
     @media (hover: hover) {
-      .bubble-toolbar { opacity: 0; pointer-events: none; transition: opacity 0.12s ease; }
-      .msg-block:hover .bubble-toolbar { opacity: 1; pointer-events: auto; }
+      .bubble-toolbar-reacts { opacity: 0; pointer-events: none; transition: opacity 0.12s ease; }
+      .msg-block:hover .bubble-toolbar-reacts { opacity: 1; pointer-events: auto; }
     }
     @media (hover: none) {
-      .bubble-toolbar { opacity: 1; pointer-events: auto; transform: scale(0.95); transform-origin: top left; }
-      .msg-block.out .bubble-toolbar { transform-origin: top right; }
+      .bubble-toolbar-reacts { opacity: 1; pointer-events: auto; transform: scale(0.95); transform-origin: top left; }
+      .msg-block.out .bubble-toolbar-reacts { transform-origin: top right; }
     }
 
     .reply-to-bar {
@@ -843,12 +928,15 @@
     .spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--green); border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Overlay Panels */
+    /* Overlay Panels — above tab-lock / confirm overlays (z-index 100) so Import & Gmail still receive clicks */
     .overlay-panel {
       display: none; position: absolute; inset: 0; background: #fff;
       z-index: 10; flex-direction: column; animation: slideIn 0.2s ease;
     }
-    .overlay-panel.open { display: flex; }
+    /* Inner z-index helps above chat panels; whole #app is lifted via .app-overlays-front while open */
+    .overlay-panel.open { display: flex; z-index: 120; }
+    /** Lift shell above tab-lock (fixed z-index 100). Import/settings overlays live inside #app. */
+    #app.app-overlays-front { position: relative; z-index: 110; }
     @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     .overlay-header {
       padding: 14px 16px; display: flex; align-items: center; gap: 14px;
@@ -1238,6 +1326,7 @@
           </svg>
           <h2>WhatsApp Search</h2>
           <p>Select a chat from the left, or search your chats with AI.<br>Click <strong>+</strong> to import more chat exports.</p>
+          <p style="font-size:12px;color:var(--text2);margin-top:14px;max-width:520px;line-height:1.5;">Live WhatsApp link syncs a <strong>limited window</strong> of recent history (often months — controlled by WhatsApp). For a full long archive, export chats on your phone and import the .zip here. In an open chat, use ⋮ → <strong>Load older messages from phone</strong> to pull older batches when your phone is online.</p>
           <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px;">
             <button class="btn btn-primary" id="btn-restore-backup" type="button" style="min-width:220px;">
               Restore from WhatsApp Backup
@@ -1266,10 +1355,17 @@
             <div id="cv-contact" class="cv-contact" aria-label="Contact details"></div>
           </div>
           <div class="chat-header-actions">
+            <button type="button" class="icon-btn cv-ai-search-btn" id="btn-chat-ai-search" style="display:none" title="AI search in this chat (uses the search bar)" aria-label="AI search in this chat">
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z"/></svg>
+            </button>
             <button class="icon-btn" id="btn-chat-menu" title="More options">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
             </button>
             <div class="chat-menu-dropdown" id="chat-menu">
+              <div class="menu-item" id="menu-fetch-older-history" title="Uses WhatsApp on-demand sync — phone must be online">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="10"/></svg>
+                Load older messages from phone
+              </div>
               <div class="menu-item danger" id="menu-delete-chat">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
                 Delete chat
@@ -1524,6 +1620,7 @@
       <span id="status-viewer-title"></span>
       <span id="status-viewer-meta"></span>
     </div>
+    <a id="status-viewer-download" class="status-viewer-dl" href="#" hidden download>Download</a>
   </div>
   <div class="status-viewer-body">
     <div id="status-viewer-stage" class="status-viewer-stage"></div>
@@ -1557,6 +1654,7 @@
   };
 
   let ws, chatData = [], activeChat = null, connected = false, searchActive = false;
+  const SEARCH_INPUT_PLACEHOLDER_DEFAULT = 'Ask AI anything about your chats...';
   let cvTab = 'chat';
   let attachmentsPayload = null;
   /** Sidebar list: `chat` (DMs + groups) vs `feed` (Status, broadcasts, newsletters). */
@@ -1666,15 +1764,33 @@
       if (!ov) return;
       ov.classList.toggle('open', !!show);
     }
+    /**
+     * Only refresh the lock if this tab still owns it (or lock is missing/stale).
+     * Blind overwrites used to let the previous tab reclaim ownership ~every 1.2s after "Use here",
+     * which re-showed the overlay and made the new tab look broken or hung.
+     */
+    function tickHeartbeat() {
+      if (!isOwner) return;
+      const cur = readLock();
+      const now = Date.now();
+      if (!cur || !cur.tabId || (now - (cur.ts || 0)) > STALE_MS) {
+        writeLock({ tabId, ts: now });
+        return;
+      }
+      if (cur.tabId !== tabId) {
+        relinquish();
+        showLockOverlay(true);
+        return;
+      }
+      writeLock({ tabId, ts: now });
+    }
     function becomeOwner() {
       isOwner = true;
       writeLock({ tabId, ts: Date.now() });
       showLockOverlay(false);
       if (hb) clearInterval(hb);
-      hb = setInterval(() => {
-        if (!isOwner) return;
-        writeLock({ tabId, ts: Date.now() });
-      }, HEARTBEAT_MS);
+      hb = setInterval(tickHeartbeat, HEARTBEAT_MS);
+      tickHeartbeat();
       bc?.postMessage({ type: 'owner', tabId });
     }
     function relinquish() {
@@ -1692,6 +1808,10 @@
       if (cur.tabId === tabId) {
         isOwner = true;
         showLockOverlay(false);
+        if (!hb) {
+          hb = setInterval(tickHeartbeat, HEARTBEAT_MS);
+          tickHeartbeat();
+        }
         return;
       }
       relinquish();
@@ -1702,6 +1822,17 @@
     check();
     setInterval(check, 1500);
 
+    window.addEventListener('storage', (e) => {
+      if (e.key !== KEY || e.newValue == null) return;
+      try {
+        const cur = JSON.parse(e.newValue);
+        if (cur && cur.tabId && cur.tabId !== tabId && isOwner) {
+          relinquish();
+          showLockOverlay(true);
+        }
+      } catch { /* ignore */ }
+    });
+
     bc?.addEventListener('message', (e) => {
       const m = e.data || {};
       if (m.type === 'owner' && m.tabId && m.tabId !== tabId) {
@@ -1711,7 +1842,10 @@
       }
     });
 
-    document.getElementById('tab-lock-takeover')?.addEventListener('click', () => becomeOwner());
+    document.getElementById('tab-lock-takeover')?.addEventListener('click', () => {
+      becomeOwner();
+      try { void refreshDash(); } catch { /* refreshDash defined later; ignore if unavailable */ }
+    });
     document.getElementById('tab-lock-back')?.addEventListener('click', () => {
       // Keep overlay; user can close the tab.
       showLockOverlay(true);
@@ -1727,6 +1861,27 @@
     e.stopPropagation();
     closeMenu();
     $('#chat-menu').classList.toggle('open');
+  });
+
+  $('#menu-fetch-older-history')?.addEventListener('click', async () => {
+    closeChatMenu();
+    if (!activeChat) return;
+    try {
+      const r = await fetch('/api/wa/fetch-older-history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ chatJid: activeChat, count: 50 }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'Request failed');
+      alert(
+        'Older messages requested from your phone. Keep WhatsApp on your phone online — new batches may arrive over the next minute. '
+        + 'If nothing appears, WhatsApp may have reached the limit for this chat; use chat export for a full backup.',
+      );
+    } catch (e) {
+      alert(e.message || 'Could not request older messages');
+    }
   });
 
   $('#menu-delete-chat').addEventListener('click', () => {
@@ -1776,7 +1931,9 @@
         discBtn.style.display = 'none';
       }
     } catch {
-      statusEl.textContent = '';
+      statusEl.textContent = 'Could not reach the server. Check your connection and try again.';
+      loadBtn.disabled = false;
+      discBtn.style.display = 'none';
     }
   }
 
@@ -1805,15 +1962,29 @@
     window.location.href = data.url;
   }
 
+  function syncAppOverlayFront() {
+    const app = document.getElementById('app');
+    if (!app) return;
+    app.classList.toggle('app-overlays-front', !!document.querySelector('.overlay-panel.open'));
+  }
+
   function openOverlay(name) {
     $(`#overlay-${name}`).classList.add('open');
+    syncAppOverlayFront();
     if (name === 'import') void refreshGmailImportUi();
   }
-  function closeOverlay(name) { $(`#overlay-${name}`).classList.remove('open'); }
-  function closeAllOverlays() { $$('.overlay-panel').forEach(o => o.classList.remove('open')); }
+  function closeOverlay(name) {
+    $(`#overlay-${name}`).classList.remove('open');
+    syncAppOverlayFront();
+  }
+  function closeAllOverlays() {
+    $$('.overlay-panel').forEach(o => o.classList.remove('open'));
+    syncAppOverlayFront();
+  }
 
-  $('#gmail-btn-load').addEventListener('click', async () => {
+  $('#gmail-btn-load')?.addEventListener('click', async () => {
     const btn = $('#gmail-btn-load');
+    if (!btn) return;
     btn.disabled = true;
     try {
       const s = await fetch('/api/gmail/status').then(r => r.json());
@@ -1850,7 +2021,7 @@
       void refreshGmailImportUi();
     }
   });
-  $('#gmail-btn-disconnect').addEventListener('click', async () => {
+  $('#gmail-btn-disconnect')?.addEventListener('click', async () => {
     await fetch('/api/gmail/disconnect', { method: 'POST' });
     void refreshGmailImportUi();
   });
@@ -2403,6 +2574,18 @@
     return `/api/message-media?messageId=${encodeURIComponent(String(messageId))}`;
   }
 
+  /** Same file as inline preview; `download=1` forces Content-Disposition attachment on the server. */
+  function mediaDownloadUrl(messageId) {
+    if (!messageId) return '';
+    return `${mediaUrlForMessage(messageId)}&download=1`;
+  }
+
+  function messageMediaDownloadAnchor(messageId) {
+    if (!messageId) return '';
+    const h = mediaDownloadUrl(messageId);
+    return `<span class="msg-media-actions"><a class="msg-media-dl" href="${escAttr(h)}" download>Download</a></span>`;
+  }
+
   function shouldHideComposerForJid(jid) {
     if (!jid) return true;
     return jid === 'status@broadcast' || jid.endsWith('@broadcast')
@@ -2470,6 +2653,11 @@
     }
     const rx = $('#status-viewer-rx');
     if (rx) rx.style.display = 'none';
+    const svd = $('#status-viewer-download');
+    if (svd) {
+      svd.hidden = true;
+      svd.removeAttribute('href');
+    }
   }
 
   function renderStatusViewerSlide() {
@@ -2497,9 +2685,19 @@
     currentStatusSlideMessageId = item.messageId || null;
     const rx = $('#status-viewer-rx');
     if (rx) rx.style.display = currentStatusSlideMessageId ? 'flex' : 'none';
+    const svd = $('#status-viewer-download');
     stage.querySelectorAll('video').forEach((v) => { try { v.pause(); } catch (_) {} });
     const mid = item.messageId;
     const url = item.hasMediaFile ? mediaUrlForMessage(mid) : '';
+    if (svd) {
+      if (url && mid) {
+        svd.href = mediaDownloadUrl(mid);
+        svd.hidden = false;
+      } else {
+        svd.hidden = true;
+        svd.removeAttribute('href');
+      }
+    }
     let inner = '';
     if (url && (item.mediaType === 'image' || item.mediaType === 'sticker')) {
       inner = `<img class="status-slide-img" src="${escAttr(url)}" alt="">`;
@@ -2705,6 +2903,50 @@
     document.getElementById('msg-text')?.focus?.();
   }
 
+  function telHrefFromPhone(phone) {
+    const digits = String(phone || '').replace(/[^\d+]/g, '');
+    return digits ? `tel:${escAttr(digits)}` : '';
+  }
+
+  /** Rich UI for shared contact cards (structured JSON from server). */
+  function renderContactCardHtml(m) {
+    let p = null;
+    try {
+      const raw = m.contactPayload != null ? String(m.contactPayload) : '';
+      if (!raw.trim()) return '';
+      p = JSON.parse(raw);
+    } catch {
+      return '';
+    }
+    if (!p || !Array.isArray(p.contacts) || !p.contacts.length) return '';
+    let blocks = '';
+    for (const c of p.contacts) {
+      const rows = [];
+      const name = (c.displayName != null && String(c.displayName).trim()) || 'Contact';
+      rows.push(`<div class="msg-contact-name">${esc(name)}</div>`);
+      if (c.organization) rows.push(`<div class="msg-contact-row"><span class="msg-contact-k">Org</span> ${esc(String(c.organization))}</div>`);
+      for (const ph of c.phones || []) {
+        const t = String(ph).trim();
+        if (!t) continue;
+        const href = telHrefFromPhone(t);
+        rows.push(href
+          ? `<div class="msg-contact-row"><span class="msg-contact-k">Phone</span> <a href="${href}">${esc(t)}</a></div>`
+          : `<div class="msg-contact-row"><span class="msg-contact-k">Phone</span> ${esc(t)}</div>`);
+      }
+      for (const em of c.emails || []) {
+        const e = String(em).trim();
+        if (!e) continue;
+        rows.push(`<div class="msg-contact-row"><span class="msg-contact-k">Email</span> <a href="${escAttr(`mailto:${e}`)}">${esc(e)}</a></div>`);
+      }
+      const rawV = (c.rawVcard != null && String(c.rawVcard).trim()) ? String(c.rawVcard).trim() : '';
+      if (rawV) {
+        rows.push(`<details class="msg-contact-raw"><summary>Full vCard</summary><pre class="msg-contact-pre">${esc(rawV)}</pre></details>`);
+      }
+      blocks += `<div class="msg-contact-entry">${rows.join('')}</div>`;
+    }
+    return `<div class="msg-contact-card" role="region" aria-label="Contact card">${blocks}</div>`;
+  }
+
   function parseReactionCounts(raw) {
     if (!raw) return {};
     if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) return raw;
@@ -2728,14 +2970,12 @@
   }
 
   function applyIncomingReactionToDom(data) {
-    const { chatJid, messageId, counts } = data || {};
+    const { messageId, counts } = data || {};
     if (!messageId || !counts || typeof counts !== 'object') return;
     const mid = String(messageId);
     const blocks = document.querySelectorAll('#cv-messages .msg-block[data-message-id]');
     for (const block of blocks) {
       if (block.getAttribute('data-message-id') !== mid) continue;
-      const sj = block.dataset.storageJid || '';
-      if (sj && sj !== chatJid) continue;
       const html = reactionCountsHtml(counts);
       const prev = block.querySelector('.bubble-reactions');
       if (!html) {
@@ -2802,7 +3042,8 @@
           } else {
             inner = `<img class="status-slide-img" src="${escAttr(u)}" alt="">`;
           }
-          return `<div class="attach-card">${inner}${attWhen ? `<div class="attach-card-meta">${attWhen}</div>` : ''}<div class="attach-card-actions"><button type="button" class="attach-open-msg" data-mid="${mid}">Show in chat</button></div></div>`;
+          const du = row.messageId ? mediaDownloadUrl(row.messageId) : '';
+          return `<div class="attach-card">${inner}${attWhen ? `<div class="attach-card-meta">${attWhen}</div>` : ''}<div class="attach-card-actions">${du ? `<a class="attach-dl" href="${escAttr(du)}" download>Download</a>` : ''}<button type="button" class="attach-open-msg" data-mid="${mid}">Show in chat</button></div></div>`;
         }).join('') + '</div>';
       }
     } else if (tab === 'links') {
@@ -2822,8 +3063,10 @@
           const name = esc(row.mediaCaption || fileBaseHint(row.mediaPath) || 'Document');
           const mid = escAttr(row.messageId || '');
           const u = row.messageId ? `/api/message-media?messageId=${encodeURIComponent(row.messageId)}` : '';
+          const dl = row.messageId ? mediaDownloadUrl(row.messageId) : '';
           const open = u ? ` · <a href="${escAttr(u)}" target="_blank" rel="noopener">Open file</a>` : '';
-          return `<div class="attach-row"><strong>${name}</strong><div class="attach-meta">${formatDate(row.timestamp)}${open}</div><div class="attach-row-actions"><button type="button" class="attach-open-msg" data-mid="${mid}">Show in chat</button></div></div>`;
+          const dlLink = dl ? ` · <a class="attach-dl" href="${escAttr(dl)}" download>Download</a>` : '';
+          return `<div class="attach-row"><strong>${name}</strong><div class="attach-meta">${formatDate(row.timestamp)}${open}${dlLink}</div><div class="attach-row-actions"><button type="button" class="attach-open-msg" data-mid="${mid}">Show in chat</button></div></div>`;
         }).join('') + '</div>';
       }
     }
@@ -2896,6 +3139,8 @@
     const composer = document.getElementById('chat-composer');
     if (composer) composer.style.display = shouldHideComposerForJid(jid) ? 'none' : '';
     if (shouldHideComposerForJid(jid)) clearReplyTarget();
+    const aiChatBtn = document.getElementById('btn-chat-ai-search');
+    if (aiChatBtn) aiChatBtn.style.display = shouldHideComposerForJid(jid) ? 'none' : 'flex';
     try {
       const msgUrl = focusMessageId
         ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(focusMessageId)}`
@@ -2961,6 +3206,8 @@
     if (away) away.style.display = 'none';
     const composer = document.getElementById('chat-composer');
     if (composer) composer.style.display = 'none';
+    const aiChatBtnBack = document.getElementById('btn-chat-ai-search');
+    if (aiChatBtnBack) aiChatBtnBack.style.display = 'none';
     $$('.chat-item').forEach(i => i.classList.remove('active'));
     setMobileChatOpen(false);
     switchPanel();
@@ -2999,21 +3246,25 @@
       const cap = m.mediaCaption ? esc(m.mediaCaption) : '';
       const mid = m.messageId != null ? String(m.messageId) : '';
       const mediaUrl = mid && m.hasMediaFile ? mediaUrlForMessage(mid) : '';
+      const mediaDl = mediaUrl ? messageMediaDownloadAnchor(mid) : '';
       let body = '';
-      if (mediaUrl && (m.mediaType === 'image' || m.mediaType === 'sticker')) {
-        body = `<span class="media-wrap"><img class="msg-media-img" src="${escAttr(mediaUrl)}" alt="" loading="lazy">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+      const contactHtml = renderContactCardHtml(m);
+      if (contactHtml) {
+        body = contactHtml;
+      } else if (mediaUrl && (m.mediaType === 'image' || m.mediaType === 'sticker')) {
+        body = `<span class="media-wrap"><img class="msg-media-img" src="${escAttr(mediaUrl)}" alt="" loading="lazy">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaDl}</span>`;
       } else if (mediaUrl && m.mediaType === 'video') {
-        body = `<span class="media-wrap"><video class="msg-media-vid" src="${escAttr(mediaUrl)}" controls playsinline preload="metadata"></video>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+        body = `<span class="media-wrap"><video class="msg-media-vid" src="${escAttr(mediaUrl)}" controls playsinline preload="metadata"></video>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaDl}</span>`;
       } else if (mediaUrl && m.mediaType === 'audio') {
-        body = `<span class="media-wrap"><audio class="msg-media-audio" src="${escAttr(mediaUrl)}" controls preload="metadata"></audio>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+        body = `<span class="media-wrap"><audio class="msg-media-audio" src="${escAttr(mediaUrl)}" controls preload="metadata"></audio>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaDl}</span>`;
       } else if (mediaUrl && m.mediaType === 'document') {
         const joint = `${m.mediaCaption || ''} ${m.text || ''}`.toLowerCase();
         const isPdf = joint.includes('.pdf');
         const label = esc((m.mediaCaption || m.text || 'Document').trim() || 'Document');
         if (isPdf) {
-          body = `<span class="media-wrap"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : `<span class="media-cap">${label}</span>`}</span>`;
+          body = `<span class="media-wrap"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : `<span class="media-cap">${label}</span>`}${mediaDl}</span>`;
         } else {
-          body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(mediaUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}</span>`;
+          body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(mediaUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaDl}</span>`;
         }
       } else if (m.mediaPending && m.mediaType) {
         body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-pending">Loading ${esc(m.mediaType)}…${cap ? ' ' + cap : ''}</span></span>`;
@@ -3030,14 +3281,18 @@
       const midAttr = mid ? ` data-message-id="${escAttr(mid)}"` : '';
       const previewTxt = (m.text || m.mediaCaption || (m.mediaType ? `[${m.mediaType}]` : '')).trim().slice(0, 160);
       const rxHtml = reactionCountsHtml(m.reactionsJson);
-      const toolbar = mid ? `<div class="bubble-toolbar" aria-hidden="true">
-          <button type="button" class="wa-tb" data-wa-react="👍" title="React">👍</button>
-          <button type="button" class="wa-tb" data-wa-react="❤️" title="React">❤️</button>
-          <button type="button" class="wa-tb" data-wa-react="😂" title="React">😂</button>
-          <button type="button" class="wa-tb" data-wa-react="😮" title="React">😮</button>
-          <button type="button" class="wa-tb" data-wa-react="😢" title="React">😢</button>
-          <button type="button" class="wa-tb" data-wa-react="🙏" title="React">🙏</button>
+      const aiSvg = '<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z"/></svg>';
+      const toolbar = mid ? `<div class="bubble-toolbar">
+          <div class="bubble-toolbar-reacts">
+          <button type="button" class="wa-tb wa-tb-ai" data-wa-ai-search="1" data-ai-preview="${escAttr(previewTxt)}" title="AI Search using this message as context" aria-label="AI Search using this message">${aiSvg}</button>
+          <button type="button" class="wa-tb" data-wa-react="👍" title="React 👍">👍</button>
+          <button type="button" class="wa-tb" data-wa-react="❤️" title="React ❤️">❤️</button>
+          <button type="button" class="wa-tb" data-wa-react="😂" title="React 😂">😂</button>
+          <button type="button" class="wa-tb" data-wa-react="😮" title="React 😮">😮</button>
+          <button type="button" class="wa-tb" data-wa-react="😢" title="React 😢">😢</button>
+          <button type="button" class="wa-tb" data-wa-react="🙏" title="React 🙏">🙏</button>
           <button type="button" class="wa-tb wa-tb-reply" data-wa-reply="1" data-reply-preview="${escAttr(previewTxt)}" title="Reply">↩︎</button>
+          </div>
         </div>` : '';
       html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr}>${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<div class="time">${ts ? esc(ts) : '—'}</div></div>${rxHtml}</div>`;
     }
@@ -3146,6 +3401,13 @@
   $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
   $('#q-clear').addEventListener('click', () => { clearSearch(); switchPanel(); });
   $('#btn-close-search').addEventListener('click', () => { clearSearch(); switchPanel(); });
+  document.getElementById('btn-chat-ai-search')?.addEventListener('click', () => {
+    if (!activeChat) return;
+    const qEl = $('#q');
+    qEl.placeholder = 'Ask AI about this chat…';
+    qEl.focus();
+    try { qEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* */ }
+  });
 
   async function sendCurrentMessage() {
     const jid = activeChat;
@@ -3182,6 +3444,19 @@
   });
   $('#reply-to-clear')?.addEventListener('click', clearReplyTarget);
   $('#cv-messages')?.addEventListener('click', async (e) => {
+    const aiBtn = e.target.closest('[data-wa-ai-search]');
+    if (aiBtn) {
+      const block = e.target.closest('.msg-block');
+      if (!block?.dataset?.messageId) return;
+      e.stopPropagation();
+      const pr = (aiBtn.getAttribute('data-ai-preview') || '').trim();
+      $('#q').value = pr
+        ? `About this message: ${pr.slice(0, 550)}${pr.length > 550 ? '…' : ''}`
+        : 'Summarize the conversation around this message.';
+      $('#q-clear').classList.add('visible');
+      await doSearch();
+      return;
+    }
     const rep = e.target.closest('[data-wa-reply]');
     if (rep) {
       const block = e.target.closest('.msg-block');
@@ -3226,7 +3501,9 @@
 
   function clearSearch() {
     searchActive = false;
-    $('#q').value = '';
+    const qEl = $('#q');
+    qEl.value = '';
+    qEl.placeholder = SEARCH_INPUT_PLACEHOLDER_DEFAULT;
     $('#q-media').value = '';
     $('#q-clear').classList.remove('visible');
     $('#search-results').innerHTML = '';
