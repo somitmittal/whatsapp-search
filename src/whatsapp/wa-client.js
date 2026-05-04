@@ -376,8 +376,12 @@ export default class WaClient {
       // Linked-device history depth is still capped by WhatsApp servers (often ~few months of rolling sync).
       // See fetchOlderHistoryFromPhone + POST /api/wa/fetch-older-history and chat export import for more.
       syncFullHistory: true,
-      // Present as an ordinary browser to WhatsApp's servers
-      browser: ['WhatsApp Search', 'Chrome', '124.0.0'],
+      /**
+       * Linked-device label on your phone (Settings → Linked devices).
+       * Do **not** use "Chrome" here — WhatsApp surfaces that in OS notifications as
+       * "syncing with Google Chrome" even though this is the Node/Baileys client, not web.whatsapp.com.
+       */
+      browser: ['WhatsApp Search', 'Desktop', '1.0.0'],
     });
 
     this._sock.ev.on('creds.update', saveCreds);
