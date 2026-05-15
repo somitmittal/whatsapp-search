@@ -2022,7 +2022,7 @@
       $('#imp-title').textContent = 'Backup loaded';
       const errTail = (data.errors && data.errors.length) ? ` Notes: ${data.errors.slice(0, 3).join('; ')}` : '';
       $('#imp-text').textContent = `Imported ${n} file(s). Skipped ${data.skipped || 0} already imported.${errTail}`;
-      refreshDash();
+      await refreshDash();
     } catch (e) {
       $('#import-result').classList.add('visible');
       $('#imp-title').textContent = 'Load WhatsApp Backup';
@@ -3821,7 +3821,7 @@
 
     try {
       setImportPhase('parse');
-      const data = await fetch('/api/import', { method: 'POST', body: form }).then(r => r.json());
+      const data = await fetch('/api/import', { method: 'POST', credentials: 'same-origin', body: form }).then((r) => r.json());
 
       setImportPhase('index');
       await new Promise(r => setTimeout(r, 600));
@@ -3838,13 +3838,31 @@
         const lines = ok.map(r => `${r.chatName}: ${r.inserted?.toLocaleString() || 0} messages`);
         if (fail.length) lines.push(`Failed: ${fail.map(r => r.chatName).join(', ')}`);
         $('#imp-text').textContent = lines.join('\n');
-        refreshDash();
+        await refreshDash();
         $('#import-result').classList.add('visible');
       } else {
         setImportPhase('done', `${(data.inserted || 0).toLocaleString()} messages indexed`);
         $('#imp-title').textContent = `Imported: ${data.chatName}`;
-        $('#imp-text').textContent = `${data.inserted?.toLocaleString() || 0} of ${data.total?.toLocaleString() || 0} messages`;
-        refreshDash();
+        const ins = data.inserted ?? 0;
+        const tot = data.total ?? data.parsedCount ?? 0;
+        if (data.parseFailed) {
+          $('#imp-title').textContent = 'No messages parsed';
+          const hint = data.parseHead
+            ? `\n\nFirst lines from the file we read (check format):\n${data.parseHead}`
+            : '';
+          $('#imp-text').textContent =
+            'No lines matched a WhatsApp export (date, time, sender: message). If this is a real export, copy one line and report it.' + hint;
+        } else if (ins === 0 && tot > 0) {
+          $('#imp-title').textContent = 'Already imported';
+          $('#imp-text').textContent =
+            `Parsed ${tot.toLocaleString()} messages but none were new (this chat may already be in your database). Delete the old chat or rename the export and try again.`;
+        } else if (ins === 0 && tot === 0) {
+          $('#imp-title').textContent = 'Nothing to import';
+          $('#imp-text').textContent = 'The archive had no usable chat text, or the .txt was empty.';
+        } else {
+          $('#imp-text').textContent = `${ins.toLocaleString()} of ${tot.toLocaleString()} messages`;
+        }
+        await refreshDash();
         $('#import-result').classList.add('visible');
       }
 

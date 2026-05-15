@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { google } = require('googleapis');
 
-import { importExportedChat, extractTextFromZip } from '../import/chat-import.js';
+import { importExportedChat, extractTextFromZip, decodeExportBuffer } from '../import/chat-import.js';
 
 const SETTINGS_IMPORTED = 'gmail_imported_keys';
 const MAX_IMPORTED_KEYS = 2000;
@@ -117,7 +117,7 @@ export async function syncWhatsAppExportsFromGmail(db, oauth2Client) {
             continue;
           }
         } else {
-          textContent = buf.toString('utf-8');
+          textContent = decodeExportBuffer(buf);
         }
 
         const chatName = chatNameFromFilename(att.filename);

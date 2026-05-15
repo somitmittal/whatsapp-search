@@ -12,7 +12,7 @@ import { parse } from 'cookie';
 import cookieParser from 'cookie-parser';
 import { registerAuthRoutes } from './auth-routes.js';
 import { getSessionIdFromRequest, setSessionCookie, UserSessionService } from '../auth/user-session.js';
-import { importExportedChat, extractTextFromZip } from '../import/chat-import.js';
+import { importExportedChat, extractTextFromZip, decodeExportBuffer } from '../import/chat-import.js';
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
 import WaClient from '../whatsapp/wa-client.js';
 import { createProvider, clearProviderCache, PROVIDER_META } from '../llm/provider.js';
@@ -1354,10 +1354,17 @@ export default class WebServer {
         const out = await syncWhatsAppExportsFromGmail(this.db, oauth2);
         const tid = getCurrentTenantId();
         const st = this._getTenantState(tid);
+        const totalInserted = (out.results || []).reduce((n, r) => n + (Number(r.inserted) || 0), 0);
         this._broadcast(
           { type: 'status', data: { connected: st.extensionConnected, stats: this.db.getTotalStats() } },
           tid,
         );
+        if (totalInserted > 0) {
+          this._broadcast(
+            { type: 'new-messages', data: { count: totalInserted, stats: this.db.getTotalStats() } },
+            tid,
+          );
+        }
         this.summaryService.indexPendingDays().then((count) => {
           if (count > 0) console.log(`[Gmail sync] Generated ${count} daily summaries`);
         }).catch((err) => console.error('[Gmail sync] Summary error:', err.message));
@@ -1441,7 +1448,7 @@ export default class WebServer {
             textContent = extractTextFromZip(file.buffer);
             if (!textContent) { results.push({ chatName: fileName, error: 'No chat .txt found in zip' }); continue; }
           } else {
-            textContent = file.buffer.toString('utf-8');
+            textContent = decodeExportBuffer(file.buffer);
           }
 
           const chatName = fileName.replace(/\.(zip|txt)$/i, '').replace(/^WhatsApp Chat with /i, '');
@@ -1451,10 +1458,17 @@ export default class WebServer {
 
         const tid = getCurrentTenantId();
         const st = this._getTenantState(tid);
+        const totalInserted = results.reduce((n, r) => n + (Number(r.inserted) || 0), 0);
         this._broadcast(
           { type: 'status', data: { connected: st.extensionConnected, stats: this.db.getTotalStats() } },
           tid,
         );
+        if (totalInserted > 0) {
+          this._broadcast(
+            { type: 'new-messages', data: { count: totalInserted, stats: this.db.getTotalStats() } },
+            tid,
+          );
+        }
 
         this.summaryService.indexPendingDays().then((count) => {
           if (count > 0) console.log(`Post-import: generated ${count} daily summaries`);
