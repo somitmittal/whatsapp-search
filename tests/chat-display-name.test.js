@@ -38,8 +38,8 @@ describe('chat-display-name', () => {
   });
 
   test('pickBetterChatTitle prefers formatted phone over Contact (…) placeholder', () => {
-    const canon = '916364922194@s.whatsapp.net';
-    const phone = formatPhoneLocalPart('916364922194');
+    const canon = '919000012345@s.whatsapp.net';
+    const phone = formatPhoneLocalPart('919000012345');
     expect(pickBetterChatTitle('Contact (1212)', phone, canon)).toBe(phone);
     expect(pickBetterChatTitle(phone, 'Contact (1212)', canon)).toBe(phone);
   });

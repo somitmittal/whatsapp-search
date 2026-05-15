@@ -12,6 +12,15 @@ data/
 .wwa_session/
 wa-config.json
 
+# Expo (machine-local, see .expo/README.md)
+.expo/
+
+# Application writeup (personal, not part of the product)
+docs/mem0-application-ai-work-trace.md
+
+# Render upload helper (may contain real keys)
+.env.render.upload
+
 # OS
 .DS_Store
 Thumbs.db
