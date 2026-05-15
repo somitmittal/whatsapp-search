@@ -1,6 +1,6 @@
 # WhatsApp Mirror — Local AI Search
 
-Search all your WhatsApp chats using AI, 100% locally. No data leaves your machine (except cloud LLM API calls you configure). If you strictly want all privacy, then you can spin up an ai model locally (small models like 1B or 2B parameters but can impact search performance)
+Search all your WhatsApp chats using AI, 100% locally. No data leaves your machine (except cloud LLM API calls you configure). If you strictly want all privacy, then you can spin up an ai model locally using ollama free models (small models like 1B or 2B parameters but can impact search performance)
 
 ## Architecture
 
