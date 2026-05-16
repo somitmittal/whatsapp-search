@@ -150,6 +150,19 @@ export default class WebServer {
     return this._isPublicInternetDeploy() || String(process.env.FORCE_SECURE_COOKIES || '').toLowerCase() === 'true';
   }
 
+  /**
+   * If exactly one WA identity exists (single-user local deployment), return its tenant_id
+   * so new browser sessions can reuse it instead of creating empty tenants.
+   */
+  _findSoleTenantFromWaIdentity() {
+    try {
+      const sql = this.db.getSqliteDatabase();
+      const rows = sql.prepare('SELECT tenant_id FROM wa_identities LIMIT 2').all();
+      if (rows.length === 1) return rows[0].tenant_id;
+    } catch (_) { /* table may not exist yet */ }
+    return null;
+  }
+
   _getTenantState(tenantId) {
     const tid = tenantId || LEGACY_TENANT_ID;
     let st = this._tenantState.get(tid);
@@ -574,7 +587,14 @@ export default class WebServer {
         this._getTenantState(req.tenantId).sessionId = sid;
         return runWithTenant(req.tenantId, () => next());
       }
-      const c = this._userSessions.createTenantWithSession();
+      const existingIdentity = this._findSoleTenantFromWaIdentity();
+      let c;
+      if (existingIdentity) {
+        const sessionId = this._userSessions.create(existingIdentity);
+        c = { sessionId, tenantId: existingIdentity };
+      } else {
+        c = this._userSessions.createTenantWithSession();
+      }
       req.tenantId = c.tenantId;
       req.waSessionId = c.sessionId;
       this._getTenantState(req.tenantId).sessionId = c.sessionId;
@@ -659,20 +679,25 @@ export default class WebServer {
 
     // ── Chat & Message APIs ───────────────────────────────────────────
     this._app.get('/api/chats', async (_req, res) => {
-      let stats = this.db.getChatStats();
       try {
-        const st = this._getTenantState(getCurrentTenantId());
-        const wa = st?.waClient;
-        if (wa && typeof wa.overlayResolvedChatNames === 'function') {
-          stats = await wa.overlayResolvedChatNames(stats);
+        let stats = this.db.getChatStats();
+        try {
+          const st = this._getTenantState(getCurrentTenantId());
+          const wa = st?.waClient;
+          if (wa && typeof wa.overlayResolvedChatNames === 'function') {
+            stats = await wa.overlayResolvedChatNames(stats);
+          }
+          if (wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
+            stats = await wa.mergeLinkedPersonalChatStats(stats);
+          }
+        } catch (_) {
+          /* keep DB-only titles */
         }
-        if (wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
-          stats = await wa.mergeLinkedPersonalChatStats(stats);
-        }
-      } catch (_) {
-        /* keep DB-only titles */
+        res.json(stats);
+      } catch (err) {
+        console.error('[/api/chats]', err.message);
+        res.status(500).json({ error: err.message });
       }
-      res.json(stats);
     });
 
     this._app.get('/api/chats/:chatJid/action-items', (req, res) => {
@@ -887,7 +912,7 @@ export default class WebServer {
       const chatJid = req.query.chatJid;
       if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
       try {
-        const stats = this.db.getChatStats().find((c) => c.chatJid === chatJid);
+        const stats = this.db.getQuickChatInfo(chatJid);
         const local = {
           chatJid,
           chatName: stats?.chatName ?? null,

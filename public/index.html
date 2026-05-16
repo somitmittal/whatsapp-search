@@ -345,21 +345,6 @@
       border-radius: 2px;
       transition: width 0.2s ease;
     }
-    .wa-sync-track {
-      flex: 1 0 100%;
-      height: 3px;
-      background: rgba(26, 115, 232, 0.15);
-      border-radius: 2px;
-      overflow: hidden;
-      margin-top: 2px;
-    }
-    .wa-sync-bar {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, #1a73e8, #1557b0);
-      border-radius: 2px;
-      transition: width 0.25s ease;
-    }
     .search-index-track {
       flex: 1 0 100%;
       height: 3px;
@@ -1197,6 +1182,31 @@
     <div id="status-strip-wrap" class="status-strip-wrap" hidden>
       <div id="status-strip" class="status-strip-scroll" role="list" aria-label="Status updates"></div>
     </div>
+    <!-- Sidebar sync progress bar — visible during SYNCING state -->
+    <div id="sidebar-sync-bar" style="display:none;padding:6px 16px 2px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.5" style="flex-shrink:0;animation:spin 1.2s linear infinite"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+        <span id="sidebar-sync-text" style="font-size:12px;color:var(--text2);">Syncing chats…</span>
+      </div>
+      <div style="background:var(--border);border-radius:3px;height:3px;overflow:hidden;">
+        <div id="sidebar-sync-fill" style="height:100%;background:#00a884;border-radius:3px;width:0%;transition:width .4s ease;"></div>
+      </div>
+    </div>
+
+    <!-- Logged-out overlay — replaces chat list when WA is disconnected -->
+    <div id="sidebar-logged-out" style="display:none;padding:40px 24px;text-align:center;">
+      <div style="width:56px;height:56px;background:#e7f8f2;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="#00a884"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.890-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+      </div>
+      <div style="font-weight:600;font-size:15px;color:var(--text);margin-bottom:6px;">Link WhatsApp</div>
+      <div style="font-size:13px;color:var(--text2);line-height:1.4;margin-bottom:18px;">
+        Connect your WhatsApp account to see<br>your chats and search through them.
+      </div>
+      <button type="button" id="sidebar-link-wa-btn" class="btn btn-primary" style="padding:8px 24px;font-size:13px;border-radius:20px;background:#00a884;border:none;color:#fff;cursor:pointer;">
+        Scan QR Code
+      </button>
+    </div>
+
     <div id="chat-list" class="chat-list"></div>
 
     <!-- Menu dropdown (positioned relative to sidebar) -->
@@ -1735,6 +1745,10 @@
     openOverlay('settings');
     loadSettings();
   });
+  $('#sidebar-link-wa-btn')?.addEventListener('click', async () => {
+    try { await fetch('/api/wa/connect', { method: 'POST' }); } catch {}
+    showEmptyPanel();
+  });
 
   $('#btn-menu').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -2140,8 +2154,38 @@
 
   // ── WhatsApp connection UI ─────────────────────────────────────────
   let _waState = 'DISCONNECTED';
+  let _waLoggedOut = false;
   let _qrPollTimer = null;
   let _lastQrDataUrl = null;
+
+  function updateSidebarForWaState() {
+    const loggedOutEl = $('#sidebar-logged-out');
+    const chatListEl = $('#chat-list');
+    const syncBarEl = $('#sidebar-sync-bar');
+    const filterEl = document.querySelector('.sidebar-search');
+    const tabsEl = document.querySelector('.sidebar-chat-tabs');
+    const stripEl = $('#status-strip-wrap');
+
+    if (_waLoggedOut && _waState !== 'READY' && _waState !== 'SYNCING') {
+      loggedOutEl.style.display = '';
+      chatListEl.style.display = 'none';
+      syncBarEl.style.display = 'none';
+      if (filterEl) filterEl.style.display = 'none';
+      if (tabsEl) tabsEl.style.display = 'none';
+      if (stripEl) stripEl.hidden = true;
+    } else {
+      loggedOutEl.style.display = 'none';
+      chatListEl.style.display = '';
+      if (filterEl) filterEl.style.display = '';
+      if (tabsEl) tabsEl.style.display = '';
+
+      if (_waState === 'SYNCING') {
+        syncBarEl.style.display = '';
+      } else {
+        syncBarEl.style.display = 'none';
+      }
+    }
+  }
 
   /**
    * Once the first history messages are in the DB, show the normal empty welcome (chat list in sidebar is useful)
@@ -2161,6 +2205,14 @@
 
   function updateWaUI({ state, message }) {
     _waState = state;
+    const msg = message || '';
+    _waLoggedOut = (state === 'DISCONNECTED' && /logged out|rescan qr/i.test(msg))
+      || (state === 'QR_READY');
+
+    if (state === 'READY' || state === 'SYNCING') {
+      _waLoggedOut = false;
+    }
+
     const dot = $('#wa-dot');
     const txt = $('#wa-status-text');
     const banner = $('#wa-banner');
@@ -2178,8 +2230,8 @@
     if (readyPanel) readyPanel.style.display = state === 'READY' ? '' : 'none';
     if (state === 'READY' && $('#wa-ready-msg')) $('#wa-ready-msg').textContent = message || 'Connected';
 
-    // Sidebar banner
-    if (state === 'READY') {
+    // Sidebar banner (hidden when logged-out overlay is shown)
+    if (state === 'READY' || _waLoggedOut) {
       banner.style.display = 'none';
     } else if (state === 'QR_READY') {
       banner.style.display = 'flex';
@@ -2190,6 +2242,8 @@
       banner.style.background = '#f0f2f5'; banner.style.color = '#667781';
       $('#wa-banner-text').textContent = message || 'Connecting…';
     }
+
+    updateSidebarForWaState();
 
     // Main panel: show correct screen based on state
     const isEmptyPanel = $('#panel-empty').classList.contains('visible');
@@ -2284,6 +2338,20 @@
     const msgN = messages ?? 0;
     $('#sync-msgs').textContent = msgN.toLocaleString() + ' messages';
     $('#sync-detail').textContent = hasTotal ? `${completed} of ${total} chats` : 'Receiving history…';
+
+    // Sidebar sync bar
+    const sidebarFill = $('#sidebar-sync-fill');
+    const sidebarText = $('#sidebar-sync-text');
+    if (sidebarFill) {
+      sidebarFill.style.width = hasTotal ? pct + '%' : '40%';
+      sidebarFill.style.animation = hasTotal ? '' : 'sync-pulse 1.5s ease-in-out infinite';
+    }
+    if (sidebarText) {
+      sidebarText.textContent = hasTotal
+        ? `Syncing chats… ${pct}% (${msgN.toLocaleString()} messages)`
+        : `Syncing chats… ${msgN.toLocaleString()} messages`;
+    }
+
     const emptyMain = $('#panel-empty').classList.contains('visible');
     const hasChats = chatData && chatData.length > 0;
     const hasIndexed = hasChats || (typeof messages === 'number' && messages > 0);
@@ -2298,25 +2366,7 @@
   }
 
   function applyWaSyncBars() {
-    const root = $('#chat-list');
-    if (!root) return;
-    const syncing = _waState === 'SYNCING';
-    const counts = Object.values(waSyncByChat);
-    const max = Math.max(1, ...counts);
-    root.querySelectorAll('.wa-sync-track').forEach(tr => {
-      const jid = tr.dataset.jid;
-      const n = waSyncByChat[jid] || 0;
-      const bar = tr.querySelector('.wa-sync-bar');
-      if (!syncing || n <= 0) {
-        tr.style.display = 'none';
-        tr.removeAttribute('title');
-        if (bar) bar.style.width = '0%';
-        return;
-      }
-      tr.style.display = '';
-      tr.title = `${n.toLocaleString()} messages received for this chat in the current sync (bar is relative to the busiest chat)`;
-      if (bar) bar.style.width = Math.round((n / max) * 100) + '%';
-    });
+    // Per-chat sync bars removed; sync progress is shown via the single sidebar-level bar.
   }
 
   // Fetch initial WA state on load
@@ -2368,22 +2418,32 @@
   // ── Dashboard ──────────────────────────────────────────────────────
   async function refreshDash() {
     try {
-      const [chats, status] = await Promise.all([
-        fetch('/api/chats').then(r => r.json()),
-        fetch('/api/status').then(r => r.json()),
+      const [chatsRes, statusRes] = await Promise.all([
+        fetch('/api/chats'),
+        fetch('/api/status'),
       ]);
+      if (!chatsRes.ok) {
+        console.error('[refreshDash] /api/chats failed:', chatsRes.status, await chatsRes.text().catch(() => ''));
+        return;
+      }
+      const chats = await chatsRes.json();
+      const status = statusRes.ok ? await statusRes.json() : null;
       chatData = chats;
       renderChatsFromState();
       adjustSyncingMainPanel();
       await refreshStatusFeed();
-      const s = status.stats;
-      $('#stat-msgs').textContent = s.totalMessages.toLocaleString();
-      $('#stat-chats').textContent = s.totalChats;
-      $('#stat-sums').textContent = s.totalSummaries;
-      if ($('#stat-facts')) $('#stat-facts').textContent = (s.threadFacts ?? 0).toLocaleString();
-      connected = status.connected;
+      if (status?.stats) {
+        const s = status.stats;
+        $('#stat-msgs').textContent = s.totalMessages.toLocaleString();
+        $('#stat-chats').textContent = s.totalChats;
+        $('#stat-sums').textContent = s.totalSummaries;
+        if ($('#stat-facts')) $('#stat-facts').textContent = (s.threadFacts ?? 0).toLocaleString();
+      }
+      connected = status?.connected ?? false;
       updateExtBadge();
-    } catch {}
+    } catch (err) {
+      console.error('[refreshDash]', err);
+    }
   }
 
   async function priorityIndexChatFirst(jid) {
@@ -2854,7 +2914,6 @@
           </div>
           <div class="chat-meta-bottom"><span class="chat-participants">${isGroup ? ch.participantCount + ' participants' : ''}</span><span class="chat-count-badge">${formatCount(ch.messageCount)}</span></div>
         </div>
-        <div class="wa-sync-track" data-jid="${esc(ch.chatJid)}" style="display:none"><div class="wa-sync-bar"></div></div>
         <div class="search-index-track${aiDone ? ' done' : ''}" data-jid="${esc(ch.chatJid)}"
           data-search-pct="${pct}" data-search-complete="${aiDone ? '1' : '0'}"
           data-summarized="${sumT}" data-total-threads="${totT}"
@@ -3205,10 +3264,15 @@
       const msgUrl = focusMessageId
         ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(focusMessageId)}`
         : `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${INITIAL_CHAT_MESSAGES_LIMIT}&offset=0`;
-      const [msgs, details] = await Promise.all([
-        fetch(msgUrl).then(r => r.json()),
+      const [msgsRes, details] = await Promise.all([
+        fetch(msgUrl).then(async r => {
+          if (!r.ok) { console.error('[openChat] messages API error:', r.status); return []; }
+          const data = await r.json();
+          return Array.isArray(data) ? data : [];
+        }),
         fetch(`/api/wa/chat-details?chatJid=${encodeURIComponent(jid)}`).then(r => r.ok ? r.json() : null),
       ]);
+      const msgs = msgsRes;
       if (activeChat !== jid) return;
       renderMessages(msgs, jid, focusMessageId);
       if (!focusMessageId && msgs.length) {
@@ -3250,7 +3314,9 @@
         credentials: 'same-origin',
         body: JSON.stringify({ chatJid: jid }),
       }).catch(() => {});
-    } catch {}
+    } catch (err) {
+      console.error('[openChat]', err);
+    }
     // Mark chat as seen for “while you were away”.
     fetch(`/api/chats/${encodeURIComponent(jid)}/seen`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
     setMobileChatOpen(true);

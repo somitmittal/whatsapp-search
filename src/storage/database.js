@@ -1232,19 +1232,64 @@ export default class Database {
       GROUP BY chat_jid
     `).all(t);
 
-    const titleRows = this._db.prepare(`
+    const goodNameRows = this._db.prepare(`
       SELECT chat_jid AS chatJid, chat_name AS chatName, sender
       FROM (
         SELECT chat_jid, chat_name, sender,
                ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
-        FROM messages WHERE tenant_id = ? AND chat_name IS NOT NULL AND chat_name != ''
-      ) WHERE rn <= 5
+        FROM messages WHERE tenant_id = ?
+          AND chat_name IS NOT NULL AND chat_name != ''
+          AND chat_name NOT LIKE 'Contact (%'
+          AND NOT (LENGTH(chat_name) <= 25 AND chat_name GLOB '[0-9-]*')
+      ) WHERE rn <= 3
+    `).all(t);
+
+    const fallbackNameRows = this._db.prepare(`
+      SELECT chat_jid AS chatJid, chat_name AS chatName, sender
+      FROM (
+        SELECT chat_jid, chat_name, sender,
+               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
+        FROM messages WHERE tenant_id = ?
+          AND chat_name IS NOT NULL AND chat_name != ''
+      ) WHERE rn = 1
+    `).all(t);
+
+    const peerRows = this._db.prepare(`
+      SELECT chat_jid AS chatJid, sender
+      FROM (
+        SELECT chat_jid, sender,
+               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
+        FROM messages WHERE tenant_id = ?
+          AND sender IS NOT NULL AND sender != '' AND sender != 'You'
+          AND NOT (LENGTH(sender) <= 20 AND sender GLOB '[0-9]*')
+      ) WHERE rn <= 2
+    `).all(t);
+
+    const fallbackPeerRows = this._db.prepare(`
+      SELECT chat_jid AS chatJid, sender
+      FROM (
+        SELECT chat_jid, sender,
+               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
+        FROM messages WHERE tenant_id = ?
+          AND sender IS NOT NULL AND sender != '' AND sender != 'You'
+      ) WHERE rn = 1
     `).all(t);
 
     const titlesByChat = new Map();
-    for (const r of titleRows) {
-      if (!titlesByChat.has(r.chatJid)) titlesByChat.set(r.chatJid, []);
-      titlesByChat.get(r.chatJid).push(r);
+    const addRow = (jid, row) => {
+      if (!titlesByChat.has(jid)) titlesByChat.set(jid, []);
+      titlesByChat.get(jid).push(row);
+    };
+    for (const r of goodNameRows) addRow(r.chatJid, r);
+    for (const r of fallbackNameRows) {
+      if (!titlesByChat.has(r.chatJid)) addRow(r.chatJid, r);
+    }
+    for (const r of peerRows) addRow(r.chatJid, { chatJid: r.chatJid, chatName: null, sender: r.sender });
+    for (const r of fallbackPeerRows) {
+      const existing = titlesByChat.get(r.chatJid) || [];
+      if (!existing.some(e => e.sender && e.sender !== 'You')) {
+        addRow(r.chatJid, { chatJid: r.chatJid, chatName: null, sender: r.sender });
+      }
     }
 
     const resolveTitle = (chatJid, rows) => {
@@ -1328,6 +1373,33 @@ export default class Database {
       return (b.lastMessageTs || 0) - (a.lastMessageTs || 0);
     });
     return out;
+  }
+
+  getQuickChatInfo(chatJid) {
+    const t = getCurrentTenantId();
+    const agg = this._db.prepare(`
+      SELECT COUNT(*) AS messageCount, MAX(timestamp) AS lastMessageTs,
+             COUNT(DISTINCT sender) AS participantCount
+      FROM messages WHERE tenant_id = ? AND chat_jid = ?
+    `).get(t, chatJid);
+    const nameRow = this._db.prepare(`
+      SELECT chat_name FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+        AND chat_name IS NOT NULL AND chat_name != '' AND chat_name NOT LIKE 'Contact (%'
+      ORDER BY timestamp DESC LIMIT 1
+    `).get(t, chatJid);
+    const fallbackRow = !nameRow ? this._db.prepare(`
+      SELECT chat_name FROM messages
+      WHERE tenant_id = ? AND chat_jid = ? AND chat_name IS NOT NULL AND chat_name != ''
+      ORDER BY timestamp DESC LIMIT 1
+    `).get(t, chatJid) : null;
+    return {
+      chatJid,
+      chatName: nameRow?.chat_name || fallbackRow?.chat_name || null,
+      messageCount: agg?.messageCount || 0,
+      participantCount: agg?.participantCount || 0,
+      lastMessageTs: agg?.lastMessageTs || null,
+    };
   }
 
   getTotalStats() {
