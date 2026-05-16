@@ -44,6 +44,20 @@
     }
   }, WEBPACK_TIMEOUT_MS);
 
+  function isAuthenticated() {
+    const isLoginPage = !!document.querySelector('[data-testid="qrcode"]')
+      || !!document.querySelector('canvas[aria-label="Scan me!"]')
+      || !!document.querySelector('[data-testid="link-device-qrcode-canvas"]');
+
+    if (isLoginPage) return false;
+
+    // Check for elements that indicate the main chat UI is loaded
+    return !!document.querySelector('#pane-side')
+      || !!document.querySelector('[data-testid="chat-list"]')
+      || !!document.querySelector('[data-testid="sidebar"]')
+      || !!document.querySelector('#main');
+  }
+
   // ═══ Messages from inject.js ═══════════════════════════════════════════
 
   window.addEventListener('message', (event) => {
@@ -54,6 +68,10 @@
     switch (type) {
       case 'ready':
         clearTimeout(webpackReadyTimeout);
+        if (!isAuthenticated()) {
+          console.log('[WA Mirror] Webpack ready but QR visible — ignoring');
+          return;
+        }
         console.log('[WA Mirror] Webpack store ready:', payload.chatCount, 'chats');
         chrome.runtime.sendMessage({
           type: 'status',
@@ -62,6 +80,14 @@
         break;
 
       case 'webpack-failed':
+        if (!isAuthenticated()) {
+          // If we are logged out, webpack failing is expected.
+          // Don't start DOM mode yet, just keep waiting.
+          webpackReadyTimeout = setTimeout(() => {
+            if (!domMode) startDOMMode();
+          }, 10000);
+          return;
+        }
         console.log('[WA Mirror] Webpack failed — starting DOM mode');
         startDOMMode();
         break;
@@ -128,6 +154,16 @@
   }
 
   function extractFromDOM() {
+    if (!isAuthenticated()) {
+      if (domMode) {
+        chrome.runtime.sendMessage({
+          type: 'status',
+          payload: { connected: false, strategy: 'dom', chatCount: 0 },
+        });
+      }
+      return;
+    }
+
     try {
       const chats = extractChatListDOM();
       if (chats.length > 0) {

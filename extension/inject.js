@@ -254,8 +254,18 @@
     return results;
   }
 
+  function isAuthenticated() {
+    return !document.querySelector('[data-testid="qrcode"]') &&
+           !document.querySelector('canvas[aria-label="Scan me!"]') &&
+           !document.querySelector('[data-testid="link-device-qrcode-canvas"]');
+  }
+
   async function extractAll(sinceTimestamp = 0) {
     if (!Store?.Chat || extractionRunning) return;
+    if (!isAuthenticated()) {
+      log('Extraction skipped: QR code visible (logged out)');
+      return;
+    }
     extractionRunning = true;
 
     try {
@@ -339,11 +349,13 @@
         extractAll(lastSyncTimestamp);
         break;
       case 'get-status':
+        const authed = isAuthenticated();
         post('status', {
-          storeReady: !!Store?.Chat,
-          chatCount: Store?.Chat?.getModelsArray?.()?.length || 0,
+          storeReady: !!Store?.Chat && authed,
+          chatCount: authed ? (Store?.Chat?.getModelsArray?.()?.length || 0) : 0,
           lastSync: lastSyncTimestamp,
           strategy: Store ? 'webpack' : 'none',
+          isLoggedOut: !authed,
         });
         break;
     }
@@ -383,12 +395,38 @@
   }
 
   function waitForAppLoad() {
+    // Check if we are on the login/QR page
+    const isLoginPage = !!document.querySelector('[data-testid="qrcode"]')
+      || !!document.querySelector('canvas[aria-label="Scan me!"]')
+      || !!document.querySelector('[data-testid="link-device-qrcode-canvas"]');
+
+    if (isLoginPage) {
+      // If we see a QR code, we are definitely not logged in.
+      // Wait and check again later.
+      if (attempt % 5 === 0) log('On login page (QR visible) — waiting...');
+      attempt++;
+      setTimeout(waitForAppLoad, 2000);
+      return;
+    }
+
     const hasApp = document.querySelector('#app')
       || document.querySelector('[data-testid="app"]')
       || document.querySelector('#pane-side');
 
     if (!hasApp) {
       setTimeout(waitForAppLoad, 1000);
+      return;
+    }
+
+    // Even if #app exists, double check we aren't still on a landing/loading screen
+    // that isn't the main chat interface.
+    const isMainUI = !!document.querySelector('#pane-side')
+      || !!document.querySelector('[data-testid="chat-list"]')
+      || !!document.querySelector('[data-testid="sidebar"]');
+
+    if (!isMainUI && attempt < 10) {
+      attempt++;
+      setTimeout(waitForAppLoad, 2000);
       return;
     }
 
