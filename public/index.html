@@ -2122,7 +2122,7 @@
           window.location.reload();
         }
         else if (msg.type === 'new-messages') {
-          refreshDash();
+          scheduleRefreshDash(msg.data?.chatTouches);
           void refreshActiveChatMessages();
           if (_waState === 'READY') { /* keep welcome hidden */ }
         }
@@ -2493,7 +2493,8 @@
       }
       const chats = await chatsRes.json();
       const status = statusRes.ok ? await statusRes.json() : null;
-      chatData = chats;
+      chatData = Array.isArray(chats) ? chats : [];
+      sortChatDataByRecency();
       if (isWaUiReady()) {
         renderChatsFromState();
         adjustSyncingMainPanel();
@@ -2718,8 +2719,66 @@
     return chatData.filter((row) => (row.sidebarTab || 'chat') === sidebarListTab);
   }
 
+  /** Match server getChatStats() ordering: recency × log(message volume). */
+  function chatListRank(c) {
+    const lm = c.lastMessageTs || 0;
+    const n = Math.max(1, c.messageCount || 0);
+    return lm * Math.log1p(n);
+  }
+
+  function sortChatDataByRecency() {
+    chatData.sort((a, b) => {
+      const ra = chatListRank(a);
+      const rb = chatListRank(b);
+      if (rb !== ra) return rb - ra;
+      return (b.lastMessageTs || 0) - (a.lastMessageTs || 0);
+    });
+  }
+
+  /**
+   * Bump chats that received new messages (instant sidebar reorder).
+   * @returns {boolean} true if an unknown chat needs full /api/chats refresh
+   */
+  function applyChatTouches(touches) {
+    if (!Array.isArray(touches) || !touches.length) return false;
+    const known = new Set(chatData.map((c) => c.chatJid));
+    let needFullRefresh = false;
+    for (const t of touches) {
+      const jid = t?.chatJid;
+      if (!jid) continue;
+      if (!known.has(jid)) {
+        needFullRefresh = true;
+        continue;
+      }
+      const ch = chatData.find((c) => c.chatJid === jid);
+      if (!ch) continue;
+      const ts = Number(t.lastMessageTs) || 0;
+      const delta = Math.max(1, Number(t.count) || 1);
+      if (ts >= (ch.lastMessageTs || 0)) ch.lastMessageTs = ts;
+      ch.messageCount = (ch.messageCount || 0) + delta;
+    }
+    sortChatDataByRecency();
+    return needFullRefresh;
+  }
+
+  let _refreshDashTimer = null;
+  function scheduleRefreshDash(chatTouches) {
+    if (Array.isArray(chatTouches) && chatTouches.length) {
+      const needFull = applyChatTouches(chatTouches);
+      if (isWaUiReady()) renderChatsFromState();
+      if (needFull) {
+        clearTimeout(_refreshDashTimer);
+        void refreshDash();
+        return;
+      }
+    }
+    clearTimeout(_refreshDashTimer);
+    _refreshDashTimer = setTimeout(() => { void refreshDash(); }, 400);
+  }
+
   function renderChatsFromState() {
     if (!isWaUiReady()) return;
+    sortChatDataByRecency();
     const fq = ($('#filter') && $('#filter').value || '').trim().toLowerCase();
     let list = chatsForCurrentSidebarTab();
     if (fq) {
@@ -3756,6 +3815,7 @@
       if (!r.ok) throw new Error(j?.error || 'Send failed');
       input.value = '';
       clearReplyTarget();
+      scheduleRefreshDash([{ chatJid: jid, lastMessageTs: Math.floor(Date.now() / 1000), count: 1 }]);
       // The sent message will appear via WA echo + indexing; refresh as a fallback.
       setTimeout(() => { if (activeChat === jid) void refreshActiveChatMessages(); }, 1200);
     } catch (e) {

@@ -49,6 +49,24 @@ function sanitizeClientMessage(m) {
   return o;
 }
 
+/** Per-chat latest timestamp + insert count for sidebar reorder without refetching all chats. */
+function summarizeChatTouchesFromRows(rows) {
+  const map = new Map();
+  for (const r of rows || []) {
+    const chatJid = r?.chatJid;
+    if (!chatJid) continue;
+    const ts = Number(r.timestamp) || 0;
+    let entry = map.get(chatJid);
+    if (!entry) {
+      entry = { chatJid, lastMessageTs: ts, count: 0 };
+      map.set(chatJid, entry);
+    }
+    entry.count += 1;
+    if (ts > entry.lastMessageTs) entry.lastMessageTs = ts;
+  }
+  return [...map.values()];
+}
+
 function sanitizeMessageList(list) {
   if (!Array.isArray(list)) return list;
   return list.map(sanitizeClientMessage);
@@ -361,7 +379,14 @@ export default class WebServer {
           }
           if (inserted > 0) {
             console.log(`[WA] Tenant ${tid} saved ${inserted} new messages`);
-            this._broadcast({ type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } }, tid);
+            this._broadcast({
+              type: 'new-messages',
+              data: {
+                count: inserted,
+                stats: this.db.getTotalStats(),
+                chatTouches: summarizeChatTouchesFromRows(rows),
+              },
+            }, tid);
             this._mediaIndexService?.scheduleProcess?.();
             this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
           }
@@ -1101,7 +1126,14 @@ export default class WebServer {
         if (inserted > 0) {
           console.log(`[Extension] Synced ${inserted} new messages`);
           this._broadcast(
-            { type: 'new-messages', data: { count: inserted, stats: this.db.getTotalStats() } },
+            {
+              type: 'new-messages',
+              data: {
+                count: inserted,
+                stats: this.db.getTotalStats(),
+                chatTouches: summarizeChatTouchesFromRows(rows),
+              },
+            },
             getCurrentTenantId(),
           );
           this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
