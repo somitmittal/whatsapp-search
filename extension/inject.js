@@ -257,7 +257,8 @@
   function isAuthenticated() {
     return !document.querySelector('[data-testid="qrcode"]') &&
            !document.querySelector('canvas[aria-label="Scan me!"]') &&
-           !document.querySelector('[data-testid="link-device-qrcode-canvas"]');
+           !document.querySelector('[data-testid="link-device-qrcode-canvas"]') &&
+           !document.querySelector('div[data-ref]');
   }
 
   async function extractAll(sinceTimestamp = 0) {
@@ -396,9 +397,7 @@
 
   function waitForAppLoad() {
     // Check if we are on the login/QR page
-    const isLoginPage = !!document.querySelector('[data-testid="qrcode"]')
-      || !!document.querySelector('canvas[aria-label="Scan me!"]')
-      || !!document.querySelector('[data-testid="link-device-qrcode-canvas"]');
+    const isLoginPage = !isAuthenticated();
 
     if (isLoginPage) {
       // If we see a QR code, we are definitely not logged in.

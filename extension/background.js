@@ -16,9 +16,17 @@ let state = {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   switch (msg.type) {
     case 'status':
-      state.connected = msg.payload.connected ?? state.connected;
-      state.chatCount = msg.payload.chatCount ?? state.chatCount;
-      state.strategy = msg.payload.strategy ?? state.strategy;
+      // Always update connected and strategy
+      state.connected = !!msg.payload.connected;
+      state.strategy = msg.payload.strategy || state.strategy;
+      
+      // Only update chatCount if it's provided and we are connected
+      if (state.connected) {
+        state.chatCount = msg.payload.chatCount ?? state.chatCount;
+      } else {
+        state.chatCount = 0;
+      }
+      
       state.error = null;
       updateBadge();
       break;

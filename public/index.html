@@ -2075,8 +2075,8 @@
       $('#panel-chat').classList.add('visible');
     } else {
       $('#panel-empty').classList.add('visible');
-      // Show QR screen if not connected, else default welcome
-      if (_waState !== 'READY') {
+      // Show QR screen if logged out or not ready, else default welcome
+      if (_waLoggedOut || (_waState !== 'READY' && _waState !== 'SYNCING')) {
         $('#welcome-qr').style.display = '';
         $('#welcome-default').style.display = 'none';
       } else {
@@ -2206,11 +2206,13 @@
   function updateWaUI({ state, message }) {
     _waState = state;
     const msg = message || '';
-    _waLoggedOut = (state === 'DISCONNECTED' && /logged out|rescan qr/i.test(msg))
-      || (state === 'QR_READY');
 
+    // Only transition _waLoggedOut to false if we actually succeed in connecting.
+    // If we are just LOADING, we preserve the previous "logged out" state to prevent flickering.
     if (state === 'READY' || state === 'SYNCING') {
       _waLoggedOut = false;
+    } else if ((state === 'DISCONNECTED' && /logged out|rescan qr/i.test(msg)) || state === 'QR_READY') {
+      _waLoggedOut = true;
     }
 
     const dot = $('#wa-dot');
@@ -2274,21 +2276,21 @@
         $('#welcome-default').style.display = 'none';
         $('#sync-progress-panel').style.display = 'none';
       }
-    } else if (state === 'QR_READY') {
+    } else if (state === 'QR_READY' || _waLoggedOut) {
       $('#sync-progress-panel').style.display = 'none';
-      if (isEmptyPanel || !hasChats) {
+      if (isEmptyPanel) {
         $('#welcome-qr').style.display = '';
         $('#welcome-default').style.display = 'none';
       }
       $('#wqr-loading').style.display = 'none';
     } else {
-      // LOADING or DISCONNECTED
+      // LOADING or DISCONNECTED (not logged out)
       $('#sync-progress-panel').style.display = 'none';
       if (state === 'DISCONNECTED' || state === 'LOADING') {
         waSyncByChat = {};
         applyWaSyncBars();
       }
-      if (isEmptyPanel || !hasChats) {
+      if (isEmptyPanel && !hasChats) {
         $('#welcome-qr').style.display = '';
         $('#welcome-default').style.display = 'none';
       }

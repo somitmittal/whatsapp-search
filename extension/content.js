@@ -47,15 +47,39 @@
   function isAuthenticated() {
     const isLoginPage = !!document.querySelector('[data-testid="qrcode"]')
       || !!document.querySelector('canvas[aria-label="Scan me!"]')
-      || !!document.querySelector('[data-testid="link-device-qrcode-canvas"]');
+      || !!document.querySelector('[data-testid="link-device-qrcode-canvas"]')
+      || !!document.querySelector('div[data-ref]'); // Baileys/WA-Web-JS often use this for QR container
 
     if (isLoginPage) return false;
 
     // Check for elements that indicate the main chat UI is loaded
-    return !!document.querySelector('#pane-side')
+    const hasMainUI = !!document.querySelector('#pane-side')
       || !!document.querySelector('[data-testid="chat-list"]')
       || !!document.querySelector('[data-testid="sidebar"]')
       || !!document.querySelector('#main');
+
+    return hasMainUI;
+  }
+
+  function reportStatus(payload) {
+    const authed = isAuthenticated();
+    const finalPayload = {
+      connected: authed && !!payload.connected,
+      strategy: payload.strategy || (domMode ? 'dom' : 'webpack'),
+      chatCount: authed ? (payload.chatCount || 0) : 0,
+      ...payload
+    };
+
+    // Override if we are clearly not authenticated
+    if (!authed) {
+      finalPayload.connected = false;
+      finalPayload.chatCount = 0;
+    }
+
+    chrome.runtime.sendMessage({
+      type: 'status',
+      payload: finalPayload,
+    });
   }
 
   // ═══ Messages from inject.js ═══════════════════════════════════════════
@@ -68,15 +92,8 @@
     switch (type) {
       case 'ready':
         clearTimeout(webpackReadyTimeout);
-        if (!isAuthenticated()) {
-          console.log('[WA Mirror] Webpack ready but QR visible — ignoring');
-          return;
-        }
         console.log('[WA Mirror] Webpack store ready:', payload.chatCount, 'chats');
-        chrome.runtime.sendMessage({
-          type: 'status',
-          payload: { connected: true, strategy: 'webpack', ...payload },
-        });
+        reportStatus({ connected: true, strategy: 'webpack', ...payload });
         break;
 
       case 'webpack-failed':
@@ -86,6 +103,7 @@
           webpackReadyTimeout = setTimeout(() => {
             if (!domMode) startDOMMode();
           }, 10000);
+          reportStatus({ connected: false });
           return;
         }
         console.log('[WA Mirror] Webpack failed — starting DOM mode');
@@ -121,7 +139,7 @@
         break;
 
       case 'status':
-        chrome.runtime.sendMessage({ type: 'status', payload });
+        reportStatus(payload);
         break;
 
       case 'log':
@@ -143,10 +161,7 @@
     clearTimeout(webpackReadyTimeout);
 
     console.log('[WA Mirror] DOM scraping mode activated');
-    chrome.runtime.sendMessage({
-      type: 'status',
-      payload: { connected: true, strategy: 'dom', chatCount: 0 },
-    });
+    reportStatus({ connected: true, strategy: 'dom', chatCount: 0 });
 
     setTimeout(extractFromDOM, 2000);
     setInterval(extractFromDOM, 30000);
@@ -156,10 +171,7 @@
   function extractFromDOM() {
     if (!isAuthenticated()) {
       if (domMode) {
-        chrome.runtime.sendMessage({
-          type: 'status',
-          payload: { connected: false, strategy: 'dom', chatCount: 0 },
-        });
+        reportStatus({ connected: false, strategy: 'dom', chatCount: 0 });
       }
       return;
     }
@@ -168,10 +180,7 @@
       const chats = extractChatListDOM();
       if (chats.length > 0) {
         sendToServer('/api/extension/chats', { chats });
-        chrome.runtime.sendMessage({
-          type: 'status',
-          payload: { connected: true, strategy: 'dom', chatCount: chats.length },
-        });
+        reportStatus({ connected: true, strategy: 'dom', chatCount: chats.length });
       }
 
       const messages = extractVisibleMessagesDOM();

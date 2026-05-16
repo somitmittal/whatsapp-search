@@ -1,30 +1,29 @@
-import { createRequire } from 'module';
-import { createServer } from 'http';
-import { basename, join, relative, resolve } from 'path';
-import { randomBytes } from 'node:crypto';
-import { mkdirSync } from 'fs';
-import { renameSync, existsSync } from 'fs';
-import config from '../config.js';
-import { runWithTenant, getCurrentTenantId } from '../storage/tenant-context.js';
-import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
-import { isJwtAuthEnabled } from '../auth/jwt-util.js';
 import { parse } from 'cookie';
 import cookieParser from 'cookie-parser';
-import { registerAuthRoutes } from './auth-routes.js';
+import { existsSync, mkdirSync, renameSync } from 'fs';
+import { createServer } from 'http';
+import { createRequire } from 'module';
+import { randomBytes } from 'node:crypto';
+import { basename, join, relative, resolve } from 'path';
+import { isJwtAuthEnabled } from '../auth/jwt-util.js';
 import { getSessionIdFromRequest, setSessionCookie, UserSessionService } from '../auth/user-session.js';
-import { importExportedChat, extractTextFromZip, decodeExportBuffer } from '../import/chat-import.js';
-import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
-import WaClient from '../whatsapp/wa-client.js';
-import { createProvider, clearProviderCache, PROVIDER_META } from '../llm/provider.js';
-import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
-import {
-  effectiveSearchApiKey,
-  effectiveSummaryApiKey,
-  keyHints,
-  publicSettingsFromDb,
-} from '../llm/defaults.js';
-import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
+import config from '../config.js';
 import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
+import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
+import { decodeExportBuffer, extractTextFromZip, importExportedChat } from '../import/chat-import.js';
+import {
+    effectiveSearchApiKey,
+    effectiveSummaryApiKey,
+    keyHints,
+    publicSettingsFromDb,
+} from '../llm/defaults.js';
+import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
+import { clearProviderCache, createProvider, PROVIDER_META } from '../llm/provider.js';
+import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
+import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
+import { getCurrentTenantId, runWithTenant } from '../storage/tenant-context.js';
+import WaClient from '../whatsapp/wa-client.js';
+import { registerAuthRoutes } from './auth-routes.js';
 
 const require = createRequire(import.meta.url);
 const express = require('express');
@@ -167,10 +166,13 @@ export default class WebServer {
     const tid = tenantId || LEGACY_TENANT_ID;
     let st = this._tenantState.get(tid);
     if (!st) {
+      const authDir = join(config.dataDir, 'tenants', tid, '.baileys_auth');
+      const hasAuth = existsSync(join(authDir, 'creds.json'));
+
       st = {
         extensionConnected: false,
         waState: 'DISCONNECTED',
-        waMessage: 'Not connected',
+        waMessage: hasAuth ? 'Not connected' : 'Logged out — rescan QR to reconnect',
         waQrDataUrl: null,
         waClient: null,
         sessionId: null,
@@ -298,6 +300,11 @@ export default class WebServer {
       onStatus: ({ state, message }) => {
         st.waState = state;
         st.waMessage = message;
+
+        if (state !== 'READY' && state !== 'SYNCING') {
+          st.extensionConnected = false;
+        }
+
         if (state === 'QR_READY' || state === 'DISCONNECTED' || state === 'LOADING') {
           st.waReadyHooksDone = false;
         }
