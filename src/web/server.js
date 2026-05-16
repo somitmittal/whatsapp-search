@@ -941,6 +941,9 @@ export default class WebServer {
     this._app.post('/api/wa/connect', async (_req, res) => {
       const tid = getCurrentTenantId();
       const st = this._getTenantState(tid);
+      if (st.waClient?._destroyed) {
+        st.waClient = null;
+      }
       const wa = this._ensureTenantWaClient(tid);
       if (st.waState === 'READY') return res.json({ ok: true, state: 'READY' });
       try {
@@ -958,6 +961,12 @@ export default class WebServer {
       if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
       try {
         await st.waClient.logout();
+        st.waClient = null;
+        st.waQrDataUrl = null;
+        st.waState = 'DISCONNECTED';
+        st.waMessage = 'Logged out — rescan QR to reconnect';
+        st.extensionConnected = false;
+        this._broadcast({ type: 'wa-status', data: { state: st.waState, message: st.waMessage, stats: this.db.getTotalStats() } }, tid);
         res.json({ ok: true });
       } catch (err) {
         res.status(500).json({ error: err.message });

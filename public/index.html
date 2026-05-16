@@ -2071,12 +2071,12 @@
     }
     $('#panel-search').classList.remove('visible');
     $$('.panel').forEach(p => p.classList.remove('visible'));
-    if (activeChat) {
+    if (activeChat && isWaUiReady()) {
       $('#panel-chat').classList.add('visible');
     } else {
       $('#panel-empty').classList.add('visible');
-      // Show QR screen if logged out or not ready, else default welcome
-      if (_waLoggedOut || (_waState !== 'READY' && _waState !== 'SYNCING')) {
+      // Show QR/reconnect screen until WhatsApp is fully ready.
+      if (!isWaUiReady()) {
         $('#welcome-qr').style.display = '';
         $('#welcome-default').style.display = 'none';
       } else {
@@ -2155,8 +2155,56 @@
   // ── WhatsApp connection UI ─────────────────────────────────────────
   let _waState = 'DISCONNECTED';
   let _waLoggedOut = false;
+  let _waStateResolved = false;
   let _qrPollTimer = null;
   let _lastQrDataUrl = null;
+
+  function isWaUiReady() {
+    return _waStateResolved && (_waState === 'READY' || _waState === 'SYNCING');
+  }
+
+  function applyPendingWaBootstrapUi() {
+    const loggedOutEl = $('#sidebar-logged-out');
+    const chatListEl = $('#chat-list');
+    const syncBarEl = $('#sidebar-sync-bar');
+    const filterEl = document.querySelector('.sidebar-search');
+    const tabsEl = document.querySelector('.sidebar-chat-tabs');
+    const stripEl = $('#status-strip-wrap');
+    if (loggedOutEl) loggedOutEl.style.display = 'none';
+    if (chatListEl) chatListEl.style.display = 'none';
+    if (syncBarEl) syncBarEl.style.display = 'none';
+    if (filterEl) filterEl.style.display = 'none';
+    if (tabsEl) tabsEl.style.display = 'none';
+    if (stripEl) stripEl.hidden = true;
+    if ($('#panel-empty')?.classList.contains('visible')) {
+      $('#welcome-qr').style.display = '';
+      $('#welcome-default').style.display = 'none';
+      $('#sync-progress-panel').style.display = 'none';
+      $('#wqr-loading').style.display = 'flex';
+      $('#wqr-loading-text').textContent = 'Checking WhatsApp session…';
+    }
+  }
+
+  async function pollForQrWhileDisconnected() {
+    if (_qrPollTimer || _waState === 'READY' || _waState === 'SYNCING') return;
+    _qrPollTimer = setInterval(async () => {
+      if (_waState === 'READY' || _waState === 'SYNCING') {
+        clearInterval(_qrPollTimer);
+        _qrPollTimer = null;
+        return;
+      }
+      try {
+        const [st, qr] = await Promise.all([
+          fetch('/api/wa/status').then(r => r.json()).catch(() => null),
+          fetch('/api/wa/qr').then(r => r.json()).catch(() => null),
+        ]);
+        if (st) updateWaUI(st);
+        if (qr?.qr) showQr(qr.qr);
+      } catch { /* ignore */ }
+    }, 3000);
+  }
+
+  applyPendingWaBootstrapUi();
 
   function updateSidebarForWaState() {
     const loggedOutEl = $('#sidebar-logged-out');
@@ -2166,13 +2214,17 @@
     const tabsEl = document.querySelector('.sidebar-chat-tabs');
     const stripEl = $('#status-strip-wrap');
 
-    if (_waLoggedOut && _waState !== 'READY' && _waState !== 'SYNCING') {
+    if (!isWaUiReady()) {
       loggedOutEl.style.display = '';
       chatListEl.style.display = 'none';
       syncBarEl.style.display = 'none';
       if (filterEl) filterEl.style.display = 'none';
       if (tabsEl) tabsEl.style.display = 'none';
       if (stripEl) stripEl.hidden = true;
+      const btn = $('#sidebar-link-wa-btn');
+      if (btn) {
+        btn.textContent = _waLoggedOut ? 'Scan QR Code' : 'Reconnect WhatsApp';
+      }
     } else {
       loggedOutEl.style.display = 'none';
       chatListEl.style.display = '';
@@ -2204,6 +2256,7 @@
   }
 
   function updateWaUI({ state, message }) {
+    _waStateResolved = true;
     _waState = state;
     const msg = message || '';
 
@@ -2246,11 +2299,13 @@
     }
 
     updateSidebarForWaState();
+    renderChatsFromState();
 
     // Main panel: show correct screen based on state
     const isEmptyPanel = $('#panel-empty').classList.contains('visible');
     if (state === 'READY') {
       clearInterval(_qrPollTimer);
+      _qrPollTimer = null;
       $('#welcome-qr').style.display = 'none';
       $('#sync-progress-panel').style.display = 'none';
       $('#welcome-default').style.display = '';
@@ -2277,6 +2332,8 @@
         $('#sync-progress-panel').style.display = 'none';
       }
     } else if (state === 'QR_READY' || _waLoggedOut) {
+      if (activeChat) showEmptyPanel();
+      pollForQrWhileDisconnected();
       $('#sync-progress-panel').style.display = 'none';
       if (isEmptyPanel) {
         $('#welcome-qr').style.display = '';
@@ -2285,6 +2342,8 @@
       $('#wqr-loading').style.display = 'none';
     } else {
       // LOADING or DISCONNECTED (not logged out)
+      if (activeChat) showEmptyPanel();
+      pollForQrWhileDisconnected();
       $('#sync-progress-panel').style.display = 'none';
       if (state === 'DISCONNECTED' || state === 'LOADING') {
         waSyncByChat = {};
@@ -2312,17 +2371,7 @@
     $('#sync-progress-panel').style.display = 'none';
     $('#wqr-status-line').textContent = 'Scan with your phone — refreshes automatically';
 
-    // Safety-net poll every 26s — silently swaps if WebSocket misses a refresh
-    clearInterval(_qrPollTimer);
-    _qrPollTimer = setInterval(async () => {
-      if (_waState === 'READY' || _waState === 'SYNCING') { clearInterval(_qrPollTimer); return; }
-      try {
-        $('#wqr-refreshing').style.display = 'flex';
-        const d = await fetch('/api/wa/qr').then(r => r.json());
-        if (d.qr) showQr(d.qr);
-        else $('#wqr-refreshing').style.display = 'none';
-      } catch { $('#wqr-refreshing').style.display = 'none'; }
-    }, 26_000);
+    pollForQrWhileDisconnected();
   }
 
   function updateSyncProgress(data) {
@@ -2374,7 +2423,6 @@
   // Fetch initial WA state on load
   (async function bootstrapWhatsAppLinking() {
     try {
-      await refreshDash();
       const st = await fetch('/api/wa/status').then(r => r.json());
       updateWaUI(st);
 
@@ -2386,6 +2434,7 @@
       // Try to load QR immediately; showQr() will keep a safety-net poll.
       const d = await fetch('/api/wa/qr').then(r => r.json());
       if (d && d.qr) showQr(d.qr);
+      await refreshDash();
     } catch {
       /* ignore */
     }
@@ -2431,8 +2480,13 @@
       const chats = await chatsRes.json();
       const status = statusRes.ok ? await statusRes.json() : null;
       chatData = chats;
-      renderChatsFromState();
-      adjustSyncingMainPanel();
+      if (isWaUiReady()) {
+        renderChatsFromState();
+        adjustSyncingMainPanel();
+      } else {
+        const list = $('#chat-list');
+        if (list) list.innerHTML = '';
+      }
       await refreshStatusFeed();
       if (status?.stats) {
         const s = status.stats;
@@ -2463,7 +2517,6 @@
       alert('Could not queue AI indexing: ' + (e.message || String(e)));
     }
   }
-  refreshDash();
 
   /** Message `timestamp` from API is unix seconds; tolerate accidental ms */
   function messageTimestampToDate(ts) {
@@ -2652,6 +2705,7 @@
   }
 
   function renderChatsFromState() {
+    if (!isWaUiReady()) return;
     const fq = ($('#filter') && $('#filter').value || '').trim().toLowerCase();
     let list = chatsForCurrentSidebarTab();
     if (fq) {

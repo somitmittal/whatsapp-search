@@ -4,23 +4,23 @@
  * Baileys implements the WhatsApp multi-device WS protocol directly.
  * No Puppeteer / headless browser → no bot-detection / "Can't link" errors.
  */
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import config from '../config.js';
 import {
-  fallbackTitleForOneOnOneJid,
-  formatPhoneLocalPart,
-  isPlausibleHumanChatTitle,
-  looksLikeLidFallbackContactLabel,
-  looksLikeOpaqueNumericId,
-  looksLikePhoneDigitsOnly,
-  looksLikeUrlOrSocialJunk,
-  pickBetterChatTitle,
-  sanitizePeerSenderName,
+    fallbackTitleForOneOnOneJid,
+    formatPhoneLocalPart,
+    isPlausibleHumanChatTitle,
+    looksLikeLidFallbackContactLabel,
+    looksLikeOpaqueNumericId,
+    looksLikePhoneDigitsOnly,
+    looksLikeUrlOrSocialJunk,
+    pickBetterChatTitle,
+    sanitizePeerSenderName,
 } from './chat-display-name.js';
-import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { buildContactPayloadFromInner } from './contact-card.js';
+import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -220,6 +220,8 @@ export default class WaClient {
     this._lastSyncingUiAt = 0;
     /** First time we have DB-visible history (or live traffic) while `SYNCING` → switch UI to `READY` immediately; history may continue in background. */
     this._uiPromotedAfterFirstHistoryBatch = false;
+    /** Consecutive close events that usually indicate a stale/expired session rather than a transient blip. */
+    this._staleSessionCloseCount = 0;
   }
 
   _isSearchGroupJid(jid) {
@@ -254,6 +256,22 @@ export default class WaClient {
     this._sock = null;
     this._setState('DISCONNECTED', 'Logged out');
     this._onDisconnected?.();
+  }
+
+  async _resetAuthAndRequestQr(reason = 'Session expired — rescan QR to reconnect') {
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
+    this._sock = null;
+    this._latestQr = null;
+    this._reconnectAttempt = 0;
+    this._staleSessionCloseCount = 0;
+    try { rmSync(this._authDir, { recursive: true, force: true }); } catch {}
+    mkdirSync(this._authDir, { recursive: true });
+    this._setState('DISCONNECTED', reason);
+    this._onDisconnected?.();
+    if (!this._destroyed) {
+      setTimeout(() => { void this._connect(); }, 300);
+    }
   }
 
   /** @param {{ quotedRow?: object }} [options] Optional quoted message row from DB for replies. */
@@ -406,15 +424,42 @@ export default class WaClient {
         const code = lastDisconnect?.error?.output?.statusCode;
         const boomMsg = lastDisconnect?.error?.message || '';
         const loggedOut = code === DisconnectReason.loggedOut || code === 401;
+        const staleSessionClose = code === DisconnectReason.connectionLost
+          || code === DisconnectReason.connectionClosed
+          || code === DisconnectReason.timedOut;
         console.log(`[WA] Closed — code=${code}, loggedOut=${loggedOut}${boomMsg ? ` — ${boomMsg}` : ''}`);
         this._sock = null;
         clearTimeout(this._reconnectTimer);
         this._reconnectTimer = null;
         if (loggedOut || this._destroyed) {
           this._reconnectAttempt = 0;
+          this._staleSessionCloseCount = 0;
+          if (loggedOut && !this._destroyed) {
+            console.log('[WA] Logged out by server — clearing stale auth and requesting fresh QR');
+            await this._resetAuthAndRequestQr('Logged out — generating a new QR…');
+            return;
+          }
           this._setState('DISCONNECTED', 'Logged out — rescan QR to reconnect');
           this._onDisconnected?.();
+        } else if (staleSessionClose) {
+          this._staleSessionCloseCount += 1;
+          const shouldResetAuth = this._staleSessionCloseCount >= 3;
+          if (shouldResetAuth) {
+            console.log(`[WA] Forcing fresh QR after ${this._staleSessionCloseCount} stale disconnects`);
+            await this._resetAuthAndRequestQr('Session timed out — generating a new QR…');
+            return;
+          }
+          const attempt = this._reconnectAttempt;
+          this._reconnectAttempt = Math.min(attempt + 1, 12);
+          const delayMs = Math.min(5000 * Math.pow(1.6, attempt), 120000);
+          console.log(`[WA] Reconnect in ${Math.round(delayMs / 1000)}s (attempt ${this._reconnectAttempt})`);
+          this._setState('LOADING', `Reconnecting in ${Math.round(delayMs / 1000)}s…`);
+          this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            void this._connect();
+          }, delayMs);
         } else {
+          this._staleSessionCloseCount = 0;
           const attempt = this._reconnectAttempt;
           this._reconnectAttempt = Math.min(attempt + 1, 12);
           const delayMs = Math.min(5000 * Math.pow(1.6, attempt), 120000);
@@ -431,6 +476,7 @@ export default class WaClient {
         clearTimeout(this._reconnectTimer);
         this._reconnectTimer = null;
         this._reconnectAttempt = 0;
+        this._staleSessionCloseCount = 0;
         this._lastSyncingUiAt = 0;
         const user = this._sock.user;
         const name = user?.name || user?.verifiedName || user?.id?.split(':')[0] || 'unknown';
