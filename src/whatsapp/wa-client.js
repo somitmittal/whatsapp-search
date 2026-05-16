@@ -36,12 +36,10 @@ const {
   downloadMediaMessage,
   extractMessageContent,
   getContentType,
-  areJidsSameUser,
 } = require('@whiskeysockets/baileys');
 const QRCode   = require('qrcode');
 const P        = require('pino');
 
-const SEARCH_GROUP     = '🔍 WhatsApp Search';
 const BATCH_MS         = 2000;
 /** Silence after last `messaging-history.set` batch before final “sync complete” (Baileys may pause between batches). */
 const SYNC_DONE_DELAY  = 1_200;
@@ -157,23 +155,6 @@ function replaceLidPlaceholderWithPn(canonJid, chatName) {
   return chatName;
 }
 
-function formatResult(result) {
-  if (!result || result.error) return `❌ Search failed: ${result?.error || 'unknown error'}`;
-  if (!result.answer && !result.sources?.length) return '🔍 No relevant messages found.';
-  const lines = [];
-  if (result.answer) lines.push(result.answer);
-  if (result.sources?.length) {
-    lines.push('\n─── Sources ───');
-    for (const s of result.sources.slice(0, 5)) {
-      const ts = s.timestamp
-        ? new Date(s.timestamp * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
-        : '';
-      lines.push(`• *${s.sender}*${ts ? ` (${ts})` : ''}: ${(s.text || '').slice(0, 120)}`);
-    }
-  }
-  return lines.join('\n');
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 export default class WaClient {
   constructor({ authDir, configFile, onQr, onReady, onMessages, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction }) {
@@ -194,7 +175,6 @@ export default class WaClient {
     this._latestQr      = null;
     this._ownerJid      = null;
     this._ownerName     = null;
-    this._searchGroupJid = null;
     this._chatNames     = new Map();   // jid → display name
     /** Messages received per chat during current history sync (for UI progress). */
     this._syncByChat    = new Map();
@@ -207,9 +187,6 @@ export default class WaClient {
     this._mediaQueue    = [];
     this._mediaDraining = false;
     this._mediaLogger   = P({ level: 'silent' });
-    /** Outgoing search-reply message ids — skip when they echo back in messages.upsert (fromMe). */
-    this._searchReplyMsgIds = new Set();
-
     /** Serialize connects — parallel _connect() calls used to create overlapping Baileys sockets → disconnect loop. */
     this._connectSeq = Promise.resolve();
     /** @type {ReturnType<typeof setTimeout> | null} */
@@ -222,21 +199,6 @@ export default class WaClient {
     this._uiPromotedAfterFirstHistoryBatch = false;
     /** Consecutive close events that usually indicate a stale/expired session rather than a transient blip. */
     this._staleSessionCloseCount = 0;
-  }
-
-  _isSearchGroupJid(jid) {
-    return !!(this._searchGroupJid && jid && areJidsSameUser(jid, this._searchGroupJid));
-  }
-
-  /** Ignore our own notices/replies when they reappear in messages.upsert (fromMe on phone + linked device). */
-  _registerSearchGroupEchoSkip(messageId) {
-    if (!messageId) return;
-    this._searchReplyMsgIds.add(messageId);
-    while (this._searchReplyMsgIds.size > 200) {
-      const first = this._searchReplyMsgIds.values().next().value;
-      if (first) this._searchReplyMsgIds.delete(first);
-      else break;
-    }
   }
 
   get state()    { return this._state; }
@@ -489,20 +451,8 @@ export default class WaClient {
         this._totalMsgs = 0;
         this._uiPromotedAfterFirstHistoryBatch = false;
 
-        // Fallback if no history batches (unusual) — don’t block connect on search-group setup
+        // Fallback if no history batches (unusual)
         this._armSyncDoneTimer(12_000);
-
-        void this._ensureSearchGroup().catch((e) => console.warn('[WA] Group error:', e.message));
-
-        if (this._ownerJid) {
-          const web = publicWebBaseUrl();
-          this._sock?.sendMessage(this._ownerJid, {
-            text:
-              `✅ *WhatsApp Search connected!*\n\n` +
-              `Hi ${name}! Your chat history is syncing. Now search through your chats using AI.\n\n` +
-              `${web}`,
-          }).catch(() => {});
-        }
       }
     });
 
@@ -516,30 +466,6 @@ export default class WaClient {
       for (const msg of messages) {
         const jid = msg.key.remoteJid;
         if (!jid || !msg.message) continue;
-
-        // Search group: queries from phone are fromMe:true on linked device — do not use !fromMe
-        if (this._isSearchGroupJid(jid)) {
-          const mid = msg.key?.id;
-          if (mid && this._searchReplyMsgIds.has(mid)) {
-            this._searchReplyMsgIds.delete(mid);
-            continue;
-          }
-          const query = extractText(msg).trim();
-          if (!query) continue;
-          console.log(`[WA] Search query: "${query}"`);
-          try {
-            const result = await this._onSearchQuery?.(query);
-            const body = formatResult(result);
-            const sent = await this._sock.sendMessage(jid, { text: body });
-            if (sent?.key?.id) this._registerSearchGroupEchoSkip(sent.key.id);
-          } catch (e) {
-            try {
-              const sent = await this._sock.sendMessage(jid, { text: `❌ Error: ${e.message}` });
-              if (sent?.key?.id) this._registerSearchGroupEchoSkip(sent.key.id);
-            } catch { /* */ }
-          }
-          continue;
-        }
 
         const row = this._msgToRow(msg);
         if (!row) continue;
@@ -593,12 +519,12 @@ export default class WaClient {
 
       for (const m of messages || []) {
         const jid = m.key?.remoteJid;
-        if (!jid || this._isSearchGroupJid(jid) || !m.message) continue;
+        if (!jid || !m.message) continue;
         this._syncByChat.set(jid, (this._syncByChat.get(jid) || 0) + 1);
       }
 
       const rows = messages
-        .filter(m => m.message && !this._isSearchGroupJid(m.key.remoteJid))
+        .filter(m => m.message && m.key?.remoteJid)
         .map(m => this._msgToRow(m))
         .filter(Boolean);
 
@@ -606,7 +532,7 @@ export default class WaClient {
         this._onMessages?.(rows);
         for (const m of messages || []) {
           const jid = m.key?.remoteJid;
-          if (!jid || this._isSearchGroupJid(jid) || !m.message) continue;
+          if (!jid || !m.message) continue;
           const row = this._msgToRow(m);
           if (row?.mediaType && MEDIA_FOR_INDEX.has(row.mediaType)) {
             this._queueMediaDownload(m, row);
@@ -904,75 +830,6 @@ export default class WaClient {
     this._syncByChat.clear();
     console.log(`[WA] Sync complete — ${this._totalMsgs} messages`);
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
-    if (this._ownerJid && this._totalMsgs > 0) {
-      const web = publicWebBaseUrl();
-      const groupHint = this._searchGroupJid ? `\n• *WhatsApp*: message the _${SEARCH_GROUP}_ group` : '';
-      this._sock?.sendMessage(this._ownerJid, {
-        text:
-          `🎉 *Sync complete!*\n\n` +
-          `📨 ${this._totalMsgs.toLocaleString()} messages indexed.\n\n` +
-          `Search via:\n` +
-          `• *Web*: ${web}${groupHint}`,
-      }).catch(() => {});
-    }
-  }
-
-  // ── Search group ───────────────────────────────────────────────────────────
-  async _ensureSearchGroup() {
-    const cfg = loadCfg(this._configFile);
-
-    if (cfg.searchGroupJid) {
-      try {
-        await this._sock.groupMetadata(cfg.searchGroupJid);
-        this._searchGroupJid = cfg.searchGroupJid;
-        console.log(`[WA] Existing search group: ${cfg.searchGroupJid}`);
-        try {
-          const sent = await this._sock.sendMessage(this._searchGroupJid, {
-            text: `👋 *WhatsApp Search is active!*\n\nType any question here to search your chats.\nExample: _what was the most heated argument?_`,
-          });
-          if (sent?.key?.id) this._registerSearchGroupEchoSkip(sent.key.id);
-        } catch { /* */ }
-        return;
-      } catch {}
-    }
-
-    let groupJid = null;
-
-    // Strategy 1: empty participants (some WA versions allow it)
-    try {
-      const r = await this._sock.groupCreate(SEARCH_GROUP, []);
-      groupJid = r.id;
-    } catch {}
-
-    // Strategy 2: one contact, remove immediately
-    if (!groupJid) {
-      try {
-        const candidates = [...this._chatNames.keys()]
-          .filter(j => j.endsWith('@s.whatsapp.net') && j !== this._ownerJid);
-        if (candidates.length) {
-          const r = await this._sock.groupCreate(SEARCH_GROUP, [candidates[0]]);
-          groupJid = r.id;
-          if (groupJid) {
-            await new Promise(res => setTimeout(res, 1500));
-            await this._sock.groupParticipantsUpdate(groupJid, [candidates[0]], 'remove');
-          }
-        }
-      } catch (e) { console.warn('[WA] Group fallback failed:', e.message); }
-    }
-
-    if (groupJid) {
-      this._searchGroupJid = groupJid;
-      saveCfg(this._configFile, { ...cfg, searchGroupJid: groupJid });
-      console.log(`[WA] Search group created: ${groupJid}`);
-      try {
-        const sent = await this._sock.sendMessage(groupJid, {
-          text: `🎉 *WhatsApp Search group created!*\n\nThis is your private AI search assistant.\n\n*How to use:* Type any question here.\n\n_Examples:_\n• most heated argument\n• trip plans with Rahul\n• payment discussions last month`,
-        });
-        if (sent?.key?.id) this._registerSearchGroupEchoSkip(sent.key.id);
-      } catch { /* */ }
-    } else {
-      console.warn('[WA] Could not create search group');
-    }
   }
 
   // ── Batch flush ────────────────────────────────────────────────────────────
