@@ -2156,11 +2156,17 @@
   let _waState = 'DISCONNECTED';
   let _waLoggedOut = false;
   let _waStateResolved = false;
+  let _waNeedsRelogin = false;
+  let _waHasEverConnected = false;
   let _qrPollTimer = null;
   let _lastQrDataUrl = null;
 
   function isWaUiReady() {
-    return _waStateResolved && (_waState === 'READY' || _waState === 'SYNCING');
+    return _waStateResolved && (
+      _waState === 'READY'
+      || _waState === 'SYNCING'
+      || (_waHasEverConnected && !_waNeedsRelogin)
+    );
   }
 
   function applyPendingWaBootstrapUi() {
@@ -2260,12 +2266,13 @@
     _waState = state;
     const msg = message || '';
 
-    // Only transition _waLoggedOut to false if we actually succeed in connecting.
-    // If we are just LOADING, we preserve the previous "logged out" state to prevent flickering.
     if (state === 'READY' || state === 'SYNCING') {
+      _waHasEverConnected = true;
       _waLoggedOut = false;
+      _waNeedsRelogin = false;
     } else if ((state === 'DISCONNECTED' && /logged out|rescan qr/i.test(msg)) || state === 'QR_READY') {
       _waLoggedOut = true;
+      _waNeedsRelogin = true;
     }
 
     const dot = $('#wa-dot');
@@ -2331,7 +2338,7 @@
         $('#welcome-default').style.display = 'none';
         $('#sync-progress-panel').style.display = 'none';
       }
-    } else if (state === 'QR_READY' || _waLoggedOut) {
+    } else if (state === 'QR_READY' || _waNeedsRelogin || _waLoggedOut) {
       if (activeChat) showEmptyPanel();
       pollForQrWhileDisconnected();
       $('#sync-progress-panel').style.display = 'none';
@@ -2341,20 +2348,23 @@
       }
       $('#wqr-loading').style.display = 'none';
     } else {
-      // LOADING or DISCONNECTED (not logged out)
-      if (activeChat) showEmptyPanel();
+      // LOADING or DISCONNECTED without an explicit relogin requirement.
       pollForQrWhileDisconnected();
       $('#sync-progress-panel').style.display = 'none';
       if (state === 'DISCONNECTED' || state === 'LOADING') {
         waSyncByChat = {};
         applyWaSyncBars();
       }
-      if (isEmptyPanel && !hasChats) {
+      if (isEmptyPanel && !hasChats && !_waHasEverConnected) {
         $('#welcome-qr').style.display = '';
         $('#welcome-default').style.display = 'none';
       }
-      $('#wqr-loading').style.display = 'flex';
-      $('#wqr-loading-text').textContent = message || 'Starting WhatsApp…';
+      if (isEmptyPanel && !_waHasEverConnected) {
+        $('#wqr-loading').style.display = 'flex';
+        $('#wqr-loading-text').textContent = message || 'Starting WhatsApp…';
+      } else {
+        $('#wqr-loading').style.display = 'none';
+      }
     }
   }
 
