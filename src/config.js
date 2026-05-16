@@ -79,13 +79,13 @@ const config = {
     (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim(),
 
   /**
-   * Baileys linked-device history: `true` (default) pulls more history on connect — more phone “syncing” alerts.
-   * Set `WA_SYNC_FULL_HISTORY=false` for fewer alerts; use chat export + “fetch older” / live messages for depth.
+   * Baileys linked-device history: default `false` for fewer phone “syncing” alerts on connect.
+   * Set `WA_SYNC_FULL_HISTORY=true` if you explicitly want deeper automatic history on first connect.
    */
   waSyncFullHistory: (() => {
     const v = String(process.env.WA_SYNC_FULL_HISTORY ?? '').trim().toLowerCase();
-    if (v === '0' || v === 'false' || v === 'no') return false;
-    return true;
+    if (v === '1' || v === 'true' || v === 'yes') return true;
+    return false;
   })(),
   /**
    * If true, after each READY we auto-run `resyncAppState` + phone-book refresh (heavy; extra sync traffic/notifications).
