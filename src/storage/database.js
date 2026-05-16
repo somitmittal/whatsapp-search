@@ -3,7 +3,6 @@ import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import config from '../config.js';
 import { buildSearchText } from '../search/fact-extract.js';
-import { segmentIntoThreads } from '../search/thread-segment.js';
 import { getCurrentTenantId } from './tenant-context.js';
 import {
   migrateAwaySummaries,
@@ -1217,76 +1216,70 @@ export default class Database {
 
   getChatStats() {
     const t = getCurrentTenantId();
-    const summaryRows = this._db.prepare(`
-      SELECT chat_jid AS chatJid, COUNT(*) AS c FROM thread_summaries WHERE tenant_id = ? GROUP BY chat_jid
-    `).all(t);
+
+    const summaryRows = this._db.prepare(
+      'SELECT chat_jid AS chatJid, COUNT(*) AS c FROM thread_summaries WHERE tenant_id = ? GROUP BY chat_jid',
+    ).all(t);
     const summarizedByChat = new Map(summaryRows.map((r) => [r.chatJid, r.c]));
 
-    const stmt = this._db.prepare(`
-      SELECT chat_jid AS chatJid, chat_name AS chatName, sender, timestamp
-      FROM messages WHERE tenant_id = ? ORDER BY chat_jid ASC, timestamp ASC
-    `);
+    const aggRows = this._db.prepare(`
+      SELECT
+        chat_jid   AS chatJid,
+        COUNT(*)   AS messageCount,
+        MAX(timestamp) AS lastMessageTs,
+        COUNT(DISTINCT sender) AS participantCount
+      FROM messages WHERE tenant_id = ?
+      GROUP BY chat_jid
+    `).all(t);
 
-    const emptyGroup = () => ({
-      messages: [],
-      anyChatName: null,
-      displayChatName: null,
-      peerSenderName: null,
-      peerHumanSenderName: null,
-      firstHumanPeerName: null,
-      bestHumanPeerName: null,
-      senders: new Set(),
-    });
+    const titleRows = this._db.prepare(`
+      SELECT chat_jid AS chatJid, chat_name AS chatName, sender
+      FROM (
+        SELECT chat_jid, chat_name, sender,
+               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
+        FROM messages WHERE tenant_id = ? AND chat_name IS NOT NULL AND chat_name != ''
+      ) WHERE rn <= 5
+    `).all(t);
 
-    const ingestRow = (g, r) => {
-      g.messages.push({ timestamp: r.timestamp });
-      if (r.chatName) {
-        g.anyChatName = r.chatName;
-        if (looksLikeContactDisplayName(r.chatName, r.chatJid)) {
-          const cn = String(r.chatName).trim();
-          if (!g.displayChatName || cn.length > g.displayChatName.length) {
-            g.displayChatName = cn;
-          }
-        }
-      }
-      if (r.sender) g.senders.add(r.sender);
-      const isGroup = r.chatJid.endsWith('@g.us');
-      if (!isGroup && r.sender && r.sender !== 'You') {
-        g.peerSenderName = r.sender;
-        const humanPeer =
-          !looksLikePhoneOnly(r.sender) && isPlausibleHumanChatTitle(r.sender, r.chatJid);
-        if (humanPeer) {
-          const sn = r.sender.trim();
-          g.peerHumanSenderName = r.sender;
-          if (!g.firstHumanPeerName) g.firstHumanPeerName = r.sender;
-          if (!g.bestHumanPeerName || sn.length > g.bestHumanPeerName.length) {
-            g.bestHumanPeerName = sn;
-          }
-        }
-      }
-    };
+    const titlesByChat = new Map();
+    for (const r of titleRows) {
+      if (!titlesByChat.has(r.chatJid)) titlesByChat.set(r.chatJid, []);
+      titlesByChat.get(r.chatJid).push(r);
+    }
 
-    const finalizeChat = (chatJid, g) => {
-      const threads = segmentIntoThreads(g.messages);
-      const totalThreads = threads.length;
-      let summarizedThreads = summarizedByChat.get(chatJid) || 0;
-      if (summarizedThreads > totalThreads) summarizedThreads = totalThreads;
-      const searchIndexPct =
-        totalThreads === 0 ? 100 : Math.min(100, Math.round((summarizedThreads / totalThreads) * 100));
-      const lastMessageTs = g.messages.length ? g.messages[g.messages.length - 1].timestamp : 0;
+    const resolveTitle = (chatJid, rows) => {
       const isGroup = chatJid.endsWith('@g.us');
+      let displayChatName = null;
+      let anyChatName = null;
+      let peerSenderName = null;
+      let bestHumanPeerName = null;
+
+      for (const r of (rows || [])) {
+        if (r.chatName) {
+          anyChatName = r.chatName;
+          if (looksLikeContactDisplayName(r.chatName, chatJid)) {
+            const cn = String(r.chatName).trim();
+            if (!displayChatName || cn.length > displayChatName.length) displayChatName = cn;
+          }
+        }
+        if (!isGroup && r.sender && r.sender !== 'You') {
+          peerSenderName = r.sender;
+          if (!looksLikePhoneOnly(r.sender) && isPlausibleHumanChatTitle(r.sender, chatJid)) {
+            const sn = r.sender.trim();
+            if (!bestHumanPeerName || sn.length > bestHumanPeerName.length) bestHumanPeerName = sn;
+          }
+        }
+      }
+
       let title = isGroup
-        ? (g.displayChatName || g.anyChatName || chatJid)
-        : (g.displayChatName
-          || g.bestHumanPeerName
-          || g.firstHumanPeerName
-          || g.peerHumanSenderName
-          || ((looksLikePhoneOnly(g.anyChatName) || looksLikeLidFallbackContactLabel(g.anyChatName))
-            ? null
-            : g.anyChatName)
-          || g.peerSenderName
-          || g.anyChatName
+        ? (displayChatName || anyChatName || chatJid)
+        : (displayChatName
+          || bestHumanPeerName
+          || ((looksLikePhoneOnly(anyChatName) || looksLikeLidFallbackContactLabel(anyChatName)) ? null : anyChatName)
+          || peerSenderName
+          || anyChatName
           || chatJid);
+
       if (
         !isGroup
         && (chatJid.endsWith('@s.whatsapp.net') || chatJid.endsWith('@hosted'))
@@ -1294,37 +1287,35 @@ export default class Database {
       ) {
         title = formatPhoneLocalPart(chatJid.split('@')[0]);
       }
-      return {
-        chatJid,
-        chatName: title,
-        sidebarTab: sidebarTabForJid(chatJid),
-        messageCount: g.messages.length,
-        participantCount: g.senders.size,
-        lastMessageTs,
-        totalThreads,
-        summarizedThreads,
-        searchIndexPct,
-        aiSearchReady: summarizedThreads > 0,
-        aiSearchComplete: totalThreads === 0 ? true : summarizedThreads >= totalThreads,
-      };
+      return title;
     };
 
     const out = [];
-    let currentJid = null;
-    let g = null;
+    for (const agg of aggRows) {
+      if (!agg.chatJid) continue;
+      const chatJid = agg.chatJid;
+      let summarizedThreads = summarizedByChat.get(chatJid) || 0;
+      const estThreads = Math.max(1, Math.ceil(agg.messageCount / 12));
+      if (summarizedThreads > estThreads) summarizedThreads = estThreads;
+      const searchIndexPct = summarizedThreads > 0
+        ? Math.min(100, Math.round((summarizedThreads / estThreads) * 100))
+        : 0;
 
-    for (const r of stmt.iterate(t)) {
-      if (!r.chatJid) continue;
-      if (r.chatJid !== currentJid) {
-        if (currentJid && g) out.push(finalizeChat(currentJid, g));
-        currentJid = r.chatJid;
-        g = emptyGroup();
-      }
-      ingestRow(g, r);
+      out.push({
+        chatJid,
+        chatName: resolveTitle(chatJid, titlesByChat.get(chatJid)),
+        sidebarTab: sidebarTabForJid(chatJid),
+        messageCount: agg.messageCount,
+        participantCount: agg.participantCount,
+        lastMessageTs: agg.lastMessageTs || 0,
+        totalThreads: estThreads,
+        summarizedThreads,
+        searchIndexPct,
+        aiSearchReady: summarizedThreads > 0,
+        aiSearchComplete: summarizedThreads >= estThreads,
+      });
     }
-    if (currentJid && g) out.push(finalizeChat(currentJid, g));
 
-    /** Recency × log(volume): active one-to-one and group chats float above stale low-traffic threads. */
     const chatListRank = (c) => {
       const lm = c.lastMessageTs || 0;
       const n = Math.max(1, c.messageCount || 0);
@@ -1674,6 +1665,13 @@ export default class Database {
              media_ai_index AS mediaAiIndex, timestamp
       FROM messages WHERE tenant_id = ? AND chat_jid = ? ORDER BY timestamp ASC
     `).all(t, chatJid);
+  }
+
+  getMessageTimestampsForChat(chatJid) {
+    const t = getCurrentTenantId();
+    return this._db.prepare(
+      'SELECT timestamp FROM messages WHERE tenant_id = ? AND chat_jid = ? ORDER BY timestamp ASC',
+    ).all(t, chatJid);
   }
 
   /** Replace all facts for one thread (after re-extraction). */

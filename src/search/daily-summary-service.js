@@ -87,11 +87,12 @@ export default class DailySummaryService {
     this._fallback = fallbackProvider;
     this._onProgress = onProgress ?? null;
     this._running = false;
-    this._aborted = false; // reserved for explicit cancel (future)
-    /** Cooperative stop: next batch boundary exits early so a higher-priority chat can run. */
+    this._aborted = false;
     this._preemptRequested = false;
     /** @type {Map<string, string>} tenantId → chatJid to process first on next run */
     this._priorityChatJidByTenant = new Map();
+    /** @type {Map<string, boolean>} tenantId → true once the initial priority pass completed */
+    this._initialPassDone = new Map();
   }
 
   /**
@@ -232,14 +233,16 @@ export default class DailySummaryService {
       /** Chats that still have at least one unsummarized thread */
       const workQueue = [];
       for (const { chatJid, chatName } of chats) {
-        const allMessages = this._db.getAllMessagesForChat(chatJid);
-        if (allMessages.length === 0) continue;
-        const threads = segmentIntoThreads(allMessages);
+        const timestamps = this._db.getMessageTimestampsForChat(chatJid);
+        if (timestamps.length === 0) continue;
+        const threads = segmentIntoThreads(timestamps);
         if (threads.length === 0) continue;
         const summarizedStarts = this._db.getSummarizedThreadStarts(chatJid);
-        const pending = threads.filter(t => !summarizedStarts.has(t[0].timestamp));
-        if (pending.length === 0) continue;
-        workQueue.push({ chatJid, chatName, pending });
+        const pendingThreadStarts = threads
+          .filter(t => !summarizedStarts.has(t[0].timestamp))
+          .map(t => ({ start: t[0].timestamp, end: t[t.length - 1].timestamp }));
+        if (pendingThreadStarts.length === 0) continue;
+        workQueue.push({ chatJid, chatName, pendingThreadStarts });
       }
 
       const chatMeta = new Map(chats.map((c) => [c.chatJid, c]));
@@ -251,8 +254,6 @@ export default class DailySummaryService {
         return lm * Math.log1p(n);
       };
 
-      // Real chats first; Status / broadcasts / newsletters last.
-      // Within each tier: frequent + recent chats first so active threads get indexed before rate limits bite tail chats.
       workQueue.sort((a, b) => {
         const fa = isWhatsAppLowPriorityFeed(a.chatJid) ? 1 : 0;
         const fb = isWhatsAppLowPriorityFeed(b.chatJid) ? 1 : 0;
@@ -271,7 +272,15 @@ export default class DailySummaryService {
         }
       }
 
-      const chatsTotal = workQueue.length;
+      const INITIAL_PRIORITY_CHATS = 10;
+      const isInitialPass = !this._initialPassDone.get(String(tid));
+      let effectiveQueue = workQueue;
+      if (isInitialPass && workQueue.length > INITIAL_PRIORITY_CHATS) {
+        effectiveQueue = workQueue.slice(0, INITIAL_PRIORITY_CHATS);
+        console.log(`[Summaries] Initial pass: indexing top ${INITIAL_PRIORITY_CHATS} of ${workQueue.length} chats first`);
+      }
+
+      const chatsTotal = effectiveQueue.length;
       let totalGenerated = 0;
 
       if (chatsTotal === 0) {
@@ -289,7 +298,7 @@ export default class DailySummaryService {
 
       let chatIndex = 0;
       let clearedPreferred = false;
-      summaryPass: for (const { chatJid, chatName, pending } of workQueue) {
+      summaryPass: for (const { chatJid, chatName, pendingThreadStarts } of effectiveQueue) {
         if (this._preemptRequested) {
           this._preemptRequested = false;
           this._restartPending = true;
@@ -297,7 +306,8 @@ export default class DailySummaryService {
           break summaryPass;
         }
         chatIndex += 1;
-        console.log(`[Summaries] ${chatName || chatJid}: ${pending.length} unsummarized threads (${chatIndex}/${chatsTotal} chats)`);
+        const pendingCount = pendingThreadStarts.length;
+        console.log(`[Summaries] ${chatName || chatJid}: ${pendingCount} unsummarized threads (${chatIndex}/${chatsTotal} chats)`);
 
         this._onProgress?.({
           phase: 'summary',
@@ -305,7 +315,7 @@ export default class DailySummaryService {
           chatName: chatName || chatJid,
           chatIndex,
           chatsTotal,
-          threadsTotal: pending.length,
+          threadsTotal: pendingCount,
           threadsDone: 0,
           active: true,
         });
@@ -313,7 +323,7 @@ export default class DailySummaryService {
         let completed = 0;
         let consecutiveFailures = 0;
 
-        for (let batchStart = 0; batchStart < pending.length; ) {
+        for (let batchStart = 0; batchStart < pendingCount; ) {
           if (this._preemptRequested) {
             this._preemptRequested = false;
             this._restartPending = true;
@@ -341,9 +351,13 @@ export default class DailySummaryService {
             break;
           }
 
-          const batch = pending.slice(batchStart, batchStart + concurrency);
+          const batchSpecs = pendingThreadStarts.slice(batchStart, batchStart + concurrency);
+          const batchThreads = batchSpecs.map(spec =>
+            this._db.getMessagesByTimeRange(chatJid, spec.start, spec.end),
+          ).filter(t => t.length > 0);
+
           const results = await Promise.allSettled(
-            batch.map(thread => this._summariseThread(activeProvider, thread, chatJid, chatName, chunkSize))
+            batchThreads.map(thread => this._summariseThread(activeProvider, thread, chatJid, chatName, chunkSize))
           );
 
           let batchSuccesses = 0;
@@ -366,7 +380,7 @@ export default class DailySummaryService {
             chatName: chatName || chatJid,
             chatIndex,
             chatsTotal,
-            threadsTotal: pending.length,
+            threadsTotal: pendingCount,
             threadsDone: completed,
             active: true,
           });
@@ -378,18 +392,18 @@ export default class DailySummaryService {
             console.log('[Summaries] Preempted after thread batch — restarting with updated priority');
             break summaryPass;
           }
-          if (batchStart < pending.length) await sleep(delayMs);
+          if (batchStart < pendingCount) await sleep(delayMs);
         }
 
-        const threadsProcessed = Math.min(completed, pending.length);
-        const chatFinished = threadsProcessed >= pending.length;
+        const threadsProcessed = Math.min(completed, pendingCount);
+        const chatFinished = threadsProcessed >= pendingCount;
         this._onProgress?.({
           phase: 'summary',
           chatJid,
           chatName: chatName || chatJid,
           chatIndex,
           chatsTotal,
-          threadsTotal: pending.length,
+          threadsTotal: pendingCount,
           threadsDone: threadsProcessed,
           chatComplete: chatFinished,
           active: false,
@@ -405,6 +419,15 @@ export default class DailySummaryService {
         console.log(`[Summaries] Done — generated ${totalGenerated} thread summaries`);
       }
       this._onProgress?.({ phase: 'summary', done: true, chatsTotal, totalGenerated });
+
+      if (isInitialPass) {
+        this._initialPassDone.set(String(tid), true);
+        if (workQueue.length > INITIAL_PRIORITY_CHATS) {
+          console.log(`[Summaries] Initial priority pass done — scheduling full pass for remaining ${workQueue.length - INITIAL_PRIORITY_CHATS} chats`);
+          this._restartPending = true;
+        }
+      }
+
       return totalGenerated;
     } finally {
       this._running = false;

@@ -1459,13 +1459,15 @@ export default class WebServer {
         const tid = getCurrentTenantId();
         const st = this._getTenantState(tid);
         const totalInserted = results.reduce((n, r) => n + (Number(r.inserted) || 0), 0);
+        const totalParsed = results.reduce((n, r) => n + (Number(r.parsedCount ?? r.total) || 0), 0);
+        const stats = this.db.getTotalStats();
         this._broadcast(
-          { type: 'status', data: { connected: st.extensionConnected, stats: this.db.getTotalStats() } },
+          { type: 'status', data: { connected: st.extensionConnected, stats } },
           tid,
         );
-        if (totalInserted > 0) {
+        if (totalInserted > 0 || totalParsed > 0) {
           this._broadcast(
-            { type: 'new-messages', data: { count: totalInserted, stats: this.db.getTotalStats() } },
+            { type: 'new-messages', data: { count: totalInserted, stats } },
             tid,
           );
         }

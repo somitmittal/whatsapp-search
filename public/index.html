@@ -1656,8 +1656,8 @@
   let ws, chatData = [], activeChat = null, connected = false, searchActive = false;
   /** Smaller pages when loading *older* history (after the first full window). */
   const CHAT_PAGE = 80;
-  /** First open: request up to server max (`MAX_MESSAGES_PAGE`); server clamps. */
-  const INITIAL_CHAT_MESSAGES_LIMIT = 50000;
+  /** First open: load enough for a usable view; scroll-up loads older pages. */
+  const INITIAL_CHAT_MESSAGES_LIMIT = 500;
   let chatMessagesOffset = 0;
   let chatHasMoreLocal = true;
   let chatLoadingOlder = false;
@@ -2641,7 +2641,8 @@
   function shouldHideComposerForJid(jid) {
     if (!jid) return true;
     return jid === 'status@broadcast' || jid.endsWith('@broadcast')
-      || jid.endsWith('@newsletter') || jid.endsWith('@bot');
+      || jid.endsWith('@newsletter') || jid.endsWith('@bot')
+      || jid.endsWith('@imported');
   }
 
   async function refreshStatusFeed() {
