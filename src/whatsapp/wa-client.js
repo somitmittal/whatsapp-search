@@ -40,9 +40,7 @@ const {
 const QRCode   = require('qrcode');
 const P        = require('pino');
 
-const BATCH_MS         = 2000;
-/** Silence after last `messaging-history.set` batch before final “sync complete” (Baileys may pause between batches). */
-const SYNC_DONE_DELAY  = 1_200;
+const BATCH_MS = 2000;
 
 const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
 const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
@@ -157,12 +155,14 @@ function replaceLidPlaceholderWithPn(canonJid, chatName) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default class WaClient {
-  constructor({ authDir, configFile, onQr, onReady, onMessages, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction }) {
+  constructor({ authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction }) {
     this._authDir = authDir || join(config.dataDir, '.baileys_auth');
     this._configFile = configFile || join(config.dataDir, 'wa-config.json');
     this._onQr          = onQr;
     this._onReady       = onReady;
     this._onMessages    = onMessages;
+    this._onChatsPreview = onChatsPreview;
+    this._onHistorySyncComplete = onHistorySyncComplete;
     this._onStatus      = onStatus;
     this._onProgress    = onProgress;
     this._onSearchQuery = onSearchQuery;
@@ -203,6 +203,8 @@ export default class WaClient {
 
   get state()    { return this._state; }
   get latestQr() { return this._latestQr; }
+  /** True while Baileys may still send `messaging-history.set` batches (UI may already be READY). */
+  get isInitialHistorySync() { return !this._historyDone; }
 
   async start() {
     if (this._sock || this._destroyed) return;
@@ -452,7 +454,7 @@ export default class WaClient {
         this._uiPromotedAfterFirstHistoryBatch = false;
 
         // Fallback if no history batches (unusual)
-        this._armSyncDoneTimer(12_000);
+        this._armSyncDoneTimer(Math.max(config.waSyncDoneDelayMs, 12_000));
       }
     });
 
@@ -515,6 +517,12 @@ export default class WaClient {
         console.warn('[WA] history name hydrate:', e.message);
       }
 
+      const preview = this._buildHistoryChatsPreview(chats);
+      if (preview.length) {
+        this._onChatsPreview?.(preview);
+        this._promoteUiWhileHistoryContinues();
+      }
+
       await this._backfillLidPnChatNamesFromMessages(messages || []);
 
       for (const m of messages || []) {
@@ -523,41 +531,18 @@ export default class WaClient {
         this._syncByChat.set(jid, (this._syncByChat.get(jid) || 0) + 1);
       }
 
-      const rows = messages
+      const rows = (messages || [])
         .filter(m => m.message && m.key?.remoteJid)
         .map(m => this._msgToRow(m))
         .filter(Boolean);
 
       if (rows.length) {
-        this._onMessages?.(rows);
-        for (const m of messages || []) {
-          const jid = m.key?.remoteJid;
-          if (!jid || !m.message) continue;
-          const row = this._msgToRow(m);
-          if (row?.mediaType && MEDIA_FOR_INDEX.has(row.mediaType)) {
-            this._queueMediaDownload(m, row);
-          }
-        }
-        this._totalMsgs += rows.length;
-        this._onProgress?.({
-          completed: 0,
-          total: 0,
-          messages: this._totalMsgs,
-          byChat: Object.fromEntries(this._syncByChat),
-        });
-        const now = Date.now();
-        if (now - this._lastSyncingUiAt >= 1200) {
-          this._lastSyncingUiAt = now;
-          if (!this._uiPromotedAfterFirstHistoryBatch) {
-            this._setState('SYNCING', `Syncing… ${this._totalMsgs.toLocaleString()} messages received`);
-          }
-        }
-        this._promoteUiWhileHistoryContinues();
-        console.log(`[WA] History batch: +${rows.length} msgs (total ${this._totalMsgs})`);
+        this._ingestHistoryRowsChunked(rows);
+        console.log(`[WA] History batch queued: ${rows.length} msgs (total ${this._totalMsgs + rows.length})`);
       }
 
-      // Reset the "done" timer — no more batches for SYNC_DONE_DELAY → mark ready
-      this._armSyncDoneTimer(SYNC_DONE_DELAY);
+      // Reset the "done" timer — no more batches for waSyncDoneDelayMs → mark ready
+      this._armSyncDoneTimer(config.waSyncDoneDelayMs);
     });
 
     // Chat / contact name updates
@@ -819,6 +804,54 @@ export default class WaClient {
     this._setState('READY', msg);
   }
 
+  _buildHistoryChatsPreview(chats) {
+    return (chats || [])
+      .filter((c) => c?.id)
+      .map((c) => {
+        const ts = c.conversationTimestamp != null ? Number(c.conversationTimestamp) : 0;
+        return {
+          chatJid: c.id,
+          chatName: c.name || null,
+          messageCount: 0,
+          lastMessageTs: ts > 1e12 ? ts : ts > 0 ? ts * 1000 : 0,
+          summarizedCount: 0,
+          participantCount: isJidGroup(c.id) ? 2 : 1,
+        };
+      });
+  }
+
+  /**
+   * Insert history in small chunks so SQLite + WebSocket work does not block the Baileys socket
+   * (blocking here was causing connectionLost / reconnect loops when many chats loaded at once).
+   */
+  _ingestHistoryRowsChunked(rows) {
+    const chunkSize = config.waHistoryChunkSize;
+    let offset = 0;
+    const drain = () => {
+      if (offset >= rows.length) return;
+      const chunk = rows.slice(offset, offset + chunkSize);
+      offset += chunk.length;
+      this._onMessages?.(chunk);
+      this._totalMsgs += chunk.length;
+      this._onProgress?.({
+        completed: 0,
+        total: 0,
+        messages: this._totalMsgs,
+        byChat: Object.fromEntries(this._syncByChat),
+      });
+      const now = Date.now();
+      if (now - this._lastSyncingUiAt >= 1200) {
+        this._lastSyncingUiAt = now;
+        if (!this._uiPromotedAfterFirstHistoryBatch) {
+          this._setState('SYNCING', `Syncing… ${this._totalMsgs.toLocaleString()} messages received`);
+        }
+      }
+      this._promoteUiWhileHistoryContinues();
+      if (offset < rows.length) setImmediate(drain);
+    };
+    drain();
+  }
+
   _armSyncDoneTimer(ms) {
     clearTimeout(this._syncDoneTimer);
     this._syncDoneTimer = setTimeout(() => this._finishSync(), ms);
@@ -830,6 +863,9 @@ export default class WaClient {
     this._syncByChat.clear();
     console.log(`[WA] Sync complete — ${this._totalMsgs} messages`);
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
+    try { this._onHistorySyncComplete?.(); } catch (e) {
+      console.warn('[WA] onHistorySyncComplete:', e.message);
+    }
   }
 
   // ── Batch flush ────────────────────────────────────────────────────────────

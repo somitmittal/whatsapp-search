@@ -87,6 +87,10 @@ const config = {
     if (v === '1' || v === 'true' || v === 'yes') return true;
     return false;
   })(),
+  /** Rows per SQLite batch during `messaging-history.set` (smaller = less event-loop blocking / fewer disconnects). */
+  waHistoryChunkSize: Math.max(50, parseInt(process.env.WA_HISTORY_CHUNK_SIZE || '350', 10) || 350),
+  /** Idle ms after the last history batch before marking sync complete (Baileys often pauses 5–30s between batches). */
+  waSyncDoneDelayMs: Math.max(3000, parseInt(process.env.WA_SYNC_DONE_DELAY_MS || '15000', 10) || 15000),
   /**
    * If true, after each READY we auto-run `resyncAppState` + phone-book refresh (heavy; extra sync traffic/notifications).
    * Default false — use Settings → “Refresh contact names” or `POST /api/wa/sync-contacts` when you want names updated.
@@ -94,6 +98,16 @@ const config = {
    */
   waAutoAppStateResync: ['1', 'true', 'yes'].includes(
     String(process.env.WA_AUTO_APP_STATE_RESYNC ?? '').trim().toLowerCase(),
+  ),
+  /**
+   * Import-first MVP: sidebar/search work from SQLite exports without linking WhatsApp.
+   * Set `WA_LIVE_SYNC=1` to re-enable live QR sync UI and auto-connect on page load.
+   */
+  importFirstMvp: !['1', 'true', 'yes'].includes(
+    String(process.env.WA_LIVE_SYNC ?? '').trim().toLowerCase(),
+  ),
+  waLiveSyncAutoConnect: ['1', 'true', 'yes'].includes(
+    String(process.env.WA_LIVE_SYNC_AUTO_CONNECT ?? '').trim().toLowerCase(),
   ),
 };
 

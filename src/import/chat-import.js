@@ -240,8 +240,19 @@ export function importExportedChat(db, content, chatName) {
     timestamp: m.timestamp,
   }));
 
+  const touchedAt = Math.floor(Date.now() / 1000);
+  if (typeof db.recordChatImportTouch === 'function') {
+    db.recordChatImportTouch(chatJid, touchedAt);
+  }
   const { count: inserted } = db.insertMessageBatch(rows);
-  return { inserted, total: messages.length, parsedCount: messages.length };
+  return {
+    inserted,
+    total: messages.length,
+    parsedCount: messages.length,
+    chatJid,
+    alreadyInDb: inserted === 0,
+    lastMessageTs: touchedAt,
+  };
 }
 
 /**

@@ -1199,16 +1199,27 @@
 
     <!-- Logged-out overlay — replaces chat list when WA is disconnected -->
     <div id="sidebar-logged-out" style="display:none;padding:40px 24px;text-align:center;">
-      <div style="width:56px;height:56px;background:#e7f8f2;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+      <div id="sidebar-empty-icon" style="width:56px;height:56px;background:#e7f8f2;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="#00a884"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.890-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
       </div>
-      <div style="font-weight:600;font-size:15px;color:var(--text);margin-bottom:6px;">Link WhatsApp</div>
+      <div id="sidebar-import-prompt" style="display:none;">
+        <div style="font-weight:600;font-size:15px;color:var(--text);margin-bottom:6px;">Import your chats</div>
+        <div style="font-size:13px;color:var(--text2);line-height:1.4;margin-bottom:18px;">
+          Export a chat on your phone (.zip) and upload with <strong>+</strong> above.
+        </div>
+        <button type="button" id="sidebar-import-btn" class="btn btn-primary" style="padding:8px 24px;font-size:13px;border-radius:20px;background:#00a884;border:none;color:#fff;cursor:pointer;margin-bottom:14px;">
+          Import chat export
+        </button>
+      </div>
+      <div id="sidebar-wa-prompt" class="live-sync-ui">
+        <div style="font-weight:600;font-size:15px;color:var(--text);margin-bottom:6px;">Link WhatsApp</div>
       <div style="font-size:13px;color:var(--text2);line-height:1.4;margin-bottom:18px;">
         Connect your WhatsApp account to see<br>your chats and search through them.
       </div>
-      <button type="button" id="sidebar-link-wa-btn" class="btn btn-primary" style="padding:8px 24px;font-size:13px;border-radius:20px;background:#00a884;border:none;color:#fff;cursor:pointer;">
-        Scan QR Code
-      </button>
+        <button type="button" id="sidebar-link-wa-btn" class="btn btn-primary" style="padding:8px 24px;font-size:13px;border-radius:20px;background:#00a884;border:none;color:#fff;cursor:pointer;">
+          Scan QR Code
+        </button>
+      </div>
     </div>
 
     <div id="chat-list" class="chat-list"></div>
@@ -1278,7 +1289,7 @@
       <!-- Welcome / QR connect panel -->
       <div id="panel-empty" class="panel visible">
         <!-- QR connect state — shown when WA not yet linked -->
-        <div id="welcome-qr" class="welcome-panel" style="display:none;">
+        <div id="welcome-qr" class="welcome-panel live-sync-ui" style="display:none;">
           <div style="width:52px;height:52px;background:#00a884;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="white"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.890-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
           </div>
@@ -1345,7 +1356,7 @@
             <button class="btn btn-primary" id="btn-restore-backup" type="button" style="min-width:220px;">
               Restore from WhatsApp Backup
             </button>
-            <button class="btn btn-secondary" id="btn-link-whatsapp" type="button" style="min-width:220px;">
+            <button class="btn btn-secondary" id="btn-link-whatsapp" type="button" style="min-width:220px;display:none;">
               Link WhatsApp (Live Sync)
             </button>
           </div>
@@ -1550,9 +1561,9 @@
           <div class="setting-row" style="gap:12px;"><button class="btn btn-secondary" id="smi-save">Save Media Indexing</button><span id="smi-status"></span></div>
           <div id="smi-hint" style="font-size:11px;color:var(--text2);margin-top:4px;">Recommended: Gemini — supports images, short video inline, and audio via the same API. Groq search stays fast for text.</div>
         </div>
-        <div class="setting-group">
-          <h3>WhatsApp Connection</h3>
-          <p>Link your phone as a WhatsApp Web device. Scan once — session is saved automatically.</p>
+        <div id="wa-live-sync-settings" class="setting-group live-sync-ui" style="display:none;">
+          <h3>WhatsApp Connection <span style="font-weight:400;font-size:12px;color:var(--text2);">(optional — live sync)</span></h3>
+          <p>Link your phone as a WhatsApp Web device. For the MVP, import chat exports with <strong>+</strong> — live sync is optional.</p>
           <div class="setting-row" style="margin-bottom:8px;">
             <span class="health-dot" id="wa-dot"></span>
             <span id="wa-status-text">Initialising…</span>
@@ -1575,6 +1586,11 @@
               <span id="wa-refresh-names-status" style="font-size:12px;color:var(--text2);"></span>
             </div>
           </div>
+        </div>
+        <div class="setting-group">
+          <h3>Advanced</h3>
+          <p style="font-size:13px;color:var(--text2);">Live WhatsApp QR sync is optional. Import exports with <strong>+</strong> for the full archive.</p>
+          <button type="button" class="btn btn-secondary" id="btn-enable-live-sync" style="margin-top:8px;">Enable live WhatsApp sync (QR)…</button>
         </div>
         <div class="setting-group">
           <h3>Data</h3>
@@ -2075,14 +2091,16 @@
     }
     $('#panel-search').classList.remove('visible');
     $$('.panel').forEach(p => p.classList.remove('visible'));
-    if (activeChat && isWaUiReady()) {
+    if (activeChat && canShowChatUI()) {
       $('#panel-chat').classList.add('visible');
     } else {
       $('#panel-empty').classList.add('visible');
-      // Show QR/reconnect screen until WhatsApp is fully ready.
-      if (!isWaUiReady()) {
+      if (!canShowChatUI() && wantsLiveSyncUi()) {
         $('#welcome-qr').style.display = '';
         $('#welcome-default').style.display = 'none';
+      } else if (!canShowChatUI()) {
+        $('#welcome-qr').style.display = 'none';
+        $('#welcome-default').style.display = hasIndexedArchive() ? '' : 'none';
       } else {
         $('#welcome-qr').style.display = 'none';
         $('#welcome-default').style.display = '';
@@ -2132,6 +2150,13 @@
         }
         else if (msg.type === 'chat-names-refreshed') { refreshDash(); }
         else if (msg.type === 'wa-status') {
+          const st = msg.data?.state;
+          const ignoreForImportFirst = _importFirstMvp && !_showLiveSyncUi
+            && (st === 'QR_READY' || st === 'LOADING');
+          if (ignoreForImportFirst) {
+            if (msg.data?.stats) void refreshDash();
+            return;
+          }
           // Load chat list from SQLite *before* routing UI — reconnect shows saved history instantly (no wait for phone sync).
           if (msg.data.stats) {
             void refreshDash().then(() => {
@@ -2143,7 +2168,10 @@
             if (msg.data.state === 'READY') clearInterval(_qrPollTimer);
           }
         }
-        else if (msg.type === 'wa-qr') { showQr(msg.data.qr); }
+        else if (msg.type === 'wa-qr') {
+          if (!(_importFirstMvp && !_showLiveSyncUi)) showQr(msg.data.qr);
+        }
+        else if (msg.type === 'sync-chats-preview') { mergeSyncChatsPreview(msg.data?.chats); }
         else if (msg.type === 'sync-progress') { updateSyncProgress(msg.data); }
         else if (msg.type === 'summary-progress') { handleSummaryProgress(msg.data); }
         else if (msg.type === 'message-reaction' && msg.data) { applyIncomingReactionToDom(msg.data); }
@@ -2164,6 +2192,52 @@
   let _waHasEverConnected = false;
   let _qrPollTimer = null;
   let _lastQrDataUrl = null;
+  let _importFirstMvp = true;
+  let _waLiveSyncAutoConnect = false;
+  let _showLiveSyncUi = localStorage.getItem("wa_show_live_sync") === "1";
+  let _archiveChatCount = 0;
+  let _archiveMessageCount = 0;
+
+  function hasIndexedArchive() {
+    return (Array.isArray(chatData) && chatData.length > 0)
+      || _archiveChatCount > 0
+      || _archiveMessageCount > 0;
+  }
+
+  function canShowChatUI() {
+    return isWaUiReady() || hasIndexedArchive();
+  }
+
+  function wantsLiveSyncUi() {
+    return !_importFirstMvp || _showLiveSyncUi || isWaUiReady();
+  }
+
+  function applyLiveSyncVisibility() {
+    const show = wantsLiveSyncUi();
+    document.querySelectorAll(".live-sync-ui").forEach((el) => {
+      el.style.display = show ? "" : "none";
+    });
+    const wqr = document.getElementById("welcome-qr");
+    if (wqr && _importFirstMvp && !show && !isWaUiReady()) wqr.style.display = "none";
+    const wdef = document.getElementById("welcome-default");
+    if (wdef && _importFirstMvp && !isWaUiReady() && hasIndexedArchive()) wdef.style.display = "";
+    const waSettings = document.getElementById("wa-live-sync-settings");
+    if (waSettings) waSettings.style.display = _showLiveSyncUi ? "" : "none";
+    const btnWa = document.getElementById("btn-link-whatsapp");
+    if (btnWa) btnWa.style.display = show ? "" : "none";
+    const banner = document.getElementById("wa-banner");
+    if (banner && _importFirstMvp && !show) banner.style.display = "none";
+  }
+
+  function enableLiveSyncUi() {
+    _showLiveSyncUi = true;
+    localStorage.setItem("wa_show_live_sync", "1");
+    applyLiveSyncVisibility();
+    updateSidebarForWaState();
+    renderChatsFromState();
+    void bootstrapWhatsAppLinking({ forceConnect: true });
+  }
+
 
   function isWaUiReady() {
     return _waStateResolved && (
@@ -2174,6 +2248,7 @@
   }
 
   function applyPendingWaBootstrapUi() {
+    if (!wantsLiveSyncUi() || hasIndexedArchive()) return;
     const loggedOutEl = $('#sidebar-logged-out');
     const chatListEl = $('#chat-list');
     const syncBarEl = $('#sidebar-sync-bar');
@@ -2214,7 +2289,7 @@
     }, 3000);
   }
 
-  applyPendingWaBootstrapUi();
+  // deferred: bootstrapWhatsAppLinking
 
   function updateSidebarForWaState() {
     const loggedOutEl = $('#sidebar-logged-out');
@@ -2224,9 +2299,21 @@
     const tabsEl = document.querySelector('.sidebar-chat-tabs');
     const stripEl = $('#status-strip-wrap');
 
-    if (!isWaUiReady()) {
+    if (!canShowChatUI()) {
       loggedOutEl.style.display = '';
       chatListEl.style.display = 'none';
+      const impPrompt = document.getElementById('sidebar-import-prompt');
+      const waPrompt = document.getElementById('sidebar-wa-prompt');
+      const emptyIcon = document.getElementById('sidebar-empty-icon');
+      if (impPrompt && waPrompt && _importFirstMvp && !wantsLiveSyncUi()) {
+        impPrompt.style.display = '';
+        waPrompt.style.display = 'none';
+        if (emptyIcon) emptyIcon.style.display = 'none';
+      } else if (impPrompt && waPrompt) {
+        impPrompt.style.display = 'none';
+        waPrompt.style.display = '';
+        if (emptyIcon) emptyIcon.style.display = '';
+      }
       syncBarEl.style.display = 'none';
       if (filterEl) filterEl.style.display = 'none';
       if (tabsEl) tabsEl.style.display = 'none';
@@ -2274,7 +2361,10 @@
       _waHasEverConnected = true;
       _waLoggedOut = false;
       _waNeedsRelogin = false;
-    } else if ((state === 'DISCONNECTED' && /logged out|rescan qr/i.test(msg)) || state === 'QR_READY') {
+    } else if (state === 'DISCONNECTED' && /logged out|rescan qr/i.test(msg)) {
+      _waLoggedOut = true;
+      _waNeedsRelogin = true;
+    } else if (state === 'QR_READY' && wantsLiveSyncUi()) {
       _waLoggedOut = true;
       _waNeedsRelogin = true;
     }
@@ -2296,17 +2386,19 @@
     if (readyPanel) readyPanel.style.display = state === 'READY' ? '' : 'none';
     if (state === 'READY' && $('#wa-ready-msg')) $('#wa-ready-msg').textContent = message || 'Connected';
 
-    // Sidebar banner (hidden when logged-out overlay is shown)
-    if (state === 'READY' || _waLoggedOut) {
+    // Sidebar banner (hidden when logged-out overlay is shown or import-first without live sync)
+    if (state === 'READY' || _waLoggedOut || !wantsLiveSyncUi()) {
       banner.style.display = 'none';
     } else if (state === 'QR_READY') {
       banner.style.display = 'flex';
       banner.style.background = '#fff3cd'; banner.style.color = '#856404';
       $('#wa-banner-text').textContent = 'Scan QR code to connect WhatsApp';
-    } else {
+    } else if (wantsLiveSyncUi()) {
       banner.style.display = 'flex';
       banner.style.background = '#f0f2f5'; banner.style.color = '#667781';
       $('#wa-banner-text').textContent = message || 'Connecting…';
+    } else {
+      banner.style.display = 'none';
     }
 
     updateSidebarForWaState();
@@ -2343,43 +2435,54 @@
         $('#sync-progress-panel').style.display = 'none';
       }
     } else if (state === 'QR_READY' || _waNeedsRelogin || _waLoggedOut) {
-      if (activeChat) showEmptyPanel();
-      pollForQrWhileDisconnected();
-      $('#sync-progress-panel').style.display = 'none';
-      if (isEmptyPanel) {
-        $('#welcome-qr').style.display = '';
-        $('#welcome-default').style.display = 'none';
+      if (activeChat && wantsLiveSyncUi()) showEmptyPanel();
+      if (wantsLiveSyncUi()) {
+        pollForQrWhileDisconnected();
+        $('#sync-progress-panel').style.display = 'none';
+        if (isEmptyPanel) {
+          $('#welcome-qr').style.display = '';
+          $('#welcome-default').style.display = 'none';
+        }
+        $('#wqr-loading').style.display = 'none';
+      } else if (activeChat) {
+        switchPanel();
       }
-      $('#wqr-loading').style.display = 'none';
     } else {
       // LOADING or DISCONNECTED without an explicit relogin requirement.
-      pollForQrWhileDisconnected();
+      if (wantsLiveSyncUi()) pollForQrWhileDisconnected();
       $('#sync-progress-panel').style.display = 'none';
       if (state === 'DISCONNECTED' || state === 'LOADING') {
         waSyncByChat = {};
         applyWaSyncBars();
       }
-      if (isEmptyPanel && !hasChats && !_waHasEverConnected) {
+      if (wantsLiveSyncUi() && isEmptyPanel && !hasChats && !_waHasEverConnected) {
         $('#welcome-qr').style.display = '';
         $('#welcome-default').style.display = 'none';
       }
-      if (isEmptyPanel && !_waHasEverConnected) {
+      if (wantsLiveSyncUi() && isEmptyPanel && !_waHasEverConnected) {
         $('#wqr-loading').style.display = 'flex';
         $('#wqr-loading-text').textContent = message || 'Starting WhatsApp…';
       } else {
         $('#wqr-loading').style.display = 'none';
       }
     }
+    applyLiveSyncVisibility();
+    if (activeChat && hasIndexedArchive()) switchPanel();
   }
 
   function showQr(dataUrl) {
     if (!dataUrl || dataUrl === _lastQrDataUrl) return;
+    if (_importFirstMvp && !_showLiveSyncUi) return;
     _lastQrDataUrl = dataUrl;
 
     // Silently swap image — no expiry overlay
     $('#wqr-img').src = dataUrl;
     $('#wqr-loading').style.display = 'none';
     $('#wqr-refreshing').style.display = 'none';
+    if (activeChat && hasIndexedArchive()) {
+      switchPanel();
+      return;
+    }
     $('#welcome-qr').style.display = '';
     $('#welcome-default').style.display = 'none';
     $('#sync-progress-panel').style.display = 'none';
@@ -2435,24 +2538,49 @@
   }
 
   // Fetch initial WA state on load
-  (async function bootstrapWhatsAppLinking() {
+  async function bootstrapWhatsAppLinking(opts = {}) {
+    const forceConnect = !!opts.forceConnect;
     try {
-      const st = await fetch('/api/wa/status').then(r => r.json());
-      updateWaUI(st);
+      const cfg = await fetch('/api/app-config').then((r) => r.json()).catch(() => ({}));
+      _importFirstMvp = cfg.importFirstMvp !== false;
+      _waLiveSyncAutoConnect = !!cfg.waLiveSyncAutoConnect;
+      if (!_showLiveSyncUi) _showLiveSyncUi = localStorage.getItem('wa_show_live_sync') === '1';
 
-      // If not connected yet, kick off linking automatically so the QR appears without extra clicks.
-      if (st && (st.state === 'DISCONNECTED' || st.state === 'LOADING') && !st.hasQr) {
-        try { await fetch('/api/wa/connect', { method: 'POST' }); } catch { /* ignore */ }
-      }
-
-      // Try to load QR immediately; showQr() will keep a safety-net poll.
-      const d = await fetch('/api/wa/qr').then(r => r.json());
-      if (d && d.qr) showQr(d.qr);
       await refreshDash();
-    } catch {
-      /* ignore */
+
+      if (!_importFirstMvp || _waLiveSyncAutoConnect || _showLiveSyncUi || forceConnect) {
+        const st = await fetch('/api/wa/status').then((r) => r.json());
+        updateWaUI(st);
+        if (forceConnect || (_waLiveSyncAutoConnect && st && (st.state === 'DISCONNECTED' || st.state === 'LOADING') && !st.hasQr)) {
+          try { await fetch('/api/wa/connect', { method: 'POST' }); } catch { /* ignore */ }
+        }
+        const d = await fetch('/api/wa/qr').then((r) => r.json());
+        if (d && d.qr) showQr(d.qr);
+      } else {
+        _waStateResolved = true;
+        _waState = 'DISCONNECTED';
+        applyLiveSyncVisibility();
+        $('#welcome-qr').style.display = 'none';
+        $('#wqr-loading').style.display = 'none';
+        $('#welcome-default').style.display = '';
+        ensureImportFirstWelcome();
+        updateSidebarForWaState();
+        renderChatsFromState();
+      }
+    } catch { /* ignore */ }
+  }
+
+  function ensureImportFirstWelcome() {
+    if (!hasIndexedArchive()) return;
+    if ($('#panel-empty')?.classList.contains('visible')) {
+      $('#welcome-qr').style.display = 'none';
+      $('#sync-progress-panel').style.display = 'none';
+      $('#wqr-loading').style.display = 'none';
+      $('#welcome-default').style.display = '';
     }
-  })();
+  }
+
+  void bootstrapWhatsAppLinking();
 
   // Logout button
   $('#wa-logout-btn').addEventListener('click', async () => {
@@ -2478,9 +2606,40 @@
       if (btn) btn.disabled = false;
     }
   }
+  document.getElementById('sidebar-import-btn')?.addEventListener('click', () => openOverlay('import'));
+  document.getElementById('btn-enable-live-sync')?.addEventListener('click', () => {
+    if (confirm('Enable live WhatsApp QR sync? Your phone will link as a companion device. You can keep using imports anytime.')) {
+      enableLiveSyncUi();
+      openOverlay('settings');
+    }
+  });
   document.getElementById('wa-refresh-names')?.addEventListener('click', refreshContactNames);
 
   // ── Dashboard ──────────────────────────────────────────────────────
+  function mergeSyncChatsPreview(preview) {
+    if (!Array.isArray(preview) || !preview.length || !canShowChatUI()) return;
+    const byJid = new Map((chatData || []).map((c) => [c.chatJid, c]));
+    for (const p of preview) {
+      if (!p?.chatJid) continue;
+      const existing = byJid.get(p.chatJid);
+      if (!existing) {
+        byJid.set(p.chatJid, { ...p });
+        continue;
+      }
+      const merged = { ...existing, ...p };
+      if ((existing.messageCount || 0) > (p.messageCount || 0)) {
+        merged.messageCount = existing.messageCount;
+        merged.lastMessageTs = existing.lastMessageTs || p.lastMessageTs;
+      }
+      if (existing.chatName && !p.chatName) merged.chatName = existing.chatName;
+      byJid.set(p.chatJid, merged);
+    }
+    chatData = [...byJid.values()];
+    sortChatDataByRecency();
+    renderChatsFromState();
+    adjustSyncingMainPanel();
+  }
+
   async function refreshDash() {
     try {
       const [chatsRes, statusRes] = await Promise.all([
@@ -2494,14 +2653,21 @@
       const chats = await chatsRes.json();
       const status = statusRes.ok ? await statusRes.json() : null;
       chatData = Array.isArray(chats) ? chats : [];
+      if (status?.stats) {
+        _archiveMessageCount = status.stats.totalMessages || 0;
+        _archiveChatCount = status.stats.totalChats || 0;
+      }
       sortChatDataByRecency();
-      if (isWaUiReady()) {
+      if (canShowChatUI()) {
         renderChatsFromState();
         adjustSyncingMainPanel();
+        ensureImportFirstWelcome();
       } else {
         const list = $('#chat-list');
         if (list) list.innerHTML = '';
       }
+      updateSidebarForWaState();
+      applyLiveSyncVisibility();
       await refreshStatusFeed();
       if (status?.stats) {
         const s = status.stats;
@@ -2727,12 +2893,42 @@
   }
 
   function sortChatDataByRecency() {
+    // Find the single most-recently imported chat (if any import has happened).
+    let pinJid = null;
+    let pinTs = 0;
+    for (const c of chatData) {
+      const t = Number(c.lastImportedAt) || 0;
+      if (t > pinTs) { pinTs = t; pinJid = c.chatJid; }
+    }
     chatData.sort((a, b) => {
+      // Most recently imported chat always goes first.
+      if (pinJid) {
+        if (a.chatJid === pinJid) return -1;
+        if (b.chatJid === pinJid) return 1;
+      }
+      // Among remaining chats: more-recently imported sorts higher.
+      const ia = Number(a.lastImportedAt) || 0;
+      const ib = Number(b.lastImportedAt) || 0;
+      if (ib !== ia) return ib - ia;
+      // Fallback: recency × log(volume).
       const ra = chatListRank(a);
       const rb = chatListRank(b);
       if (rb !== ra) return rb - ra;
       return (b.lastMessageTs || 0) - (a.lastMessageTs || 0);
     });
+  }
+
+  /**
+   * Move one chat to index 0. Does NOT re-sort (sort would undo the splice);
+   * the caller should call renderChatsFromState() when ready.
+   */
+  function pinChatToTop(chatJid) {
+    if (!chatJid || !Array.isArray(chatData) || !chatData.length) return;
+    const i = chatData.findIndex((c) => c.chatJid === chatJid);
+    if (i > 0) {
+      const [ch] = chatData.splice(i, 1);
+      chatData.unshift(ch);
+    }
   }
 
   /**
@@ -2753,9 +2949,9 @@
       const ch = chatData.find((c) => c.chatJid === jid);
       if (!ch) continue;
       const ts = Number(t.lastMessageTs) || 0;
-      const delta = Math.max(1, Number(t.count) || 1);
-      if (ts >= (ch.lastMessageTs || 0)) ch.lastMessageTs = ts;
-      ch.messageCount = (ch.messageCount || 0) + delta;
+      const delta = Number(t.count) || 0;
+      if (ts > 0) ch.lastMessageTs = Math.max(ch.lastMessageTs || 0, ts);
+      if (delta > 0) ch.messageCount = (ch.messageCount || 0) + delta;
     }
     sortChatDataByRecency();
     return needFullRefresh;
@@ -2765,7 +2961,7 @@
   function scheduleRefreshDash(chatTouches) {
     if (Array.isArray(chatTouches) && chatTouches.length) {
       const needFull = applyChatTouches(chatTouches);
-      if (isWaUiReady()) renderChatsFromState();
+      if (canShowChatUI()) renderChatsFromState();
       if (needFull) {
         clearTimeout(_refreshDashTimer);
         void refreshDash();
@@ -2777,7 +2973,7 @@
   }
 
   function renderChatsFromState() {
-    if (!isWaUiReady()) return;
+    if (!canShowChatUI()) return;
     sortChatDataByRecency();
     const fq = ($('#filter') && $('#filter').value || '').trim().toLowerCase();
     let list = chatsForCurrentSidebarTab();
@@ -4026,6 +4222,61 @@
     prog.classList.remove('visible');
   }
 
+  /**
+   * After import: close the overlay, refresh the sidebar, open the imported chat.
+   * @param {string|null} chatJid  the imported chat's JID (from server response)
+   * @param {string} [resultTitle]  short text to show as a toast
+   */
+  async function finishImportUi(chatJid, resultTitle) {
+    clearTimeout(_refreshDashTimer);
+    // Close the overlay immediately so the user sees the sidebar / chat right away.
+    closeAllOverlays();
+    if (resultTitle) showImportToast(resultTitle);
+    const touchTs = Math.floor(Date.now() / 1000);
+    await refreshDash();
+    let targetJid = chatJid;
+    if (!targetJid && chatData.length) {
+      // No JID from server (e.g. parse failed for all files): open the most recently imported.
+      let best = 0;
+      for (const c of chatData) {
+        const t = Number(c.lastImportedAt) || 0;
+        if (t >= best) { best = t; targetJid = c.chatJid; }
+      }
+    }
+    if (targetJid) {
+      // Stamp lastImportedAt locally so sortChatDataByRecency pins this chat.
+      const row = chatData.find((c) => c.chatJid === targetJid);
+      if (row) row.lastImportedAt = Math.max(Number(row.lastImportedAt) || 0, touchTs);
+    }
+    ensureImportFirstWelcome();
+    updateSidebarForWaState();
+    if (canShowChatUI()) renderChatsFromState();
+    // Open the imported chat regardless of canShowChatUI — we just refreshed so it exists.
+    if (targetJid) void openChat(targetJid);
+  }
+
+  /** Briefly show a small toast anchored to the bottom of the sidebar. */
+  function showImportToast(msg) {
+    let toast = document.getElementById('import-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'import-toast';
+      toast.style.cssText = [
+        'position:fixed', 'bottom:20px', 'left:50%', 'transform:translateX(-50%)',
+        'background:#128C7E', 'color:#fff', 'padding:10px 20px',
+        'border-radius:20px', 'font-size:13px', 'font-weight:500',
+        'box-shadow:0 2px 8px rgba(0,0,0,0.25)', 'z-index:9999',
+        'transition:opacity 0.4s', 'white-space:nowrap', 'max-width:90vw',
+        'overflow:hidden', 'text-overflow:ellipsis',
+      ].join(';');
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.opacity = '1';
+    clearTimeout(toast._hideTimer);
+    toast._hideTimer = setTimeout(() => { toast.style.opacity = '0'; }, 3200);
+  }
+
   async function uploadBatch(fileList) {
     $('#import-result').classList.remove('visible');
     hideImportProgress();
@@ -4043,42 +4294,39 @@
 
       if (data.error) {
         setImportPhase('error', data.error);
-        $('#imp-title').textContent = 'Import Failed'; $('#imp-text').textContent = data.error;
-        $('#import-result').classList.add('visible');
+        showImportToast('Import failed: ' + data.error.slice(0, 60));
       } else if (data.results) {
         const ok = data.results.filter(r => !r.error), fail = data.results.filter(r => r.error);
-        const total = ok.reduce((s, r) => s + (r.inserted || 0), 0);
-        setImportPhase('done', `${total.toLocaleString()} messages indexed`);
-        $('#imp-title').textContent = `Imported ${ok.length} of ${data.totalFiles} files`;
-        const lines = ok.map(r => `${r.chatName}: ${r.inserted?.toLocaleString() || 0} messages`);
-        if (fail.length) lines.push(`Failed: ${fail.map(r => r.chatName).join(', ')}`);
-        $('#imp-text').textContent = lines.join('\n');
-        await refreshDash();
-        $('#import-result').classList.add('visible');
+        const totalNew = ok.reduce((s, r) => s + (r.inserted || 0), 0);
+        const totalParsed = ok.reduce((s, r) => s + (r.parsedCount ?? r.total ?? 0), 0);
+        const toastMsg = totalNew > 0
+          ? `Imported ${totalNew.toLocaleString()} new messages from ${ok.length} chat${ok.length > 1 ? 's' : ''}`
+          : `${totalParsed.toLocaleString()} messages already in library`;
+        setImportPhase('done', totalNew > 0 ? `${totalNew.toLocaleString()} new messages` : `${totalParsed.toLocaleString()} messages refreshed`);
+        if (fail.length) showImportToast(`${ok.length} imported, ${fail.length} failed`);
+        await finishImportUi(data.pinnedChatJid || ok[0]?.chatJid, toastMsg);
       } else {
-        setImportPhase('done', `${(data.inserted || 0).toLocaleString()} messages indexed`);
-        $('#imp-title').textContent = `Imported: ${data.chatName}`;
         const ins = data.inserted ?? 0;
         const tot = data.total ?? data.parsedCount ?? 0;
+        let toastMsg;
         if (data.parseFailed) {
-          $('#imp-title').textContent = 'No messages parsed';
-          const hint = data.parseHead
-            ? `\n\nFirst lines from the file we read (check format):\n${data.parseHead}`
-            : '';
-          $('#imp-text').textContent =
-            'No lines matched a WhatsApp export (date, time, sender: message). If this is a real export, copy one line and report it.' + hint;
+          toastMsg = 'No messages matched WhatsApp format';
+          setImportPhase('error', 'Parse failed');
+          showImportToast(toastMsg);
+          return;
         } else if (ins === 0 && tot > 0) {
-          $('#imp-title').textContent = 'Already imported';
-          $('#imp-text').textContent =
-            `Parsed ${tot.toLocaleString()} messages but none were new (this chat may already be in your database). Delete the old chat or rename the export and try again.`;
+          toastMsg = `${tot.toLocaleString()} messages already in library — moved to top`;
+          setImportPhase('done', 'Chat refreshed');
         } else if (ins === 0 && tot === 0) {
-          $('#imp-title').textContent = 'Nothing to import';
-          $('#imp-text').textContent = 'The archive had no usable chat text, or the .txt was empty.';
+          toastMsg = 'Nothing to import — archive was empty';
+          setImportPhase('done', 'Nothing new');
+          showImportToast(toastMsg);
+          return;
         } else {
-          $('#imp-text').textContent = `${ins.toLocaleString()} of ${tot.toLocaleString()} messages`;
+          toastMsg = `Imported ${ins.toLocaleString()} messages from ${data.chatName}`;
+          setImportPhase('done', `${ins.toLocaleString()} messages indexed`);
         }
-        await refreshDash();
-        $('#import-result').classList.add('visible');
+        await finishImportUi(data.pinnedChatJid || data.chatJid, toastMsg);
       }
 
       setTimeout(hideImportProgress, 4000);

@@ -201,6 +201,66 @@ export default class WebServer {
     return st;
   }
 
+  _runWaHistoryCompleteHooks(tid, waClient) {
+    const st = this._getTenantState(tid);
+    if (st.waHistoryHooksDone) return;
+    st.waHistoryHooksDone = true;
+    this._getCachedTotalStats(tid, { force: true });
+    this._mediaIndexService?.scheduleProcess?.();
+    if (waClient?.syncResolvedNamesToDb) {
+      setTimeout(() => {
+        void runWithTenant(tid, async () => {
+          try {
+            const n = await waClient.syncResolvedNamesToDb(this.db);
+            if (n > 0) {
+              this._broadcast({
+                type: 'chat-names-refreshed',
+                data: { stats: this._getCachedTotalStats(tid, { force: true }) },
+              }, tid);
+            }
+          } catch (e) {
+            console.warn('[WA] syncResolvedNamesToDb:', e.message);
+          }
+        });
+      }, 2000);
+    }
+    if (config.waAutoAppStateResync && waClient?.refreshPhoneBookNamesInDb) {
+      setTimeout(() => {
+        void runWithTenant(tid, async () => {
+          try {
+            const n = await waClient.refreshPhoneBookNamesInDb(this.db);
+            this._broadcast({
+              type: 'chat-names-refreshed',
+              data: { stats: this._getCachedTotalStats(tid, { force: true }), rowsUpdated: n },
+            }, tid);
+          } catch (e) {
+            console.warn('[WA] refreshPhoneBookNamesInDb:', e.message);
+          }
+        });
+      }, 5500);
+    }
+  }
+
+  /** True while linked-device history is still streaming (heavy work should yield). */
+  isTenantWaHistoryBusy(tenantId) {
+    const st = this._getTenantState(tenantId);
+    if (st.waState === 'SYNCING' || st.waState === 'LOADING') return true;
+    return Boolean(st.waClient?.isInitialHistorySync);
+  }
+
+  _getCachedTotalStats(tenantId, { force = false } = {}) {
+    const st = this._getTenantState(tenantId);
+    const busy = this.isTenantWaHistoryBusy(tenantId);
+    const now = Date.now();
+    if (!force && busy && st._statsCache && now - (st._statsCacheAt || 0) < 2500) {
+      return st._statsCache;
+    }
+    const stats = runWithTenant(tenantId, () => this.db.getTotalStats());
+    st._statsCache = stats;
+    st._statsCacheAt = now;
+    return stats;
+  }
+
   /** @returns {boolean} */
   _verifyWsClient(info) {
     const req = info.req;
@@ -324,46 +384,26 @@ export default class WebServer {
         }
 
         if (state === 'QR_READY' || state === 'DISCONNECTED' || state === 'LOADING') {
-          st.waReadyHooksDone = false;
+          st.waHistoryHooksDone = false;
         }
         if (state === 'READY') {
           st.waQrDataUrl = null;
           st.extensionConnected = true;
-          if (!st.waReadyHooksDone) {
-            st.waReadyHooksDone = true;
-            if (waClient?.syncResolvedNamesToDb) {
-              setTimeout(() => {
-                void runWithTenant(tid, async () => {
-                  try {
-                    const n = await waClient.syncResolvedNamesToDb(this.db);
-                    if (n > 0) this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats() } }, tid);
-                  } catch (e) {
-                    console.warn('[WA] syncResolvedNamesToDb:', e.message);
-                  }
-                });
-              }, 2000);
-            }
-            if (config.waAutoAppStateResync && waClient?.refreshPhoneBookNamesInDb) {
-              setTimeout(() => {
-                void runWithTenant(tid, async () => {
-                  try {
-                    const n = await waClient.refreshPhoneBookNamesInDb(this.db);
-                    this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats(), rowsUpdated: n } }, tid);
-                  } catch (e) {
-                    console.warn('[WA] refreshPhoneBookNamesInDb:', e.message);
-                  }
-                });
-              }, 5500);
-            }
-          }
         }
-        const stats = runWithTenant(tid, () => this.db.getTotalStats());
+        const stats = this._getCachedTotalStats(tid);
         this._broadcast({ type: 'wa-status', data: { state, message, stats } }, tid);
       },
       onProgress: ({ completed, total, messages }) => {
         this._broadcast({ type: 'sync-progress', data: { completed, total, messages } }, tid);
       },
+      onChatsPreview: (preview) => {
+        if (Array.isArray(preview) && preview.length) {
+          this._broadcast({ type: 'sync-chats-preview', data: { chats: preview } }, tid);
+        }
+      },
+      onHistorySyncComplete: () => this._runWaHistoryCompleteHooks(tid, waClient),
       onMessages: (rows) => {
+        const historyBusy = this.isTenantWaHistoryBusy(tid);
         runWithTenant(tid, () => {
           const { count: inserted, insertedMessageIds } = this.db.insertMessageBatch(rows);
           const lastNameByChat = new Map();
@@ -371,24 +411,28 @@ export default class WebServer {
             if (r?.chatJid && r?.chatName) lastNameByChat.set(r.chatJid, r.chatName);
           }
           for (const [chatJid, chatName] of lastNameByChat) {
-            if (waClient?.propagateDisplayNameForChat) {
+            if (!historyBusy && waClient?.propagateDisplayNameForChat) {
               void waClient.propagateDisplayNameForChat(this.db, chatJid, chatName).catch(() => {});
             } else {
               this.db.propagateChatDisplayName(chatJid, chatName);
             }
           }
           if (inserted > 0) {
-            console.log(`[WA] Tenant ${tid} saved ${inserted} new messages`);
+            if (!historyBusy || inserted >= 200) {
+              console.log(`[WA] Tenant ${tid} saved ${inserted} new messages`);
+            }
             this._broadcast({
               type: 'new-messages',
               data: {
                 count: inserted,
-                stats: this.db.getTotalStats(),
+                stats: this._getCachedTotalStats(tid),
                 chatTouches: summarizeChatTouchesFromRows(rows),
               },
             }, tid);
-            this._mediaIndexService?.scheduleProcess?.();
-            this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
+            if (!historyBusy) {
+              this._mediaIndexService?.scheduleProcess?.();
+              this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
+            }
           }
         });
       },
@@ -648,6 +692,13 @@ export default class WebServer {
     this._app.use(express.static(config.publicDir));
 
     // ── Status ────────────────────────────────────────────────────────
+    this._app.get('/api/app-config', (_req, res) => {
+      res.json({
+        importFirstMvp: config.importFirstMvp,
+        waLiveSyncAutoConnect: config.waLiveSyncAutoConnect && !config.importFirstMvp,
+      });
+    });
+
     this._app.get('/api/status', (_req, res) => {
       const st = this._getTenantState(getCurrentTenantId());
       res.json({
@@ -712,14 +763,16 @@ export default class WebServer {
     // ── Chat & Message APIs ───────────────────────────────────────────
     this._app.get('/api/chats', async (_req, res) => {
       try {
+        const tid = getCurrentTenantId();
         let stats = this.db.getChatStats();
         try {
-          const st = this._getTenantState(getCurrentTenantId());
+          const st = this._getTenantState(tid);
           const wa = st?.waClient;
-          if (wa && typeof wa.overlayResolvedChatNames === 'function') {
+          const skipHeavyOverlay = this.isTenantWaHistoryBusy(tid);
+          if (!skipHeavyOverlay && wa && typeof wa.overlayResolvedChatNames === 'function') {
             stats = await wa.overlayResolvedChatNames(stats);
           }
-          if (wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
+          if (!skipHeavyOverlay && wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
             stats = await wa.mergeLinkedPersonalChatStats(stats);
           }
         } catch (_) {
@@ -902,6 +955,57 @@ export default class WebServer {
         return res.json(result);
       } catch (err) {
         console.error('Search API error:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    /** BM25 prototype UI: LLM rerank for in-browser uploaded chats (uses configured search provider). */
+    this._app.post('/api/wa-search/rerank', async (req, res) => {
+      try {
+        const { query, candidates } = req.body;
+        if (!query || typeof query !== 'string') {
+          return res.status(400).json({ error: 'query is required' });
+        }
+        if (!Array.isArray(candidates) || !candidates.length) {
+          return res.status(400).json({ error: 'candidates array is required' });
+        }
+
+        const providerName = this.db.getSetting('llm_provider') || config.defaultSearchProvider;
+        const model = this.db.getSetting('llm_model') || config.defaultSearchModel;
+        const apiKey = effectiveSearchApiKey(this.db);
+        const provider = await createProvider(providerName, apiKey, model || undefined);
+
+        const numbered = candidates
+          .map((c, i) => `[${i}] ${c.sender}: ${c.text}`)
+          .join('\n');
+        const system = `You are a semantic search reranker for WhatsApp chat messages.
+Given a user query and candidate messages, score each by true semantic relevance.
+Return ONLY a raw JSON array, no markdown, no explanation.`;
+        const user = `Query: "${query}"
+
+Candidates:
+${numbered}
+
+Return JSON array for ALL ${candidates.length} candidates:
+[{"index": 0, "score": 0.0-1.0, "reason": "one short phrase"}, ...]
+
+Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
+
+        const raw = await provider.chat([
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ], { maxTokens: 1500 });
+
+        const cleaned = String(raw || '[]').replace(/```json|```/g, '').trim();
+        let scores;
+        try {
+          scores = JSON.parse(cleaned);
+        } catch {
+          return res.status(502).json({ error: 'LLM returned invalid JSON', raw: cleaned.slice(0, 500) });
+        }
+        return res.json({ scores, raw: cleaned });
+      } catch (err) {
+        console.error('[/api/wa-search/rerank]', err.message);
         return res.status(500).json({ error: err.message });
       }
     });
@@ -1538,19 +1642,38 @@ export default class WebServer {
           { type: 'status', data: { connected: st.extensionConnected, stats } },
           tid,
         );
-        if (totalInserted > 0 || totalParsed > 0) {
+        const parsedResults = results.filter(
+          (r) => !r.error && (Number(r.parsedCount ?? r.total) || 0) > 0 && r.chatJid,
+        );
+        if (parsedResults.length > 0) {
+          const chatTouches = parsedResults.map((r) => ({
+            chatJid: r.chatJid,
+            lastMessageTs: Number(r.lastMessageTs) || Math.floor(Date.now() / 1000),
+            count: Number(r.inserted) || 0,
+          }));
           this._broadcast(
-            { type: 'new-messages', data: { count: totalInserted, stats } },
+            {
+              type: 'new-messages',
+              data: { count: totalInserted, stats, chatTouches },
+            },
             tid,
           );
+          this._mediaIndexService?.scheduleProcess?.();
         }
 
         this.summaryService.indexPendingDays().then((count) => {
           if (count > 0) console.log(`Post-import: generated ${count} daily summaries`);
         }).catch((err) => console.error('Post-import summary error:', err.message));
 
-        if (results.length === 1) return res.json(results[0]);
-        return res.json({ results, totalFiles: results.length });
+        const primary = results.find((r) => r.chatJid && !r.error) || results[0];
+        if (results.length === 1) {
+          return res.json({ ...results[0], pinnedChatJid: primary?.chatJid || results[0].chatJid });
+        }
+        return res.json({
+          results,
+          totalFiles: results.length,
+          pinnedChatJid: primary?.chatJid || null,
+        });
       } catch (err) {
         console.error('Import API error:', err.message);
         return res.status(500).json({ error: err.message });

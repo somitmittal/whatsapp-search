@@ -239,7 +239,34 @@ export default class Database {
     this._migrateActionSuggestionsColumn();
     this._migrateReactionsJsonAndDedupe();
     this._migrateContactPayloadColumn();
+    this._migrateChatImportTouches();
     this._rebuildFtsIfEmpty();
+  }
+
+  _migrateChatImportTouches() {
+    try {
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS chat_import_touches (
+          tenant_id TEXT NOT NULL,
+          chat_jid TEXT NOT NULL,
+          touched_at INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, chat_jid)
+        );
+      `);
+    } catch (e) {
+      console.warn('[DB] chat_import_touches:', e.message);
+    }
+  }
+
+  /** Bump sidebar sort order after every successful import parse (including re-imports). */
+  recordChatImportTouch(chatJid, touchedAt = Math.floor(Date.now() / 1000)) {
+    if (!chatJid) return;
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      INSERT INTO chat_import_touches (tenant_id, chat_jid, touched_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(tenant_id, chat_jid) DO UPDATE SET touched_at = excluded.touched_at
+    `).run(t, chatJid, touchedAt);
   }
 
   /** Speeds up getChatStats() and per-chat timeline queries (tenant-scoped ordered scan). */
@@ -1232,6 +1259,11 @@ export default class Database {
       GROUP BY chat_jid
     `).all(t);
 
+    const touchRows = this._db.prepare(
+      'SELECT chat_jid AS chatJid, touched_at AS touchedAt FROM chat_import_touches WHERE tenant_id = ?',
+    ).all(t);
+    const importTouchedAt = new Map(touchRows.map((r) => [r.chatJid, r.touchedAt]));
+
     const goodNameRows = this._db.prepare(`
       SELECT chat_jid AS chatJid, chat_name AS chatName, sender
       FROM (
@@ -1346,13 +1378,16 @@ export default class Database {
         ? Math.min(100, Math.round((summarizedThreads / estThreads) * 100))
         : 0;
 
+      const msgTs = agg.lastMessageTs || 0;
+      const touchTs = importTouchedAt.get(chatJid) || 0;
       out.push({
         chatJid,
         chatName: resolveTitle(chatJid, titlesByChat.get(chatJid)),
         sidebarTab: sidebarTabForJid(chatJid),
         messageCount: agg.messageCount,
         participantCount: agg.participantCount,
-        lastMessageTs: agg.lastMessageTs || 0,
+        lastMessageTs: msgTs,
+        lastImportedAt: touchTs || null,
         totalThreads: estThreads,
         summarizedThreads,
         searchIndexPct,
@@ -1361,12 +1396,28 @@ export default class Database {
       });
     }
 
+    let pinImportJid = null;
+    let pinImportTs = 0;
+    for (const [jid, ts] of importTouchedAt) {
+      if (ts > pinImportTs) {
+        pinImportTs = ts;
+        pinImportJid = jid;
+      }
+    }
+
     const chatListRank = (c) => {
       const lm = c.lastMessageTs || 0;
       const n = Math.max(1, c.messageCount || 0);
       return lm * Math.log1p(n);
     };
     out.sort((a, b) => {
+      if (pinImportJid) {
+        if (a.chatJid === pinImportJid) return -1;
+        if (b.chatJid === pinImportJid) return 1;
+      }
+      const ia = a.lastImportedAt || 0;
+      const ib = b.lastImportedAt || 0;
+      if (ib !== ia) return ib - ia;
       const ra = chatListRank(a);
       const rb = chatListRank(b);
       if (rb !== ra) return rb - ra;

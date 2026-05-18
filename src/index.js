@@ -173,7 +173,7 @@ async function main() {
         const pName = sumProvSetting && sumProvSetting !== 'same' ? sumProvSetting : savedProvider;
         console.log(`Summary LLM connected: ${pName} (${effectiveSumProvider.model})`);
         const stats = runWithTenant(defaultTenantId, () => db.getTotalStats());
-        if (stats.totalMessages > 0) {
+        if (stats.totalMessages > 0 && !webServer.isTenantWaHistoryBusy(defaultTenantId)) {
           console.log('Generating daily summaries in background...');
           void runWithTenant(defaultTenantId, async () => {
             try {
@@ -191,6 +191,7 @@ async function main() {
 
   let summaryInterval = setInterval(async () => {
     try {
+      if (webServer.isTenantWaHistoryBusy(defaultTenantId)) return;
       await runWithTenant(defaultTenantId, async () => {
         await summaryService.indexPendingDays();
       });
@@ -199,6 +200,7 @@ async function main() {
 
   let mediaIndexInterval = setInterval(async () => {
     try {
+      if (webServer.isTenantWaHistoryBusy(defaultTenantId)) return;
       await runWithTenant(defaultTenantId, async () => {
         await mediaIndexService.processPending(12);
       });
