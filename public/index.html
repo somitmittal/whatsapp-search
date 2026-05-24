@@ -2095,7 +2095,7 @@
       $('#panel-chat').classList.add('visible');
     } else {
       $('#panel-empty').classList.add('visible');
-      if (!canShowChatUI() && wantsLiveSyncUi()) {
+      if (wantsLiveSyncUi() && !isWaUiReady()) {
         $('#welcome-qr').style.display = '';
         $('#welcome-default').style.display = 'none';
       } else if (!canShowChatUI()) {
@@ -2194,7 +2194,9 @@
   let _lastQrDataUrl = null;
   let _importFirstMvp = true;
   let _waLiveSyncAutoConnect = false;
-  let _showLiveSyncUi = localStorage.getItem("wa_show_live_sync") === "1";
+  // Show the WhatsApp QR flow on the main page by default. Users who previously
+  // hid live sync can keep it hidden with wa_show_live_sync=0.
+  let _showLiveSyncUi = localStorage.getItem("wa_show_live_sync") !== "0";
   let _archiveChatCount = 0;
   let _archiveMessageCount = 0;
 
@@ -2551,7 +2553,9 @@
       if (!_importFirstMvp || _waLiveSyncAutoConnect || _showLiveSyncUi || forceConnect) {
         const st = await fetch('/api/wa/status').then((r) => r.json());
         updateWaUI(st);
-        if (forceConnect || (_waLiveSyncAutoConnect && st && (st.state === 'DISCONNECTED' || st.state === 'LOADING') && !st.hasQr)) {
+        const shouldStartQr = (forceConnect || _showLiveSyncUi || _waLiveSyncAutoConnect)
+          && st && (st.state === 'DISCONNECTED' || st.state === 'LOADING') && !st.hasQr;
+        if (shouldStartQr) {
           try { await fetch('/api/wa/connect', { method: 'POST' }); } catch { /* ignore */ }
         }
         const d = await fetch('/api/wa/qr').then((r) => r.json());
@@ -2573,10 +2577,11 @@
   function ensureImportFirstWelcome() {
     if (!hasIndexedArchive()) return;
     if ($('#panel-empty')?.classList.contains('visible')) {
-      $('#welcome-qr').style.display = 'none';
+      const showQrWelcome = wantsLiveSyncUi() && !isWaUiReady();
+      $('#welcome-qr').style.display = showQrWelcome ? '' : 'none';
       $('#sync-progress-panel').style.display = 'none';
       $('#wqr-loading').style.display = 'none';
-      $('#welcome-default').style.display = '';
+      $('#welcome-default').style.display = showQrWelcome ? 'none' : '';
     }
   }
 
