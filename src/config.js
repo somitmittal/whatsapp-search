@@ -62,14 +62,14 @@ const config = {
   defaultTenantId: (process.env.DEFAULT_TENANT_ID || 'legacy-default').trim(),
   /**
    * Defaults when settings table has no row yet (first run / new DB).
-   * Search: Groq. Summary: Ollama Cloud (gpt-oss:20b on free tier when available).
-   * On Render, set `GROQ_API_KEY` and `OLLAMA_CLOUD_API_KEY` as secrets; users can paste their own keys in Settings to override.
+   * Local: Ollama with llama3.2:3b (auto-downloaded, unloaded when idle).
+   * Cloud deploy: set `GROQ_API_KEY` / `OLLAMA_CLOUD_API_KEY` in env; users can override in Settings.
    */
-  defaultSearchProvider: 'groq',
+  defaultSearchProvider: process.env.LLM_PROVIDER || 'ollama',
   defaultSearchModel:
-    process.env.LLM_MODEL || process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-  defaultSummaryProvider: 'ollama_cloud',
-  defaultSummaryModel: process.env.SUMMARY_MODEL || 'gpt-oss:20b',
+    process.env.LLM_MODEL || process.env.GROQ_MODEL || 'llama3.2:3b',
+  defaultSummaryProvider: process.env.SUMMARY_PROVIDER || 'ollama',
+  defaultSummaryModel: process.env.SUMMARY_MODEL || 'llama3.2:3b',
   /**
    * Vision + audio transcription for FTS media indexing (`media_ai_index`).
    * Separate from Search — uses Gemini by default when any Gemini env key is set (see `geminiKeysFromEnv` in defaults.js) or DB `media_index_api_key`.

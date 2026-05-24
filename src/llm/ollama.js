@@ -6,14 +6,17 @@ const START_COOLDOWN_MS = 60_000;
 const PULL_COOLDOWN_MS = 300_000;
 
 export default class OllamaProvider {
-  constructor(_apiKey, model = 'qwen3.5:4b') {
-    this._baseUrl = 'http://localhost:11434';
+  constructor(_apiKey, model = 'llama3.2:3b') {
+    this._baseUrl = (process.env.OLLAMA_HOST || 'http://localhost:11434').replace(/\/$/, '');
     this._model = model;
     this._healthyAt = 0;
     this._lastStartAttempt = 0;
     this._lastPullAttempt = 0;
     this._warmedUp = false;
     this.pullStatus = null;
+    // Seconds to keep model loaded after a request. 0 = unload immediately (saves RAM).
+    // Set OLLAMA_KEEP_ALIVE=300 to keep it hot for 5 min between queries.
+    this._keepAlive = Number(process.env.OLLAMA_KEEP_ALIVE) || 0;
   }
 
   get name() { return 'ollama'; }
@@ -40,11 +43,6 @@ export default class OllamaProvider {
     }
 
     this._healthyAt = Date.now();
-
-    if (!this._warmedUp && !this._warmingUp) {
-      this._warmUp();
-    }
-
     return true;
   }
 
@@ -53,8 +51,9 @@ export default class OllamaProvider {
       model: this._model,
       messages,
       stream: false,
+      keep_alive: this._keepAlive,
       options: {
-        num_ctx: options.numCtx ?? 16384,
+        num_ctx: options.numCtx ?? 8192,
         temperature: options.temperature ?? 0.3,
       },
     };
@@ -70,6 +69,7 @@ export default class OllamaProvider {
       prompt: 'Describe this image in detail for search indexing. Include all visible text, objects, people, locations, activities, and notable details.',
       images: [imageBase64],
       stream: false,
+      keep_alive: this._keepAlive,
     };
 
     const res = await this._fetch('/api/generate', 'POST', body, TIMEOUT_MS);
@@ -190,19 +190,6 @@ export default class OllamaProvider {
       console.error(`[Ollama] Pull failed: ${err.message}`);
       this.pullStatus = { model: modelName, status: 'error', percent: 0, detail: err.message };
     }
-  }
-
-  _warmUp() {
-    this._warmingUp = true;
-    console.log(`[Ollama] Pre-loading ${this._model} into memory...`);
-    const body = { model: this._model, prompt: 'hi', stream: false, options: { num_predict: 1 } };
-    this._fetch('/api/generate', 'POST', body, TIMEOUT_MS)
-      .then(() => {
-        this._warmedUp = true;
-        this._warmingUp = false;
-        console.log(`[Ollama] ${this._model} loaded and ready`);
-      })
-      .catch(() => { this._warmingUp = false; });
   }
 
   async _fetch(path, method, body, timeout) {

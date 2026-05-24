@@ -1504,8 +1504,8 @@
       <div class="overlay-body">
         <div class="setting-group">
           <h3>Search AI Model</h3>
-          <p>Used for search queries — pick a fast, smart cloud model for best results.</p>
-          <div class="setting-row"><label>Provider</label><select id="s-provider"><option value="groq">Groq — Fast Llama (Free)</option><option value="gemini">Google Gemini (Free)</option><option value="openrouter">OpenRouter (Free models)</option><option value="ollama">Ollama — Local</option><option value="ollama_cloud">Ollama Cloud</option><option value="openai">OpenAI</option><option value="claude">Anthropic Claude</option><option value="grok">Grok / xAI (Free Tier)</option></select></div>
+          <p>Used for search queries. Default: <strong>Ollama local</strong> (llama3.2:3b) — no API key needed, downloads once (~2 GB), unloads from RAM when idle.</p>
+          <div class="setting-row"><label>Provider</label><select id="s-provider"><option value="ollama" selected>Ollama — Local (no key)</option><option value="groq">Groq — Fast Llama (Free)</option><option value="gemini">Google Gemini (Free)</option><option value="openrouter">OpenRouter (Free models)</option><option value="ollama_cloud">Ollama Cloud</option><option value="openai">OpenAI</option><option value="claude">Anthropic Claude</option><option value="grok">Grok / xAI (Free Tier)</option></select></div>
           <div class="setting-row" id="s-key-row" style="align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><div style="flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;">
             <textarea id="s-key" rows="3" placeholder="Paste one key per line, or comma-separated. Multiple keys are rotated automatically." style="width:100%;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea>
             <p id="s-key-stored-hint" class="env-key-note" style="display:none;margin:0;"><span>A key is saved locally. Paste to replace, or <button type="button" id="s-key-clear" style="background:none;border:none;color:var(--blue);cursor:pointer;padding:0;font:inherit;text-decoration:underline;">remove stored key</button>.</span><span id="s-key-clear-msg" style="display:none;"><br><strong>Click Save &amp; Connect</strong> to remove the stored key.</span></p>
@@ -1517,15 +1517,15 @@
         </div>
         <div class="setting-group">
           <h3>Summary AI Model</h3>
-          <p>Used for daily summaries (background task). A local/free model works great here.</p>
+          <p>Used for daily summaries (background task). Default: same local Ollama model — no extra download.</p>
           <div class="setting-row"><label>Provider</label>
             <select id="ss-provider">
-              <option value="same">Same as Search</option>
-              <option value="ollama">Ollama — Local</option>
-              <option value="openrouter">OpenRouter (Free models)</option>
-              <option value="ollama_cloud" selected>Ollama Cloud</option>
+              <option value="same" selected>Same as Search</option>
+              <option value="ollama">Ollama — Local (no key)</option>
               <option value="groq">Groq — Fast Llama (Free)</option>
               <option value="gemini">Google Gemini (Free)</option>
+              <option value="openrouter">OpenRouter (Free models)</option>
+              <option value="ollama_cloud">Ollama Cloud</option>
               <option value="openai">OpenAI</option>
               <option value="claude">Anthropic Claude</option>
               <option value="grok">Grok / xAI (Free Tier)</option>
@@ -1538,7 +1538,7 @@
           <p id="ss-key-env-note" class="env-key-note" style="display:none;">Using server secrets (<code>OLLAMA_CLOUD_API_KEY</code> or <code>SUMMARY_API_KEY</code>). Paste keys above to override.</p>
           <div class="setting-row" id="ss-model-row" style="display:none;"><label>Model</label><select id="ss-model"></select></div>
           <div class="setting-row" style="gap:12px;"><button class="btn btn-secondary" id="ss-save">Save Summary Provider</button><span id="ss-status"></span></div>
-          <div id="ss-hint" style="font-size:11px;color:var(--text2);margin-top:4px;">Default: Ollama Cloud with <code>gpt-oss:20b</code> (set <code>OLLAMA_CLOUD_API_KEY</code> on Render). Choose &ldquo;Same as Search&rdquo; to use only Groq.</div>
+          <div id="ss-hint" style="font-size:11px;color:var(--text2);margin-top:4px;">Default: same as Search (local Ollama). For cloud deployments, set <code>GROQ_API_KEY</code> or pick a cloud provider.</div>
         </div>
         <div class="setting-group">
           <h3>Media indexing</h3>
@@ -1547,9 +1547,13 @@
             <select id="smi-provider">
               <option value="gemini" selected>Google Gemini</option>
               <option value="same">Same as Search</option>
+              <option value="ollama">Ollama — Local (no key)</option>
+              <option value="groq">Groq — Fast Llama (Free)</option>
+              <option value="openrouter">OpenRouter (Free models)</option>
+              <option value="ollama_cloud">Ollama Cloud</option>
               <option value="openai">OpenAI</option>
               <option value="claude">Anthropic Claude</option>
-              <option value="grok">Grok / xAI</option>
+              <option value="grok">Grok / xAI (Free Tier)</option>
             </select>
           </div>
           <div class="setting-row" id="smi-key-row" style="align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><div style="flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;">
@@ -1725,8 +1729,8 @@
   // Ollama local vs cloud: same first 5 tags (see src/llm/ollama-model-lists.js). Hydrated from /api/settings when possible.
   const MODELS = {
     groq: ['llama-3.3-70b-versatile','llama-3.1-8b-instant','meta-llama/llama-4-scout-17b-16e-instruct','qwen/qwen3-32b'],
-    ollama: ['qwen3.5:4b','llama3.2:3b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','deepseek-v3.1:671b-cloud','kimi-k2:1t-cloud'],
-    ollama_cloud: ['qwen3.5:4b','llama3.2:3b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','qwen3:8b','mistral-small3.2:24b','deepseek-r1:7b','deepseek-r1:latest','gemma3:4b','gpt-oss:20b','gpt-oss:120b'],
+    ollama: ['llama3.2:3b','qwen3.5:4b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','deepseek-v3.1:671b-cloud','kimi-k2:1t-cloud'],
+    ollama_cloud: ['llama3.2:3b','qwen3.5:4b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','qwen3:8b','mistral-small3.2:24b','deepseek-r1:7b','deepseek-r1:latest','gemma3:4b','gpt-oss:20b','gpt-oss:120b'],
     openrouter: ['google/gemma-2-9b-it:free','meta-llama/llama-3.2-3b-instruct:free','mistralai/mistral-7b-instruct:free','qwen/qwen-2.5-7b-instruct:free','meta-llama/llama-3.2-1b-instruct:free'],
     gemini: ['gemini-2.5-flash','gemini-2.0-flash','gemini-2.0-flash-lite'],
     openai: ['gpt-4o-mini','gpt-4o','gpt-4.1-mini','gpt-4.1-nano'],
@@ -1739,7 +1743,7 @@
   }).catch(() => {});
   const HINTS = {
     groq: 'On Render, set <code>GROQ_API_KEY</code> as a secret, or get a free key from <a href="https://console.groq.com/keys" target="_blank">console.groq.com</a>. Llama 70B at high speed. <strong>Multiple keys (comma-separated)</strong> rotate automatically.',
-    ollama: 'The <strong>first five</strong> model tags match Ollama Cloud. The last three are <strong>desktop-only</strong> cloud proxies (<code>glm-5.1:cloud</code>, etc.) — they need the local Ollama app, not the Cloud API.',
+    ollama: 'Runs locally — <strong>no API key, no cloud</strong>. Default <code>llama3.2:3b</code> (~2 GB download, first time only). Model unloads from RAM when idle. Install <a href="https://ollama.com/download" target="_blank">Ollama</a> if not already installed — the app will start it automatically.',
     ollama_cloud: 'API key from <a href="https://ollama.com" target="_blank">ollama.com</a>. The <strong>first five</strong> tags are the same as local Ollama; then cloud extras including <code>glm-5.1:cloud</code>. Same <code>/api/chat</code> as local. Optional: <code>OLLAMA_CLOUD_URL</code>.',
     openrouter: 'Key from <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai</a>. Models ending in <code>:free</code> are free tier. Any OpenRouter model id works.',
     gemini: 'Free key from <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a>. <strong>Paste multiple keys separated by commas</strong> — they will be rotated on each call to avoid rate limits.',
@@ -2301,7 +2305,13 @@
     const tabsEl = document.querySelector('.sidebar-chat-tabs');
     const stripEl = $('#status-strip-wrap');
 
-    if (!canShowChatUI()) {
+    // Hide the chat list when WA is not connected (QR showing / logged out).
+    const waNotConnected = _waStateResolved
+      && (_waState === 'QR_READY' || _waState === 'DISCONNECTED' || _waState === 'LOADING')
+      && !isWaUiReady();
+    const showChats = canShowChatUI() && !waNotConnected;
+
+    if (!showChats) {
       loggedOutEl.style.display = '';
       chatListEl.style.display = 'none';
       const impPrompt = document.getElementById('sidebar-import-prompt');
@@ -4415,10 +4425,9 @@
       $('#s-key').value = '';
 
       if (settings.summary_provider) $('#ss-provider').value = settings.summary_provider;
-      else $('#ss-provider').value = 'ollama_cloud';
+      else $('#ss-provider').value = 'same';
       updateSummaryModelOptions();
       if (settings.summary_model) $('#ss-model').value = settings.summary_model;
-      else if ($('#ss-provider').value === 'ollama_cloud') $('#ss-model').value = 'gpt-oss:20b';
       $('#ss-key').value = '';
 
       if (settings.media_index_provider) $('#smi-provider').value = settings.media_index_provider;
@@ -4500,8 +4509,9 @@
   function updateSmiModelOptions() {
     const p = $('#smi-provider').value;
     const isSame = p === 'same';
-    $('#smi-key-row').style.display = isSame ? 'none' : '';
-    if (isSame) $('#smi-key-env-note').style.display = 'none';
+    const noKey = isSame || p === 'ollama';
+    $('#smi-key-row').style.display = noKey ? 'none' : '';
+    if (noKey) $('#smi-key-env-note').style.display = 'none';
     $('#smi-model-row').style.display = isSame ? 'none' : '';
     if (!isSame) {
       const sel = $('#smi-model');

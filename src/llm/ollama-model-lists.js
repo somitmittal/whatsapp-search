@@ -6,8 +6,8 @@
  */
 
 export const OLLAMA_MODELS_BASE = [
-  'qwen3.5:4b',
   'llama3.2:3b',
+  'qwen3.5:4b',
   'mistral',
   'gemma2:9b',
   'phi3:mini',
