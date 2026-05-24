@@ -663,11 +663,16 @@ export default class WebServer {
         this._getTenantState(req.tenantId).sessionId = sid;
         return runWithTenant(req.tenantId, () => next());
       }
-      const existingIdentity = this._findSoleTenantFromWaIdentity();
+      // On local-only installs, reuse the sole WA tenant so the user isn't locked
+      // out of their own data after clearing cookies. On deployed servers, always
+      // give new visitors a fresh isolated tenant — never leak User A's chats.
+      const reuseLocal = !this._isPublicInternetDeploy()
+        ? this._findSoleTenantFromWaIdentity()
+        : null;
       let c;
-      if (existingIdentity) {
-        const sessionId = this._userSessions.create(existingIdentity);
-        c = { sessionId, tenantId: existingIdentity };
+      if (reuseLocal) {
+        const sessionId = this._userSessions.create(reuseLocal);
+        c = { sessionId, tenantId: reuseLocal };
       } else {
         c = this._userSessions.createTenantWithSession();
       }
