@@ -36,12 +36,31 @@ function parseSummaryConcurrencyEnv() {
   return Math.min(SUMMARY_CONCURRENCY_MAX, n);
 }
 
-function getSummaryThreadConcurrency(isLocal, keyCount) {
-  if (isLocal) return 1;
+/** Small local models (≤ 4B params) can handle parallel requests without saturating memory. */
+const LOCAL_SMALL_MODEL_CONCURRENCY = 3;
+
+function getSummaryThreadConcurrency(isLocal, keyCount, modelName) {
   const override = parseSummaryConcurrencyEnv();
   if (override !== null) return override;
+  if (isLocal) {
+    return isSmallLocalModel(modelName) ? LOCAL_SMALL_MODEL_CONCURRENCY : 1;
+  }
   return Math.max(DEFAULT_CLOUD_SUMMARY_CONCURRENCY, keyCount || 1);
 }
+
+function isSmallLocalModel(modelName) {
+  if (!modelName) return false;
+  const m = String(modelName).toLowerCase();
+  const sizeMatch = m.match(/(\d+(?:\.\d+)?)\s*b/);
+  if (sizeMatch) {
+    const params = parseFloat(sizeMatch[1]);
+    if (params <= 4) return true;
+  }
+  if (m.includes(':1b') || m.includes(':3b') || m.includes(':1.5b') || m.includes(':2b')) return true;
+  return false;
+}
+
+const DELAY_LOCAL_SMALL_MS = 300;
 
 /** Optional delay between cloud thread batches (ms); default DELAY_CLOUD_MS. Raise if SUMMARY_CONCURRENCY > 1 causes 429s. */
 function getCloudBatchDelayMs(isLocal) {
@@ -337,10 +356,11 @@ export default class DailySummaryService {
           }
 
           const isLocal = this._isLocal(activeProvider);
+          const smallLocal = isLocal && isSmallLocalModel(activeProvider.model);
           const chunkSize = isLocal ? SUMMARY_CHUNK_LOCAL : SUMMARY_CHUNK_CLOUD;
-          const delayMs = isLocal ? DELAY_LOCAL_MS : getCloudBatchDelayMs(isLocal);
+          const delayMs = isLocal ? (smallLocal ? DELAY_LOCAL_SMALL_MS : DELAY_LOCAL_MS) : getCloudBatchDelayMs(isLocal);
           const keyCount = activeProvider._keys?.length ?? (isLocal ? 1 : DEFAULT_CONCURRENCY);
-          const concurrency = getSummaryThreadConcurrency(isLocal, keyCount);
+          const concurrency = getSummaryThreadConcurrency(isLocal, keyCount, activeProvider.model);
 
           if (batchStart === 0) {
             console.log(`[Summaries] Using ${activeProvider.name}/${activeProvider.model} — concurrency ${concurrency}`);

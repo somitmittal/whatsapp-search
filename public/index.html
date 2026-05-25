@@ -2305,11 +2305,14 @@
     const tabsEl = document.querySelector('.sidebar-chat-tabs');
     const stripEl = $('#status-strip-wrap');
 
-    // Hide the chat list when WA is not connected (QR showing / logged out).
+    // Hide WA-synced chats when WA is not connected (QR showing / logged out).
+    // Always show the sidebar if imported chats exist.
     const waNotConnected = _waStateResolved
       && (_waState === 'QR_READY' || _waState === 'DISCONNECTED' || _waState === 'LOADING')
       && !isWaUiReady();
-    const showChats = canShowChatUI() && !waNotConnected;
+    const hasImportedChats = (Array.isArray(chatData) && chatData.some((c) => c.chatJid && c.chatJid.endsWith('@imported')))
+      || _justImportedJid;
+    const showChats = canShowChatUI() && (!waNotConnected || hasImportedChats);
 
     if (!showChats) {
       loggedOutEl.style.display = '';
@@ -2447,7 +2450,7 @@
         $('#sync-progress-panel').style.display = 'none';
       }
     } else if (state === 'QR_READY' || _waNeedsRelogin || _waLoggedOut) {
-      if (activeChat && wantsLiveSyncUi()) showEmptyPanel();
+      // Never tear away a chat the user is actively viewing just to show the QR.
       if (wantsLiveSyncUi()) {
         pollForQrWhileDisconnected();
         $('#sync-progress-panel').style.display = 'none';
@@ -2992,6 +2995,10 @@
     sortChatDataByRecency();
     const fq = ($('#filter') && $('#filter').value || '').trim().toLowerCase();
     let list = chatsForCurrentSidebarTab();
+    // When WA is not connected, only show imported chats (not WA-synced ones).
+    if (!isWaUiReady()) {
+      list = list.filter((c) => c.chatJid && c.chatJid.endsWith('@imported'));
+    }
     if (fq) {
       list = list.filter((c) => {
         const jid = String(c.chatJid || '');
@@ -3059,7 +3066,7 @@
     const wrap = $('#status-strip-wrap');
     const strip = $('#status-strip');
     if (!wrap || !strip) return;
-    const show = sidebarListTab === 'chat';
+    const show = sidebarListTab === 'chat' && isWaUiReady();
     const peers = statusFeedData.peers || [];
     if (!show || peers.length === 0) {
       wrap.hidden = true;
@@ -3614,6 +3621,16 @@
       ]);
       const msgs = msgsRes;
       if (activeChat !== jid) return;
+      // Update header message count from actual fetched messages (chatData may be stale).
+      if (msgs.length > 0) {
+        const infoEl = $('#cv-info');
+        if (infoEl) {
+          const isGrp = jid.includes('@g.us') || (ch?.participantCount > 2);
+          infoEl.textContent = isGrp
+            ? `${ch?.participantCount || 0} participants \u00b7 ${msgs.length.toLocaleString()}+ messages`
+            : `${msgs.length.toLocaleString()}+ messages`;
+        }
+      }
       renderMessages(msgs, jid, focusMessageId);
       if (!focusMessageId && msgs.length) {
         const sorted = [...msgs].sort((a, b) => {
@@ -4244,14 +4261,14 @@
    */
   async function finishImportUi(chatJid, resultTitle) {
     clearTimeout(_refreshDashTimer);
-    // Close the overlay immediately so the user sees the sidebar / chat right away.
+    // Set BEFORE refreshDash so background WA events don't clear the chat during the await.
+    _justImportedJid = chatJid || _justImportedJid;
     closeAllOverlays();
     if (resultTitle) showImportToast(resultTitle);
     const touchTs = Math.floor(Date.now() / 1000);
     await refreshDash();
     let targetJid = chatJid;
     if (!targetJid && chatData.length) {
-      // No JID from server (e.g. parse failed for all files): open the most recently imported.
       let best = 0;
       for (const c of chatData) {
         const t = Number(c.lastImportedAt) || 0;
@@ -4259,16 +4276,18 @@
       }
     }
     if (targetJid) {
-      // Stamp lastImportedAt locally so sortChatDataByRecency pins this chat.
+      _justImportedJid = targetJid;
       const row = chatData.find((c) => c.chatJid === targetJid);
       if (row) row.lastImportedAt = Math.max(Number(row.lastImportedAt) || 0, touchTs);
     }
     ensureImportFirstWelcome();
     updateSidebarForWaState();
-    if (canShowChatUI()) renderChatsFromState();
-    // Open the imported chat regardless of canShowChatUI — we just refreshed so it exists.
+    renderChatsFromState();
     if (targetJid) void openChat(targetJid);
   }
+
+  /** JID of the just-imported chat — prevents background WA events from clearing the active chat. Reset on page reload. */
+  let _justImportedJid = null;
 
   /** Briefly show a small toast anchored to the bottom of the sidebar. */
   function showImportToast(msg) {

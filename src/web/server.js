@@ -155,6 +155,7 @@ export default class WebServer {
       verifyClient: (info) => this._verifyWsClient(info),
     });
     this._setupWebSocket();
+    this._migrateLegacyDataToWaTenant();
     this._setupRoutes();
   }
 
@@ -178,6 +179,36 @@ export default class WebServer {
       if (rows.length === 1) return rows[0].tenant_id;
     } catch (_) { /* table may not exist yet */ }
     return null;
+  }
+
+  /**
+   * On local installs, data imported before multi-tenant was introduced lives
+   * under `legacy-default`.  Move it to the active WA tenant so the user sees
+   * all their chats in one place.
+   */
+  _migrateLegacyDataToWaTenant() {
+    if (this._isPublicInternetDeploy()) return;
+    const waTenant = this._findSoleTenantFromWaIdentity();
+    if (!waTenant || waTenant === LEGACY_TENANT_ID) return;
+    const sql = this.db.getSqliteDatabase();
+    const legacyCount = sql.prepare(
+      'SELECT COUNT(*) AS c FROM messages WHERE tenant_id = ?',
+    ).get(LEGACY_TENANT_ID)?.c || 0;
+    if (legacyCount === 0) return;
+    console.log(`[Migration] Moving ${legacyCount} legacy-default messages → tenant ${waTenant}`);
+    const migrate = sql.transaction(() => {
+      // Move messages that don't conflict; delete duplicates that already exist under the target tenant.
+      sql.prepare(`
+        UPDATE messages SET tenant_id = ?
+        WHERE tenant_id = ?
+          AND message_id NOT IN (SELECT message_id FROM messages WHERE tenant_id = ?)
+      `).run(waTenant, LEGACY_TENANT_ID, waTenant);
+      sql.prepare('DELETE FROM messages WHERE tenant_id = ?').run(LEGACY_TENANT_ID);
+      try { sql.prepare('UPDATE chat_import_touches SET tenant_id = ? WHERE tenant_id = ?').run(waTenant, LEGACY_TENANT_ID); } catch (_) {}
+      try { sql.prepare('UPDATE daily_summaries SET tenant_id = ? WHERE tenant_id = ?').run(waTenant, LEGACY_TENANT_ID); } catch (_) {}
+    });
+    migrate();
+    console.log(`[Migration] Done — legacy data merged into active tenant.`);
   }
 
   _getTenantState(tenantId) {
