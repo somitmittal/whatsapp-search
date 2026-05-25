@@ -14,9 +14,10 @@ export default class OllamaProvider {
     this._lastPullAttempt = 0;
     this._warmedUp = false;
     this.pullStatus = null;
-    // Seconds to keep model loaded after a request. 0 = unload immediately (saves RAM).
-    // Set OLLAMA_KEEP_ALIVE=300 to keep it hot for 5 min between queries.
-    this._keepAlive = Number(process.env.OLLAMA_KEEP_ALIVE) || 0;
+    // Seconds to keep model loaded after a request (avoids ~3s reload on each call).
+    // Default 300s (5 min) balances speed vs memory. Set OLLAMA_KEEP_ALIVE=0 to unload immediately.
+    const envKeepAlive = process.env.OLLAMA_KEEP_ALIVE;
+    this._keepAlive = envKeepAlive !== undefined ? Number(envKeepAlive) : 300;
   }
 
   get name() { return 'ollama'; }
@@ -53,7 +54,7 @@ export default class OllamaProvider {
       stream: false,
       keep_alive: this._keepAlive,
       options: {
-        num_ctx: options.numCtx ?? 8192,
+        num_ctx: options.numCtx ?? Number(process.env.OLLAMA_NUM_CTX) || 4096,
         temperature: options.temperature ?? 0.3,
       },
     };
@@ -109,10 +110,12 @@ export default class OllamaProvider {
 
     console.log('[Ollama] Not running — starting automatically...');
     try {
+      const env = { ...process.env };
+      if (!env.OLLAMA_NUM_PARALLEL) env.OLLAMA_NUM_PARALLEL = '4';
       const child = spawn('ollama', ['serve'], {
         detached: true,
         stdio: 'ignore',
-        env: { ...process.env },
+        env,
       });
       child.unref();
 

@@ -13,9 +13,17 @@ const MAX_SOURCES_RETURNED = 8;
 const MAX_MSGS_FOR_SYNTHESIS = 50;
 /** Cap each message body in synthesis so the second LLM call stays within small context limits. */
 const MAX_SYNTH_MESSAGE_CHARS = 420;
-const LLM_DAY_SELECT_TIMEOUT = 12_000;
-const LLM_SYNTH_TIMEOUT = 20_000;
 const LLM_HEALTH_TIMEOUT = 4_000;
+
+function searchTimeouts(provider) {
+  const isLocal = provider?.name === 'ollama';
+  const envSelect = Number(process.env.SEARCH_SELECT_TIMEOUT_MS);
+  const envSynth = Number(process.env.SEARCH_SYNTH_TIMEOUT_MS);
+  return {
+    select: envSelect > 0 ? envSelect : (isLocal ? 45_000 : 12_000),
+    synth:  envSynth  > 0 ? envSynth  : (isLocal ? 60_000 : 20_000),
+  };
+}
 
 function formatTs(ts) {
   const d = new Date(ts * 1000);
@@ -150,13 +158,15 @@ export default class SmartSearch {
         ? this._db.countDailySummaries()
         : this._db.getAllDailySummaries().length);
 
+    const timeouts = searchTimeouts(this._provider);
+
     if (useThreads || dailyCount > 0) {
       try {
         hierarchicalHits = await race(
           useThreads
             ? this._hierarchicalThreadMessages(q, chatJid)
             : this._hierarchicalDayMessages(q, chatJid),
-          LLM_DAY_SELECT_TIMEOUT,
+          timeouts.select,
         );
         if (mediaType) hierarchicalHits = hierarchicalHits.filter(m => m.mediaType === mediaType);
         console.log(`[Search] Hierarchical (${useThreads ? 'threads' : 'days'}): ${hierarchicalHits.length} msgs (${Date.now() - t0}ms)`);
@@ -182,7 +192,7 @@ export default class SmartSearch {
 
     // ── Synthesis (single LLM call) ─────────────────────────────────
     try {
-      const result = await race(this._synthesize(q, allMessages), LLM_SYNTH_TIMEOUT);
+      const result = await race(this._synthesize(q, allMessages), timeouts.synth);
       if (result) {
         console.log(`[Search] Done in ${Date.now() - t0}ms`);
         return result;
