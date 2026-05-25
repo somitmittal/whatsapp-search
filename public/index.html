@@ -448,6 +448,19 @@
     }
     .chat-menu-dropdown.open { display: block; }
 
+    #sidebar-ctx-menu {
+      display: none; position: fixed;
+      background: #fff; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+      min-width: 160px; z-index: 200; overflow: hidden; padding: 4px 0;
+    }
+    #sidebar-ctx-menu .menu-item {
+      padding: 8px 16px; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px;
+    }
+    #sidebar-ctx-menu .menu-item:hover { background: #f5f5f5; }
+    #sidebar-ctx-menu .menu-item.danger { color: #dc3545; }
+    #sidebar-ctx-menu .menu-item.danger:hover { background: #fef2f2; }
+    #sidebar-ctx-menu .menu-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+
     /* Confirm dialog */
     .confirm-overlay {
       display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -1634,6 +1647,18 @@
   </div>
 </div>
 
+<!-- Sidebar right-click context menu -->
+<div id="sidebar-ctx-menu">
+  <div class="menu-item" id="ctx-open-chat">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+    Open chat
+  </div>
+  <div class="menu-item danger" id="ctx-delete-chat">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+    Delete chat
+  </div>
+</div>
+
 <!-- Delete confirmation dialog -->
 <div class="confirm-overlay" id="confirm-delete">
   <div class="confirm-box">
@@ -1933,25 +1958,67 @@
     }
   });
 
+  let _ctxMenuJid = null;
+
+  function showSidebarContextMenu(e, jid) {
+    e.preventDefault();
+    _ctxMenuJid = jid;
+    const menu = $('#sidebar-ctx-menu');
+    menu.style.display = 'block';
+    menu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px';
+    menu.style.top = Math.min(e.clientY, window.innerHeight - 100) + 'px';
+  }
+
+  function closeSidebarContextMenu() {
+    $('#sidebar-ctx-menu').style.display = 'none';
+    _ctxMenuJid = null;
+  }
+
+  document.addEventListener('click', closeSidebarContextMenu);
+  document.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('.chat-item')) closeSidebarContextMenu();
+  });
+
+  $('#ctx-open-chat').addEventListener('click', () => {
+    if (_ctxMenuJid) openChat(_ctxMenuJid);
+    closeSidebarContextMenu();
+  });
+
+  $('#ctx-delete-chat').addEventListener('click', () => {
+    const jid = _ctxMenuJid;
+    closeSidebarContextMenu();
+    if (!jid) return;
+    promptDeleteChat(jid);
+  });
+
+  function promptDeleteChat(jid) {
+    const ch = chatData.find(c => c.chatJid === jid);
+    const name = ch?.chatName || jid;
+    $('#confirm-delete-msg').textContent = `All ${(ch?.messageCount || 0).toLocaleString()} messages and summaries for "${name}" will be permanently deleted.`;
+    _ctxMenuJid = jid;
+    $('#confirm-delete').classList.add('open');
+  }
+
   $('#menu-delete-chat').addEventListener('click', () => {
     closeChatMenu();
     if (!activeChat) return;
-    const ch = chatData.find(c => c.chatJid === activeChat);
-    const name = ch?.chatName || activeChat;
-    $('#confirm-delete-msg').textContent = `All ${(ch?.messageCount || 0).toLocaleString()} messages and summaries for "${name}" will be permanently deleted.`;
-    $('#confirm-delete').classList.add('open');
+    promptDeleteChat(activeChat);
   });
 
-  $('#confirm-delete-no').addEventListener('click', () => $('#confirm-delete').classList.remove('open'));
+  $('#confirm-delete-no').addEventListener('click', () => {
+    $('#confirm-delete').classList.remove('open');
+    _ctxMenuJid = null;
+  });
   $('#confirm-delete-yes').addEventListener('click', async () => {
     $('#confirm-delete').classList.remove('open');
-    if (!activeChat) return;
+    const jid = _ctxMenuJid || activeChat;
+    _ctxMenuJid = null;
+    if (!jid) return;
     try {
-      const res = await fetch(`/api/chats/${encodeURIComponent(activeChat)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/chats/${encodeURIComponent(jid)}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.ok) {
-        activeChat = null;
-        switchPanel();
+        if (activeChat === jid) { activeChat = null; switchPanel(); }
         refreshDash();
       }
     } catch (err) {
@@ -3268,7 +3335,10 @@
         <div class="chat-index-track" data-jid="${esc(ch.chatJid)}" style="display:none"><div class="chat-index-bar"></div></div>
       </div>`;
     }).join('');
-    c.querySelectorAll('.chat-item').forEach(i => i.addEventListener('click', () => openChat(i.dataset.jid)));
+    c.querySelectorAll('.chat-item').forEach(i => {
+      i.addEventListener('click', () => openChat(i.dataset.jid));
+      i.addEventListener('contextmenu', (e) => showSidebarContextMenu(e, i.dataset.jid));
+    });
     c.querySelectorAll('.chat-priority-first').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.preventDefault();

@@ -677,7 +677,10 @@ export default class WebServer {
         return runWithTenant(LEGACY_TENANT_ID, () => next());
       }
       if (!isJwtAuthEnabled()) {
-        return runWithTenant(config.defaultTenantId || LEGACY_TENANT_ID, () => next());
+        const tid = config.defaultTenantId
+          || this._findSoleTenantFromWaIdentity()
+          || LEGACY_TENANT_ID;
+        return runWithTenant(tid, () => next());
       }
       // Claim endpoints must be accessible without creating a brand-new tenant implicitly.
       if (path === '/api/session/transfer/claim') {
