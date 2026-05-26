@@ -4726,7 +4726,7 @@
     else if (settingsKeyState.pendingClearLlm) body.apiKey = '';
     else if (!settingsKeyState.hasLlm) body.apiKey = '';
     const isOllama = provider === 'ollama';
-    $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> ${isOllama ? 'Starting Ollama...' : 'Connecting...'}`;
+    $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> ${isOllama ? `Starting Ollama &amp; loading ${esc(model)}...` : 'Connecting...'}`;
     $('#s-save').disabled = true;
     try {
       const data = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
@@ -4736,7 +4736,7 @@
         $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> Downloading ${esc(data.model)}... check progress below`;
         startPullPolling();
       } else if (isOllama) {
-        $('#s-status').innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it installed?';
+        $('#s-status').innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it <a href="https://ollama.com/download" target="_blank">installed</a>?';
       } else {
         $('#s-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
       }
@@ -4810,7 +4810,7 @@
       else if (settingsKeyState.pendingClearSummary) body.apiKey = '';
       else if (!settingsKeyState.hasSummary) body.apiKey = '';
     }
-    $('#ss-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> ${provider === 'same' ? 'Syncing...' : isOllama ? 'Starting Ollama...' : 'Connecting...'}`;
+    $('#ss-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> ${provider === 'same' ? 'Syncing...' : isOllama ? `Starting Ollama &amp; loading ${esc(model)}...` : 'Connecting...'}`;
     $('#ss-save').disabled = true;
     try {
       const data = await fetch('/api/settings/summary-provider', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
@@ -4820,7 +4820,7 @@
         $('#ss-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> Downloading ${esc(data.model)}... check progress below`;
         startPullPolling();
       } else if (isOllama) {
-        $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it installed?';
+        $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it <a href="https://ollama.com/download" target="_blank">installed</a>?';
       } else {
         $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
       }
