@@ -1,9 +1,10 @@
 import { spawn } from 'child_process';
+import { existsSync } from 'fs';
 
 const TIMEOUT_MS = 180_000;
 const HEALTH_CACHE_MS = 30_000;
-const START_COOLDOWN_MS = 60_000;
-const PULL_COOLDOWN_MS = 300_000;
+const START_COOLDOWN_MS = 15_000;
+const PULL_COOLDOWN_MS = 30_000;
 
 export default class OllamaProvider {
   constructor(_apiKey, model = 'llama3.2:3b') {
@@ -24,6 +25,8 @@ export default class OllamaProvider {
   get model() { return this._model; }
   get needsKey() { return false; }
 
+  resetHealthCache() { this._healthyAt = 0; }
+
   async checkHealth() {
     if (Date.now() - this._healthyAt < HEALTH_CACHE_MS) return true;
 
@@ -35,12 +38,15 @@ export default class OllamaProvider {
 
     const hasModel = await this._hasModel(this._model);
     if (!hasModel) {
-      await this._tryPull(this._model);
-      for (let i = 0; i < 3; i++) {
+      this._tryPull(this._model).catch(e => console.error('[Ollama] Pull error:', e.message));
+      // Give it a brief moment — small models on fast connections may finish quickly.
+      for (let i = 0; i < 5; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        if (await this._hasModel(this._model)) break;
-        if (i === 2) return false;
+        if (await this._hasModel(this._model)) { this._healthyAt = Date.now(); return true; }
+        if (this.pullStatus?.status === 'error') return false;
       }
+      // Still downloading — return false but pull continues in background.
+      return false;
     }
 
     this._healthyAt = Date.now();
@@ -84,7 +90,11 @@ export default class OllamaProvider {
 
   async _isRunning() {
     try {
-      const res = await this._fetch('/api/tags', 'GET', null, 5000);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`${this._baseUrl}/api/tags`, { signal: controller.signal });
+      clearTimeout(timer);
+      await res.text().catch(() => {});
       return res.ok;
     } catch {
       return false;
@@ -104,6 +114,20 @@ export default class OllamaProvider {
     }
   }
 
+  _findOllamaBin() {
+    const candidates = [
+      '/usr/local/bin/ollama',
+      '/opt/homebrew/bin/ollama',
+    ];
+    if (process.platform === 'darwin') {
+      candidates.push('/Applications/Ollama.app/Contents/Resources/ollama');
+    }
+    for (const c of candidates) {
+      if (existsSync(c)) return c;
+    }
+    return 'ollama';
+  }
+
   async _tryStart() {
     if (Date.now() - this._lastStartAttempt < START_COOLDOWN_MS) return;
     this._lastStartAttempt = Date.now();
@@ -112,7 +136,8 @@ export default class OllamaProvider {
     try {
       const env = { ...process.env };
       if (!env.OLLAMA_NUM_PARALLEL) env.OLLAMA_NUM_PARALLEL = '4';
-      const child = spawn('ollama', ['serve'], {
+      const bin = this._findOllamaBin();
+      const child = spawn(bin, ['serve'], {
         detached: true,
         stdio: 'ignore',
         env,
@@ -133,6 +158,7 @@ export default class OllamaProvider {
   }
 
   async _tryPull(modelName) {
+    if (this.pullStatus?.status === 'downloading') return;
     if (Date.now() - this._lastPullAttempt < PULL_COOLDOWN_MS) return;
     this._lastPullAttempt = Date.now();
 

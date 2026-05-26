@@ -1090,6 +1090,44 @@
     }
     .pull-banner.done .pb-fill { background: #43a047; }
 
+    /* ── Hardware Recommendation Banner ────────── */
+    .hw-recommend {
+      display: none; background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+      border: 1px solid #bbdefb; border-radius: 10px; padding: 14px 16px;
+      margin-bottom: 12px; animation: fadeIn 0.3s ease;
+    }
+    .hw-recommend.visible { display: block; }
+    .hw-recommend .hw-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .hw-recommend .hw-icon { font-size: 20px; flex-shrink: 0; }
+    .hw-recommend .hw-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .hw-recommend .hw-specs { font-size: 11px; color: var(--text2); margin-bottom: 8px; line-height: 1.5; }
+    .hw-recommend .hw-specs code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; font-size: 10px; }
+    .hw-recommend .hw-model-pick {
+      display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.7);
+      border-radius: 8px; padding: 10px 12px; border: 1px solid rgba(0,0,0,0.08);
+    }
+    .hw-recommend .hw-model-name { font-weight: 600; font-size: 14px; color: var(--text); }
+    .hw-recommend .hw-model-badge {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+      background: #43a047; color: #fff; padding: 2px 8px; border-radius: 10px;
+    }
+    .hw-recommend .hw-model-size { font-size: 11px; color: var(--text2); margin-left: auto; }
+    .hw-recommend .hw-reason { font-size: 12px; color: var(--text2); margin-top: 8px; line-height: 1.4; }
+    .hw-recommend .hw-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .hw-recommend .hw-btn {
+      font-size: 12px; padding: 6px 16px; border-radius: 6px; border: none;
+      cursor: pointer; font-weight: 500; transition: all 0.15s ease;
+    }
+    .hw-recommend .hw-btn-apply {
+      background: var(--green); color: #fff;
+    }
+    .hw-recommend .hw-btn-apply:hover { background: var(--green-dark); }
+    .hw-recommend .hw-btn-dismiss {
+      background: transparent; color: var(--text2); border: 1px solid var(--border);
+    }
+    .hw-recommend .hw-btn-dismiss:hover { background: rgba(0,0,0,0.04); }
+    .hw-recommend .hw-status { font-size: 12px; color: var(--text2); margin-top: 6px; }
+
     /* ── Import Progress Bar ──────────────────── */
     .import-progress { display: none; margin-bottom: 16px; }
     .import-progress.visible { display: block; }
@@ -1527,6 +1565,24 @@
           <div class="setting-row"><label>Model</label><select id="s-model"></select></div>
           <div class="setting-row" style="gap:12px;"><button class="btn btn-primary" id="s-save">Save & Connect</button><span id="s-status"></span></div>
           <div id="s-hint"></div>
+          <div class="hw-recommend" id="hw-recommend">
+            <div class="hw-header">
+              <span class="hw-icon">&#9881;&#65039;</span>
+              <span class="hw-title">Recommended model for your hardware</span>
+            </div>
+            <div class="hw-specs" id="hw-specs"></div>
+            <div class="hw-model-pick">
+              <span class="hw-model-name" id="hw-model-name"></span>
+              <span class="hw-model-badge" id="hw-model-badge"></span>
+              <span class="hw-model-size" id="hw-model-size"></span>
+            </div>
+            <div class="hw-reason" id="hw-reason"></div>
+            <div class="hw-actions" id="hw-actions">
+              <button class="hw-btn hw-btn-apply" id="hw-apply">Use this model</button>
+              <button class="hw-btn hw-btn-dismiss" id="hw-dismiss">Keep current</button>
+            </div>
+            <div class="hw-status" id="hw-status" style="display:none;"></div>
+          </div>
         </div>
         <div class="setting-group">
           <h3>Summary AI Model</h3>
@@ -1754,7 +1810,7 @@
   // Ollama local vs cloud: same first 5 tags (see src/llm/ollama-model-lists.js). Hydrated from /api/settings when possible.
   const MODELS = {
     groq: ['llama-3.3-70b-versatile','llama-3.1-8b-instant','meta-llama/llama-4-scout-17b-16e-instruct','qwen/qwen3-32b'],
-    ollama: ['llama3.2:3b','qwen3.5:4b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','deepseek-v3.1:671b-cloud','kimi-k2:1t-cloud'],
+    ollama: ['llama3.2:3b','llama3.2:1b','qwen3.5:4b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','deepseek-v3.1:671b-cloud','kimi-k2:1t-cloud'],
     ollama_cloud: ['llama3.2:3b','qwen3.5:4b','mistral','gemma2:9b','phi3:mini','glm-5.1:cloud','qwen3:8b','mistral-small3.2:24b','deepseek-r1:7b','deepseek-r1:latest','gemma3:4b','gpt-oss:20b','gpt-oss:120b'],
     openrouter: ['google/gemma-2-9b-it:free','meta-llama/llama-3.2-3b-instruct:free','mistralai/mistral-7b-instruct:free','qwen/qwen-2.5-7b-instruct:free','meta-llama/llama-3.2-1b-instruct:free'],
     gemini: ['gemini-2.5-flash','gemini-2.0-flash','gemini-2.0-flash-lite'],
@@ -4451,7 +4507,107 @@
     if (p === 'ollama') $('#s-key-env-note').style.display = 'none';
     const h = $('#s-hint'); h.style.display = ''; h.innerHTML = HINTS[p] || '';
   }
-  $('#s-provider').addEventListener('change', updateModelOptions);
+  $('#s-provider').addEventListener('change', () => {
+    updateModelOptions();
+    checkHardwareRecommendation();
+  });
+
+  // ── Ollama Hardware Recommendation ────────────────────────────────
+  let _hwRecCache = null;
+  let _hwRecFetching = false;
+
+  async function checkHardwareRecommendation() {
+    const panel = $('#hw-recommend');
+    if ($('#s-provider').value !== 'ollama') { panel.classList.remove('visible'); return; }
+    if (_hwRecCache) { renderHwRec(_hwRecCache); return; }
+    if (_hwRecFetching) return;
+    _hwRecFetching = true;
+    try {
+      const data = await fetch('/api/ollama/recommend').then(r => r.json());
+      if (data.error) { _hwRecFetching = false; return; }
+      _hwRecCache = data;
+      renderHwRec(data);
+    } catch { /* silent */ }
+    _hwRecFetching = false;
+  }
+
+  function renderHwRec(data) {
+    const panel = $('#hw-recommend');
+    const { hardware: hw, recommended: rec } = data;
+    const gpuLine = hw.gpu ? ` &middot; GPU: <code>${esc(hw.gpu.name)}</code>` : '';
+    $('#hw-specs').innerHTML = `<code>${hw.ram} GB RAM</code> &middot; <code>${hw.cpuCores} cores</code>${gpuLine} &middot; ${esc(hw.platform)}/${esc(hw.arch)}`;
+    $('#hw-model-name').textContent = rec.model;
+    $('#hw-model-badge').textContent = rec.label;
+    $('#hw-model-size').textContent = `~${rec.sizeGb} GB download`;
+    $('#hw-reason').textContent = rec.reason;
+
+    const curModel = $('#s-model').value;
+    const isCurrent = curModel === rec.model;
+    const actionsEl = $('#hw-actions');
+    const statusEl = $('#hw-status');
+
+    if (isCurrent && rec.available) {
+      actionsEl.style.display = 'none';
+      statusEl.style.display = 'block';
+      statusEl.innerHTML = '<span class="health-dot ok"></span> Already using recommended model — ready to go!';
+    } else if (isCurrent && !rec.available) {
+      actionsEl.style.display = 'none';
+      statusEl.style.display = 'block';
+      statusEl.innerHTML = '<span class="spinner" style="width:12px;height:12px;"></span> Model selected — click <strong>Save &amp; Connect</strong> to download';
+    } else {
+      actionsEl.style.display = 'flex';
+      statusEl.style.display = 'none';
+      const applyBtn = $('#hw-apply');
+      applyBtn.textContent = rec.available ? `Use ${rec.model}` : `Download & use ${rec.model} (~${rec.sizeGb} GB)`;
+    }
+
+    panel.classList.add('visible');
+  }
+
+  $('#hw-apply').addEventListener('click', async () => {
+    if (!_hwRecCache) return;
+    const rec = _hwRecCache.recommended;
+    const applyBtn = $('#hw-apply');
+    const statusEl = $('#hw-status');
+    const actionsEl = $('#hw-actions');
+
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Setting up...';
+
+    try {
+      const data = await fetch('/api/ollama/apply-recommendation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: rec.model }),
+      }).then(r => r.json());
+
+      actionsEl.style.display = 'none';
+      statusEl.style.display = 'block';
+
+      if (data.healthy) {
+        statusEl.innerHTML = `<span class="health-dot ok"></span> ${esc(rec.model)} is ready!`;
+        $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(rec.model)}`;
+      } else if (data.pulling) {
+        statusEl.innerHTML = `<span class="spinner" style="width:12px;height:12px;"></span> Downloading ${esc(rec.model)} in the background...`;
+        startPullPolling();
+      } else {
+        statusEl.innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it <a href="https://ollama.com/download" target="_blank">installed</a>?';
+      }
+
+      $('#s-provider').value = 'ollama';
+      updateModelOptions();
+      $('#s-model').value = rec.model;
+      void loadSettings();
+    } catch (err) {
+      statusEl.style.display = 'block';
+      statusEl.innerHTML = `<span class="health-dot fail"></span> ${esc(err.message)}`;
+    }
+    applyBtn.disabled = false;
+  });
+
+  $('#hw-dismiss').addEventListener('click', () => {
+    $('#hw-recommend').classList.remove('visible');
+  });
 
   function applyKeyEnvHints(settings, keyHints) {
     const sKey = $('#s-key');
@@ -4527,6 +4683,7 @@
       $('#smi-key').value = '';
 
       applyKeyEnvHints(settings, keyHints);
+      checkHardwareRecommendation();
     } catch {}
     refreshDash();
   }
@@ -4573,9 +4730,16 @@
     $('#s-save').disabled = true;
     try {
       const data = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
-      if (data.healthy) $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
-      else if (isOllama) $('#s-status').innerHTML = '<span class="health-dot fail"></span> Loading model... try again soon';
-      else $('#s-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
+      if (data.healthy) {
+        $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
+      } else if (data.pulling) {
+        $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> Downloading ${esc(data.model)}... check progress below`;
+        startPullPolling();
+      } else if (isOllama) {
+        $('#s-status').innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it installed?';
+      } else {
+        $('#s-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
+      }
     } catch (err) { $('#s-status').innerHTML = `<span class="health-dot fail"></span> ${esc(err.message)}`; }
     finally { $('#s-save').disabled = false; void loadSettings(); }
   });
@@ -4650,9 +4814,16 @@
     $('#ss-save').disabled = true;
     try {
       const data = await fetch('/api/settings/summary-provider', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
-      if (data.healthy) $('#ss-status').innerHTML = `<span class="health-dot ok"></span> Connected: ${esc(data.model)}`;
-      else if (isOllama) $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Loading model... try again soon';
-      else $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
+      if (data.healthy) {
+        $('#ss-status').innerHTML = `<span class="health-dot ok"></span> Connected: ${esc(data.model)}`;
+      } else if (data.pulling) {
+        $('#ss-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> Downloading ${esc(data.model)}... check progress below`;
+        startPullPolling();
+      } else if (isOllama) {
+        $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it installed?';
+      } else {
+        $('#ss-status').innerHTML = '<span class="health-dot fail"></span> Not reachable — check key';
+      }
     } catch (err) { $('#ss-status').innerHTML = `<span class="health-dot fail"></span> ${esc(err.message)}`; }
     finally { $('#ss-save').disabled = false; void loadSettings(); }
   });
@@ -4874,6 +5045,11 @@
         $('#pb-title').textContent = `${data.model} ready!`;
         $('#pb-detail').textContent = 'Model downloaded successfully';
         $('#pb-pct').textContent = '';
+        $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
+        const hwSt = $('#hw-status');
+        if (hwSt && hwSt.style.display !== 'none') {
+          hwSt.innerHTML = `<span class="health-dot ok"></span> ${esc(data.model)} is ready!`;
+        }
         setTimeout(() => { banner.classList.remove('visible'); stopPullPolling(); }, 5000);
       } else if (data.status === 'error') {
         banner.classList.add('error');

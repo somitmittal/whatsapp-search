@@ -18,6 +18,7 @@ import {
     publicSettingsFromDb,
 } from '../llm/defaults.js';
 import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
+import { getHardwareRecommendation } from '../llm/ollama-recommend.js';
 import { clearProviderCache, createProvider, PROVIDER_META } from '../llm/provider.js';
 import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
 import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
@@ -1322,7 +1323,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const k = effectiveSearchApiKey(this.db);
 
         const instance = await createProvider(p, k, m || undefined);
+        if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
         const healthy = await instance.checkHealth();
+        const pulling = !healthy && instance.pullStatus?.status === 'downloading';
 
         this.searchEngine.setProvider(instance);
         await this._reloadMediaIndexProvider?.();
@@ -1334,7 +1337,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           if (healthy) { this._triggerSummaryGen(); }
         }
 
-        return res.json({ ok: true, healthy, provider: p, model: instance.model });
+        return res.json({ ok: true, healthy, pulling, provider: p, model: instance.model });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1371,13 +1374,15 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const sk = effectiveSummaryApiKey(this.db);
 
         const instance = await createProvider(sp, sk, sm || undefined);
+        if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
         const healthy = await instance.checkHealth();
+        const pulling = !healthy && instance.pullStatus?.status === 'downloading';
 
         this.summaryService.setProvider(instance);
 
         if (healthy) { this._triggerSummaryGen(); }
 
-        return res.json({ ok: true, healthy, provider: sp, model: instance.model });
+        return res.json({ ok: true, healthy, pulling, provider: sp, model: instance.model });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1438,7 +1443,56 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     this._app.get('/api/pull-status', (_req, res) => {
       const p = this.searchEngine?._provider;
       if (p?.pullStatus) return res.json(p.pullStatus);
+      const sp = this.summaryService?._provider;
+      if (sp?.pullStatus) return res.json(sp.pullStatus);
       return res.json(null);
+    });
+
+    // ── Ollama Hardware Recommendation ─────────────────────────────────
+    this._app.get('/api/ollama/recommend', async (_req, res) => {
+      try {
+        const provider = this.searchEngine?._provider;
+        const rec = await getHardwareRecommendation(provider);
+        return res.json(rec);
+      } catch (err) {
+        console.error('[Recommend] Error:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    // ── Ollama: apply recommended model + trigger background download ──
+    this._app.post('/api/ollama/apply-recommendation', async (req, res) => {
+      try {
+        const { model } = req.body;
+        if (!model) return res.status(400).json({ error: 'model required' });
+
+        this.db.setSetting('llm_provider', 'ollama');
+        this.db.setSetting('llm_model', model);
+        clearProviderCache();
+
+        const instance = await createProvider('ollama', '', model);
+        if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
+
+        // Fire health check — this starts Ollama + triggers background pull if needed.
+        const healthPromise = instance.checkHealth();
+
+        this.searchEngine.setProvider(instance);
+        await this._reloadMediaIndexProvider?.();
+        this.summaryService.setFallbackProvider(instance);
+        const sumP = this.db.getSetting('summary_provider');
+        if (!sumP || sumP === 'same') {
+          this.summaryService.setProvider(instance);
+        }
+
+        const healthy = await healthPromise;
+        const pulling = !healthy && instance.pullStatus?.status === 'downloading';
+
+        if (healthy) this._triggerSummaryGen();
+
+        return res.json({ ok: true, healthy, pulling, model: instance.model });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
     });
 
     // ── Gmail: OAuth + sync WhatsApp exports from attachments ─────────
