@@ -1,4 +1,7 @@
 import { createRequire } from 'module';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { basename, extname, join } from 'path';
+import config from '../config.js';
 
 const require = createRequire(import.meta.url);
 const AdmZip = require('adm-zip');
@@ -192,6 +195,90 @@ export function parseExportedChat(content, chatName) {
   return { messages, chatName };
 }
 
+// ── Media helpers ──────────────────────────────────────────────────────────────
+
+const MEDIA_EXTS = {
+  image: new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif']),
+  video: new Set(['mp4', 'mov', 'avi', 'mkv', '3gp']),
+  audio: new Set(['opus', 'ogg', 'mp3', 'm4a', 'aac', 'wav', 'amr']),
+  sticker: new Set(['webp']),
+  document: new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'zip']),
+};
+
+function mediaTypeFromExt(ext) {
+  const e = (ext || '').toLowerCase().replace(/^\./, '');
+  if (MEDIA_EXTS.image.has(e)) return 'image';
+  if (MEDIA_EXTS.video.has(e)) return 'video';
+  if (MEDIA_EXTS.audio.has(e)) return 'audio';
+  if (MEDIA_EXTS.document.has(e)) return 'document';
+  return null;
+}
+
+function mediaTypeFromFilename(name) {
+  const n = (name || '').toUpperCase();
+  if (n.startsWith('IMG-') || n.startsWith('PHOTO-')) return 'image';
+  if (n.startsWith('VID-') || n.startsWith('VIDEO-')) return 'video';
+  if (n.startsWith('PTT-') || n.startsWith('AUD-')) return 'audio';
+  if (n.startsWith('STK-')) return 'sticker';
+  if (n.startsWith('DOC-')) return 'document';
+  return mediaTypeFromExt(extname(name));
+}
+
+/**
+ * Patterns WhatsApp uses to reference attached media in the chat .txt:
+ *   "IMG-20240101-WA0001.jpg (file attached)"
+ *   "<attached: 00000012-PHOTO.jpg>"
+ *   "‎image omitted"  (no media file present)
+ */
+const ATTACHED_FILE_RE = /^(.+?)\s*\(file attached\)\s*$/i;
+const ATTACHED_TAG_RE = /^<attached:\s*(.+?)>\s*$/i;
+
+function extractAttachedFilename(text) {
+  const t = (text || '').trim().replace(/\u200e|\u200f/g, '');
+  let m = t.match(ATTACHED_FILE_RE);
+  if (m) return m[1].trim();
+  m = t.match(ATTACHED_TAG_RE);
+  if (m) return m[1].trim();
+  return null;
+}
+
+function safeJidDir(jid) {
+  return String(jid || 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '_');
+}
+
+/**
+ * Extracts all non-txt files from a WhatsApp export ZIP and saves them to disk.
+ * Returns a Map<lowercaseFilename, absolutePath> for matching against messages.
+ */
+export function extractMediaFromZip(zipBuffer, chatJid) {
+  const zip = new AdmZip(zipBuffer);
+  const mediaMap = new Map();
+  const dir = join(config.mediaDir, safeJidDir(chatJid));
+
+  for (const entry of zip.getEntries()) {
+    if (entry.isDirectory) continue;
+    const name = entry.entryName;
+    const lower = name.toLowerCase();
+    if (lower.endsWith('.txt') || lower.includes('__macosx')) continue;
+
+    const ext = extname(name).toLowerCase().replace(/^\./, '');
+    const mtype = mediaTypeFromExt(ext);
+    if (!mtype) continue;
+
+    try {
+      const buf = entry.getData();
+      if (!buf || buf.length === 0) continue;
+      mkdirSync(dir, { recursive: true });
+      const safeName = basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const fullPath = join(dir, safeName);
+      if (!existsSync(fullPath)) writeFileSync(fullPath, buf);
+      mediaMap.set(basename(name).toLowerCase(), { path: fullPath, type: mtype });
+    } catch { /* skip corrupt entries */ }
+  }
+
+  return mediaMap;
+}
+
 /** Safe local part for synthetic import JID (WhatsApp-style @domain). */
 export function slugForImportChatJid(name) {
   const s = String(name || 'chat')
@@ -209,9 +296,10 @@ export function slugForImportChatJid(name) {
  * @param {import('../storage/database.js').default} db
  * @param {string} content    raw .txt file content
  * @param {string} chatName   human-readable chat name
- * @returns {{ inserted: number, total: number, parsedCount?: number, parseFailed?: boolean, parseHead?: string }}
+ * @param {Map<string, {path: string, type: string}>} [mediaMap]  filename→{path,type} from extractMediaFromZip
+ * @returns {{ inserted: number, total: number, parsedCount?: number, parseFailed?: boolean, parseHead?: string, mediaCount?: number }}
  */
-export function importExportedChat(db, content, chatName) {
+export function importExportedChat(db, content, chatName, mediaMap) {
   const { messages } = parseExportedChat(content, chatName);
   const trimmed = String(content || '').trim();
   if (messages.length === 0) {
@@ -227,24 +315,56 @@ export function importExportedChat(db, content, chatName) {
   const slug = slugForImportChatJid(chatName);
   const chatJid = `import_${slug}@imported`;
 
-  const rows = messages.map((m, i) => ({
-    messageId: `imp_${chatJid}_${m.timestamp}_${i}`,
-    chatJid,
-    chatName,
-    sender: m.sender,
-    senderJid: `${m.sender.replace(/\s+/g, '_').toLowerCase()}@imported`,
-    text: m.text,
-    mediaType: null,
-    mediaPath: null,
-    mediaCaption: null,
-    timestamp: m.timestamp,
-  }));
+  let mediaCount = 0;
+  const rows = messages.map((m, i) => {
+    let mediaType = null;
+    let mediaPath = null;
+
+    if (mediaMap && mediaMap.size > 0) {
+      const attachedFile = extractAttachedFilename(m.text);
+      if (attachedFile) {
+        const hit = mediaMap.get(attachedFile.toLowerCase());
+        if (hit) {
+          mediaType = hit.type;
+          mediaPath = hit.path;
+          mediaCount++;
+        } else {
+          mediaType = mediaTypeFromFilename(attachedFile);
+        }
+      }
+    }
+
+    return {
+      messageId: `imp_${chatJid}_${m.timestamp}_${i}`,
+      chatJid,
+      chatName,
+      sender: m.sender,
+      senderJid: `${m.sender.replace(/\s+/g, '_').toLowerCase()}@imported`,
+      text: m.text,
+      mediaType,
+      mediaPath,
+      mediaCaption: null,
+      timestamp: m.timestamp,
+    };
+  });
 
   const touchedAt = Math.floor(Date.now() / 1000);
   if (typeof db.recordChatImportTouch === 'function') {
     db.recordChatImportTouch(chatJid, touchedAt);
   }
   const { count: inserted } = db.insertMessageBatch(rows);
+
+  // For re-imports: update media fields on rows that were skipped by INSERT OR IGNORE.
+  let mediaLinked = 0;
+  if (mediaMap && mediaMap.size > 0 && typeof db.updateMessageMedia === 'function') {
+    for (const row of rows) {
+      if (row.mediaPath) {
+        const updated = db.updateMessageMedia(row.messageId, row.mediaType, row.mediaPath);
+        if (updated) mediaLinked++;
+      }
+    }
+  }
+
   return {
     inserted,
     total: messages.length,
@@ -252,6 +372,7 @@ export function importExportedChat(db, content, chatName) {
     chatJid,
     alreadyInDb: inserted === 0,
     lastMessageTs: touchedAt,
+    mediaCount: mediaCount + mediaLinked,
   };
 }
 

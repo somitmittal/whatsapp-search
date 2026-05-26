@@ -1611,12 +1611,12 @@
         </div>
         <div class="setting-group">
           <h3>Media indexing</h3>
-          <p>Vision + audio transcription so images, video, and voice notes are searchable (FTS). Separate from Search — default <strong>Gemini 2.5 Flash</strong> when a Google key is set.</p>
+          <p>Vision + audio transcription so images, video, and voice notes are searchable (FTS). Default: <strong>Ollama local</strong> — no API key needed.</p>
           <div class="setting-row"><label>Provider</label>
             <select id="smi-provider">
-              <option value="gemini" selected>Google Gemini</option>
+              <option value="ollama" selected>Ollama — Local (no key)</option>
               <option value="same">Same as Search</option>
-              <option value="ollama">Ollama — Local (no key)</option>
+              <option value="gemini">Google Gemini</option>
               <option value="groq">Groq — Fast Llama (Free)</option>
               <option value="openrouter">OpenRouter (Free models)</option>
               <option value="ollama_cloud">Ollama Cloud</option>
@@ -4633,7 +4633,7 @@
     }
     const smiKey = $('#smi-key');
     const smiNote = $('#smi-key-env-note');
-    const smiP = (settings && settings.media_index_provider) || 'gemini';
+    const smiP = (settings && settings.media_index_provider) || 'ollama';
     if (keyHints && keyHints.mediaIndex === 'env' && settings && !settings.hasMediaIndexApiKey && smiP !== 'same') {
       if (smiNote) smiNote.style.display = 'block';
       if (smiKey) smiKey.placeholder = 'Optional — server uses GEMINI_API_KEY / MEDIA_INDEX_API_KEY. Paste to override.';
@@ -4676,10 +4676,9 @@
       $('#ss-key').value = '';
 
       if (settings.media_index_provider) $('#smi-provider').value = settings.media_index_provider;
-      else $('#smi-provider').value = 'gemini';
+      else $('#smi-provider').value = 'ollama';
       updateSmiModelOptions();
       if (settings.media_index_model) $('#smi-model').value = settings.media_index_model;
-      else if ($('#smi-provider').value === 'gemini') $('#smi-model').value = 'gemini-2.5-flash';
       $('#smi-key').value = '';
 
       applyKeyEnvHints(settings, keyHints);
@@ -4730,7 +4729,9 @@
     $('#s-save').disabled = true;
     try {
       const data = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
-      if (data.healthy) {
+      if (data.error) {
+        $('#s-status').innerHTML = `<span class="health-dot fail"></span> ${esc(data.error)}`;
+      } else if (data.healthy) {
         $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
       } else if (data.pulling) {
         $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> Downloading ${esc(data.model)}... check progress below`;
@@ -4814,7 +4815,9 @@
     $('#ss-save').disabled = true;
     try {
       const data = await fetch('/api/settings/summary-provider', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
-      if (data.healthy) {
+      if (data.error) {
+        $('#ss-status').innerHTML = `<span class="health-dot fail"></span> ${esc(data.error)}`;
+      } else if (data.healthy) {
         $('#ss-status').innerHTML = `<span class="health-dot ok"></span> Connected: ${esc(data.model)}`;
       } else if (data.pulling) {
         $('#ss-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> Downloading ${esc(data.model)}... check progress below`;

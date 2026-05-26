@@ -72,11 +72,11 @@ const config = {
   defaultSummaryModel: process.env.SUMMARY_MODEL || 'llama3.2:3b',
   /**
    * Vision + audio transcription for FTS media indexing (`media_ai_index`).
-   * Separate from Search — uses Gemini by default when any Gemini env key is set (see `geminiKeysFromEnv` in defaults.js) or DB `media_index_api_key`.
+   * Separate from Search — defaults to local Ollama. Override with MEDIA_INDEX_PROVIDER env var.
    */
-  defaultMediaIndexProvider: (process.env.MEDIA_INDEX_PROVIDER || 'gemini').trim(),
+  defaultMediaIndexProvider: (process.env.MEDIA_INDEX_PROVIDER || 'ollama').trim(),
   defaultMediaIndexModel:
-    (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim(),
+    (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || 'llama3.2:3b').trim(),
 
   /**
    * Baileys linked-device history: default `false` for fewer phone “syncing” alerts on connect.

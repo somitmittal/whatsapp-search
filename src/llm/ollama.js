@@ -60,7 +60,7 @@ export default class OllamaProvider {
       stream: false,
       keep_alive: this._keepAlive,
       options: {
-        num_ctx: options.numCtx ?? Number(process.env.OLLAMA_NUM_CTX) || 4096,
+        num_ctx: options.numCtx ?? (Number(process.env.OLLAMA_NUM_CTX) || 4096),
         temperature: options.temperature ?? 0.3,
       },
     };

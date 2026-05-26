@@ -10,7 +10,7 @@ import { getSessionIdFromRequest, setSessionCookie, UserSessionService } from '.
 import config from '../config.js';
 import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
-import { decodeExportBuffer, extractTextFromZip, importExportedChat } from '../import/chat-import.js';
+import { decodeExportBuffer, extractMediaFromZip, extractTextFromZip, importExportedChat, slugForImportChatJid } from '../import/chat-import.js';
 import {
     effectiveSearchApiKey,
     effectiveSummaryApiKey,
@@ -1714,15 +1714,20 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           if (!isZip && !isTxt) { results.push({ chatName: fileName, error: 'Only .zip or .txt supported' }); continue; }
 
           let textContent;
+          let mediaMap;
+          const chatName = fileName.replace(/\.(zip|txt)$/i, '').replace(/^WhatsApp Chat with /i, '');
+
           if (isZip) {
             textContent = extractTextFromZip(file.buffer);
-            if (!textContent) { results.push({ chatName: fileName, error: 'No chat .txt found in zip' }); continue; }
+            if (!textContent) { results.push({ chatName, error: 'No chat .txt found in zip' }); continue; }
+            const slug = slugForImportChatJid(chatName);
+            const chatJid = `import_${slug}@imported`;
+            mediaMap = extractMediaFromZip(file.buffer, chatJid);
           } else {
             textContent = decodeExportBuffer(file.buffer);
           }
 
-          const chatName = fileName.replace(/\.(zip|txt)$/i, '').replace(/^WhatsApp Chat with /i, '');
-          const result = importExportedChat(this.db, textContent, chatName);
+          const result = importExportedChat(this.db, textContent, chatName, mediaMap);
           results.push({ chatName, ...result });
         }
 

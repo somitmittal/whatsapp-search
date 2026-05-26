@@ -903,6 +903,16 @@ export default class Database {
     return r.changes ?? 0;
   }
 
+  updateMessageMedia(messageId, mediaType, mediaPath) {
+    if (!messageId || !mediaPath) return 0;
+    const t = getCurrentTenantId();
+    const r = this._db.prepare(
+      `UPDATE messages SET media_type = ?, media_path = ?
+       WHERE tenant_id = ? AND message_id = ? AND (media_path IS NULL OR trim(media_path) = '')`
+    ).run(mediaType, mediaPath, t, messageId);
+    return r.changes ?? 0;
+  }
+
   /** Chat JID for a message id (WebSocket media-ready, etc.). */
   getMessageChatJid(messageId) {
     if (!messageId) return null;
@@ -1667,8 +1677,9 @@ export default class Database {
 
     for (const r of rows) {
       const mt = r.mediaType || '';
-      if (mediaKinds.has(mt)) media.push(r);
-      else if (mt === 'document') docs.push(r);
+      const hasFile = !!(r.mediaPath && String(r.mediaPath).trim());
+      if (mediaKinds.has(mt) && hasFile) media.push(r);
+      else if (mt === 'document' && hasFile) docs.push(r);
 
       const hay = `${r.text || ''}\n${r.mediaCaption || ''}`;
       let m;
