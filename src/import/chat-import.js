@@ -230,15 +230,18 @@ function mediaTypeFromFilename(name) {
  *   "<attached: 00000012-PHOTO.jpg>"
  *   "‎image omitted"  (no media file present)
  */
-const ATTACHED_FILE_RE = /^(.+?)\s*\(file attached\)\s*$/i;
-const ATTACHED_TAG_RE = /^<attached:\s*(.+?)>\s*$/i;
+const ATTACHED_FILE_RE = /(\S+)\s*\(file attached\)/i;
+const ATTACHED_TAG_RE = /<attached:\s*(.+?)>/i;
+const MEDIA_EXT_RE = /\.(jpe?g|png|webp|gif|heic|heif|mp4|mov|avi|mkv|3gp|opus|ogg|mp3|m4a|aac|wav|amr|pdf|doc[x]?|xls[x]?|ppt[x]?)$/i;
 
 function extractAttachedFilename(text) {
   const t = (text || '').trim().replace(/\u200e|\u200f/g, '');
-  let m = t.match(ATTACHED_FILE_RE);
+  let m = t.match(ATTACHED_TAG_RE);
   if (m) return m[1].trim();
-  m = t.match(ATTACHED_TAG_RE);
+  m = t.match(ATTACHED_FILE_RE);
   if (m) return m[1].trim();
+  // Bare filename with a known media extension (some exports omit the wrapper text).
+  if (MEDIA_EXT_RE.test(t) && !t.includes(' ')) return t;
   return null;
 }
 
@@ -316,21 +319,47 @@ export function importExportedChat(db, content, chatName, mediaMap) {
   const chatJid = `import_${slug}@imported`;
 
   let mediaCount = 0;
+
+  // Build a set of media filenames for fast reverse-lookup in message text.
+  const mediaFilenames = mediaMap && mediaMap.size > 0
+    ? [...mediaMap.keys()]
+    : [];
+
   const rows = messages.map((m, i) => {
     let mediaType = null;
     let mediaPath = null;
 
     if (mediaMap && mediaMap.size > 0) {
-      const attachedFile = extractAttachedFilename(m.text);
+      const text = (m.text || '').trim();
+
+      // 1. Try explicit attachment patterns first.
+      const attachedFile = extractAttachedFilename(text);
       if (attachedFile) {
         const hit = mediaMap.get(attachedFile.toLowerCase());
         if (hit) {
           mediaType = hit.type;
           mediaPath = hit.path;
           mediaCount++;
-        } else {
-          mediaType = mediaTypeFromFilename(attachedFile);
         }
+      }
+
+      // 2. Reverse lookup: check if any media filename appears in the message text.
+      if (!mediaPath) {
+        const lower = text.toLowerCase();
+        for (const fn of mediaFilenames) {
+          if (lower.includes(fn)) {
+            const hit = mediaMap.get(fn);
+            mediaType = hit.type;
+            mediaPath = hit.path;
+            mediaCount++;
+            break;
+          }
+        }
+      }
+
+      // 3. Detect media type from text even without a matching file (shows as pending).
+      if (!mediaType && attachedFile) {
+        mediaType = mediaTypeFromFilename(attachedFile);
       }
     }
 

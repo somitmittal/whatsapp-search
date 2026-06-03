@@ -905,11 +905,10 @@ export default class Database {
 
   updateMessageMedia(messageId, mediaType, mediaPath) {
     if (!messageId || !mediaPath) return 0;
-    const t = getCurrentTenantId();
     const r = this._db.prepare(
       `UPDATE messages SET media_type = ?, media_path = ?
-       WHERE tenant_id = ? AND message_id = ? AND (media_path IS NULL OR trim(media_path) = '')`
-    ).run(mediaType, mediaPath, t, messageId);
+       WHERE message_id = ? AND (media_path IS NULL OR trim(media_path) = '')`
+    ).run(mediaType, mediaPath, messageId);
     return r.changes ?? 0;
   }
 
