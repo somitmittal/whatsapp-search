@@ -1,4 +1,7 @@
 node_modules/
+dist/
+build/node/
+build/icon.iconset/
 data/
 *.zip
 *.xlsx

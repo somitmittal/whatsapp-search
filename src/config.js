@@ -109,6 +109,10 @@ const config = {
   waLiveSyncAutoConnect: ['1', 'true', 'yes'].includes(
     String(process.env.WA_LIVE_SYNC_AUTO_CONNECT ?? '').trim().toLowerCase(),
   ),
+  /** Packaged Mac/Windows desktop app (Electron). */
+  isDesktopApp: ['1', 'true', 'yes'].includes(
+    String(process.env.DESKTOP_APP ?? '').trim().toLowerCase(),
+  ),
 };
 
 export default config;

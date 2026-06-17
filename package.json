@@ -2,10 +2,13 @@
   "name": "whatsapp-search-agent",
   "version": "1.0.0",
   "description": "WhatsApp Search Agent - search all your chats using AI, 100% locally",
-  "main": "src/index.js",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
+    "electron": "electron .",
+    "preelectron": "bash scripts/generate-icon-icns.sh",
+    "dist:mac": "bash scripts/generate-icon-icns.sh && bash scripts/prepare-node-mac.sh && electron-builder install-app-deps && electron-builder --mac",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit",
     "qa:search": "node scripts/search-qa-agent.mjs"
   },
@@ -27,6 +30,45 @@
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
     "jest": "^29.7.0"
+  },
+  "build": {
+    "appId": "com.whatsappsearch.desktop",
+    "productName": "WhatsApp Search",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "public/**/*",
+      "electron/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "build/node",
+        "to": "node",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "WhatsApp Search"
+    }
   }
 }

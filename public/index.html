@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#00a884">
+  <link rel="icon" href="/favicon.png" type="image/png">
   <title>WhatsApp Search</title>
   <style>
     :root {
@@ -1066,6 +1067,40 @@
       padding: 9px 24px; font-size: 14px; font-weight: 500; cursor: pointer;
     }
     .ob-next:hover { background: var(--green-dark); }
+
+    /* Onboarding — local AI (Ollama) setup */
+    .ob-ollama { width: 100%; max-width: 420px; text-align: left; }
+    .ob-ollama-specs { font-size: 12px; color: var(--text2); margin-bottom: 12px; line-height: 1.5; }
+    .ob-ollama-specs code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+    .ob-ollama-pick {
+      display: flex; align-items: center; gap: 10px; background: var(--bg-app);
+      border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
+    }
+    .ob-ollama-name { font-weight: 600; font-size: 15px; color: var(--text); }
+    .ob-ollama-badge {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+      background: var(--green); color: #fff; padding: 2px 8px; border-radius: 10px;
+    }
+    .ob-ollama-size { font-size: 11px; color: var(--text2); margin-left: auto; }
+    .ob-ollama-reason { font-size: 13px; color: var(--text2); line-height: 1.45; margin-bottom: 14px; }
+    .ob-ollama-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .ob-ollama-apply {
+      background: var(--green); color: #fff; border: none; border-radius: 8px;
+      padding: 10px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .ob-ollama-apply:hover { background: var(--green-dark); }
+    .ob-ollama-apply:disabled { opacity: 0.6; cursor: wait; }
+    .ob-ollama-skip-local {
+      background: transparent; color: var(--text2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px; font-size: 13px; cursor: pointer;
+    }
+    .ob-ollama-status { font-size: 12px; color: var(--text2); margin-top: 10px; min-height: 18px; }
+    .ob-ollama-bar {
+      width: 100%; height: 4px; background: var(--border); border-radius: 2px;
+      overflow: hidden; margin-top: 8px; display: none;
+    }
+    .ob-ollama-bar.visible { display: block; }
+    .ob-ollama-bar-fill { height: 100%; background: var(--green); width: 0%; transition: width 0.3s; }
 
     /* ── Model Download Banner ─────────────────── */
     .pull-banner {
@@ -4894,17 +4929,111 @@
         </div>`,
     },
     {
-      title: 'Choose Your AI',
-      subtitle: 'Pick a model that works for you',
-      html: `<p class="ob-desc">Go to <strong>Settings</strong> (&#8942; menu) to pick your AI model.</p>
-        <div class="ob-features">
-          <div class="ob-feat"><div class="ob-feat-icon">&#9889;</div><div class="ob-feat-label">Gemini</div><div class="ob-feat-desc">Free &amp; fast (recommended)</div></div>
-          <div class="ob-feat"><div class="ob-feat-icon">&#128187;</div><div class="ob-feat-label">Ollama</div><div class="ob-feat-desc">100% local, no internet</div></div>
-          <div class="ob-feat"><div class="ob-feat-icon">&#127776;</div><div class="ob-feat-label">GPT / Claude / Grok</div><div class="ob-feat-desc">Premium quality</div></div>
-        </div>
-        <p class="ob-desc" style="margin-top:16px;font-size:12px;color:var(--text2);">You can also install the <strong>Chrome extension</strong> for live sync from WhatsApp Web.</p>`,
+      title: 'Set Up Local AI',
+      subtitle: 'Recommended Ollama model for your Mac',
+      html: `<div id="ob-ollama-root" class="ob-ollama"><span class="spinner" style="width:18px;height:18px;"></span> Detecting RAM and picking the best model...</div>`,
+      ollama: true,
     },
   ];
+
+  let obOllamaRec = null;
+  let isDesktopApp = window.desktopApp?.isDesktop === true
+    || new URLSearchParams(window.location.search).get('desktop') === '1';
+
+  async function renderObOllamaStep() {
+    const root = $('#ob-ollama-root');
+    if (!root) return;
+    try {
+      const data = await fetch('/api/ollama/recommend').then(r => r.json());
+      if (data.error) {
+        root.innerHTML = `<p class="ob-desc">Could not detect hardware. Install <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a> and pick a model in Settings.</p>`;
+        return;
+      }
+      obOllamaRec = data;
+      const hw = data.hardware;
+      const rec = data.recommended;
+      const gpuLine = hw.gpu ? ` · GPU: <code>${esc(hw.gpu.name)}</code>` : '';
+      root.innerHTML = `
+        <div class="ob-ollama-specs"><code>${hw.ram} GB RAM</code> · <code>${hw.cpuCores} cores</code>${gpuLine}</div>
+        <div class="ob-ollama-pick">
+          <span class="ob-ollama-name">${esc(rec.model)}</span>
+          <span class="ob-ollama-badge">${esc(rec.label)}</span>
+          <span class="ob-ollama-size">~${rec.sizeGb} GB</span>
+        </div>
+        <p class="ob-ollama-reason">${esc(rec.reason)}</p>
+        <div class="ob-ollama-actions">
+          <button type="button" class="ob-ollama-apply" id="ob-ollama-apply">${rec.available ? 'Use this model' : `Download & use ${esc(rec.model)}`}</button>
+          <button type="button" class="ob-ollama-skip-local" id="ob-ollama-skip-local">Choose later</button>
+        </div>
+        <div class="ob-ollama-status" id="ob-ollama-status"></div>
+        <div class="ob-ollama-bar" id="ob-ollama-bar"><div class="ob-ollama-bar-fill" id="ob-ollama-bar-fill"></div></div>
+        <p class="ob-desc" style="margin-top:14px;font-size:11px;color:var(--text2);">Runs 100% on your Mac — no API keys, no cloud. Ollama will start automatically if installed.</p>`;
+    } catch (err) {
+      root.innerHTML = `<p class="ob-desc">Setup check failed. You can configure AI in Settings later.</p>`;
+    }
+  }
+
+  async function applyObOllamaRecommendation() {
+    if (!obOllamaRec?.recommended) return;
+    const rec = obOllamaRec.recommended;
+    const btn = $('#ob-ollama-apply');
+    const status = $('#ob-ollama-status');
+    const bar = $('#ob-ollama-bar');
+    const fill = $('#ob-ollama-bar-fill');
+    if (btn) { btn.disabled = true; btn.textContent = 'Setting up...'; }
+    try {
+      const data = await fetch('/api/ollama/apply-recommendation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: rec.model }),
+      }).then(r => r.json());
+      if (data.error) {
+        if (status) status.innerHTML = `<span class="health-dot fail"></span> ${esc(data.error)}`;
+        if (btn) btn.disabled = false;
+        return;
+      }
+      if (data.healthy) {
+        if (status) status.innerHTML = `<span class="health-dot ok"></span> ${esc(rec.model)} is ready!`;
+        if (btn) btn.textContent = 'Done';
+        return;
+      }
+      if (data.pulling) {
+        if (status) status.innerHTML = `<span class="spinner" style="width:12px;height:12px;"></span> Downloading in background — you can continue`;
+        if (bar) bar.classList.add('visible');
+        startObOllamaPullWatch(fill, status, rec.model);
+        startPullPolling();
+        return;
+      }
+      if (status) status.innerHTML = 'Install <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a> first, then try again in Settings.';
+      if (btn) btn.disabled = false;
+    } catch (err) {
+      if (status) status.innerHTML = esc(err.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  let obOllamaPullTimer = null;
+  function startObOllamaPullWatch(fillEl, statusEl, modelName) {
+    if (obOllamaPullTimer) clearInterval(obOllamaPullTimer);
+    obOllamaPullTimer = setInterval(async () => {
+      try {
+        const data = await fetch('/api/pull-status').then(r => r.json());
+        if (!data) return;
+        if (fillEl && data.percent != null) fillEl.style.width = data.percent + '%';
+        if (data.status === 'done') {
+          clearInterval(obOllamaPullTimer);
+          obOllamaPullTimer = null;
+          if (statusEl) statusEl.innerHTML = `<span class="health-dot ok"></span> ${esc(modelName)} ready!`;
+          const btn = $('#ob-ollama-apply');
+          if (btn) { btn.textContent = 'Done'; btn.disabled = true; }
+        } else if (data.status === 'error') {
+          clearInterval(obOllamaPullTimer);
+          obOllamaPullTimer = null;
+          if (statusEl) statusEl.innerHTML = `<span class="health-dot fail"></span> Download failed — try Settings`;
+        }
+      } catch { /* ignore */ }
+    }, 2000);
+  }
 
   let obStep = 0;
   (function gmailReturnParams() {
@@ -4955,9 +5084,23 @@
     $('#ob-body').innerHTML = `<h2>${s.title}</h2><div class="ob-subtitle">${s.subtitle}</div>${s.html}`;
     $('#ob-next').textContent = obStep === OB_STEPS.length - 1 ? 'Get Started' : 'Next';
     if (obStep === 2) void updateObGmailForOb();
+    if (s.ollama) void renderObOllamaStep();
   }
 
   $('#onboarding').addEventListener('click', (e) => {
+    const ollamaApply = e.target && e.target.closest && e.target.closest('#ob-ollama-apply');
+    const ollamaSkip = e.target && e.target.closest && e.target.closest('#ob-ollama-skip-local');
+    if (ollamaApply) {
+      e.preventDefault();
+      void applyObOllamaRecommendation();
+      return;
+    }
+    if (ollamaSkip) {
+      e.preventDefault();
+      const st = $('#ob-ollama-status');
+      if (st) st.textContent = 'You can change the model anytime in Settings.';
+      return;
+    }
     const connectEl = e.target && e.target.closest && e.target.closest('#ob-gmail-connect');
     const syncEl = e.target && e.target.closest && e.target.closest('#ob-gmail-sync');
     if (connectEl) {
@@ -4999,6 +5142,8 @@
   if (!localStorage.getItem('wa_onboarding_done')) {
     renderObStep();
     $('#onboarding').classList.add('open');
+  } else if (isDesktopApp) {
+    fetch('/api/desktop/info').then(r => r.json()).catch(() => ({}));
   }
 
   // ── Utils ──────────────────────────────────────────────────────────

@@ -729,6 +729,15 @@ export default class WebServer {
     this._app.get('/health', (_req, res) => res.status(200).type('text/plain').send('ok'));
     this._app.get('/api/health', (_req, res) => res.status(200).json({ ok: true }));
 
+    this._app.get('/api/desktop/info', (_req, res) => {
+      res.json({
+        desktop: config.isDesktopApp,
+        platform: process.platform,
+        arch: process.arch,
+        dataDir: config.isDesktopApp ? config.dataDir : undefined,
+      });
+    });
+
     this._app.use(express.static(config.publicDir));
 
     // ── Status ────────────────────────────────────────────────────────
