@@ -8,7 +8,7 @@
     "start": "node src/index.js",
     "electron": "electron .",
     "preelectron": "bash scripts/generate-icon-icns.sh",
-    "dist:mac": "bash scripts/generate-icon-icns.sh && bash scripts/prepare-node-mac.sh && electron-builder install-app-deps && electron-builder --mac",
+    "dist:mac": "bash scripts/generate-icon-icns.sh && bash scripts/prepare-node-mac.sh && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node && electron-builder --mac && npm rebuild better-sqlite3",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit",
     "qa:search": "node scripts/search-qa-agent.mjs"
   },
@@ -36,7 +36,7 @@
   },
   "build": {
     "appId": "com.whatsappsearch.desktop",
-    "productName": "WhatsApp Search",
+    "productName": "Searchable",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -65,10 +65,14 @@
         "dmg"
       ],
       "hardenedRuntime": true,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "CFBundleDisplayName": "Searchable",
+        "CFBundleName": "Searchable"
+      }
     },
     "dmg": {
-      "title": "WhatsApp Search"
+      "title": "Searchable"
     }
   }
 }

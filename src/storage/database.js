@@ -1259,13 +1259,13 @@ export default class Database {
     const summarizedByChat = new Map(summaryRows.map((r) => [r.chatJid, r.c]));
 
     const aggRows = this._db.prepare(`
-      SELECT
+        SELECT
         chat_jid   AS chatJid,
         COUNT(*)   AS messageCount,
         MAX(timestamp) AS lastMessageTs,
         COUNT(DISTINCT sender) AS participantCount
       FROM messages WHERE tenant_id = ?
-      GROUP BY chat_jid
+        GROUP BY chat_jid
     `).all(t);
 
     const touchRows = this._db.prepare(

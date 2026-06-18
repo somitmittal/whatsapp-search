@@ -9,6 +9,7 @@ const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('fs');
 const path = require('path');
 const http = require('http');
 
+const APP_NAME = 'Searchable';
 const APP_ROOT = path.join(__dirname, '..');
 const SERVER_ENTRY = path.join(APP_ROOT, 'src', 'index.js');
 const APP_ICON = path.join(APP_ROOT, 'build', 'icon.png');
@@ -22,6 +23,14 @@ let serverPort = DEFAULT_PORT;
 function resolveNodeExecutable() {
   if (process.env.WA_SEARCH_NODE) return process.env.WA_SEARCH_NODE;
 
+  // Dev: prefer system Node so native modules match local npm install/rebuild.
+  if (!app.isPackaged) {
+    try {
+      const nodePath = execSync('which node', { encoding: 'utf8' }).trim();
+      if (nodePath) return nodePath;
+    } catch { /* ignore */ }
+  }
+
   if (app.isPackaged) {
     const bundled = path.join(process.resourcesPath, 'node', 'bin', 'node');
     if (existsSync(bundled)) return bundled;
@@ -29,11 +38,6 @@ function resolveNodeExecutable() {
 
   const devBundled = path.join(APP_ROOT, 'build', 'node', 'bin', 'node');
   if (existsSync(devBundled)) return devBundled;
-
-  try {
-    const nodePath = execSync('which node', { encoding: 'utf8' }).trim();
-    if (nodePath) return nodePath;
-  } catch { /* ignore */ }
 
   throw new Error(
     'Node.js not found. Install Node 20+ (brew install node) or run: bash scripts/prepare-node-mac.sh',
@@ -150,7 +154,7 @@ function createWindow() {
     height: 840,
     minWidth: 900,
     minHeight: 600,
-    title: 'WhatsApp Search',
+    title: APP_NAME,
     icon: iconPath,
     backgroundColor: '#f0f2f5',
     webPreferences: {
@@ -176,6 +180,7 @@ function createWindow() {
 }
 
 app.isQuitting = false;
+app.setName(APP_NAME);
 
 app.whenReady().then(async () => {
   try {
