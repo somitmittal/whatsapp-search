@@ -78,6 +78,9 @@ function buildServerEnv() {
     LLM_PROVIDER: process.env.LLM_PROVIDER || 'ollama',
     SUMMARY_PROVIDER: process.env.SUMMARY_PROVIDER || 'ollama',
     MEDIA_INDEX_PROVIDER: process.env.MEDIA_INDEX_PROVIDER || 'ollama',
+    // Unload idle model quickly — avoids RAM spikes when app is in background
+    OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || '60',
+    OLLAMA_NUM_PARALLEL: process.env.OLLAMA_NUM_PARALLEL || '2',
   };
 }
 

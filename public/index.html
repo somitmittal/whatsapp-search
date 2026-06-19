@@ -4579,7 +4579,12 @@
     const panel = $('#hw-recommend');
     const { hardware: hw, recommended: rec } = data;
     const gpuLine = hw.gpu ? ` &middot; GPU: <code>${esc(hw.gpu.name)}</code>` : '';
-    $('#hw-specs').innerHTML = `<code>${hw.ram} GB RAM</code> &middot; <code>${hw.cpuCores} cores</code>${gpuLine} &middot; ${esc(hw.platform)}/${esc(hw.arch)}`;
+    const avail = hw.availableRam != null ? hw.availableRam : hw.freeRam;
+    const budget = hw.budgetRam != null ? hw.budgetRam : null;
+    const availLine = avail != null
+      ? ` &middot; <code>~${avail} GB</code> available${budget != null ? ` (<code>~${budget} GB</code> AI budget)` : ''}`
+      : '';
+    $('#hw-specs').innerHTML = `<code>${hw.ram} GB</code> total RAM${availLine} &middot; <code>${hw.cpuCores} cores</code>${gpuLine} &middot; ${esc(hw.platform)}/${esc(hw.arch)}`;
     $('#hw-model-name').textContent = rec.model;
     $('#hw-model-badge').textContent = rec.label;
     $('#hw-model-size').textContent = `~${rec.sizeGb} GB download`;
@@ -4628,7 +4633,10 @@
       actionsEl.style.display = 'none';
       statusEl.style.display = 'block';
 
-      if (data.healthy) {
+      if (data.warning) {
+        statusEl.innerHTML = `<span class="health-dot warn"></span> ${esc(data.warning)}`;
+        $('#s-model').value = data.model;
+      } else if (data.healthy) {
         statusEl.innerHTML = `<span class="health-dot ok"></span> ${esc(rec.model)} is ready!`;
         $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(rec.model)}`;
       } else if (data.pulling) {
@@ -4775,6 +4783,9 @@
       const data = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
       if (data.error) {
         $('#s-status').innerHTML = `<span class="health-dot fail"></span> ${esc(data.error)}`;
+      } else if (data.memoryWarning) {
+        $('#s-model').value = data.model;
+        $('#s-status').innerHTML = `<span class="health-dot warn"></span> ${esc(data.memoryWarning)}`;
       } else if (data.healthy) {
         $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
       } else if (data.pulling) {
@@ -4960,8 +4971,13 @@
       const hw = data.hardware;
       const rec = data.recommended;
       const gpuLine = hw.gpu ? ` · GPU: <code>${esc(hw.gpu.name)}</code>` : '';
+      const avail = hw.availableRam != null ? hw.availableRam : hw.freeRam;
+      const budget = hw.budgetRam;
+      const memLine = budget != null && avail != null
+        ? `<code>${hw.ram} GB</code> total · <code>~${avail} GB</code> available · <code>~${budget} GB</code> AI budget`
+        : `<code>${hw.ram} GB RAM</code>`;
       root.innerHTML = `
-        <div class="ob-ollama-specs"><code>${hw.ram} GB RAM</code> · <code>${hw.cpuCores} cores</code>${gpuLine}</div>
+        <div class="ob-ollama-specs">${memLine} · <code>${hw.cpuCores} cores</code>${gpuLine}</div>
         <div class="ob-ollama-pick">
           <span class="ob-ollama-name">${esc(rec.model)}</span>
           <span class="ob-ollama-badge">${esc(rec.label)}</span>

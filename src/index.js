@@ -46,11 +46,24 @@ async function main() {
   const defaultTenantId = config.defaultTenantId || LEGACY_TENANT_ID;
   runWithTenant(defaultTenantId, () => applyLlmDefaultsIfUnset(db));
 
-  const { savedProvider, savedKey, savedModel } = runWithTenant(defaultTenantId, () => ({
+  const { savedProvider, savedKey } = runWithTenant(defaultTenantId, () => ({
     savedProvider: db.getSetting('llm_provider') || config.defaultSearchProvider,
     savedKey: effectiveSearchApiKey(db),
-    savedModel: db.getSetting('llm_model') || config.defaultSearchModel,
   }));
+  let savedModel = runWithTenant(defaultTenantId, () => db.getSetting('llm_model') || config.defaultSearchModel);
+
+  if (savedProvider === 'ollama') {
+    const { resolveSafeOllamaModel, applyOllamaMemorySettings } = await import('./llm/ollama-recommend.js');
+    const safe = resolveSafeOllamaModel(savedModel);
+    savedModel = safe.model;
+    runWithTenant(defaultTenantId, () => {
+      applyOllamaMemorySettings(db, safe);
+      if (safe.downgraded) db.setSetting('llm_model', safe.model);
+    });
+    if (safe.downgraded) {
+      console.log(`[Ollama] Startup: ${safe.requestedModel} → ${safe.model} (safe RAM budget ~${safe.budgetGb} GB)`);
+    }
+  }
 
   let provider = null;
   try {

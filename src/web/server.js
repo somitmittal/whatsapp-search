@@ -18,7 +18,7 @@ import {
     publicSettingsFromDb,
 } from '../llm/defaults.js';
 import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
-import { getHardwareRecommendation } from '../llm/ollama-recommend.js';
+import { applyOllamaMemorySettings, getHardwareRecommendation, resolveSafeOllamaModel } from '../llm/ollama-recommend.js';
 import { clearProviderCache, createProvider, PROVIDER_META } from '../llm/provider.js';
 import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
 import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
@@ -1389,12 +1389,24 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         if (Object.prototype.hasOwnProperty.call(req.body, 'apiKey')) {
           this.db.setSetting('llm_api_key', apiKey ?? '');
         }
-        if (model) this.db.setSetting('llm_model', model);
 
+        let p = provider || this.db.getSetting('llm_provider') || config.defaultSearchProvider;
+        let m = model || this.db.getSetting('llm_model') || config.defaultSearchModel;
+        let memoryWarning = null;
+
+        if (p === 'ollama' && m) {
+          const safe = resolveSafeOllamaModel(m);
+          m = safe.model;
+          memoryWarning = safe.warning;
+          applyOllamaMemorySettings(this.db, safe);
+          if (safe.downgraded) {
+            console.warn(`[Ollama] Model ${safe.requestedModel} exceeds safe RAM budget (~${safe.budgetGb} GB) — using ${safe.model}`);
+          }
+        }
+
+        if (model || p === 'ollama') this.db.setSetting('llm_model', m);
         clearProviderCache();
 
-        const p = provider || this.db.getSetting('llm_provider') || config.defaultSearchProvider;
-        const m = model || this.db.getSetting('llm_model') || config.defaultSearchModel;
         const k = effectiveSearchApiKey(this.db);
 
         const instance = await createProvider(p, k, m || undefined);
@@ -1412,7 +1424,15 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           if (healthy) { this._triggerSummaryGen(); }
         }
 
-        return res.json({ ok: true, healthy, pulling, provider: p, model: instance.model });
+        return res.json({
+          ok: true,
+          healthy,
+          pulling,
+          provider: p,
+          model: instance.model,
+          memoryWarning,
+          downgraded: memoryWarning != null,
+        });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1539,13 +1559,17 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     this._app.post('/api/ollama/apply-recommendation', async (req, res) => {
       try {
         const { model } = req.body;
-        if (!model) return res.status(400).json({ error: 'model required' });
+        const safe = resolveSafeOllamaModel(model || undefined);
+        if (safe.downgraded && safe.requestedModel) {
+          console.warn(`[Ollama] Downgraded ${safe.requestedModel} → ${safe.model} (budget ~${safe.budgetGb} GB)`);
+        }
 
         this.db.setSetting('llm_provider', 'ollama');
-        this.db.setSetting('llm_model', model);
+        this.db.setSetting('llm_model', safe.model);
+        applyOllamaMemorySettings(this.db, safe);
         clearProviderCache();
 
-        const instance = await createProvider('ollama', '', model);
+        const instance = await createProvider('ollama', '', safe.model);
         if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
 
         // Fire health check — this starts Ollama + triggers background pull if needed.
@@ -1564,7 +1588,16 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
         if (healthy) this._triggerSummaryGen();
 
-        return res.json({ ok: true, healthy, pulling, model: instance.model });
+        return res.json({
+          ok: true,
+          healthy,
+          pulling,
+          model: instance.model,
+          numCtx: safe.numCtx,
+          budgetRam: safe.budgetGb,
+          downgraded: safe.downgraded,
+          warning: safe.warning,
+        });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
