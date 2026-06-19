@@ -73,6 +73,7 @@ function buildServerEnv() {
     HOST: '127.0.0.1',
     PORT: String(serverPort),
     SESSION_SECRET: process.env.SESSION_SECRET || getOrCreateSessionSecret(userData),
+    DEFAULT_TENANT_ID: 'legacy-default',
     // Desktop: local Ollama by default, import-first flow
     LLM_PROVIDER: process.env.LLM_PROVIDER || 'ollama',
     SUMMARY_PROVIDER: process.env.SUMMARY_PROVIDER || 'ollama',

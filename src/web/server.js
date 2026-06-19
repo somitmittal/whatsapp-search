@@ -157,6 +157,7 @@ export default class WebServer {
     });
     this._setupWebSocket();
     this._migrateLegacyDataToWaTenant();
+    if (config.isDesktopApp) this._normalizeDesktopSessions();
     this._setupRoutes();
   }
 
@@ -180,6 +181,69 @@ export default class WebServer {
       if (rows.length === 1) return rows[0].tenant_id;
     } catch (_) { /* table may not exist yet */ }
     return null;
+  }
+
+  /** Local installs: reuse the tenant that already holds imported/synced messages. */
+  _findLocalTenantWithMostMessages() {
+    if (this._isPublicInternetDeploy()) return null;
+    try {
+      const sql = this.db.getSqliteDatabase();
+      const row = sql.prepare(`
+        SELECT tenant_id AS tenantId, COUNT(*) AS c
+        FROM messages
+        GROUP BY tenant_id
+        ORDER BY c DESC
+        LIMIT 1
+      `).get();
+      if (row?.tenantId && row.c > 0) return row.tenantId;
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  _desktopTenantId() {
+    return config.defaultTenantId || LEGACY_TENANT_ID;
+  }
+
+  _normalizeDesktopSessions() {
+    try {
+      const tid = this._desktopTenantId();
+      const sql = this.db.getSqliteDatabase();
+      const n = sql.prepare('UPDATE user_sessions SET tenant_id = ? WHERE tenant_id != ?').run(tid, tid).changes;
+      if (n > 0) console.log(`[Desktop] Rebound ${n} session(s) to tenant ${tid}`);
+    } catch (e) {
+      console.warn('[Desktop] session normalize:', e.message);
+    }
+  }
+
+  /**
+   * Desktop app: one stable workspace — never spin up empty UUID tenants per tab/request.
+   * @returns {boolean} true when handled
+   */
+  _applyDesktopTenantSession(req, res, next) {
+    if (!config.isDesktopApp) return false;
+
+    const tid = this._desktopTenantId();
+    const secure = this._isSecureCookieDeployment();
+    let sid = getSessionIdFromRequest(req);
+    let row = sid ? this._userSessions.getById(sid) : null;
+
+    if (row && row.tenant_id !== tid) {
+      this._userSessions.rebindTenant(sid, tid);
+      row = { ...row, tenant_id: tid };
+    }
+
+    if (!row) {
+      sid = this._userSessions.create(tid);
+      setSessionCookie(res, sid, { secure });
+    } else {
+      this._userSessions.touch(sid);
+    }
+
+    req.tenantId = tid;
+    req.waSessionId = sid;
+    this._getTenantState(tid).sessionId = sid;
+    runWithTenant(tid, () => next());
+    return true;
   }
 
   /**
@@ -677,6 +741,7 @@ export default class WebServer {
       if (!path.startsWith('/api/') || path === '/api/health' || path === '/api/gmail/oauth/callback') {
         return runWithTenant(LEGACY_TENANT_ID, () => next());
       }
+      if (this._applyDesktopTenantSession(req, res, next)) return;
       if (!isJwtAuthEnabled()) {
         const tid = config.defaultTenantId
           || this._findSoleTenantFromWaIdentity()
@@ -698,11 +763,11 @@ export default class WebServer {
         this._getTenantState(req.tenantId).sessionId = sid;
         return runWithTenant(req.tenantId, () => next());
       }
-      // On local-only installs, reuse the sole WA tenant so the user isn't locked
-      // out of their own data after clearing cookies. On deployed servers, always
+      // On local-only installs, reuse the sole WA tenant (or existing message data) so the user
+      // isn't locked out of their own imports after clearing cookies. On deployed servers, always
       // give new visitors a fresh isolated tenant — never leak User A's chats.
       const reuseLocal = !this._isPublicInternetDeploy()
-        ? this._findSoleTenantFromWaIdentity()
+        ? (this._findSoleTenantFromWaIdentity() || this._findLocalTenantWithMostMessages())
         : null;
       let c;
       if (reuseLocal) {
@@ -745,6 +810,7 @@ export default class WebServer {
       res.json({
         importFirstMvp: config.importFirstMvp,
         waLiveSyncAutoConnect: config.waLiveSyncAutoConnect && !config.importFirstMvp,
+        desktop: config.isDesktopApp,
       });
     });
 

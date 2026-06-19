@@ -1,6 +1,8 @@
 import { describe, test, expect } from '@jest/globals';
 import {
   parseExportedChat,
+  parseTimestamp,
+  detectImportDateOrder,
   slugForImportChatJid,
   extractTextFromZip,
   decodeExportBuffer,
@@ -126,6 +128,32 @@ describe('parseExportedChat', () => {
     expect(messages.length).toBe(2);
     expect(messages[0].text).toContain('line1');
     expect(messages[0].text).toContain('second line');
+  });
+
+  test('parses ambiguous Indian DD/MM/YYYY (1 Dec 2025)', () => {
+    const ts = parseTimestamp('01/12/2025', '11:34', 'DMY');
+    const d = new Date(ts * 1000);
+    expect(d.getFullYear()).toBe(2025);
+    expect(d.getMonth()).toBe(11);
+    expect(d.getDate()).toBe(1);
+    expect(d.getHours()).toBe(11);
+    expect(d.getMinutes()).toBe(34);
+  });
+
+  test('detectImportDateOrder prefers DMY for Indian-style export sample', () => {
+    const sample = [
+      '01/12/2025, 11:34 - Aditya: hi',
+      '04/12/2025, 08:06 - Bhaskar: ref',
+      '15/11/2025, 14:00 - Rahul: form',
+    ].join('\n');
+    expect(detectImportDateOrder(sample)).toBe('DMY');
+  });
+
+  test('parseExportedChat uses DMY for ambiguous dates by default', () => {
+    const { messages } = parseExportedChat('01/12/2025, 11:34 - Aditya: hello', 'T');
+    const d = new Date(messages[0].timestamp * 1000);
+    expect(d.getMonth()).toBe(11);
+    expect(d.getDate()).toBe(1);
   });
 });
 

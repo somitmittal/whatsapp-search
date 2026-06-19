@@ -2356,11 +2356,12 @@
   let _lastQrDataUrl = null;
   let _importFirstMvp = true;
   let _waLiveSyncAutoConnect = false;
-  // Show the WhatsApp QR flow on the main page by default. Users who previously
-  // hid live sync can keep it hidden with wa_show_live_sync=0.
-  let _showLiveSyncUi = localStorage.getItem("wa_show_live_sync") !== "0";
+  // Live sync UI: import-first / desktop default off; web default on unless user hid it.
+  let _showLiveSyncUi = false;
   let _archiveChatCount = 0;
   let _archiveMessageCount = 0;
+  let isDesktopApp = window.desktopApp?.isDesktop === true
+    || new URLSearchParams(window.location.search).get('desktop') === '1';
 
   function hasIndexedArchive() {
     return (Array.isArray(chatData) && chatData.length > 0)
@@ -2717,7 +2718,12 @@
       const cfg = await fetch('/api/app-config').then((r) => r.json()).catch(() => ({}));
       _importFirstMvp = cfg.importFirstMvp !== false;
       _waLiveSyncAutoConnect = !!cfg.waLiveSyncAutoConnect;
-      if (!_showLiveSyncUi) _showLiveSyncUi = localStorage.getItem('wa_show_live_sync') === '1';
+      isDesktopApp = isDesktopApp || cfg.desktop === true;
+      if (cfg.desktop || _importFirstMvp) {
+        _showLiveSyncUi = localStorage.getItem('wa_show_live_sync') === '1';
+      } else {
+        _showLiveSyncUi = localStorage.getItem('wa_show_live_sync') !== '0';
+      }
 
       await refreshDash();
 
@@ -2912,6 +2918,9 @@
     const d = new Date(ts * 1000);
     const now = new Date();
     const diff = (now - d) / 86400000;
+    if (diff < 0) {
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
     if (diff < 1 && d.getDate() === now.getDate()) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
     if (diff < 2) return 'Yesterday';
     if (diff < 7) return d.toLocaleDateString('en-US', { weekday: 'short' });
@@ -4937,8 +4946,6 @@
   ];
 
   let obOllamaRec = null;
-  let isDesktopApp = window.desktopApp?.isDesktop === true
-    || new URLSearchParams(window.location.search).get('desktop') === '1';
 
   async function renderObOllamaStep() {
     const root = $('#ob-ollama-root');

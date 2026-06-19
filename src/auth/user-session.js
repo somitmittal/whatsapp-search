@@ -73,6 +73,15 @@ export class UserSessionService {
   }
 
   /**
+   * @param {string} id
+   * @param {string} tenantId
+   */
+  rebindTenant(id, tenantId) {
+    if (!isOpaqueSessionId(id) || !tenantId) return;
+    this._db.prepare('UPDATE user_sessions SET tenant_id = ? WHERE id = ?').run(tenantId, id);
+  }
+
+  /**
    * @param {string} tenantId
    * @returns {string} session id
    */

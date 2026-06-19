@@ -113,6 +113,8 @@ const config = {
   isDesktopApp: ['1', 'true', 'yes'].includes(
     String(process.env.DESKTOP_APP ?? '').trim().toLowerCase(),
   ),
+  /** WhatsApp export date order for ambiguous DD/MM vs MM/DD: `auto`, `DMY`, or `MDY`. */
+  importDateOrder: (process.env.IMPORT_DATE_ORDER || 'auto').trim().toUpperCase(),
 };
 
 export default config;

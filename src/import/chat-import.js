@@ -60,18 +60,24 @@ const EXPORT_LINE_PATTERNS = [
   ),
 ];
 
-/**
- * @param {string} dateStr
- * @param {string} timeStr
- * @returns {number} unix timestamp in seconds
- */
-function parseTimestamp(dateStr, timeStr) {
-  const parts = String(dateStr)
-    .split(/[/.\-]/)
-    .map((p) => Number(String(p).trim()));
-  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return 0;
+const WA_LAUNCH_TS = Math.floor(new Date('2009-01-09T00:00:00Z').getTime() / 1000);
 
-  const [a, b, c] = parts;
+/**
+ * @param {number[]} timestamps unix seconds
+ */
+function scoreParsedTimestamps(timestamps) {
+  const now = Math.floor(Date.now() / 1000);
+  let score = 0;
+  for (const ts of timestamps) {
+    if (!ts) continue;
+    if (ts > now + 86400 * 2) score -= 5;
+    else if (ts < WA_LAUNCH_TS) score -= 2;
+    else score += 1;
+  }
+  return score;
+}
+
+function applyDateParts(a, b, c, order) {
   let year;
   let month;
   let day;
@@ -88,6 +94,9 @@ function parseTimestamp(dateStr, timeStr) {
     } else if (b > 12) {
       month = a;
       day = b;
+    } else if (order === 'DMY') {
+      day = a;
+      month = b;
     } else {
       month = a;
       day = b;
@@ -100,12 +109,33 @@ function parseTimestamp(dateStr, timeStr) {
     } else if (b > 12) {
       month = a;
       day = b;
+    } else if (order === 'DMY') {
+      day = a;
+      month = b;
     } else {
       month = a;
       day = b;
     }
     if (year < 100) year += 2000;
   }
+
+  return { year, month, day };
+}
+
+/**
+ * @param {string} dateStr
+ * @param {string} timeStr
+ * @param {'DMY' | 'MDY'} [order='DMY']
+ * @returns {number} unix timestamp in seconds
+ */
+export function parseTimestamp(dateStr, timeStr, order = 'DMY') {
+  const parts = String(dateStr)
+    .split(/[/.\-]/)
+    .map((p) => Number(String(p).trim()));
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return 0;
+
+  const [a, b, c] = parts;
+  const { year, month, day } = applyDateParts(a, b, c, order);
 
   let timeToParse = String(timeStr || '')
     .trim()
@@ -129,6 +159,36 @@ function parseTimestamp(dateStr, timeStr) {
   const date = new Date(year, month - 1, day, hours, minutes, seconds);
   const t = Math.floor(date.getTime() / 1000);
   return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Pick DD/MM vs MM/DD for ambiguous dates (e.g. 01/12/2025).
+ * @param {string} content
+ * @returns {'DMY' | 'MDY'}
+ */
+export function detectImportDateOrder(content) {
+  const forced = config.importDateOrder;
+  if (forced === 'DMY' || forced === 'MDY') return forced;
+
+  const lines = String(content || '').split(/\r?\n/);
+  const ambiguous = [];
+  for (const rawLine of lines) {
+    const m = matchExportLine(normalizeExportLine(rawLine));
+    if (!m) continue;
+    const dateStr = m[1];
+    const parts = dateStr.split(/[/.\-]/).map((p) => Number(String(p).trim()));
+    if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) continue;
+    const [a, b] = parts;
+    if (a > 12 || b > 12) continue;
+    ambiguous.push(dateStr);
+    if (ambiguous.length >= 100) break;
+  }
+
+  if (ambiguous.length < 2) return 'DMY';
+
+  const dmy = ambiguous.map((d) => parseTimestamp(d, '12:00', 'DMY'));
+  const mdy = ambiguous.map((d) => parseTimestamp(d, '12:00', 'MDY'));
+  return scoreParsedTimestamps(dmy) >= scoreParsedTimestamps(mdy) ? 'DMY' : 'MDY';
 }
 
 function normalizeExportLine(raw) {
@@ -165,6 +225,7 @@ export function parseExportedChat(content, chatName) {
   let body = String(content || '');
   if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
 
+  const dateOrder = detectImportDateOrder(body);
   const lines = body.split(/\r?\n/);
   const messages = [];
   /** @type {{ sender: string, text: string, timestamp: number } | null} */
@@ -181,7 +242,7 @@ export function parseExportedChat(content, chatName) {
       current = {
         sender: sender.trim(),
         text: (text || '').trim(),
-        timestamp: parseTimestamp(dateStr, timeStr),
+        timestamp: parseTimestamp(dateStr, timeStr, dateOrder),
       };
     } else if (current) {
       current.text += '\n' + rawLine;
@@ -318,6 +379,11 @@ export function importExportedChat(db, content, chatName, mediaMap) {
   const slug = slugForImportChatJid(chatName);
   const chatJid = `import_${slug}@imported`;
 
+  // Re-import replaces existing rows so date-parser fixes apply cleanly.
+  if (typeof db.deleteChat === 'function') {
+    db.deleteChat(chatJid);
+  }
+
   let mediaCount = 0;
 
   // Build a set of media filenames for fast reverse-lookup in message text.
@@ -383,6 +449,8 @@ export function importExportedChat(db, content, chatName, mediaMap) {
   }
   const { count: inserted } = db.insertMessageBatch(rows);
 
+  const lastMsgTs = rows.reduce((max, r) => Math.max(max, Number(r.timestamp) || 0), 0);
+
   // For re-imports: update media fields on rows that were skipped by INSERT OR IGNORE.
   let mediaLinked = 0;
   if (mediaMap && mediaMap.size > 0 && typeof db.updateMessageMedia === 'function') {
@@ -400,7 +468,7 @@ export function importExportedChat(db, content, chatName, mediaMap) {
     parsedCount: messages.length,
     chatJid,
     alreadyInDb: inserted === 0,
-    lastMessageTs: touchedAt,
+    lastMessageTs: lastMsgTs || touchedAt,
     mediaCount: mediaCount + mediaLinked,
   };
 }
