@@ -24,6 +24,7 @@ import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
 import {
+  detectSmbLibraryMismatch,
   getSearchPrompts,
   getSmbProfileFromDb,
   listSmbProfileOptions,
@@ -965,6 +966,13 @@ export default class WebServer {
     this._app.get('/api/chats', async (_req, res) => {
       try {
         const tid = getCurrentTenantId();
+        if (!this._repairedFutureTs) {
+          this._repairedFutureTs = true;
+          const repaired = this.db.repairFutureMessageTimestamps();
+          if (repaired > 0) {
+            console.log(`[DB] Repaired ${repaired} future-dated import message(s)`);
+          }
+        }
         let stats = this.db.getChatStats();
         try {
           const st = this._getTenantState(tid);
@@ -1147,12 +1155,17 @@ export default class WebServer {
     // ── Search ────────────────────────────────────────────────────────
     this._app.post('/api/search', async (req, res) => {
       try {
-        const { query, chatJid, mediaType } = req.body;
+        const { query, chatJid, mediaType, businessContext } = req.body;
         if (!query || typeof query !== 'string') {
           return res.status(400).json({ error: 'query is required' });
         }
 
-        const result = await this.searchEngine.search(query, chatJid || null, mediaType || null);
+        const result = await this.searchEngine.search(
+          query,
+          chatJid || null,
+          mediaType || null,
+          { businessContext: !!businessContext },
+        );
         return res.json(result);
       } catch (err) {
         console.error('Search API error:', err.message);
@@ -1458,10 +1471,13 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
     this._app.get('/api/smb/profile', (_req, res) => {
       const profile = getSmbProfileFromDb(this.db);
+      const mismatch = detectSmbLibraryMismatch(this.db);
       res.json({
         profile: profile.id,
         businessName: (this.db.getSetting(SMB_BUSINESS_NAME_SETTING) || '').trim(),
         prompts: getSearchPrompts(profile),
+        dataMismatch: mismatch.mismatch,
+        mismatchReason: mismatch.reason || '',
       });
     });
 
@@ -1476,11 +1492,14 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           this.db.setSetting(SMB_BUSINESS_NAME_SETTING, String(businessName || '').trim());
         }
         const current = getSmbProfileFromDb(this.db);
+        const mismatch = detectSmbLibraryMismatch(this.db);
         return res.json({
           ok: true,
           profile: current.id,
           businessName: (this.db.getSetting(SMB_BUSINESS_NAME_SETTING) || '').trim(),
           prompts: getSearchPrompts(current),
+          dataMismatch: mismatch.mismatch,
+          mismatchReason: mismatch.reason || '',
         });
       } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -1584,11 +1603,10 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
         if (p === 'ollama' && m) {
           const safe = resolveSafeOllamaModel(m);
-          m = safe.model;
           memoryWarning = safe.warning;
           applyOllamaMemorySettings(this.db, safe);
-          if (safe.downgraded) {
-            console.warn(`[Ollama] Model ${safe.requestedModel} exceeds safe RAM budget (~${safe.budgetGb} GB) — using ${safe.model}`);
+          if (safe.warning) {
+            console.warn(`[Ollama] ${safe.warning}`);
           }
         }
 
@@ -1619,7 +1637,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           provider: p,
           model: instance.model,
           memoryWarning,
-          downgraded: memoryWarning != null,
+          exceedsBudget: memoryWarning != null,
         });
       } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -1748,8 +1766,8 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       try {
         const { model } = req.body;
         const safe = resolveSafeOllamaModel(model || undefined);
-        if (safe.downgraded && safe.requestedModel) {
-          console.warn(`[Ollama] Downgraded ${safe.requestedModel} → ${safe.model} (budget ~${safe.budgetGb} GB)`);
+        if (safe.warning) {
+          console.warn(`[Ollama] ${safe.warning}`);
         }
 
         this.db.setSetting('llm_provider', 'ollama');
@@ -1783,7 +1801,8 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           model: instance.model,
           numCtx: safe.numCtx,
           budgetRam: safe.budgetGb,
-          downgraded: safe.downgraded,
+          exceedsBudget: safe.exceedsBudget,
+          suggestedModel: safe.suggestedModel,
           warning: safe.warning,
         });
       } catch (err) {

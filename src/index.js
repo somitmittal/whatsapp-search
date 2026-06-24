@@ -55,13 +55,9 @@ async function main() {
   if (savedProvider === 'ollama') {
     const { resolveSafeOllamaModel, applyOllamaMemorySettings } = await import('./llm/ollama-recommend.js');
     const safe = resolveSafeOllamaModel(savedModel);
-    savedModel = safe.model;
-    runWithTenant(defaultTenantId, () => {
-      applyOllamaMemorySettings(db, safe);
-      if (safe.downgraded) db.setSetting('llm_model', safe.model);
-    });
-    if (safe.downgraded) {
-      console.log(`[Ollama] Startup: ${safe.requestedModel} → ${safe.model} (safe RAM budget ~${safe.budgetGb} GB)`);
+    runWithTenant(defaultTenantId, () => applyOllamaMemorySettings(db, safe));
+    if (safe.warning) {
+      console.warn(`[Ollama] Startup: ${safe.warning}`);
     }
   }
 

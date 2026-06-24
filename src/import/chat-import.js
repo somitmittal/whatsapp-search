@@ -77,6 +77,19 @@ function scoreParsedTimestamps(timestamps) {
   return score;
 }
 
+/** If parsed date is more than one day in the future, step year back (bad 2-digit / export year). */
+function clampImportYearToPlausible(year, month, day, hours, minutes, seconds) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const graceSec = 86400;
+  let y = year;
+  for (let i = 0; i < 5 && y > 1970; i++) {
+    const t = Math.floor(new Date(y, month - 1, day, hours, minutes, seconds).getTime() / 1000);
+    if (t <= nowSec + graceSec) return y;
+    y -= 1;
+  }
+  return year;
+}
+
 function applyDateParts(a, b, c, order) {
   let year;
   let month;
@@ -135,7 +148,7 @@ export function parseTimestamp(dateStr, timeStr, order = 'DMY') {
   if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return 0;
 
   const [a, b, c] = parts;
-  const { year, month, day } = applyDateParts(a, b, c, order);
+  let { year, month, day } = applyDateParts(a, b, c, order);
 
   let timeToParse = String(timeStr || '')
     .trim()
@@ -155,6 +168,8 @@ export function parseTimestamp(dateStr, timeStr, order = 'DMY') {
 
   if (isPM && hours < 12) hours += 12;
   if (isAM && hours === 12) hours = 0;
+
+  year = clampImportYearToPlausible(year, month, day, hours, minutes, seconds);
 
   const date = new Date(year, month - 1, day, hours, minutes, seconds);
   const t = Math.floor(date.getTime() / 1000);

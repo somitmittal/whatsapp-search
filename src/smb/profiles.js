@@ -156,3 +156,31 @@ export function listSmbProfileOptions() {
     isBusiness: !!p.isBusiness,
   }));
 }
+
+/**
+ * Business profile active but library is mostly imported large groups — wrong vertical tuning.
+ * @param {import('../storage/database.js').default} db
+ * @returns {{ mismatch: boolean, reason?: string }}
+ */
+export function detectSmbLibraryMismatch(db) {
+  const profile = getSmbProfileFromDb(db);
+  if (!profile.isBusiness) return { mismatch: false };
+  if (!db || typeof db.getChatStats !== 'function') return { mismatch: false };
+  const stats = db.getChatStats();
+  if (!stats?.length) return { mismatch: false };
+
+  const groupLike = stats.filter((c) => {
+    const jid = String(c.chatJid || '');
+    const participants = Number(c.participantCount) || 0;
+    return jid.includes('@imported') || jid.endsWith('@g.us') || participants > 8;
+  });
+
+  if (groupLike.length / stats.length < 0.5) return { mismatch: false };
+
+  return {
+    mismatch: true,
+    reason:
+      'Your chats look like personal or group imports, but a business profile is active. '
+      + 'Switch to Personal in Settings → Business for general chat search, or use the Business tab for customer workflows.',
+  };
+}

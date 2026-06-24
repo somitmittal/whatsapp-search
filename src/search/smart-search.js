@@ -1,6 +1,6 @@
 import { basename } from 'path';
 import Fuse from 'fuse.js';
-import { getSmbProfileFromDb, synthesisSystemAddon } from '../smb/profiles.js';
+import { getSmbProfileFromDb, SMB_PROFILES, synthesisSystemAddon } from '../smb/profiles.js';
 
 const MAX_THREADS = 8;
 const MAX_DAYS = 8;
@@ -126,7 +126,7 @@ export default class SmartSearch {
    *   3. Merge + dedupe
    *   4. Synthesis (1 LLM call) — crisp 2-3 sentence answer
    */
-  async search(query, chatJid = null, mediaType = null) {
+  async search(query, chatJid = null, mediaType = null, options = {}) {
     const q = typeof query === 'string' ? query.trim() : '';
     if (!q) {
       return { answer: 'Enter a search query.', sources: [] };
@@ -193,7 +193,7 @@ export default class SmartSearch {
 
     // ── Synthesis (single LLM call) ─────────────────────────────────
     try {
-      const result = await race(this._synthesize(q, allMessages), timeouts.synth);
+      const result = await race(this._synthesize(q, allMessages, options), timeouts.synth);
       if (result) {
         console.log(`[Search] Done in ${Date.now() - t0}ms`);
         return result;
@@ -459,7 +459,7 @@ export default class SmartSearch {
   // Synthesis — crisp answer + only cited sources
   // ──────────────────────────────────────────────────────────────────
 
-  async _synthesize(query, messages) {
+  async _synthesize(query, messages, options = {}) {
     const transcript = messages.map((m, i) => {
       const ts = formatTs(m.timestamp);
       const sender = m.sender || 'Unknown';
@@ -468,7 +468,9 @@ export default class SmartSearch {
       return `[${i + 1}] ${sender} (${ts}): ${text}`;
     }).join('\n');
 
-    const smbProfile = getSmbProfileFromDb(this._db);
+    const smbProfile = options.businessContext
+      ? getSmbProfileFromDb(this._db)
+      : SMB_PROFILES.personal;
     const businessName = (this._db.getSetting?.('smb_business_name') || '').trim();
     const smbLine = synthesisSystemAddon(smbProfile);
     const businessLine = businessName ? `\nBusiness name: ${businessName}.` : '';

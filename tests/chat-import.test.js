@@ -155,6 +155,13 @@ describe('parseExportedChat', () => {
     expect(d.getMonth()).toBe(11);
     expect(d.getDate()).toBe(1);
   });
+
+  test('clamps import dates more than one day in the future', () => {
+    const ts = parseTimestamp('01/12/26', '11:34', 'DMY');
+    const d = new Date(ts * 1000);
+    expect(d.getTime()).toBeLessThanOrEqual(Date.now() + 86400 * 1000);
+    expect(d.getFullYear()).toBeLessThanOrEqual(new Date().getFullYear());
+  });
 });
 
 describe('slugForImportChatJid', () => {

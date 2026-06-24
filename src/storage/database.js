@@ -1547,6 +1547,42 @@ export default class Database {
     return out;
   }
 
+  /**
+   * One-time repair for imports that parsed a year ahead (e.g. Dec 2026 instead of Dec 2025).
+   * @returns {number} rows updated
+   */
+  repairFutureMessageTimestamps() {
+    const t = getCurrentTenantId();
+    const now = Math.floor(Date.now() / 1000) + 86400;
+    const rows = this._db.prepare(
+      'SELECT id, timestamp FROM messages WHERE tenant_id = ? AND timestamp > ?',
+    ).all(t, now);
+    if (!rows.length) return 0;
+
+    const upd = this._db.prepare(
+      'UPDATE messages SET timestamp = ? WHERE id = ? AND tenant_id = ?',
+    );
+    let fixed = 0;
+    const txn = this._db.transaction(() => {
+      for (const row of rows) {
+        let ts = row.timestamp;
+        let guard = 0;
+        while (ts > now && guard < 5) {
+          const d = new Date(ts * 1000);
+          d.setFullYear(d.getFullYear() - 1);
+          ts = Math.floor(d.getTime() / 1000);
+          guard += 1;
+        }
+        if (ts !== row.timestamp) {
+          upd.run(ts, row.id, t);
+          fixed += 1;
+        }
+      }
+    });
+    txn();
+    return fixed;
+  }
+
   getQuickChatInfo(chatJid) {
     const t = getCurrentTenantId();
     const agg = this._db.prepare(`

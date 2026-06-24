@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import {
+  detectSmbLibraryMismatch,
   getSearchPrompts,
   listSmbProfileOptions,
   resolveSmbProfile,
@@ -30,5 +31,18 @@ describe('smb profiles', () => {
   it('adds synthesis context for business profiles', () => {
     expect(synthesisSystemAddon(resolveSmbProfile('personal'))).toBe('');
     expect(synthesisSystemAddon(resolveSmbProfile('d2c'))).toMatch(/D2C/i);
+  });
+
+  it('flags business profile mismatch for imported group libraries', () => {
+    const db = {
+      getSetting: () => 'clinic',
+      getChatStats: () => [
+        { chatJid: 'import_college@imported', participantCount: 129, messageCount: 400 },
+        { chatJid: 'import_alumni@imported', participantCount: 144, messageCount: 2800 },
+      ],
+    };
+    expect(detectSmbLibraryMismatch(db).mismatch).toBe(true);
+    const personalDb = { getSetting: () => 'personal', getChatStats: () => db.getChatStats() };
+    expect(detectSmbLibraryMismatch(personalDb).mismatch).toBe(false);
   });
 });

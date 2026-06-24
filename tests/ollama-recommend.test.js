@@ -30,12 +30,15 @@ describe('ollama-recommend', () => {
     expect(pickModelTierForBudget(12 * RAM_BUDGET_RATIO).model).toBe('qwen3.5:4b');
   });
 
-  test('resolveSafeOllamaModel downgrades oversized request', () => {
+  test('resolveSafeOllamaModel warns but keeps oversized request', () => {
     const safe = resolveSafeOllamaModel('gemma2:9b');
+    expect(safe.model).toBe('gemma2:9b');
+    expect(safe.downgraded).toBe(false);
     if (safe.budgetGb < 10) {
-      expect(safe.model).not.toBe('gemma2:9b');
-      expect(safe.downgraded).toBe(true);
-      expect(safe.warning).toBeTruthy();
+      expect(safe.exceedsBudget).toBe(true);
+      expect(safe.warning).toMatch(/gemma2:9b/);
+      expect(safe.warning).not.toMatch(/Using .* instead/i);
+      expect(safe.suggestedModel).toBeTruthy();
     }
   });
 

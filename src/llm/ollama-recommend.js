@@ -151,7 +151,8 @@ export function tierForModel(modelName) {
 }
 
 /**
- * Never return a model that exceeds the memory budget — prevents swap / system hang.
+ * Check a model against the RAM budget. Warns when over budget but keeps the requested model.
+ * When no model is requested, returns the largest tier that fits the budget.
  * @param {string} [requestedModel]
  */
 export function resolveSafeOllamaModel(requestedModel) {
@@ -160,29 +161,25 @@ export function resolveSafeOllamaModel(requestedModel) {
   const budgetGb = computeModelBudgetGb(availableRamGb, pressure);
   const safeTier = pickModelTierForBudget(budgetGb);
 
-  if (pressure === 'critical') {
-    const tier = MODEL_TIERS[MODEL_TIERS.length - 1];
-    return {
-      model: tier.model,
-      budgetGb,
-      availableRamGb,
-      pressure,
-      numCtx: numCtxForBudget(1),
-      downgraded: requestedModel != null && requestedModel !== tier.model,
-      requestedModel: requestedModel || null,
-      warning: 'Memory pressure is high — using the smallest model so your Mac stays responsive.',
-    };
-  }
-
   const reqTier = requestedModel ? tierForModel(requestedModel) : null;
   const fits = reqTier && budgetGb >= reqTier.minBudgetGb;
-
-  const model = fits ? requestedModel : safeTier.model;
   const numCtx = numCtxForBudget(budgetGb);
 
+  let model;
   let warning = null;
-  if (!fits && requestedModel) {
-    warning = `${requestedModel} needs more free RAM than the safe budget (~${budgetGb} GB). Using ${safeTier.model} instead to avoid system hangs.`;
+
+  if (requestedModel) {
+    model = requestedModel;
+    if (pressure === 'critical') {
+      warning = 'Memory pressure is high — this model may make your Mac less responsive.';
+    } else if (!fits) {
+      warning = `${requestedModel} needs more free RAM than the safe budget (~${budgetGb} GB). It may run slowly or cause memory pressure.`;
+    }
+  } else if (pressure === 'critical') {
+    model = MODEL_TIERS[MODEL_TIERS.length - 1].model;
+    warning = 'Memory pressure is high — defaulting to the smallest model for new setups.';
+  } else {
+    model = safeTier.model;
   }
 
   return {
@@ -191,7 +188,9 @@ export function resolveSafeOllamaModel(requestedModel) {
     availableRamGb,
     pressure,
     numCtx,
-    downgraded: requestedModel != null && model !== requestedModel,
+    downgraded: false,
+    exceedsBudget: !!requestedModel && !fits,
+    suggestedModel: requestedModel && !fits ? safeTier.model : null,
     requestedModel: requestedModel || null,
     warning,
   };
