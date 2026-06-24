@@ -1,5 +1,6 @@
 import { basename } from 'path';
 import Fuse from 'fuse.js';
+import { getSmbProfileFromDb, synthesisSystemAddon } from '../smb/profiles.js';
 
 const MAX_THREADS = 8;
 const MAX_DAYS = 8;
@@ -467,11 +468,17 @@ export default class SmartSearch {
       return `[${i + 1}] ${sender} (${ts}): ${text}`;
     }).join('\n');
 
+    const smbProfile = getSmbProfileFromDb(this._db);
+    const businessName = (this._db.getSetting?.('smb_business_name') || '').trim();
+    const smbLine = synthesisSystemAddon(smbProfile);
+    const businessLine = businessName ? `\nBusiness name: ${businessName}.` : '';
+
     const answer = await this._provider.chat([
       {
         role: 'system',
         content:
           'You are a WhatsApp chat search assistant.\n\n' +
+          (smbLine ? `${smbLine}${businessLine}\n\n` : '') +
           'FORMAT YOUR RESPONSE EXACTLY LIKE THIS:\n\n' +
           '**Summary**\n' +
           'Write a clear 3-5 sentence answer to the question. Name specific people, dates, and key details. ' +

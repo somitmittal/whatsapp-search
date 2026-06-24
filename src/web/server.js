@@ -21,9 +21,21 @@ import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
 import { applyOllamaMemorySettings, getHardwareRecommendation, resolveSafeOllamaModel } from '../llm/ollama-recommend.js';
 import { clearProviderCache, createProvider, PROVIDER_META } from '../llm/provider.js';
 import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
+import SmbInboxService from '../smb/inbox-service.js';
+import AppointmentBoardService from '../smb/appointment-board.js';
+import {
+  getSearchPrompts,
+  getSmbProfileFromDb,
+  listSmbProfileOptions,
+  resolveSmbProfile,
+  SMB_BUSINESS_NAME_SETTING,
+  SMB_PROFILE_SETTING,
+} from '../smb/profiles.js';
 import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
 import { getCurrentTenantId, runWithTenant } from '../storage/tenant-context.js';
 import WaClient from '../whatsapp/wa-client.js';
+import WabaIngestService, { verifyWabaSignature } from '../whatsapp/waba-client.js';
+import { getWabaConfig, publicWabaConfig, saveWabaConfig } from '../whatsapp/waba-settings.js';
 import { registerAuthRoutes } from './auth-routes.js';
 
 const require = createRequire(import.meta.url);
@@ -127,6 +139,14 @@ export default class WebServer {
     this.summaryService = summaryService;
     this._mediaIndexService = mediaIndexService || null;
     this._actionItemService = actionItemService || null;
+    this._smbInbox = new SmbInboxService(db);
+    this._appointmentBoard = new AppointmentBoardService(db);
+    this._wabaIngest = new WabaIngestService({
+      db,
+      onBroadcast: (payload, tenantId) => this._broadcast(payload, tenantId),
+      actionItemService: this._actionItemService,
+      mediaIndexService: this._mediaIndexService,
+    });
     /** @type {(() => Promise<{ healthy?: boolean, provider?: string, model?: string }|void>)|null} */
     this._reloadMediaIndexProvider = reloadMediaIndexProvider || null;
     this._userSessions = new UserSessionService(this.db.getSqliteDatabase());
@@ -720,6 +740,70 @@ export default class WebServer {
     });
   }
 
+  _publicBaseUrl(req) {
+    const render = String(process.env.RENDER_EXTERNAL_URL || '').trim();
+    if (render) return render.replace(/\/$/, '');
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const host = req.headers['x-forwarded-host'] || req.get('host') || `localhost:${config.webPort}`;
+    return `${proto}://${host}`.replace(/\/$/, '');
+  }
+
+  _resolveTenantFromWabaBody(body) {
+    const entries = Array.isArray(body?.entry) ? body.entry : [];
+    for (const entry of entries) {
+      for (const change of entry.changes || []) {
+        const pid = change.value?.metadata?.phone_number_id;
+        if (!pid) continue;
+        const tid = this.db.findTenantIdBySetting('waba_phone_number_id', String(pid));
+        if (tid) return tid;
+      }
+    }
+    return config.defaultTenantId
+      || this._findLocalTenantWithMostMessages()
+      || LEGACY_TENANT_ID;
+  }
+
+  /** Meta Cloud API webhooks — no session cookie; tenant resolved from verify token / phone_number_id. */
+  _registerWabaWebhookRoutes() {
+    this._app.get('/api/waba/webhook', (req, res) => {
+      try {
+        const verifyToken = String(req.query['hub.verify_token'] || '');
+        const tenantId = this.db.findTenantIdBySetting('waba_verify_token', verifyToken)
+          || config.defaultTenantId
+          || LEGACY_TENANT_ID;
+        return runWithTenant(tenantId, () => {
+          const result = this._wabaIngest.handleVerification(req.query, this.db);
+          if (result.ok) return res.status(200).send(result.challenge);
+          return res.sendStatus(403);
+        });
+      } catch (err) {
+        console.error('[WABA] verify:', err.message);
+        return res.sendStatus(500);
+      }
+    });
+
+    this._app.post('/api/waba/webhook', async (req, res) => {
+      try {
+        const tenantId = this._resolveTenantFromWabaBody(req.body);
+        await runWithTenant(tenantId, async () => {
+          const cfg = getWabaConfig(this.db);
+          if (cfg.appSecret) {
+            const sig = req.headers['x-hub-signature-256'];
+            const raw = JSON.stringify(req.body);
+            if (!verifyWabaSignature(cfg.appSecret, raw, sig)) {
+              return res.sendStatus(403);
+            }
+          }
+          await this._wabaIngest.ingestWebhookBody(req.body, tenantId);
+        });
+        return res.sendStatus(200);
+      } catch (err) {
+        console.error('[WABA] webhook:', err.message);
+        return res.sendStatus(500);
+      }
+    });
+  }
+
   _setupRoutes() {
     this._app.use((_req, res, next) => {
       res.header('Access-Control-Allow-Origin', '*');
@@ -730,6 +814,8 @@ export default class WebServer {
     });
     this._app.use(cookieParser());
     this._app.use(express.json({ limit: '10mb' }));
+
+    this._registerWabaWebhookRoutes();
 
     /**
      * Per-request tenant: httpOnly `ws.sid` cookie and/or `Authorization: Bearer` opaque sessionId (extension/mobile).
@@ -1361,6 +1447,108 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         return res.json({ inserted, total: rows.length });
       } catch (err) {
         console.error('Extension sync error:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    // ── SMB / business profiles ───────────────────────────────────────
+    this._app.get('/api/smb/profiles', (_req, res) => {
+      res.json({ profiles: listSmbProfileOptions() });
+    });
+
+    this._app.get('/api/smb/profile', (_req, res) => {
+      const profile = getSmbProfileFromDb(this.db);
+      res.json({
+        profile: profile.id,
+        businessName: (this.db.getSetting(SMB_BUSINESS_NAME_SETTING) || '').trim(),
+        prompts: getSearchPrompts(profile),
+      });
+    });
+
+    this._app.post('/api/smb/profile', (req, res) => {
+      try {
+        const { profile, businessName } = req.body || {};
+        if (profile != null) {
+          const resolved = resolveSmbProfile(profile);
+          this.db.setSetting(SMB_PROFILE_SETTING, resolved.id);
+        }
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'businessName')) {
+          this.db.setSetting(SMB_BUSINESS_NAME_SETTING, String(businessName || '').trim());
+        }
+        const current = getSmbProfileFromDb(this.db);
+        return res.json({
+          ok: true,
+          profile: current.id,
+          businessName: (this.db.getSetting(SMB_BUSINESS_NAME_SETTING) || '').trim(),
+          prompts: getSearchPrompts(current),
+        });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/smb/inbox', (_req, res) => {
+      try {
+        res.json(this._smbInbox.getDashboard());
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/smb/prompts', (_req, res) => {
+      const profile = getSmbProfileFromDb(this.db);
+      res.json({ profile: profile.id, prompts: getSearchPrompts(profile) });
+    });
+
+    this._app.get('/api/smb/appointments', (_req, res) => {
+      try {
+        res.json(this._appointmentBoard.getBoard());
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // ── WhatsApp Business API (Cloud API) ─────────────────────────────
+    this._app.get('/api/waba/config', (req, res) => {
+      res.json({
+        ...publicWabaConfig(this.db),
+        webhookUrl: `${this._publicBaseUrl(req)}/api/waba/webhook`,
+      });
+    });
+
+    this._app.post('/api/waba/config', (req, res) => {
+      try {
+        saveWabaConfig(this.db, req.body || {});
+        res.json({
+          ok: true,
+          ...publicWabaConfig(this.db),
+          webhookUrl: `${this._publicBaseUrl(req)}/api/waba/webhook`,
+        });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/waba/test', async (_req, res) => {
+      try {
+        const cfg = getWabaConfig(this.db);
+        if (!cfg.phoneNumberId || !cfg.accessToken) {
+          return res.status(400).json({ error: 'Phone Number ID and Access Token required' });
+        }
+        const GRAPH_VERSION = (process.env.WABA_GRAPH_API_VERSION || 'v21.0').trim();
+        const r = await fetch(
+          `https://graph.facebook.com/${GRAPH_VERSION}/${cfg.phoneNumberId}`,
+          { headers: { Authorization: `Bearer ${cfg.accessToken}` } },
+        );
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          return res.status(502).json({
+            ok: false,
+            error: data.error?.message || `Graph API ${r.status}`,
+          });
+        }
+        return res.json({ ok: true, display: data.display_phone_number || data.verified_name || 'connected' });
+      } catch (err) {
         return res.status(500).json({ error: err.message });
       }
     });

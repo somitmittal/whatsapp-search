@@ -1,8 +1,9 @@
-import { FACT_EXTRACTION_PROMPT, parseFactsFromLlm } from './fact-extract.js';
+import { buildFactExtractionPrompt, parseFactsFromLlm } from './fact-extract.js';
 import { segmentIntoThreads } from './thread-segment.js';
 import { isWhatsAppLowPriorityFeed } from '../whatsapp/jid-filters.js';
 import { getCurrentTenantId } from '../storage/tenant-context.js';
 import { prioritizeChatFirst } from './priority-chat-queue.js';
+import { factExtractionAddon, getSmbProfileFromDb } from '../smb/profiles.js';
 /** Messages per LLM call — keeps prompts bounded and allows parallel segment work. */
 const SUMMARY_CHUNK_CLOUD = 200;
 const SUMMARY_CHUNK_LOCAL = 150;
@@ -161,7 +162,8 @@ export default class DailySummaryService {
 
   async _collectFactsFromTranscript(provider, transcript) {
     if (!provider || !transcript?.trim()) return [];
-    const prompt = `${FACT_EXTRACTION_PROMPT}\n${transcript}`;
+    const profile = getSmbProfileFromDb(this._db);
+    const prompt = `${buildFactExtractionPrompt(factExtractionAddon(profile))}\n${transcript}`;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const raw = await provider.chat(

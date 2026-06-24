@@ -2,12 +2,12 @@
  * Structured fact extraction for WhatsApp threads (JSON array from LLM).
  */
 
-export const FACT_EXTRACTION_PROMPT = `You extract searchable structured facts from a WhatsApp conversation transcript.
+const FACT_EXTRACTION_BASE = `You extract searchable structured facts from a WhatsApp conversation transcript.
 
 Output ONLY a valid JSON array (no markdown fences, no commentary). Max 30 objects.
 
 Each object MUST have:
-- "type": one of: "plan", "recommendation", "decision", "conflict", "shared_content", "payment", "meeting", "question", "other"
+- "type": one of: "plan", "recommendation", "decision", "conflict", "shared_content", "payment", "meeting", "question", "appointment", "order", "lead", "site_visit", "delivery", "complaint", "prescription", "other"
 
 Add fields depending on type (use short strings, real names from the chat):
 - plan: topic, dates_mentioned, people (array of strings), details
@@ -27,6 +27,22 @@ Example:
 
 Transcript:
 `;
+
+/** @deprecated use buildFactExtractionPrompt */
+export const FACT_EXTRACTION_PROMPT = FACT_EXTRACTION_BASE;
+
+/**
+ * @param {string} [profileAddon]
+ * @returns {string}
+ */
+export function buildFactExtractionPrompt(profileAddon = '') {
+  const addon = String(profileAddon || '').trim();
+  if (!addon) return FACT_EXTRACTION_BASE;
+  return `${FACT_EXTRACTION_BASE.replace(
+    'Transcript:\n',
+    `${addon}\n\nTranscript:\n`,
+  )}`;
+}
 
 /** Parse LLM response into fact objects; returns [] on failure. */
 export function parseFactsFromLlmResponse(raw) {

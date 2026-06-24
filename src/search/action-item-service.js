@@ -3,6 +3,8 @@
  * Not run for every message — only candidates that look like requests, deadlines, or open loops.
  */
 
+import { actionItemAddon, getSmbProfileFromDb } from '../smb/profiles.js';
+
 function combinedText(row) {
   const t = (row.text || '').trim();
   const c = (row.mediaCaption || '').trim();
@@ -89,6 +91,8 @@ export default class ActionItemService {
     }
 
     const body = combinedText(row);
+    const profile = getSmbProfileFromDb(this.db);
+    const verticalLine = actionItemAddon(profile);
     const prompt = `You analyze ONE WhatsApp message. Decide if the recipient should follow up with concrete actions.
 
 Reply with ONLY a compact JSON object (no markdown), shape:
@@ -99,6 +103,7 @@ Rules:
 - false for pure thanks, greetings, jokes, reactions, or statements with no implied task.
 - items must be actionable (verb-first), <= 90 chars each.
 - Use neutral professional tone.
+${verticalLine ? `- ${verticalLine}` : ''}
 
 Sender name: ${row.sender || 'Unknown'}
 Message:

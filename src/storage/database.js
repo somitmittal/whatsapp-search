@@ -817,6 +817,41 @@ export default class Database {
       .reduce((acc, r) => { acc[r.key] = r.value; return acc; }, {});
   }
 
+  /**
+   * Resolve tenant for WABA webhooks (Meta has no session cookie).
+   * @param {string} key
+   * @param {string} value
+   * @returns {string | null}
+   */
+  findTenantIdBySetting(key, value) {
+    if (!key || value == null) return null;
+    const row = this._db.prepare(
+      'SELECT tenant_id AS tenantId FROM tenant_settings WHERE key = ? AND value = ? LIMIT 1',
+    ).get(key, String(value));
+    return row?.tenantId || null;
+  }
+
+  /**
+   * @param {string[]} factTypes
+   * @param {number} [limit]
+   */
+  listThreadFactsByTypes(factTypes, limit = 50) {
+    const types = (factTypes || []).filter(Boolean);
+    if (!types.length) return [];
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
+    const t = getCurrentTenantId();
+    const placeholders = types.map(() => '?').join(',');
+    return this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+             thread_start AS threadStart, thread_end AS threadEnd,
+             fact_type AS factType, payload_json AS payloadJson
+      FROM thread_facts
+      WHERE tenant_id = ? AND fact_type IN (${placeholders})
+      ORDER BY thread_end DESC
+      LIMIT ?
+    `).all(t, ...types, safeLimit);
+  }
+
   // ── Messages ──────────────────────────────────────────────────────────
 
   insertMessage({
@@ -1000,6 +1035,83 @@ export default class Database {
         snippet: String(r.snippet || '').slice(0, 140),
       };
     }).filter(Boolean);
+  }
+
+  /**
+   * 1:1 customer chats where the latest message is not from the business ("You").
+   * Excludes WhatsApp groups (@g.us).
+   */
+  getChatsAwaitingReply(limit = 15) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 15, 50));
+    const t = getCurrentTenantId();
+    const rows = this._db.prepare(`
+      WITH latest AS (
+        SELECT chat_jid AS chatJid, sender, text, timestamp,
+               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
+        FROM messages
+        WHERE tenant_id = ?
+          AND chat_jid NOT LIKE '%@g.us'
+      ),
+      names AS (
+        SELECT chat_jid AS chatJid, chat_name AS chatName
+        FROM (
+          SELECT chat_jid, chat_name,
+                 ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
+          FROM messages
+          WHERE tenant_id = ? AND chat_name IS NOT NULL AND chat_name != ''
+        ) WHERE rn = 1
+      )
+      SELECT l.chatJid, COALESCE(n.chatName, l.chatJid) AS chatName,
+             l.sender AS lastSender, l.text AS lastText, l.timestamp AS lastMessageTs
+      FROM latest l
+      LEFT JOIN names n ON n.chatJid = l.chatJid
+      WHERE l.rn = 1
+        AND (l.sender IS NULL OR l.sender = '' OR l.sender != 'You')
+      ORDER BY l.timestamp DESC
+      LIMIT ?
+    `).all(t, t, safeLimit);
+    return rows.map((r) => ({
+      chatJid: r.chatJid,
+      chatName: r.chatName,
+      lastSender: r.lastSender || 'Customer',
+      lastText: String(r.lastText || '').slice(0, 160),
+      lastMessageTs: r.lastMessageTs,
+    }));
+  }
+
+  /** Open follow-up suggestions across all chats (newest first). */
+  getAllActionItemsAcrossChats(limit = 20) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 60));
+    const t = getCurrentTenantId();
+    const rows = this._db.prepare(`
+      SELECT c.chat_jid AS chatJid, c.source_message_id AS sourceMessageId,
+             c.items_json AS itemsJson, c.created_at AS createdAt,
+             m.text AS snippet, m.timestamp AS messageTs, m.chat_name AS chatName
+      FROM chat_action_items c
+      LEFT JOIN messages m ON m.tenant_id = c.tenant_id AND m.message_id = c.source_message_id AND m.chat_jid = c.chat_jid
+      WHERE c.tenant_id = ?
+      ORDER BY c.created_at DESC
+      LIMIT ?
+    `).all(t, safeLimit * 3);
+    const out = [];
+    for (const r of rows) {
+      if (out.length >= safeLimit) break;
+      let items = [];
+      try {
+        items = JSON.parse(r.itemsJson || '[]');
+      } catch { /* */ }
+      if (!Array.isArray(items) || !items.length) continue;
+      out.push({
+        chatJid: r.chatJid,
+        chatName: r.chatName || r.chatJid,
+        sourceMessageId: r.sourceMessageId,
+        items: items.slice(0, 3),
+        createdAt: r.createdAt,
+        messageTimestamp: r.messageTs ?? null,
+        snippet: String(r.snippet || '').slice(0, 140),
+      });
+    }
+    return out;
   }
 
   /**

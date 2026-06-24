@@ -107,6 +107,37 @@
       cursor: pointer; font-family: inherit;
     }
     .sidebar-tab.active { background: var(--hover); color: var(--text); }
+    .business-inbox-panel {
+      flex: 1; overflow-y: auto; padding: 10px 12px 16px; display: none;
+    }
+    .business-inbox-panel.visible { display: block; }
+    .biz-section { margin-bottom: 16px; }
+    .biz-section h4 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+      color: var(--text2); margin: 0 0 8px;
+    }
+    .biz-card {
+      background: #fff; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+      box-shadow: 0 1px 2px var(--shadow); cursor: pointer; border: 1px solid transparent;
+    }
+    .biz-card:hover { border-color: rgba(0,168,132,0.35); }
+    .biz-card-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+    .biz-card-meta { font-size: 11px; color: var(--text2); }
+    .biz-card-snippet { font-size: 12px; color: var(--text); margin-top: 6px; line-height: 1.4; }
+    .biz-appt-status { display: inline-block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; padding: 2px 6px; border-radius: 4px; margin-left: 6px; }
+    .biz-appt-status.requested { background: rgba(234, 179, 8, 0.2); color: #a16207; }
+    .biz-appt-status.confirmed { background: rgba(22, 163, 74, 0.18); color: #166534; }
+    .biz-appt-status.cancelled { background: rgba(239, 68, 68, 0.15); color: #b91c1c; }
+    .biz-empty { font-size: 12px; color: var(--text2); padding: 8px 4px; line-height: 1.5; }
+    .smb-prompts {
+      display: none; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; background: var(--header-bg);
+    }
+    .smb-prompts.visible { display: flex; }
+    .smb-prompt-chip {
+      font-size: 11px; padding: 5px 10px; border-radius: 14px; border: 1px solid var(--border);
+      background: #fff; color: var(--text); cursor: pointer; white-space: nowrap;
+    }
+    .smb-prompt-chip:hover { border-color: #00a884; color: #00a884; }
 
     /* WhatsApp-style Status row (above chat list on Chats tab) */
     .status-strip-wrap {
@@ -1267,6 +1298,7 @@
     </div>
     <div class="sidebar-chat-tabs" role="tablist" aria-label="Chat categories">
       <button type="button" class="sidebar-tab active" id="sidebar-tab-chat" data-sidebar-tab="chat" role="tab" aria-selected="true">Chats</button>
+      <button type="button" class="sidebar-tab" id="sidebar-tab-business" data-sidebar-tab="business" role="tab" aria-selected="false" hidden>Business</button>
       <button type="button" class="sidebar-tab" id="sidebar-tab-feed" data-sidebar-tab="feed" role="tab" aria-selected="false">Status &amp; feeds</button>
     </div>
     <div id="status-strip-wrap" class="status-strip-wrap" hidden>
@@ -1307,6 +1339,8 @@
         </button>
       </div>
     </div>
+
+    <div id="business-inbox-panel" class="business-inbox-panel" aria-label="Business inbox"></div>
 
     <div id="chat-list" class="chat-list"></div>
 
@@ -1356,6 +1390,8 @@
       </button>
       <button class="search-clear-btn" id="q-clear">Back</button>
     </div>
+
+    <div id="smb-prompts" class="smb-prompts" aria-label="Business quick searches"></div>
 
     <div id="chat-action-items-bar" class="chat-action-items-bar">
       <details id="action-items-details">
@@ -1436,7 +1472,7 @@
             <path fill-rule="evenodd" clip-rule="evenodd" d="M229.565 160.229c32.647-16.884 55.022-50.77 55.022-90.229C284.587 31.59 253.107 0 213.87 0c-30.759 0-57.14 19.337-67.108 46.525C136.794 19.337 110.413 0 79.653 0 40.417 0 8.937 31.59 8.937 70c0 39.46 22.375 73.345 55.022 90.229L151.5 172l78.065-11.771z" fill="#d4dbe0"/>
           </svg>
           <h2>WhatsApp Search</h2>
-          <p>Select a chat from the left, or search your chats with AI.<br>Click <strong>+</strong> to import more chat exports.</p>
+          <p id="welcome-default-lead">Select a chat from the left, or search your chats with AI.<br>Click <strong>+</strong> to import more chat exports.</p>
           <p style="font-size:12px;color:var(--text2);margin-top:14px;max-width:520px;line-height:1.5;">Live WhatsApp link syncs a <strong>limited window</strong> of recent history (often months — controlled by WhatsApp). For a full long archive, export chats on your phone and import the .zip here. In an open chat, use ⋮ → <strong>Load older messages from phone</strong> to pull older batches when your phone is online.</p>
           <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px;">
             <button class="btn btn-primary" id="btn-restore-backup" type="button" style="min-width:220px;">
@@ -1669,6 +1705,50 @@
           <div class="setting-row" style="gap:12px;"><button class="btn btn-secondary" id="smi-save">Save Media Indexing</button><span id="smi-status"></span></div>
           <div id="smi-hint" style="font-size:11px;color:var(--text2);margin-top:4px;">Recommended: Gemini — supports images, short video inline, and audio via the same API. Groq search stays fast for text.</div>
         </div>
+        <div class="setting-group" id="smb-settings-group">
+          <h3>Business profile</h3>
+          <p style="font-size:13px;color:var(--text2);">Tune AI search for clinics, real estate, or D2C stores. Import customer chats with <strong>+</strong> first.</p>
+          <div class="setting-row">
+            <label>Account type</label>
+            <select id="smb-profile">
+              <option value="personal">Personal</option>
+              <option value="clinic">Clinic / Healthcare</option>
+              <option value="real_estate">Real Estate</option>
+              <option value="d2c">D2C / Online Store</option>
+            </select>
+          </div>
+          <div class="setting-row" id="smb-business-name-row" style="display:none;">
+            <label>Business name</label>
+            <input type="text" id="smb-business-name" placeholder="e.g. City Dental, PropHub, Glow Skincare" />
+          </div>
+          <div class="setting-row" style="gap:12px;">
+            <button type="button" class="btn btn-secondary" id="smb-save">Save business profile</button>
+            <span id="smb-status" style="font-size:12px;color:var(--text2);"></span>
+          </div>
+        </div>
+        <div class="setting-group" id="waba-settings-group">
+          <h3>WhatsApp Business API <span style="font-weight:400;font-size:12px;color:var(--text2);">(live sync)</span></h3>
+          <p style="font-size:13px;color:var(--text2);">Connect your official Cloud API number for <strong>new</strong> customer messages (webhook). Past history still comes from import.</p>
+          <div class="setting-row" style="align-items:flex-start;">
+            <label style="padding-top:6px;">Webhook URL</label>
+            <div style="flex:1;min-width:0;">
+              <code id="waba-webhook-url" style="display:block;font-size:11px;word-break:break-all;padding:8px;background:var(--hover);border-radius:6px;">—</code>
+              <p style="font-size:11px;color:var(--text2);margin-top:6px;">Paste in Meta Developer Console → WhatsApp → Configuration. Desktop users need a tunnel (e.g. ngrok) pointing to this server.</p>
+            </div>
+          </div>
+          <div class="setting-row"><label>Phone Number ID</label><input type="text" id="waba-phone-id" placeholder="From Meta App Dashboard" /></div>
+          <div class="setting-row"><label>Verify token</label><input type="text" id="waba-verify-token" placeholder="You choose this — same in Meta webhook setup" /></div>
+          <div class="setting-row" style="align-items:flex-start;"><label style="padding-top:6px;">Access token</label>
+            <textarea id="waba-access-token" rows="2" placeholder="Permanent token from Meta" style="width:100%;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);"></textarea>
+          </div>
+          <div class="setting-row"><label>App secret</label><input type="password" id="waba-app-secret" placeholder="Optional — verifies webhook signatures" autocomplete="off" /></div>
+          <div class="setting-row" style="gap:12px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary" id="waba-save">Save API settings</button>
+            <button type="button" class="btn btn-secondary" id="waba-test">Test connection</button>
+            <span id="waba-status" style="font-size:12px;color:var(--text2);"></span>
+          </div>
+          <p id="waba-stats" style="font-size:11px;color:var(--text2);margin-top:4px;"></p>
+        </div>
         <div id="wa-live-sync-settings" class="setting-group live-sync-ui" style="display:none;">
           <h3>WhatsApp Connection <span style="font-weight:400;font-size:12px;color:var(--text2);">(optional — live sync)</span></h3>
           <p>Link your phone as a WhatsApp Web device. For the MVP, import chat exports with <strong>+</strong> — live sync is optional.</p>
@@ -1816,6 +1896,13 @@
   /** Set when `openChat` used jump-to-message; disables scroll-older pagination. */
   let activeFocusMessageId = null;
   const SEARCH_INPUT_PLACEHOLDER_DEFAULT = 'Ask AI anything about your chats...';
+  const SMB_PLACEHOLDERS = {
+    clinic: 'Ask about appointments, follow-ups, prescriptions…',
+    real_estate: 'Ask about site visits, leads, deals…',
+    d2c: 'Ask about orders, delivery, refunds…',
+  };
+  /** @type {{ profile: string, businessName: string, prompts: Array<{label:string,query:string}> }} */
+  let smbState = { profile: 'personal', businessName: '', prompts: [] };
   let cvTab = 'chat';
   let attachmentsPayload = null;
   /** Sidebar list: `chat` (DMs + groups) vs `feed` (Status, broadcasts, newsletters). */
@@ -3184,14 +3271,22 @@
   }
 
   function setSidebarListTab(tab) {
-    const next = tab === 'feed' ? 'feed' : 'chat';
+    const next = tab === 'feed' ? 'feed' : (tab === 'business' ? 'business' : 'chat');
     sidebarListTab = next;
     document.querySelectorAll('[data-sidebar-tab]').forEach((b) => {
       const on = b.getAttribute('data-sidebar-tab') === sidebarListTab;
       b.classList.toggle('active', on);
       b.setAttribute('aria-selected', on ? 'true' : 'false');
     });
-    renderChatsFromState();
+    const bizPanel = $('#business-inbox-panel');
+    const chatList = $('#chat-list');
+    const filterWrap = document.querySelector('.sidebar-search');
+    const isBusiness = sidebarListTab === 'business';
+    if (bizPanel) bizPanel.classList.toggle('visible', isBusiness);
+    if (chatList) chatList.style.display = isBusiness ? 'none' : '';
+    if (filterWrap) filterWrap.style.display = isBusiness ? 'none' : '';
+    if (isBusiness) void loadBusinessInbox();
+    else renderChatsFromState();
     renderStatusStrip();
   }
 
@@ -4302,12 +4397,264 @@
     searchActive = false;
     const qEl = $('#q');
     qEl.value = '';
-    qEl.placeholder = SEARCH_INPUT_PLACEHOLDER_DEFAULT;
+    qEl.placeholder = smbSearchPlaceholder();
     $('#q-media').value = '';
     $('#q-clear').classList.remove('visible');
     $('#search-results').innerHTML = '';
     $('#search-loading').classList.remove('visible');
   }
+
+  function smbSearchPlaceholder() {
+    return SMB_PLACEHOLDERS[smbState.profile] || SEARCH_INPUT_PLACEHOLDER_DEFAULT;
+  }
+
+  function isSmbBusinessMode() {
+    return smbState.profile && smbState.profile !== 'personal';
+  }
+
+  function applySmbUi() {
+    const tab = $('#sidebar-tab-business');
+    const prompts = $('#smb-prompts');
+    const nameRow = $('#smb-business-name-row');
+    const on = isSmbBusinessMode();
+    if (tab) tab.hidden = !on;
+    if (prompts) prompts.classList.toggle('visible', on);
+    if (nameRow) nameRow.style.display = on ? '' : 'none';
+    const qEl = $('#q');
+    if (qEl && !searchActive) qEl.placeholder = smbSearchPlaceholder();
+    renderSmbPrompts();
+    if (on && sidebarListTab === 'business') void loadBusinessInbox();
+    const welcomeLead = $('#welcome-default-lead');
+    if (welcomeLead) {
+      welcomeLead.innerHTML = on
+        ? 'Import customer chats with <strong>+</strong>, then use <strong>Business</strong> in the sidebar or the quick-search chips above.<br>AI is tuned for your vertical — appointments, leads, orders, and follow-ups.'
+        : 'Select a chat from the left, or search your chats with AI.<br>Click <strong>+</strong> to import more chat exports.';
+    }
+  }
+
+  function renderSmbPrompts() {
+    const root = $('#smb-prompts');
+    if (!root) return;
+    if (!isSmbBusinessMode()) {
+      root.innerHTML = '';
+      return;
+    }
+    root.innerHTML = (smbState.prompts || []).map((p) =>
+      `<button type="button" class="smb-prompt-chip" data-smb-query="${escAttr(p.query)}">${esc(p.label)}</button>`,
+    ).join('');
+  }
+
+  async function loadSmbProfile() {
+    try {
+      const data = await fetch('/api/smb/profile').then((r) => r.json());
+      smbState = {
+        profile: data.profile || 'personal',
+        businessName: data.businessName || '',
+        prompts: Array.isArray(data.prompts) ? data.prompts : [],
+      };
+      const sel = $('#smb-profile');
+      if (sel) sel.value = smbState.profile;
+      const nameEl = $('#smb-business-name');
+      if (nameEl) nameEl.value = smbState.businessName;
+      applySmbUi();
+    } catch { /* ignore */ }
+  }
+
+  function formatBizTs(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+  }
+
+  async function loadBusinessInbox() {
+    const root = $('#business-inbox-panel');
+    if (!root || !isSmbBusinessMode()) return;
+    root.innerHTML = '<div class="biz-empty"><span class="spinner" style="width:16px;height:16px;"></span> Loading…</div>';
+    try {
+      const isClinic = smbState.profile === 'clinic';
+      const [data, apptData] = await Promise.all([
+        fetch('/api/smb/inbox').then((r) => r.json()),
+        isClinic ? fetch('/api/smb/appointments').then((r) => r.json()) : Promise.resolve(null),
+      ]);
+      if (!data.enabled) {
+        root.innerHTML = '<div class="biz-empty">Set a business profile in Settings to use the business inbox.</div>';
+        return;
+      }
+      const title = data.businessName || data.profile?.label || 'Business';
+      let html = `<div class="biz-section"><h4>${esc(title)}</h4><p class="biz-empty" style="padding:0 0 8px;">${esc(data.profile?.tagline || '')}</p></div>`;
+
+      if (isClinic && apptData?.enabled) {
+        html += '<div class="biz-section"><h4>Appointment board</h4>';
+        const appts = apptData.appointments || [];
+        if (appts.length) {
+          for (const a of appts.slice(0, 12)) {
+            const st = ['requested', 'confirmed', 'cancelled'].includes(a.status) ? a.status : 'other';
+            const stCls = st === 'other' ? '' : ` biz-appt-status ${st}`;
+            html += `<div class="biz-card" data-biz-jid="${escAttr(a.chatJid)}">
+              <div class="biz-card-title">${esc(a.patientName || a.chatName || 'Patient')}${st !== 'other' ? `<span class="biz-appt-status ${st}">${esc(a.status)}</span>` : ''}</div>
+              ${a.when ? `<div class="biz-card-meta">${esc(a.when)}</div>` : ''}
+              <div class="biz-card-snippet">${esc(a.summary || a.reason || '')}</div>
+            </div>`;
+          }
+        } else {
+          html += '<div class="biz-empty">No appointments indexed yet. Import chats and run <strong>Generate Summaries</strong>.</div>';
+        }
+        html += '</div>';
+      }
+
+      html += '<div class="biz-section"><h4>Awaiting reply</h4>';
+      if (data.awaitingReply?.length) {
+        for (const row of data.awaitingReply) {
+          html += `<div class="biz-card" data-biz-jid="${escAttr(row.chatJid)}">
+            <div class="biz-card-title">${esc(row.chatName || row.lastSender)}</div>
+            <div class="biz-card-meta">${esc(formatBizTs(row.lastMessageTs))}</div>
+            <div class="biz-card-snippet">${esc(row.lastText || '')}</div>
+          </div>`;
+        }
+      } else {
+        html += '<div class="biz-empty">No customer chats waiting on you right now.</div>';
+      }
+      html += '</div>';
+
+      html += '<div class="biz-section"><h4>Suggested follow-ups</h4>';
+      if (data.followUps?.length) {
+        for (const row of data.followUps.slice(0, 8)) {
+          const item = row.items?.[0] || '';
+          html += `<div class="biz-card" data-biz-jid="${escAttr(row.chatJid)}"${row.sourceMessageId ? ` data-biz-mid="${escAttr(row.sourceMessageId)}"` : ''}>
+            <div class="biz-card-title">${esc(row.chatName || 'Chat')}</div>
+            <div class="biz-card-snippet">${esc(item)}</div>
+            ${row.snippet ? `<div class="biz-card-meta">${esc(row.snippet)}</div>` : ''}
+          </div>`;
+        }
+      } else {
+        html += '<div class="biz-empty">Follow-ups appear as new customer messages are indexed.</div>';
+      }
+      html += '</div>';
+
+      html += '<div class="biz-section"><h4>Recent highlights</h4>';
+      if (data.highlights?.length) {
+        for (const h of data.highlights.slice(0, 6)) {
+          html += `<div class="biz-card" data-biz-jid="${escAttr(h.chatJid)}">
+            <div class="biz-card-title">${esc(h.chatName || h.factType)}</div>
+            <div class="biz-card-meta">${esc(h.factType)}</div>
+            <div class="biz-card-snippet">${esc(h.summary || '')}</div>
+          </div>`;
+        }
+      } else {
+        html += '<div class="biz-empty">Run <strong>Generate Summaries</strong> in Settings to extract appointments, orders, and payments.</div>';
+      }
+      html += '</div>';
+
+      root.innerHTML = html;
+    } catch (err) {
+      root.innerHTML = `<div class="biz-empty">${esc(err.message)}</div>`;
+    }
+  }
+
+  $('#smb-prompts')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-smb-query]');
+    if (!btn) return;
+    const q = btn.getAttribute('data-smb-query');
+    if (!q) return;
+    $('#q').value = q;
+    void doSearch();
+  });
+
+  $('#business-inbox-panel')?.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-biz-jid]');
+    if (!card) return;
+    const jid = card.getAttribute('data-biz-jid');
+    const mid = card.getAttribute('data-biz-mid');
+    if (jid) void openChat(jid, mid || null);
+  });
+
+  $('#smb-profile')?.addEventListener('change', () => {
+    const on = $('#smb-profile')?.value !== 'personal';
+    const nameRow = $('#smb-business-name-row');
+    if (nameRow) nameRow.style.display = on ? '' : 'none';
+  });
+
+  async function loadWabaConfig() {
+    try {
+      const data = await fetch('/api/waba/config').then((r) => r.json());
+      const urlEl = $('#waba-webhook-url');
+      if (urlEl) urlEl.textContent = data.webhookUrl || '—';
+      const pid = $('#waba-phone-id');
+      if (pid) pid.value = data.phoneNumberId || '';
+      const vt = $('#waba-verify-token');
+      if (vt && !data.hasAccessToken) vt.value = vt.value || '';
+      const stats = $('#waba-stats');
+      if (stats) {
+        const parts = [];
+        if (data.messagesReceived) parts.push(`${data.messagesReceived} webhook message(s) received`);
+        if (data.lastWebhookAt) parts.push(`Last: ${formatBizTs(data.lastWebhookAt)}`);
+        if (data.lastError) parts.push(`Error: ${data.lastError}`);
+        stats.textContent = parts.join(' · ');
+      }
+    } catch { /* ignore */ }
+  }
+
+  $('#waba-save')?.addEventListener('click', async () => {
+    const status = $('#waba-status');
+    if (status) status.textContent = 'Saving…';
+    try {
+      const body = {
+        phoneNumberId: $('#waba-phone-id')?.value || '',
+        verifyToken: $('#waba-verify-token')?.value || '',
+        accessToken: $('#waba-access-token')?.value || '',
+        appSecret: $('#waba-app-secret')?.value || '',
+      };
+      const data = await fetch('/api/waba/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then((r) => r.json());
+      if (data.error) throw new Error(data.error);
+      if (status) status.textContent = data.configured ? 'Saved — add webhook URL in Meta' : 'Saved (fill all required fields)';
+      $('#waba-access-token').value = '';
+      $('#waba-app-secret').value = '';
+      await loadWabaConfig();
+    } catch (err) {
+      if (status) status.textContent = err.message;
+    }
+  });
+
+  $('#waba-test')?.addEventListener('click', async () => {
+    const status = $('#waba-status');
+    if (status) status.textContent = 'Testing…';
+    try {
+      const data = await fetch('/api/waba/test', { method: 'POST' }).then((r) => r.json());
+      if (!data.ok) throw new Error(data.error || 'Test failed');
+      if (status) status.textContent = `Connected: ${data.display}`;
+    } catch (err) {
+      if (status) status.textContent = err.message;
+    }
+  });
+
+  $('#smb-save')?.addEventListener('click', async () => {
+    const profile = $('#smb-profile')?.value || 'personal';
+    const businessName = $('#smb-business-name')?.value || '';
+    const status = $('#smb-status');
+    if (status) status.textContent = 'Saving…';
+    try {
+      const data = await fetch('/api/smb/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile, businessName }),
+      }).then((r) => r.json());
+      if (data.error) throw new Error(data.error);
+      smbState = {
+        profile: data.profile,
+        businessName: data.businessName || '',
+        prompts: data.prompts || [],
+      };
+      applySmbUi();
+      if (status) status.textContent = 'Saved';
+    } catch (err) {
+      if (status) status.textContent = err.message;
+    }
+  });
 
   async function doSearch() {
     const query = $('#q').value.trim();
@@ -4735,6 +5082,8 @@
 
       applyKeyEnvHints(settings, keyHints);
       checkHardwareRecommendation();
+      void loadSmbProfile();
+      void loadWabaConfig();
     } catch {}
     refreshDash();
   }
@@ -4912,11 +5261,24 @@
     {
       title: 'Welcome to WhatsApp Search',
       subtitle: 'Your chats as a private knowledge base',
-      html: `<p class="ob-desc">Import your WhatsApp export and ask questions in plain English. Get direct answers with source messages &mdash; like having a personal assistant that knows your chat history.</p>
+      html: `<p class="ob-desc">Import your WhatsApp export and ask questions in plain English. Pick your account type so AI search matches how you use WhatsApp.</p>
+        <div class="setting-row" style="margin:12px 0;align-items:flex-start;">
+          <label style="min-width:110px;padding-top:8px;">I use WhatsApp for</label>
+          <select id="ob-smb-profile" style="flex:1;">
+            <option value="personal">Personal chats</option>
+            <option value="clinic">Clinic / healthcare (patients)</option>
+            <option value="real_estate">Real estate (buyers &amp; sellers)</option>
+            <option value="d2c">Online store / D2C (customers)</option>
+          </select>
+        </div>
+        <div class="setting-row" id="ob-smb-name-row" style="display:none;margin-bottom:12px;">
+          <label style="min-width:110px;">Business name</label>
+          <input type="text" id="ob-smb-business-name" placeholder="Optional — helps AI answers" style="flex:1;" />
+        </div>
         <div class="ob-features">
           <div class="ob-feat"><div class="ob-feat-icon">&#128274;</div><div class="ob-feat-label">100% local</div><div class="ob-feat-desc">Nothing leaves your device</div></div>
           <div class="ob-feat"><div class="ob-feat-icon">&#129302;</div><div class="ob-feat-label">AI-powered</div><div class="ob-feat-desc">Direct answers with sources</div></div>
-          <div class="ob-feat"><div class="ob-feat-icon">&#128269;</div><div class="ob-feat-label">Deep search</div><div class="ob-feat-desc">Find images &amp; media too</div></div>
+          <div class="ob-feat"><div class="ob-feat-icon">&#128269;</div><div class="ob-feat-label">Deep search</div><div class="ob-feat-desc">Find orders, visits, follow-ups</div></div>
         </div>`,
     },
     {
@@ -5106,8 +5468,35 @@
     });
     $('#ob-body').innerHTML = `<h2>${s.title}</h2><div class="ob-subtitle">${s.subtitle}</div>${s.html}`;
     $('#ob-next').textContent = obStep === OB_STEPS.length - 1 ? 'Get Started' : 'Next';
+    if (obStep === 0) {
+      const obProf = $('#ob-smb-profile');
+      const obNameRow = $('#ob-smb-name-row');
+      const obName = $('#ob-smb-business-name');
+      if (obProf) {
+        obProf.value = smbState.profile || 'personal';
+        obProf.onchange = () => {
+          const on = obProf.value !== 'personal';
+          if (obNameRow) obNameRow.style.display = on ? '' : 'none';
+        };
+        obProf.dispatchEvent(new Event('change'));
+      }
+      if (obName) obName.value = smbState.businessName || '';
+    }
     if (obStep === 2) void updateObGmailForOb();
     if (s.ollama) void renderObOllamaStep();
+  }
+
+  async function saveObSmbProfileFromOnboarding() {
+    const profile = $('#ob-smb-profile')?.value || 'personal';
+    const businessName = $('#ob-smb-business-name')?.value || '';
+    try {
+      await fetch('/api/smb/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile, businessName }),
+      });
+      await loadSmbProfile();
+    } catch { /* ignore */ }
   }
 
   $('#onboarding').addEventListener('click', (e) => {
@@ -5152,6 +5541,7 @@
   });
 
   $('#ob-next').addEventListener('click', () => {
+    if (obStep === 0) void saveObSmbProfileFromOnboarding();
     if (obStep < OB_STEPS.length - 1) { obStep++; renderObStep(); }
     else { closeOnboarding(); }
   });
@@ -5235,6 +5625,7 @@
 
   startPullPolling();
   setInterval(() => { if (!pullPollTimer) startPullPolling(); }, 30000);
+  void loadSmbProfile();
 })();
 </script>
 </body>
