@@ -20,27 +20,38 @@ let serverProcess = null;
 let mainWindow = null;
 let serverPort = DEFAULT_PORT;
 
+function bundledNodeName() {
+  return process.platform === 'win32' ? 'node.exe' : 'node';
+}
+
 function resolveNodeExecutable() {
   if (process.env.WA_SEARCH_NODE) return process.env.WA_SEARCH_NODE;
+
+  const nodeName = bundledNodeName();
 
   // Dev: prefer system Node so native modules match local npm install/rebuild.
   if (!app.isPackaged) {
     try {
-      const nodePath = execSync('which node', { encoding: 'utf8' }).trim();
-      if (nodePath) return nodePath;
+      if (process.platform === 'win32') {
+        const nodePath = execSync('where node', { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
+        if (nodePath) return nodePath;
+      } else {
+        const nodePath = execSync('which node', { encoding: 'utf8' }).trim();
+        if (nodePath) return nodePath;
+      }
     } catch { /* ignore */ }
   }
 
   if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, 'node', 'bin', 'node');
+    const bundled = path.join(process.resourcesPath, 'node', 'bin', nodeName);
     if (existsSync(bundled)) return bundled;
   }
 
-  const devBundled = path.join(APP_ROOT, 'build', 'node', 'bin', 'node');
+  const devBundled = path.join(APP_ROOT, 'build', 'node', 'bin', nodeName);
   if (existsSync(devBundled)) return devBundled;
 
   throw new Error(
-    'Node.js not found. Install Node 20+ (brew install node) or run: bash scripts/prepare-node-mac.sh',
+    'Node.js not found. Install Node 20+ or run the prepare-node script for your platform.',
   );
 }
 

@@ -882,6 +882,51 @@ export default class WebServer {
     this._app.get('/health', (_req, res) => res.status(200).type('text/plain').send('ok'));
     this._app.get('/api/health', (_req, res) => res.status(200).json({ ok: true }));
 
+    this._app.get('/download', (_req, res) => {
+      res.sendFile(resolve(config.publicDir, 'download.html'));
+    });
+
+    this._app.get('/api/releases/latest', async (_req, res) => {
+      const repo = config.githubRepo;
+      if (!repo) {
+        return res.status(503).json({ error: 'GITHUB_REPO is not configured' });
+      }
+      try {
+        const headers = {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'searchable-desktop-download',
+        };
+        const ghToken = (process.env.GITHUB_TOKEN || '').trim();
+        if (ghToken) headers.Authorization = `Bearer ${ghToken}`;
+
+        const ghRes = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
+        if (ghRes.status === 404) {
+          return res.status(404).json({
+            error: 'No published release yet. Push a version tag (e.g. v1.0.0) to trigger the release workflow.',
+          });
+        }
+        if (!ghRes.ok) {
+          const text = await ghRes.text().catch(() => '');
+          return res.status(502).json({ error: `GitHub API error: ${ghRes.status} ${text.slice(0, 120)}` });
+        }
+        const release = await ghRes.json();
+        const allAssets = (release.assets || []).map((a) => ({
+          name: a.name,
+          url: a.browser_download_url,
+          size: a.size,
+        }));
+        return res.json({
+          version: release.tag_name,
+          name: release.name,
+          publishedAt: release.published_at,
+          releasePage: release.html_url,
+          allAssets,
+        });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
     this._app.get('/api/desktop/info', (_req, res) => {
       res.json({
         desktop: config.isDesktopApp,

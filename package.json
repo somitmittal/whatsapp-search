@@ -8,7 +8,11 @@
     "start": "node src/index.js",
     "electron": "electron .",
     "preelectron": "bash scripts/generate-icon-icns.sh",
-    "dist:mac": "bash scripts/generate-icon-icns.sh && bash scripts/prepare-node-mac.sh && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node && electron-builder --mac && npm rebuild better-sqlite3",
+    "dist:mac-arm64": "bash scripts/generate-icon-icns.sh && bash scripts/prepare-node.sh darwin-arm64 && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node && electron-builder --mac --arm64 && npm rebuild better-sqlite3",
+    "dist:mac-x64": "bash scripts/generate-icon-icns.sh && bash scripts/prepare-node.sh darwin-x64 && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node && electron-builder --mac --x64 && npm rebuild better-sqlite3",
+    "dist:mac": "npm run dist:mac-arm64 && npm run dist:mac-x64",
+    "dist:win": "bash scripts/prepare-node.sh win-x64 && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node.exe && electron-builder --win --x64 && npm rebuild better-sqlite3",
+    "dist:linux": "bash scripts/prepare-node.sh linux-x64 && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node && electron-builder --linux --x64 && npm rebuild better-sqlite3",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit",
     "qa:search": "node scripts/search-qa-agent.mjs"
   },
@@ -58,6 +62,7 @@
         "filter": ["**/*"]
       }
     ],
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "build/icon.icns",
@@ -70,6 +75,23 @@
         "CFBundleDisplayName": "Searchable",
         "CFBundleName": "Searchable"
       }
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     },
     "dmg": {
       "title": "Searchable"

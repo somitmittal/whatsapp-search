@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Download Searchable — Desktop App</title>
+  <style>
+    :root {
+      --green: #00a884;
+      --green-dark: #008f72;
+      --text: #111b21;
+      --text2: #667781;
+      --bg: #f0f2f5;
+      --card: #fff;
+      --border: #e9edef;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    .wrap {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 48px 20px 64px;
+    }
+    .logo {
+      width: 56px; height: 56px; border-radius: 14px;
+      background: var(--green); color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 26px; font-weight: 700; margin-bottom: 20px;
+    }
+    h1 { font-size: 28px; font-weight: 600; margin-bottom: 8px; }
+    .lead { color: var(--text2); font-size: 15px; margin-bottom: 28px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+    .primary-btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; padding: 14px 20px; border: none; border-radius: 10px;
+      background: var(--green); color: #fff; font-size: 16px; font-weight: 600;
+      text-decoration: none; cursor: pointer; transition: background 0.15s;
+    }
+    .primary-btn:hover { background: var(--green-dark); }
+    .primary-btn:disabled, .primary-btn.disabled {
+      opacity: 0.55; pointer-events: none; cursor: wait;
+    }
+    .hint { font-size: 13px; color: var(--text2); margin-top: 12px; text-align: center; }
+    .platform-grid {
+      display: grid; gap: 10px; margin-top: 20px;
+    }
+    .platform-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+      background: #fafafa;
+    }
+    .platform-row.recommended { border-color: var(--green); background: rgba(0,168,132,0.06); }
+    .platform-label { font-weight: 500; font-size: 14px; }
+    .platform-meta { font-size: 12px; color: var(--text2); }
+    .platform-row a {
+      font-size: 13px; font-weight: 600; color: var(--green); text-decoration: none; white-space: nowrap;
+    }
+    .platform-row a:hover { text-decoration: underline; }
+    .badge {
+      display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.4px; padding: 2px 6px; border-radius: 4px;
+      background: rgba(0,168,132,0.15); color: var(--green-dark); margin-left: 6px;
+    }
+    .web-link { display: block; text-align: center; margin-top: 24px; font-size: 14px; }
+    .web-link a { color: var(--green); font-weight: 500; }
+    .error { color: #b91c1c; font-size: 14px; }
+    .spinner {
+      width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.35);
+      border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-card { text-align: center; color: var(--text2); padding: 32px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="logo">S</div>
+    <h1>Download Searchable</h1>
+    <p class="lead">Desktop app — your WhatsApp chats stay on your machine. AI search with local or cloud models you choose.</p>
+
+    <div id="state-loading" class="card loading-card">Loading latest release…</div>
+    <div id="state-error" class="card error" hidden></div>
+
+    <div id="state-ready" hidden>
+      <div class="card">
+        <a id="primary-download" class="primary-btn disabled" href="#" download>
+          <span id="primary-label">Download</span>
+        </a>
+        <p class="hint" id="primary-hint"></p>
+      </div>
+
+      <div class="card">
+        <p style="font-size:13px;font-weight:600;margin-bottom:12px;">All platforms <span id="version-tag" style="color:var(--text2);font-weight:400;"></span></p>
+        <div class="platform-grid" id="platform-grid"></div>
+      </div>
+    </div>
+
+    <p class="web-link">Prefer the browser? <a href="/">Use the web app</a></p>
+    <p class="web-link" style="margin-top:8px;"><a id="github-link" href="#" target="_blank" rel="noopener">View on GitHub</a></p>
+  </div>
+
+  <script>
+    function detectOs() {
+      const ua = navigator.userAgent || '';
+      const platform = navigator.platform || '';
+      if (/Win/i.test(platform) || /Windows/i.test(ua)) return 'windows';
+      if (/Mac|iPhone|iPad|iPod/i.test(platform)) return 'mac';
+      if (/Linux/i.test(ua) && !/Android/i.test(ua)) return 'linux';
+      return 'unknown';
+    }
+
+    function formatBytes(n) {
+      if (!n) return '';
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+      return `${(n / (1024 * 1024)).toFixed(0)} MB`;
+    }
+
+    function pickDownloads(data) {
+      const assets = data.allAssets || [];
+      const find = (re) => assets.find((a) => re.test(a.name));
+      return {
+        macArm64: find(/mac.*arm64|darwin.*arm64/i),
+        macX64: find(/mac.*x64|darwin.*(x64|x86)/i),
+        windows: find(/win.*\.exe$/i),
+        linux: find(/linux.*\.AppImage$/i),
+      };
+    }
+
+    function platformRows(dl, os) {
+      const rows = [
+        { id: 'macArm64', label: 'macOS (Apple Silicon)', meta: 'M1 / M2 / M3', asset: dl.macArm64, osMatch: os === 'mac' && /arm|aarch/i.test(navigator.userAgent) },
+        { id: 'macX64', label: 'macOS (Intel)', meta: 'x64 Mac', asset: dl.macX64, osMatch: os === 'mac' && !/arm|aarch/i.test(navigator.userAgent) },
+        { id: 'windows', label: 'Windows', meta: '64-bit installer', asset: dl.windows, osMatch: os === 'windows' },
+        { id: 'linux', label: 'Linux', meta: 'AppImage', asset: dl.linux, osMatch: os === 'linux' },
+      ];
+      return rows.filter((r) => r.asset);
+    }
+
+    function primaryAsset(dl, os) {
+      if (os === 'windows' && dl.windows) return { asset: dl.windows, label: 'Download for Windows' };
+      if (os === 'linux' && dl.linux) return { asset: dl.linux, label: 'Download for Linux' };
+      if (os === 'mac') {
+        const arm = /arm|aarch/i.test(navigator.userAgent);
+        if (arm && dl.macArm64) return { asset: dl.macArm64, label: 'Download for Mac (Apple Silicon)' };
+        if (!arm && dl.macX64) return { asset: dl.macX64, label: 'Download for Mac (Intel)' };
+        return { asset: dl.macArm64 || dl.macX64, label: 'Download for Mac' };
+      }
+      return { asset: dl.macArm64 || dl.windows || dl.linux || dl.macX64, label: 'Download' };
+    }
+
+    async function init() {
+      const loading = document.getElementById('state-loading');
+      const errorEl = document.getElementById('state-error');
+      const ready = document.getElementById('state-ready');
+      const os = detectOs();
+
+      try {
+        const res = await fetch('/api/releases/latest');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not load release');
+
+        loading.hidden = true;
+        ready.hidden = false;
+
+        const version = (data.version || '').replace(/^v/, '');
+        document.getElementById('version-tag').textContent = data.version ? `· ${data.version}` : '';
+        document.getElementById('github-link').href = data.releasePage || '#';
+
+        const dl = pickDownloads(data);
+        const primary = primaryAsset(dl, os);
+        const btn = document.getElementById('primary-download');
+        const hint = document.getElementById('primary-hint');
+
+        if (primary.asset) {
+          btn.href = primary.asset.url;
+          btn.classList.remove('disabled');
+          document.getElementById('primary-label').textContent = primary.label;
+          hint.textContent = `${primary.asset.name} · ${formatBytes(primary.asset.size)}`;
+        } else {
+          document.getElementById('primary-label').textContent = 'No build for your platform yet';
+          hint.textContent = 'Pick a file below or check GitHub Releases.';
+        }
+
+        const grid = document.getElementById('platform-grid');
+        grid.innerHTML = '';
+        for (const row of platformRows(dl, os)) {
+          const div = document.createElement('div');
+          div.className = 'platform-row' + (row.osMatch ? ' recommended' : '');
+          div.innerHTML = `
+            <div>
+              <div class="platform-label">${row.label}${row.osMatch ? '<span class="badge">Your OS</span>' : ''}</div>
+              <div class="platform-meta">${row.meta} · ${formatBytes(row.asset.size)}</div>
+            </div>
+            <a href="${row.asset.url}" download>Download</a>`;
+          grid.appendChild(div);
+        }
+      } catch (err) {
+        loading.hidden = true;
+        errorEl.hidden = false;
+        errorEl.textContent = err.message + ' — try GitHub Releases directly.';
+        document.getElementById('github-link').href = 'https://github.com/somitmittal/whatsapp-search/releases';
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

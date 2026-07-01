@@ -1512,6 +1512,7 @@
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
             Your messages stay on your device. Only search queries go to the AI you choose.
           </div>
+          <p id="welcome-desktop-dl" style="font-size:13px;margin-top:16px;"><a href="/download" style="color:#00a884;font-weight:500;">Download the desktop app</a> for fully local storage and Ollama.</p>
         </div>
       </div>
 
@@ -2874,6 +2875,8 @@
       _importFirstMvp = cfg.importFirstMvp !== false;
       _waLiveSyncAutoConnect = !!cfg.waLiveSyncAutoConnect;
       isDesktopApp = isDesktopApp || cfg.desktop === true;
+      const dlLink = $('#welcome-desktop-dl');
+      if (dlLink) dlLink.style.display = isDesktopApp ? 'none' : '';
       if (cfg.desktop || _importFirstMvp) {
         _showLiveSyncUi = localStorage.getItem('wa_show_live_sync') === '1';
       } else {
