@@ -4,10 +4,20 @@ Desktop builds are published to [GitHub Releases](https://github.com/somitmittal
 
 ## Create a release
 
+The workflow runs when you **push a version tag** — not on ordinary commits to `main`.
+
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+# Tag must point to a commit that includes .github/workflows/release-desktop.yml
+git checkout main && git pull
+git tag v1.0.1
+git push origin v1.0.1
 ```
+
+**If you tagged before the workflow existed** (e.g. `v1.0.0` on an older commit), GitHub will show **0 workflow runs**. Fix: push a **new** tag on current `main` (`v1.0.1`, etc.) or use **Run workflow** in Actions → Release Desktop.
+
+### Manual run (no tag)
+
+GitHub → **Actions** → **Release Desktop** → **Run workflow** → enter tag name (e.g. `v1.0.1`).
 
 The workflow `.github/workflows/release-desktop.yml` builds:
 
