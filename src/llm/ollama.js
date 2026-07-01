@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
+import { canSpawnLocalOllama } from './deployment-env.js';
 
 const TIMEOUT_MS = 180_000;
 const HEALTH_CACHE_MS = 30_000;
@@ -118,6 +119,7 @@ export default class OllamaProvider {
     const candidates = [
       '/usr/local/bin/ollama',
       '/opt/homebrew/bin/ollama',
+      '/usr/bin/ollama',
     ];
     if (process.platform === 'darwin') {
       candidates.push('/Applications/Ollama.app/Contents/Resources/ollama');
@@ -125,22 +127,31 @@ export default class OllamaProvider {
     for (const c of candidates) {
       if (existsSync(c)) return c;
     }
-    return 'ollama';
+    return null;
   }
 
   async _tryStart() {
+    if (!canSpawnLocalOllama()) return;
     if (Date.now() - this._lastStartAttempt < START_COOLDOWN_MS) return;
     this._lastStartAttempt = Date.now();
+
+    const bin = this._findOllamaBin();
+    if (!bin) {
+      console.warn('[Ollama] Binary not found — install from https://ollama.com/download or use a cloud LLM provider');
+      return;
+    }
 
     console.log('[Ollama] Not running — starting automatically...');
     try {
       const env = { ...process.env };
       if (!env.OLLAMA_NUM_PARALLEL) env.OLLAMA_NUM_PARALLEL = '4';
-      const bin = this._findOllamaBin();
       const child = spawn(bin, ['serve'], {
         detached: true,
         stdio: 'ignore',
         env,
+      });
+      child.on('error', (err) => {
+        console.error('[Ollama] Auto-start failed:', err.message);
       });
       child.unref();
 

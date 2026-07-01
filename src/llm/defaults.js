@@ -4,6 +4,7 @@
  */
 
 import config from '../config.js';
+import { isRenderDeployment } from './deployment-env.js';
 
 export function applyLlmDefaultsIfUnset(db) {
   if (!db.getSetting('llm_provider')) {
@@ -17,6 +18,25 @@ export function applyLlmDefaultsIfUnset(db) {
   }
   if (!db.getSetting('summary_model')) {
     db.setSetting('summary_model', config.defaultSummaryModel);
+  }
+  migrateAwayFromLocalOllama(db);
+}
+
+/** Render cannot run `ollama serve` — switch stored local-Ollama settings to cloud defaults. */
+export function migrateAwayFromLocalOllama(db) {
+  if (!isRenderDeployment()) return;
+
+  if (db.getSetting('llm_provider') === 'ollama') {
+    db.setSetting('llm_provider', process.env.LLM_PROVIDER || 'groq');
+    db.setSetting('llm_model', process.env.LLM_MODEL || process.env.GROQ_MODEL || 'llama-3.3-70b-versatile');
+  }
+  if (db.getSetting('summary_provider') === 'ollama') {
+    db.setSetting('summary_provider', process.env.SUMMARY_PROVIDER || 'ollama_cloud');
+    db.setSetting('summary_model', process.env.SUMMARY_MODEL || 'gpt-oss:20b');
+  }
+  if (db.getSetting('media_index_provider') === 'ollama') {
+    db.setSetting('media_index_provider', (process.env.MEDIA_INDEX_PROVIDER || 'gemini').trim());
+    db.setSetting('media_index_model', (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim());
   }
 }
 

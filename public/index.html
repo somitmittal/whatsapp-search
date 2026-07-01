@@ -5424,7 +5424,13 @@
     if (!root) return;
     try {
       const data = await fetch('/api/ollama/recommend').then(r => r.json());
-      if (data.error) {
+      if (data.supported === false) {
+        root.innerHTML = `<p class="ob-desc">${esc(data.reason || 'Local Ollama is not available on this host.')}</p>
+          <p class="ob-desc" style="margin-top:10px;">Use <strong>Groq</strong> or <strong>Ollama Cloud</strong> in Settings → AI. On Render, set <code>GROQ_API_KEY</code> and <code>OLLAMA_CLOUD_API_KEY</code> in environment variables.</p>
+          <button type="button" class="ob-ollama-skip-local" id="ob-ollama-skip-local" style="margin-top:12px;">Continue</button>`;
+        return;
+      }
+      if (data.error || !data.hardware || !data.recommended) {
         root.innerHTML = `<p class="ob-desc">Could not detect hardware. Install <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a> and pick a model in Settings.</p>`;
         return;
       }

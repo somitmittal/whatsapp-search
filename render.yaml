@@ -1,5 +1,6 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 # Use a Web Service (not Static Site). Set Root Directory if the app lives in a subfolder.
+# Local Ollama does NOT run on Render (512 MB+ RAM required). Use cloud LLM keys below.
 services:
   - type: web
     name: whatsapp-search
@@ -7,3 +8,17 @@ services:
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /health
+    envVars:
+      - key: LLM_PROVIDER
+        value: groq
+      - key: SUMMARY_PROVIDER
+        value: ollama_cloud
+      - key: MEDIA_INDEX_PROVIDER
+        value: gemini
+      - key: OLLAMA_AUTO_START
+        value: "false"
+      # Set these as secrets in the Render dashboard:
+      # - SESSION_SECRET (required)
+      # - GROQ_API_KEY (search)
+      # - OLLAMA_CLOUD_API_KEY (summaries)
+      # - GEMINI_API_KEY (media indexing, optional)

@@ -19,6 +19,7 @@ import {
 } from '../llm/defaults.js';
 import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
 import { applyOllamaMemorySettings, getHardwareRecommendation, resolveSafeOllamaModel } from '../llm/ollama-recommend.js';
+import { canSpawnLocalOllama, localOllamaUnsupportedReason } from '../llm/deployment-env.js';
 import { clearProviderCache, createProvider, PROVIDER_META } from '../llm/provider.js';
 import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
 import SmbInboxService from '../smb/inbox-service.js';
@@ -1752,9 +1753,15 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     // ── Ollama Hardware Recommendation ─────────────────────────────────
     this._app.get('/api/ollama/recommend', async (_req, res) => {
       try {
+        if (!canSpawnLocalOllama()) {
+          return res.json({
+            supported: false,
+            reason: localOllamaUnsupportedReason(),
+          });
+        }
         const provider = this.searchEngine?._provider;
         const rec = await getHardwareRecommendation(provider);
-        return res.json(rec);
+        return res.json({ supported: true, ...rec });
       } catch (err) {
         console.error('[Recommend] Error:', err.message);
         return res.status(500).json({ error: err.message });
@@ -1764,6 +1771,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     // ── Ollama: apply recommended model + trigger background download ──
     this._app.post('/api/ollama/apply-recommendation', async (req, res) => {
       try {
+        if (!canSpawnLocalOllama()) {
+          return res.status(400).json({ error: localOllamaUnsupportedReason() });
+        }
         const { model } = req.body;
         const safe = resolveSafeOllamaModel(model || undefined);
         if (safe.warning) {

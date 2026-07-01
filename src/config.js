@@ -29,6 +29,10 @@ loadEnv();
  */
 const serverSecret = (process.env.SESSION_SECRET || process.env.JWT_SECRET || '').trim();
 
+const onRender =
+  process.env.RENDER === 'true'
+  || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
+
 const config = {
   dataDir: resolve(ROOT, process.env.DATA_DIR || './data'),
   mediaDir: resolve(ROOT, process.env.DATA_DIR || './data', 'media'),
@@ -62,21 +66,21 @@ const config = {
   defaultTenantId: (process.env.DEFAULT_TENANT_ID || 'legacy-default').trim(),
   /**
    * Defaults when settings table has no row yet (first run / new DB).
-   * Local: Ollama with llama3.2:3b (auto-downloaded, unloaded when idle).
-   * Cloud deploy: set `GROQ_API_KEY` / `OLLAMA_CLOUD_API_KEY` in env; users can override in Settings.
+   * Local desktop: Ollama with llama3.2:3b.
+   * Render / cloud: Groq search + Ollama Cloud summaries + Gemini media (keys via env).
    */
-  defaultSearchProvider: process.env.LLM_PROVIDER || 'ollama',
+  defaultSearchProvider: process.env.LLM_PROVIDER || (onRender ? 'groq' : 'ollama'),
   defaultSearchModel:
-    process.env.LLM_MODEL || process.env.GROQ_MODEL || 'llama3.2:3b',
-  defaultSummaryProvider: process.env.SUMMARY_PROVIDER || 'ollama',
-  defaultSummaryModel: process.env.SUMMARY_MODEL || 'llama3.2:3b',
+    process.env.LLM_MODEL || process.env.GROQ_MODEL || (onRender ? 'llama-3.3-70b-versatile' : 'llama3.2:3b'),
+  defaultSummaryProvider: process.env.SUMMARY_PROVIDER || (onRender ? 'ollama_cloud' : 'ollama'),
+  defaultSummaryModel: process.env.SUMMARY_MODEL || (onRender ? 'gpt-oss:20b' : 'llama3.2:3b'),
   /**
    * Vision + audio transcription for FTS media indexing (`media_ai_index`).
-   * Separate from Search — defaults to local Ollama. Override with MEDIA_INDEX_PROVIDER env var.
+   * Separate from Search — local Ollama on desktop; Gemini on Render when keys are set.
    */
-  defaultMediaIndexProvider: (process.env.MEDIA_INDEX_PROVIDER || 'ollama').trim(),
+  defaultMediaIndexProvider: (process.env.MEDIA_INDEX_PROVIDER || (onRender ? 'gemini' : 'ollama')).trim(),
   defaultMediaIndexModel:
-    (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || 'llama3.2:3b').trim(),
+    (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || (onRender ? 'gemini-2.5-flash' : 'llama3.2:3b')).trim(),
 
   /**
    * Baileys linked-device history: default `false` for fewer phone “syncing” alerts on connect.

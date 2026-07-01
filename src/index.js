@@ -53,11 +53,16 @@ async function main() {
   let savedModel = runWithTenant(defaultTenantId, () => db.getSetting('llm_model') || config.defaultSearchModel);
 
   if (savedProvider === 'ollama') {
-    const { resolveSafeOllamaModel, applyOllamaMemorySettings } = await import('./llm/ollama-recommend.js');
-    const safe = resolveSafeOllamaModel(savedModel);
-    runWithTenant(defaultTenantId, () => applyOllamaMemorySettings(db, safe));
-    if (safe.warning) {
-      console.warn(`[Ollama] Startup: ${safe.warning}`);
+    const { canSpawnLocalOllama } = await import('./llm/deployment-env.js');
+    if (canSpawnLocalOllama()) {
+      const { resolveSafeOllamaModel, applyOllamaMemorySettings } = await import('./llm/ollama-recommend.js');
+      const safe = resolveSafeOllamaModel(savedModel);
+      runWithTenant(defaultTenantId, () => applyOllamaMemorySettings(db, safe));
+      if (safe.warning) {
+        console.warn(`[Ollama] Startup: ${safe.warning}`);
+      }
+    } else {
+      console.warn('[Ollama] Local Ollama skipped on this host — configure Groq or Ollama Cloud in Settings / env.');
     }
   }
 
