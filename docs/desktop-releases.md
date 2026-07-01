@@ -29,7 +29,8 @@ npm run dist:linux       # on Linux or CI
 ## Download page
 
 - Web: `https://your-host.onrender.com/download`
-- Fetches latest release via `/api/releases/latest` (GitHub API)
+- Fetches latest release via `/api/releases/latest` (GitHub API, cached 1 hour)
+- On Render, set **`GITHUB_TOKEN`** (read-only PAT) to avoid API rate limits
 - Override repo with env `GITHUB_REPO=owner/repo` if needed
 
 ## macOS note

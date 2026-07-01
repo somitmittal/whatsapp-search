@@ -91,7 +91,10 @@
     <p class="lead">Desktop app — your WhatsApp chats stay on your machine. AI search with local or cloud models you choose.</p>
 
     <div id="state-loading" class="card loading-card">Loading latest release…</div>
-    <div id="state-error" class="card error" hidden></div>
+    <div id="state-error" class="card" hidden>
+      <p class="error" id="state-error-text"></p>
+      <a id="fallback-releases" class="primary-btn" style="margin-top:16px;" href="https://github.com/somitmittal/whatsapp-search/releases/latest" target="_blank" rel="noopener">Open GitHub Releases</a>
+    </div>
 
     <div id="state-ready" hidden>
       <div class="card">
@@ -169,7 +172,11 @@
       try {
         const res = await fetch('/api/releases/latest');
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Could not load release');
+        if (!res.ok) {
+          const err = new Error(data.error || 'Could not load release');
+          err.releasePage = data.releasePage;
+          throw err;
+        }
 
         loading.hidden = true;
         ready.hidden = false;
@@ -209,8 +216,12 @@
       } catch (err) {
         loading.hidden = true;
         errorEl.hidden = false;
-        errorEl.textContent = err.message + ' — try GitHub Releases directly.';
-        document.getElementById('github-link').href = 'https://github.com/somitmittal/whatsapp-search/releases';
+        const errText = document.getElementById('state-error-text');
+        if (errText) errText.textContent = err.message;
+        const fallback = document.getElementById('fallback-releases');
+        const ghDefault = 'https://github.com/somitmittal/whatsapp-search/releases/latest';
+        if (fallback) fallback.href = err.releasePage || ghDefault;
+        document.getElementById('github-link').href = err.releasePage || ghDefault;
       }
     }
 
