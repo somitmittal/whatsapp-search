@@ -59,11 +59,13 @@ function providerSupportsInlineVideoCaption(provider) {
  * images, video, audio, stickers, and documents (PDF body + filenames).
  */
 export default class MediaIndexService {
-  constructor({ db, getProvider, getPriorityChatJid = null }) {
+  constructor({ db, getProvider, getPriorityChatJid = null, isWaLive = null }) {
     this._db = db;
     this._getProvider = getProvider;
     /** @type {(() => string|null)|null} */
     this._getPriorityChatJid = typeof getPriorityChatJid === 'function' ? getPriorityChatJid : null;
+    /** @type {(() => boolean)|null} */
+    this._isWaLive = typeof isWaLive === 'function' ? isWaLive : null;
     /** Set from WebServer when `/api/settings` updates the search LLM (same as SmartSearch). */
     this._overrideProvider = null;
     this._scheduled = null;
@@ -83,6 +85,11 @@ export default class MediaIndexService {
 
   _activeProvider() {
     return this._overrideProvider ?? this._getProvider?.() ?? null;
+  }
+
+  /** Expose local-model download state without leaking provider mutation APIs. */
+  getPullStatus() {
+    return this._activeProvider()?.pullStatus ?? null;
   }
 
   /** Debounced kick after new rows or path updates. */
@@ -105,7 +112,8 @@ export default class MediaIndexService {
     let brokeEarly = false;
     try {
       const prio = this._getPriorityChatJid?.() ?? null;
-      const jobs = this._db.getPendingMediaIndexJobs(limit, prio);
+      const waLive = this._isWaLive ? this._isWaLive() !== false : true;
+      const jobs = this._db.getPendingMediaIndexJobs(limit, prio, waLive);
       for (const job of jobs) {
         if (this._preemptRequested) {
           brokeEarly = true;

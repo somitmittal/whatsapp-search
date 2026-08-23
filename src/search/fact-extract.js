@@ -2,7 +2,13 @@
  * Structured fact extraction for WhatsApp threads (JSON array from LLM).
  */
 
+import { GROUNDING_PROMPT_RULES } from './grounding.js';
+
 const FACT_EXTRACTION_BASE = `You extract searchable structured facts from a WhatsApp conversation transcript.
+
+${GROUNDING_PROMPT_RULES}
+- Every value must be copied from the transcript. Omit any field you cannot fill from it.
+- Skip a fact entirely rather than guessing a name, company, ticker, amount or date.
 
 Output ONLY a valid JSON array (no markdown fences, no commentary). Max 30 objects.
 

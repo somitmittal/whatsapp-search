@@ -21,8 +21,10 @@ import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
 import { applyOllamaMemorySettings, getHardwareRecommendation, resolveSafeOllamaModel } from '../llm/ollama-recommend.js';
 import { canSpawnLocalOllama, localOllamaUnsupportedReason } from '../llm/deployment-env.js';
 import { clearProviderCache, createProvider, PROVIDER_META } from '../llm/provider.js';
+import { selectPullStatus } from '../llm/pull-status.js';
 import { createIndexingSummaryProvider } from '../search/indexing-profile.js';
 import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
+import { effectiveUnreadCount, shouldShowGroupCatchup } from '../whatsapp/unread-tracker.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
 import {
@@ -368,6 +370,15 @@ export default class WebServer {
   }
 
   /** True while linked-device history is still streaming (heavy work should yield). */
+  /**
+   * Server-side mirror of `isWaUiReady()` in public/index.html: when this is false the
+   * sidebar lists imported archives only, so indexers deprioritise WA-synced chats.
+   */
+  isTenantWaLive(tenantId) {
+    const st = this._getTenantState(tenantId);
+    return st.waState === 'READY' || st.waState === 'SYNCING';
+  }
+
   isTenantWaHistoryBusy(tenantId) {
     const st = this._getTenantState(tenantId);
     if (st.waState === 'SYNCING' || st.waState === 'LOADING') return true;
@@ -1135,8 +1146,61 @@ export default class WebServer {
       try {
         const chatJid = decodeURIComponent(req.params.chatJid || '');
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const st = this._getTenantState(getCurrentTenantId());
+        const isGroup = chatJid.endsWith('@g.us');
+        const waConnected = st.waState === 'READY' && Boolean(st.waClient);
+        if (!isGroup || !waConnected) {
+          return res.json({
+            eligible: false,
+            isGroup,
+            waConnected,
+            unreadCount: 0,
+            summaries: [],
+          });
+        }
+
         const limit = Math.min(parseInt(req.query.limit, 10) || 3, 10);
-        return res.json(this.db.getAwayThreadSummaries(chatJid, limit));
+        const snapshotUnread = Number(req.query.unreadCount);
+        const snapshotSince = Number(req.query.since);
+        const hasSnapshot = Number.isFinite(snapshotUnread) && snapshotUnread >= 0
+          && Number.isFinite(snapshotSince) && snapshotSince >= 0;
+
+        let unreadCount;
+        let sinceTs;
+        if (hasSnapshot) {
+          unreadCount = Math.floor(snapshotUnread);
+          sinceTs = snapshotSince;
+        } else {
+          const whatsappUnread = st.waClient.getUnreadCount?.(chatJid) || 0;
+          const lastSeenTs = this.db.getChatLastSeen(chatJid);
+          const locallyUnseen = this.db.countIncomingMessagesSince(chatJid, lastSeenTs);
+          unreadCount = effectiveUnreadCount(whatsappUnread, locallyUnseen);
+          sinceTs = this.db.getUnreadWindowStart(chatJid, unreadCount);
+        }
+
+        const eligible = shouldShowGroupCatchup({
+          isGroup: true,
+          waConnected: true,
+          unreadCount,
+        });
+        if (!eligible) {
+          return res.json({
+            eligible: false,
+            isGroup: true,
+            waConnected: true,
+            unreadCount,
+            sinceTs,
+            summaries: [],
+          });
+        }
+        return res.json({
+          eligible: true,
+          isGroup: true,
+          waConnected: true,
+          unreadCount,
+          sinceTs,
+          ...this.db.getAwayThreadSummaries(chatJid, limit, sinceTs),
+        });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1783,11 +1847,12 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
     // ── Ollama Pull Status ────────────────────────────────────────────
     this._app.get('/api/pull-status', (_req, res) => {
-      const p = this.searchEngine?._provider;
-      if (p?.pullStatus) return res.json(p.pullStatus);
-      const sp = this.summaryService?._provider;
-      if (sp?.pullStatus) return res.json(sp.pullStatus);
-      return res.json(null);
+      const status = selectPullStatus([
+        this.searchEngine?._provider?.pullStatus,
+        this.summaryService?._provider?.pullStatus,
+        this._mediaIndexService?.getPullStatus?.(),
+      ]);
+      return res.json(status);
     });
 
     // ── Ollama Hardware Recommendation ─────────────────────────────────

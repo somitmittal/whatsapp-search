@@ -103,6 +103,8 @@ async function main() {
     }
   }
 
+  const isWaLive = () => webServer?.isTenantWaLive?.(getCurrentTenantId()) ?? false;
+
   const summaryService = new DailySummaryService({
     db,
     provider: summaryProvider,
@@ -110,16 +112,19 @@ async function main() {
     onProgress: (data) => {
       if (webServer) webServer.onSummaryProgress(data);
     },
+    isWaLive,
   });
   const embeddingIndexService = new EmbeddingIndexService({
     db,
     getPriorityChatJid: () => summaryService.getPriorityChatForTenant(getCurrentTenantId()),
+    isWaLive,
   });
   const searchEngine = new SmartSearch(db, provider, { embeddingIndex: embeddingIndexService });
   const mediaIndexService = new MediaIndexService({
     db,
     getProvider: () => mediaIndexProvider,
     getPriorityChatJid: () => summaryService.getPriorityChatForTenant(getCurrentTenantId()),
+    isWaLive,
   });
 
   async function reloadMediaIndexProvider() {

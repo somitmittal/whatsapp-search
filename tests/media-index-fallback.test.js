@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { buildFallbackMediaIndex } from '../src/search/media-index-service.js';
+import MediaIndexService, { buildFallbackMediaIndex } from '../src/search/media-index-service.js';
 
 describe('buildFallbackMediaIndex', () => {
   test('uses caption and filename', () => {
@@ -23,5 +23,22 @@ describe('buildFallbackMediaIndex', () => {
       messageId: 'x',
     });
     expect(s).toContain('video');
+  });
+});
+
+describe('MediaIndexService pull status', () => {
+  test('exposes download progress from its active provider', () => {
+    const pullStatus = {
+      model: 'llama3.2:3b',
+      status: 'downloading',
+      percent: 42,
+      detail: 'pulling model layer',
+    };
+    const service = new MediaIndexService({
+      db: {},
+      getProvider: () => ({ pullStatus }),
+    });
+
+    expect(service.getPullStatus()).toEqual(pullStatus);
   });
 });

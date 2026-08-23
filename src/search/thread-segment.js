@@ -41,4 +41,14 @@ export function segmentIntoThreads(messages, gapSeconds = THREAD_GAP_SECONDS) {
   return threads.filter(t => t.length >= MIN_THREAD_MESSAGES);
 }
 
+/** Return thread ranges newest-first without mutating the segmentation result. */
+export function threadRangesNewestFirst(threads) {
+  return threads
+    .map((thread) => ({
+      start: thread[0].timestamp,
+      end: thread[thread.length - 1].timestamp,
+    }))
+    .sort((a, b) => b.end - a.end);
+}
+
 export { THREAD_GAP_SECONDS, MIN_THREAD_MESSAGES };

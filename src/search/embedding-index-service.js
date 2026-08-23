@@ -6,11 +6,14 @@ import { packF32, unpackF32, topKByCosine } from './vector-math.js';
 const DEFAULT_BATCH = 12;
 
 export default class EmbeddingIndexService {
-  constructor({ db, encode = encodeTexts, modelId = MINILM_MODEL_ID, getPriorityChatJid = null }) {
+  constructor({
+    db, encode = encodeTexts, modelId = MINILM_MODEL_ID, getPriorityChatJid = null, isWaLive = null,
+  }) {
     this._db = db;
     this._encode = encode;
     this._modelId = modelId;
     this._getPriorityChatJid = typeof getPriorityChatJid === 'function' ? getPriorityChatJid : null;
+    this._isWaLive = typeof isWaLive === 'function' ? isWaLive : null;
     this._scheduled = null;
     this._running = false;
     this._preemptRequested = false;
@@ -40,7 +43,8 @@ export default class EmbeddingIndexService {
     let brokeEarly = false;
     try {
       const prio = this._getPriorityChatJid?.() ?? null;
-      const jobs = this._db.getPendingEmbeddingJobs(limit, prio, this._modelId);
+      const waLive = this._isWaLive ? this._isWaLive() !== false : true;
+      const jobs = this._db.getPendingEmbeddingJobs(limit, prio, this._modelId, waLive);
       const ready = [];
       for (const job of jobs) {
         const text = embeddableText(job);

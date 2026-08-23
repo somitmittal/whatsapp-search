@@ -26,3 +26,18 @@ export function isWhatsAppLowPriorityFeed(jid) {
 export function sidebarTabForJid(jid) {
   return isWhatsAppLowPriorityFeed(jid) ? SIDEBAR_TAB_FEED : SIDEBAR_TAB_CHAT;
 }
+
+/** Archives created by file / Gmail import (`import_<slug>@imported`). */
+export function isImportedChatJid(jid) {
+  return typeof jid === 'string' && jid.endsWith('@imported');
+}
+
+/**
+ * Mirrors the sidebar filter in `renderChatsFromState()` (public/index.html): while
+ * WhatsApp is offline the list shows imported archives only. Indexers use this to queue
+ * chats the user cannot currently see behind the ones they can — it affects ordering
+ * only, so hidden chats are still indexed once the visible queue drains.
+ */
+export function isChatVisibleInSidebar(jid, waLive) {
+  return Boolean(waLive) || isImportedChatJid(jid);
+}

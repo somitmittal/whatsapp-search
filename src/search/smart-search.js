@@ -1,6 +1,7 @@
 import { basename } from 'path';
 import Fuse from 'fuse.js';
 import { getSmbProfileFromDb, SMB_PROFILES, synthesisSystemAddon } from '../smb/profiles.js';
+import { GROUNDING_PROMPT_RULES, groundAnswer } from './grounding.js';
 
 const MAX_THREADS = 8;
 const MAX_DAYS = 8;
@@ -473,12 +474,16 @@ export default class SmartSearch {
   // ──────────────────────────────────────────────────────────────────
 
   async _synthesize(query, messages, options = {}) {
+    const messageTexts = messages.map((m) => {
+      const text = displayMessageText(m);
+      return text.length > MAX_SYNTH_MESSAGE_CHARS
+        ? `${text.slice(0, MAX_SYNTH_MESSAGE_CHARS - 1)}…`
+        : text;
+    });
     const transcript = messages.map((m, i) => {
       const ts = formatTs(m.timestamp);
       const sender = m.sender || 'Unknown';
-      let text = displayMessageText(m);
-      if (text.length > MAX_SYNTH_MESSAGE_CHARS) text = `${text.slice(0, MAX_SYNTH_MESSAGE_CHARS - 1)}…`;
-      return `[${i + 1}] ${sender} (${ts}): ${text}`;
+      return `[${i + 1}] ${sender} (${ts}): ${messageTexts[i]}`;
     }).join('\n');
 
     const smbProfile = options.businessContext
@@ -488,30 +493,40 @@ export default class SmartSearch {
     const smbLine = synthesisSystemAddon(smbProfile);
     const businessLine = businessName ? `\nBusiness name: ${businessName}.` : '';
 
-    const answer = await this._provider.chat([
+    const raw = await this._provider.chat([
       {
         role: 'system',
         content:
           'You are a WhatsApp chat search assistant.\n\n' +
           (smbLine ? `${smbLine}${businessLine}\n\n` : '') +
+          `${GROUNDING_PROMPT_RULES}\n\n` +
           'FORMAT YOUR RESPONSE EXACTLY LIKE THIS:\n\n' +
           '**Summary**\n' +
-          'Write a clear 3-5 sentence answer to the question. Name specific people, dates, and key details. ' +
+          'Write a clear 3-5 sentence answer to the question, using only what the messages say. ' +
+          'Name specific people, dates, and key details exactly as they were written. ' +
           'Describe context, tone, and outcome when relevant (e.g., "heated exchange", "friendly debate", "unanimous agreement").\n\n' +
           '**Key Messages**\n' +
           'Quote 3-5 most relevant messages using their citation numbers:\n' +
-          '- [4] Rahul: "exact quote or paraphrase" — why this is relevant\n' +
-          '- [7] Amit: "exact quote or paraphrase" — why this is relevant\n\n' +
+          '- [4] Rahul: "quote copied word for word from message 4" — why this is relevant\n' +
+          '- [7] Amit: "quote copied word for word from message 7" — why this is relevant\n\n' +
           'RULES:\n' +
           '- ALWAYS cite sources as [1], [2] etc. matching the message numbers provided.\n' +
+          '- Text inside quotation marks must be copied character for character from that message. Never reword it.\n' +
           '- Focus on ANSWERING the question, not just listing messages.\n' +
           '- If the messages don\'t contain a clear answer, say so honestly.\n' +
           '- Ignore messages unrelated to the question.',
       },
       { role: 'user', content: `${transcript}\n\n---\nQuestion: ${query}` },
-    ], { maxTokens: 1500 });
+    ], { maxTokens: 1500, temperature: 0 });
 
-    if (!answer?.trim()) return null;
+    if (!raw?.trim()) return null;
+
+    const checked = groundAnswer(raw, { transcript, messageTexts });
+    if (checked.removed.length) {
+      console.log(`[Search] Dropped ${checked.removed.length} ungrounded fragment(s): ${checked.removed.slice(0, 5).join(' | ')}`);
+    }
+    if (checked.empty) return { answer: checked.text, sources: [] };
+    const answer = checked.text;
 
     const cited = new Set();
     for (const m of answer.matchAll(/\[(\d+)\]/g)) {

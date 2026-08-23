@@ -4,6 +4,7 @@
  */
 
 import { actionItemAddon, getSmbProfileFromDb } from '../smb/profiles.js';
+import { GROUNDING_PROMPT_RULES } from './grounding.js';
 
 function combinedText(row) {
   const t = (row.text || '').trim();
@@ -94,6 +95,8 @@ export default class ActionItemService {
     const profile = getSmbProfileFromDb(this.db);
     const verticalLine = actionItemAddon(profile);
     const prompt = `You analyze ONE WhatsApp message. Decide if the recipient should follow up with concrete actions.
+
+${GROUNDING_PROMPT_RULES}
 
 Reply with ONLY a compact JSON object (no markdown), shape:
 {"followUp":boolean,"items":["max 3 short imperative action items for the reader, e.g. Confirm date with Alice","empty array if none"]}

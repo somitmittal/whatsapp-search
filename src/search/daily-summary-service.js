@@ -1,10 +1,10 @@
 import { buildFactExtractionPrompt, parseFactsFromLlm } from './fact-extract.js';
-import { segmentIntoThreads } from './thread-segment.js';
-import { isWhatsAppLowPriorityFeed } from '../whatsapp/jid-filters.js';
+import { segmentIntoThreads, threadRangesNewestFirst } from './thread-segment.js';
 import { getCurrentTenantId } from '../storage/tenant-context.js';
-import { prioritizeChatFirst } from './priority-chat-queue.js';
+import { prioritizeChatFirst, sortChatsForIndexing } from './priority-chat-queue.js';
 import { factExtractionAddon, getSmbProfileFromDb } from '../smb/profiles.js';
 import { isSmallLocalModel, localSummaryLlmExtras } from './indexing-profile.js';
+import { GROUNDING_PROMPT_RULES, enforceGroundedAnswer, filterGroundedFacts } from './grounding.js';
 /** Messages per LLM call — keeps prompts bounded and allows parallel segment work. */
 const SUMMARY_CHUNK_CLOUD = 200;
 const SUMMARY_CHUNK_LOCAL = 150;
@@ -81,6 +81,7 @@ function formatTime(ts) {
 
 const SUMMARY_PROMPT =
   'Summarize this WhatsApp conversation thread in 2-4 keyword-rich sentences.\n\n' +
+  `${GROUNDING_PROMPT_RULES}\n\n` +
   'Rules:\n' +
   '- Include ALL specific names, numbers, dates, prices, and locations mentioned.\n' +
   '- Cover every distinct topic discussed, decision made, or key fact.\n' +
@@ -91,11 +92,13 @@ const SUMMARY_PROMPT =
   '- Do NOT add opinions or filler. Factual + tonal summary only.\n\n';
 
 export default class DailySummaryService {
-  constructor({ db, provider = null, fallbackProvider = null, onProgress }) {
+  constructor({ db, provider = null, fallbackProvider = null, onProgress, isWaLive = null }) {
     this._db = db;
     this._provider = provider;
     this._fallback = fallbackProvider;
     this._onProgress = onProgress ?? null;
+    /** @type {(() => boolean)|null} */
+    this._isWaLive = typeof isWaLive === 'function' ? isWaLive : null;
     this._running = false;
     this._aborted = false;
     this._preemptRequested = false;
@@ -158,9 +161,14 @@ export default class DailySummaryService {
       try {
         const raw = await provider.chat(
           [{ role: 'user', content: prompt }],
-          summaryLlmOptions(provider, { temperature: 0.1, maxTokens: 2000 }),
+          summaryLlmOptions(provider, { temperature: 0, maxTokens: 2000 }),
         );
-        return parseFactsFromLlm(raw);
+        const parsed = parseFactsFromLlm(raw);
+        const grounded = filterGroundedFacts(parsed, transcript);
+        if (grounded.length < parsed.length) {
+          console.log(`[Facts] Dropped ${parsed.length - grounded.length} ungrounded fact(s)`);
+        }
+        return grounded;
       } catch (err) {
         const msg = err.message || '';
         const is429 = msg.includes('429');
@@ -249,9 +257,12 @@ export default class DailySummaryService {
         const threads = segmentIntoThreads(timestamps);
         if (threads.length === 0) continue;
         const summarizedStarts = this._db.getSummarizedThreadStarts(chatJid);
-        const pendingThreadStarts = threads
-          .filter(t => !summarizedStarts.has(t[0].timestamp))
-          .map(t => ({ start: t[0].timestamp, end: t[t.length - 1].timestamp }));
+        // `segmentIntoThreads()` preserves chronological input order. Reverse the
+        // pending ranges so recent messages become AI-searchable while older history
+        // continues indexing in the background.
+        const pendingThreadStarts = threadRangesNewestFirst(
+          threads.filter(t => !summarizedStarts.has(t[0].timestamp)),
+        );
         if (pendingThreadStarts.length === 0) continue;
         workQueue.push({ chatJid, chatName, pendingThreadStarts });
       }
@@ -265,12 +276,8 @@ export default class DailySummaryService {
         return lm * Math.log1p(n);
       };
 
-      workQueue.sort((a, b) => {
-        const fa = isWhatsAppLowPriorityFeed(a.chatJid) ? 1 : 0;
-        const fb = isWhatsAppLowPriorityFeed(b.chatJid) ? 1 : 0;
-        if (fa !== fb) return fa - fb;
-        return indexScore(b.chatJid) - indexScore(a.chatJid);
-      });
+      const waLive = this._isWaLive ? this._isWaLive() !== false : true;
+      sortChatsForIndexing(workQueue, { waLive, indexScore });
 
       const tid = getCurrentTenantId();
       const preferred = this._priorityChatJidByTenant.get(String(tid));
@@ -510,7 +517,8 @@ export default class DailySummaryService {
     const isLocal = this._isLocal(provider);
     const keyCount = provider._keys?.length ?? (isLocal ? 1 : DEFAULT_CONCURRENCY);
     const concurrency = getSummaryThreadConcurrency(isLocal, keyCount, provider.model);
-    const pending = this._db.getPendingFactThreads(concurrency);
+    const waLive = this._isWaLive ? this._isWaLive() !== false : true;
+    const pending = this._db.getPendingFactThreads(concurrency, waLive);
     if (pending.length === 0) return 0;
 
     console.log(`[Facts] Summaries caught up — extracting facts for ${pending.length} thread(s)`);
@@ -587,12 +595,17 @@ export default class DailySummaryService {
         const result = await provider.chat(
           [{ role: 'user', content: prompt }],
           summaryLlmOptions(provider, {
-            temperature: 0.2,
+            temperature: 0,
             maxTokens: segment?.segmentTotal > 1 ? 500 : 450,
           }),
         );
 
-        return result?.trim() || null;
+        if (!result?.trim()) return null;
+        const checked = enforceGroundedAnswer(result, transcript);
+        if (checked.removed.length) {
+          console.log(`[Summaries] Dropped ungrounded text for ${chatName} ${timeLabel}: ${checked.removed.slice(0, 5).join(' | ')}`);
+        }
+        return checked.text.trim() || null;
       } catch (err) {
         const msg = err.message || '';
         const is429 = msg.includes('429') || msg.includes('rate limit') || msg.includes('Rate limit');
@@ -641,7 +654,9 @@ export default class DailySummaryService {
     const mergePrompt =
       'Two consecutive summary fragments describe adjacent parts of the SAME WhatsApp conversation (in order). ' +
       'Merge them into 2-4 keyword-rich sentences. Keep ALL names, numbers, dates, topics, and tone. ' +
-      'Remove redundancy. Do not add opinions.\n\n' +
+      'Remove redundancy. Do not add opinions.\n' +
+      'Use only what the two fragments say: add no new names, companies, numbers or dates, ' +
+      'and never expand or explain an abbreviation.\n\n' +
       header +
       '--- Fragment A ---\n' +
       a +
@@ -652,9 +667,12 @@ export default class DailySummaryService {
       try {
         const result = await provider.chat(
           [{ role: 'user', content: mergePrompt }],
-          summaryLlmOptions(provider, { temperature: 0.15, maxTokens: 550 }),
+          summaryLlmOptions(provider, { temperature: 0, maxTokens: 550 }),
         );
-        return result?.trim() || null;
+        if (!result?.trim()) return null;
+        // Fragments are already verified against the transcript, so they are the source of truth here.
+        const checked = enforceGroundedAnswer(result, `${a}\n${b}`);
+        return checked.text.trim() || null;
       } catch (err) {
         const msg = err.message || '';
         const is429 = msg.includes('429') || msg.includes('rate limit') || msg.includes('Rate limit');

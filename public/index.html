@@ -96,6 +96,33 @@
     .chat-action-items-bar .ai-jump {
       display: inline-block; margin-top: 4px; font-size: 11px; color: var(--blue); cursor: pointer; text-decoration: underline;
     }
+    #away-summary-bar {
+      margin: 10px 14px;
+      padding: 0;
+      border: 1px solid rgba(0,168,132,0.22);
+      border-radius: 14px;
+      background: linear-gradient(135deg, #ecfdf7 0%, #f5f3ff 100%);
+      box-shadow: 0 6px 20px rgba(0, 92, 75, 0.08);
+      overflow: hidden;
+    }
+    #away-summary-bar details { padding: 12px 14px 14px; }
+    #away-summary-summary {
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 0 8px; font-size: 13px; color: #075e54;
+    }
+    #away-summary-summary::before {
+      content: '✦'; display: inline-grid; place-items: center;
+      width: 24px; height: 24px; border-radius: 8px;
+      color: #fff; background: linear-gradient(135deg, #00a884, #7c3aed);
+    }
+    #away-summary-body .ai-group {
+      padding: 9px 10px; margin-top: 7px; border-left: none;
+      border-radius: 10px; background: rgba(255,255,255,0.78);
+    }
+    .away-summary-loading {
+      color: var(--text2); font-size: 12px; line-height: 1.5;
+      padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.7);
+    }
 
     .sidebar-chat-tabs {
       display: flex; gap: 6px; padding: 4px 12px 8px; flex-shrink: 0;
@@ -1968,6 +1995,8 @@
   let currentStatusSlideMessageId = null;
   /** @type {{ messageId: string, preview: string } | null} */
   let replyTarget = null;
+  /** Snapshot retained after marking a chat seen while its unread summary finishes indexing. */
+  let awaySummarySnapshot = null;
   /** @type {Record<string, { pct: number, show: boolean }>} */
   let summaryProgressByJid = {};
   /** Per-chat message counts during WhatsApp history sync (from server). */
@@ -2808,6 +2837,12 @@
       }
     }
     applyLiveSyncVisibility();
+    updateComposerVisibility();
+    if (state !== 'READY') {
+      awaySummarySnapshot = null;
+      const away = $('#away-summary-bar');
+      if (away) away.style.display = 'none';
+    }
     if (activeChat && hasIndexedArchive()) switchPanel();
   }
 
@@ -3128,11 +3163,23 @@
     if (d.chatComplete) {
       summaryProgressByJid[jid] = { pct: 100, show: true };
       applyChatSummaryBars();
+      if (awaySummarySnapshot?.jid === jid && activeChat === jid) {
+        void loadAwaySummaryForChat(jid, awaySummarySnapshot);
+      }
       setTimeout(() => {
         delete summaryProgressByJid[jid];
         applyChatSummaryBars();
       }, 450);
       return;
+    }
+    if (
+      d.active === true
+      && awaySummarySnapshot?.jid === jid
+      && activeChat === jid
+      && (d.threadsDone || 0) > (awaySummarySnapshot.lastThreadsDone || 0)
+    ) {
+      awaySummarySnapshot.lastThreadsDone = d.threadsDone || 0;
+      void loadAwaySummaryForChat(jid, awaySummarySnapshot);
     }
     if (d.active === false) {
       delete summaryProgressByJid[jid];
@@ -3395,6 +3442,17 @@
     return jid === 'status@broadcast' || jid.endsWith('@broadcast')
       || jid.endsWith('@newsletter') || jid.endsWith('@bot')
       || jid.endsWith('@imported');
+  }
+
+  function canSendMessageToJid(jid) {
+    return _waState === 'READY' && !shouldHideComposerForJid(jid);
+  }
+
+  function updateComposerVisibility() {
+    const composer = document.getElementById('chat-composer');
+    const canSend = canSendMessageToJid(activeChat);
+    if (composer) composer.style.display = canSend ? '' : 'none';
+    if (!canSend) clearReplyTarget();
   }
 
   async function refreshStatusFeed() {
@@ -3952,9 +4010,7 @@
     renderCvContact(null, jid);
     $$('.chat-item').forEach(i => i.classList.toggle('active', i.dataset.jid === jid));
     switchPanel();
-    const composer = document.getElementById('chat-composer');
-    if (composer) composer.style.display = shouldHideComposerForJid(jid) ? 'none' : '';
-    if (shouldHideComposerForJid(jid)) clearReplyTarget();
+    updateComposerVisibility();
     const aiChatBtn = document.getElementById('btn-chat-ai-search');
     if (aiChatBtn) aiChatBtn.style.display = shouldHideComposerForJid(jid) ? 'none' : 'flex';
     try {
@@ -4017,7 +4073,7 @@
         renderCvContact(details, jid);
       }
       void loadActionItemsForChat(jid);
-      void loadAwaySummaryForChat(jid);
+      await loadAwaySummaryForChat(jid);
       void fetchChatAttachments(jid);
       fetch('/api/summaries/priority-chat', {
         method: 'POST',
@@ -4028,7 +4084,7 @@
     } catch (err) {
       console.error('[openChat]', err);
     }
-    // Mark chat as seen for “while you were away”.
+    // Mark seen only after the unread-summary request captured its window.
     fetch(`/api/chats/${encodeURIComponent(jid)}/seen`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
     setMobileChatOpen(true);
   }
@@ -4346,20 +4402,49 @@
     }
   }
 
-  async function loadAwaySummaryForChat(jid) {
+  async function loadAwaySummaryForChat(jid, snapshot = null) {
     const wrap = $('#away-summary-bar');
     const body = $('#away-summary-body');
     const sum = $('#away-summary-summary');
     const det = $('#away-summary-details');
     if (!wrap || !body) return;
-    if (!jid) { wrap.style.display = 'none'; return; }
+    const ch = chatData.find((row) => row.chatJid === jid);
+    const isGroup = jid?.endsWith('@g.us') || (ch?.participantCount > 2);
+    if (!jid || !isGroup || _waState !== 'READY') {
+      awaySummarySnapshot = null;
+      wrap.style.display = 'none';
+      return;
+    }
     try {
-      const data = await fetch(`/api/chats/${encodeURIComponent(jid)}/away-summary?limit=3`).then((r) => r.json());
+      const params = new URLSearchParams({ limit: '3' });
+      if (snapshot?.sinceTs != null && snapshot?.unreadCount != null) {
+        params.set('since', String(snapshot.sinceTs));
+        params.set('unreadCount', String(snapshot.unreadCount));
+      }
+      const data = await fetch(
+        `/api/chats/${encodeURIComponent(jid)}/away-summary?${params.toString()}`,
+      ).then((r) => r.json());
       if (activeChat !== jid) return;
+      if (!data?.eligible || data.unreadCount <= 10) {
+        awaySummarySnapshot = null;
+        wrap.style.display = 'none';
+        return;
+      }
+
+      awaySummarySnapshot = {
+        jid,
+        sinceTs: data.sinceTs,
+        unreadCount: data.unreadCount,
+        lastThreadsDone: snapshot?.lastThreadsDone || 0,
+      };
       const rows = data?.summaries || [];
-      if (!rows.length) { wrap.style.display = 'none'; return; }
       wrap.style.display = '';
-      if (sum) sum.textContent = `While you were away (${rows.length})`;
+      if (sum) sum.textContent = `Group catch-up · ${data.unreadCount} unread messages`;
+      if (!rows.length) {
+        body.innerHTML = '<div class="away-summary-loading">Creating a summary of the latest discussion… You can keep reading while AI indexing catches up.</div>';
+        if (det) det.open = true;
+        return;
+      }
       body.innerHTML = rows.map((r) => {
         const when = r.threadEnd
           ? (messageTimestampToDate(r.threadEnd)?.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || 'Unknown date')
@@ -4372,6 +4457,7 @@
       }).join('');
       if (det) det.open = true;
     } catch {
+      awaySummarySnapshot = null;
       wrap.style.display = 'none';
     }
   }
@@ -5723,7 +5809,10 @@
     try {
       const data = await fetch('/api/pull-status').then(r => r.json());
       const banner = $('#pull-banner');
-      if (!data) { banner.classList.remove('visible', 'error', 'done'); stopPullPolling(); return; }
+      // Keep the existing 2s watcher alive: on startup the first status request can
+      // arrive before Ollama begins pulling. Stopping here delayed the bar by up to
+      // the 30s fallback interval even though download progress was already logged.
+      if (!data) { banner.classList.remove('visible', 'error', 'done'); return; }
 
       banner.classList.add('visible');
       banner.classList.remove('error', 'done');
@@ -5758,6 +5847,7 @@
   }
 
   startPullPolling();
+  // Re-arm after a completed/error pull so later provider changes are also observed.
   setInterval(() => { if (!pullPollTimer) startPullPolling(); }, 30000);
   void loadSmbProfile();
 })();

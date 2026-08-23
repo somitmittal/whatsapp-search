@@ -825,12 +825,41 @@ export default class Database {
     return this._stmtGetChatLastSeen.get(t, chatJid)?.lastSeenTs || 0;
   }
 
-  getAwayThreadSummaries(chatJid, limit = 3) {
+  countIncomingMessagesSince(chatJid, sinceTs = 0) {
+    if (!chatJid) return 0;
     const t = getCurrentTenantId();
-    const lastSeen = this.getChatLastSeen(chatJid);
+    return this._db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM messages
+      WHERE tenant_id = ? AND chat_jid = ? AND timestamp > ?
+        AND (sender IS NULL OR sender != 'You')
+    `).get(t, chatJid, Number(sinceTs) || 0)?.count || 0;
+  }
+
+  /** Timestamp immediately before the newest `unreadCount` incoming messages. */
+  getUnreadWindowStart(chatJid, unreadCount) {
+    if (!chatJid || !Number.isFinite(Number(unreadCount)) || Number(unreadCount) <= 0) return 0;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT MIN(timestamp) AS earliest
+      FROM (
+        SELECT timestamp
+        FROM messages
+        WHERE tenant_id = ? AND chat_jid = ?
+          AND (sender IS NULL OR sender != 'You')
+        ORDER BY timestamp DESC, id DESC
+        LIMIT ?
+      )
+    `).get(t, chatJid, Math.floor(Number(unreadCount)));
+    return row?.earliest ? Math.max(0, Number(row.earliest) - 1) : 0;
+  }
+
+  getAwayThreadSummaries(chatJid, limit = 3, sinceTs = null) {
+    const t = getCurrentTenantId();
+    const lastSeen = sinceTs == null ? this.getChatLastSeen(chatJid) : Math.max(0, Number(sinceTs) || 0);
     const rows = this._stmtGetThreadSummariesSince.all(
       t,
-    chatJid,
+      chatJid,
       lastSeen,
       Math.max(1, Math.min(Number(limit) || 3, 10)),
     );
@@ -1198,30 +1227,27 @@ export default class Database {
   }
 
   /**
+   * Leading ORDER BY tier that puts chats the sidebar can currently show ahead of the rest.
+   * Empty while WhatsApp is live, because then every chat is visible.
+   * @param {boolean} waLive
+   * @param {string} col qualified `chat_jid` column for the surrounding query
+   */
+  _visibilityOrderSql(waLive, col = 'chat_jid') {
+    return waLive ? '' : `CASE WHEN ${col} LIKE '%@imported' THEN 0 ELSE 1 END, `;
+  }
+
+  /**
    * Rows with downloaded media that still need caption/transcribe (media_ai_index IS NULL).
    * When `priorityChatJid` is set, rows in that chat are ordered before others (same global newest-first within each tier).
    */
-  getPendingMediaIndexJobs(limit = 12, priorityChatJid = null) {
+  getPendingMediaIndexJobs(limit = 12, priorityChatJid = null, waLive = true) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();
     const prio = priorityChatJid && String(priorityChatJid).trim()
       ? String(priorityChatJid).trim()
       : null;
-    if (prio) {
-      return this._db.prepare(`
-        SELECT id, message_id AS messageId, chat_jid AS chatJid, media_type AS mediaType, media_path AS mediaPath,
-               media_caption AS mediaCaption, text AS text,
-               media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError
-        FROM messages
-        WHERE tenant_id = ?
-          AND media_path IS NOT NULL AND trim(media_path) != ''
-          AND media_type IN ('image', 'audio', 'video', 'sticker', 'document')
-          AND (media_ai_index IS NULL OR media_index_status IN ('pending', 'failed'))
-        ORDER BY CASE WHEN chat_jid = ? THEN 0 ELSE 1 END, timestamp DESC
-        LIMIT ?
-      `).all(t, prio, n);
-    }
-    return this._db.prepare(`
+    const vis = this._visibilityOrderSql(waLive);
+    const select = `
       SELECT id, message_id AS messageId, chat_jid AS chatJid, media_type AS mediaType, media_path AS mediaPath,
              media_caption AS mediaCaption, text AS text,
              media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError
@@ -1230,12 +1256,22 @@ export default class Database {
         AND media_path IS NOT NULL AND trim(media_path) != ''
         AND media_type IN ('image', 'audio', 'video', 'sticker', 'document')
         AND (media_ai_index IS NULL OR media_index_status IN ('pending', 'failed'))
-      ORDER BY timestamp DESC
+    `;
+    if (prio) {
+      return this._db.prepare(`
+        ${select}
+        ORDER BY CASE WHEN chat_jid = ? THEN 0 ELSE 1 END, ${vis}timestamp DESC
+        LIMIT ?
+      `).all(t, prio, n);
+    }
+    return this._db.prepare(`
+      ${select}
+      ORDER BY ${vis}timestamp DESC
       LIMIT ?
     `).all(t, n);
   }
 
-  getPendingEmbeddingJobs(limit = 12, priorityChatJid = null, modelId = '') {
+  getPendingEmbeddingJobs(limit = 12, priorityChatJid = null, modelId = '', waLive = true) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();
     const model = String(modelId || '');
@@ -1257,16 +1293,17 @@ export default class Database {
         AND ${hasText}
         AND e.message_rowid IS NULL
     `;
+    const vis = this._visibilityOrderSql(waLive, 'm.chat_jid');
     if (prio) {
       return this._db.prepare(`
         ${select}
-        ORDER BY CASE WHEN m.chat_jid = ? THEN 0 ELSE 1 END, m.timestamp DESC
+        ORDER BY CASE WHEN m.chat_jid = ? THEN 0 ELSE 1 END, ${vis}m.timestamp DESC
         LIMIT ?
       `).all(model, t, prio, n);
     }
     return this._db.prepare(`
       ${select}
-      ORDER BY m.timestamp DESC
+      ORDER BY ${vis}m.timestamp DESC
       LIMIT ?
     `).all(model, t, n);
   }
@@ -2042,7 +2079,7 @@ export default class Database {
     `).run(t, chatJid, chatName, threadStart, threadEnd, summary, messageCount);
   }
 
-  getPendingFactThreads(limit = 12) {
+  getPendingFactThreads(limit = 12, waLive = true) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();
     return this._db.prepare(`
@@ -2050,7 +2087,7 @@ export default class Database {
              thread_start AS threadStart, thread_end AS threadEnd
       FROM thread_summaries
       WHERE tenant_id = ? AND (facts_status IS NULL OR trim(facts_status) = '')
-      ORDER BY thread_end DESC
+      ORDER BY ${this._visibilityOrderSql(waLive)}thread_end DESC
       LIMIT ?
     `).all(t, n);
   }

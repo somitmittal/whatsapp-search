@@ -21,6 +21,7 @@ import {
 } from './chat-display-name.js';
 import { buildContactPayloadFromInner } from './contact-card.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
+import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 
 const require = createRequire(import.meta.url);
@@ -173,6 +174,8 @@ export default class WaClient {
 
     this._sock          = null;
     this._state         = 'DISCONNECTED';
+    /** WhatsApp-reported unread count by chat JID (runtime state from chat events). */
+    this._unreadByChat  = new Map();
     this._latestQr      = null;
     this._ownerJid      = null;
     this._ownerName     = null;
@@ -251,6 +254,14 @@ export default class WaClient {
       return await this._sock.sendMessage(chatJid, { text: t }, { quoted });
     }
     return await this._sock.sendMessage(chatJid, { text: t });
+  }
+
+  getUnreadCount(chatJid) {
+    return unreadCountForChat(this._unreadByChat, chatJid);
+  }
+
+  _captureUnreadCounts(chats) {
+    captureUnreadCounts(this._unreadByChat, chats);
   }
 
   /** React to a chat or status message (`statusJidList` set for `status@broadcast`). */
@@ -518,6 +529,7 @@ export default class WaClient {
         console.warn('[WA] history name hydrate:', e.message);
       }
 
+      this._captureUnreadCounts(chats);
       const preview = this._buildHistoryChatsPreview(chats);
       if (preview.length) {
         this._onChatsPreview?.(preview);
@@ -548,18 +560,21 @@ export default class WaClient {
 
     // Chat / contact name updates
     this._sock.ev.on('chats.set', async ({ chats }) => {
+      this._captureUnreadCounts(chats);
       for (const c of chats || []) {
         if (!c?.name) continue;
         await this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
       }
     });
     this._sock.ev.on('chats.upsert', async (chats) => {
+      this._captureUnreadCounts(chats);
       for (const c of chats || []) {
         if (!c?.name) continue;
         await this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
       }
     });
     this._sock.ev.on('chats.update', async (updates) => {
+      this._captureUnreadCounts(updates);
       for (const u of updates || []) {
         if (!u?.name) continue;
         await this._applyLabelToLinkedJids(u.name, u.id, u.lidJid, u.pnJid, u.lid, u.phoneNumber);
