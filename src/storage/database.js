@@ -23,6 +23,7 @@ import {
 } from '../whatsapp/chat-display-name.js';
 import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 import { reactionParticipantSlotKey } from '../whatsapp/reaction-counts.js';
+import { normalizeUnixSeconds } from '../utils/timestamp.js';
 
 const require = createRequire(import.meta.url);
 const SQLite = require('better-sqlite3');
@@ -57,6 +58,31 @@ export default class Database {
     this._prepareStatements();
     this._migrateChatActionItemsTable();
     this._migrateOllamaCloudModelSettings();
+    this._ensureMessageEmbeddingsTable();
+    this._ensureThreadFactsStatusColumn();
+  }
+
+  _ensureMessageEmbeddingsTable() {
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS message_embeddings (
+        message_rowid INTEGER PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        dim INTEGER NOT NULL,
+        vector BLOB NOT NULL,
+        source_hash TEXT NOT NULL,
+        created_at INTEGER DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_embeddings_tenant_model
+        ON message_embeddings(tenant_id, model);
+    `);
+  }
+
+  _ensureThreadFactsStatusColumn() {
+    const cols = this._db.prepare(`PRAGMA table_info(thread_summaries)`).all();
+    if (!cols.some((c) => c.name === 'facts_status')) {
+      this._db.exec(`ALTER TABLE thread_summaries ADD COLUMN facts_status TEXT`);
+    }
   }
 
   /**
@@ -97,6 +123,8 @@ export default class Database {
         media_path TEXT,
         media_caption TEXT,
         media_ai_index TEXT,
+        media_index_status TEXT DEFAULT NULL,
+        media_index_error TEXT DEFAULT NULL,
         timestamp INTEGER NOT NULL,
         indexed_at INTEGER DEFAULT (unixepoch())
       );
@@ -552,6 +580,14 @@ export default class Database {
         this._db.exec('ALTER TABLE messages ADD COLUMN media_ai_index TEXT');
         console.log('[DB] Added messages.media_ai_index');
       }
+      if (!cols.some((c) => c.name === 'media_index_status')) {
+        this._db.exec('ALTER TABLE messages ADD COLUMN media_index_status TEXT DEFAULT NULL');
+        console.log('[DB] Added messages.media_index_status');
+      }
+      if (!cols.some((c) => c.name === 'media_index_error')) {
+        this._db.exec('ALTER TABLE messages ADD COLUMN media_index_error TEXT DEFAULT NULL');
+        console.log('[DB] Added messages.media_index_error');
+      }
     } catch (e) {
       console.warn('[DB] media_ai_index column:', e.message);
     }
@@ -863,7 +899,8 @@ export default class Database {
     const info = this._stmtInsertMessage.run({
       tenantId,
       messageId, chatJid, chatName, sender, senderJid,
-      text, mediaType, mediaPath, mediaCaption, mediaAiIndex, timestamp,
+      text, mediaType, mediaPath, mediaCaption, mediaAiIndex,
+      timestamp: normalizeUnixSeconds(timestamp, Math.floor(Date.now() / 1000)),
       reactionsJson,
       contactPayload,
     });
@@ -892,7 +929,7 @@ export default class Database {
           mediaPath: row.mediaPath ?? null,
           mediaCaption: row.mediaCaption ?? null,
           mediaAiIndex: row.mediaAiIndex ?? null,
-          timestamp: row.timestamp,
+          timestamp: normalizeUnixSeconds(row.timestamp, Math.floor(Date.now() / 1000)),
           reactionsJson: row.reactionsJson ?? null,
           contactPayload: row.contactPayload ?? null,
         });
@@ -1123,7 +1160,41 @@ export default class Database {
     const t = getCurrentTenantId();
     const r = this._db.prepare('UPDATE messages SET media_ai_index = ? WHERE tenant_id = ? AND message_id = ?')
       .run(text ?? '', t, messageId);
+    this._deleteEmbeddingByMessageId(messageId);
     return r.changes ?? 0;
+  }
+
+  updateMediaIndexResult(messageId, { text = '', status = 'indexed', error = null } = {}) {
+    if (!messageId) return 0;
+    const t = getCurrentTenantId();
+    const changes = this._db.prepare(`
+      UPDATE messages
+      SET media_ai_index = ?, media_index_status = ?, media_index_error = ?
+      WHERE tenant_id = ? AND message_id = ?
+    `).run(text ?? '', status, error ? String(error).slice(0, 500) : null, t, messageId).changes ?? 0;
+    this._deleteEmbeddingByMessageId(messageId);
+    return changes;
+  }
+
+  _deleteEmbeddingByMessageId(messageId) {
+    if (!messageId) return;
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      DELETE FROM message_embeddings
+      WHERE tenant_id = ?
+        AND message_rowid IN (
+          SELECT id FROM messages WHERE tenant_id = ? AND message_id = ?
+        )
+    `).run(t, t, messageId);
+  }
+
+  resetUnsupportedMediaIndexes() {
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      UPDATE messages
+      SET media_ai_index = NULL, media_index_status = NULL, media_index_error = NULL
+      WHERE tenant_id = ? AND media_index_status = 'unsupported'
+    `).run(t).changes ?? 0;
   }
 
   /**
@@ -1139,27 +1210,113 @@ export default class Database {
     if (prio) {
       return this._db.prepare(`
         SELECT id, message_id AS messageId, chat_jid AS chatJid, media_type AS mediaType, media_path AS mediaPath,
-               media_caption AS mediaCaption, text AS text
+               media_caption AS mediaCaption, text AS text,
+               media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError
         FROM messages
         WHERE tenant_id = ?
           AND media_path IS NOT NULL AND trim(media_path) != ''
           AND media_type IN ('image', 'audio', 'video', 'sticker', 'document')
-          AND media_ai_index IS NULL
+          AND (media_ai_index IS NULL OR media_index_status IN ('pending', 'failed'))
         ORDER BY CASE WHEN chat_jid = ? THEN 0 ELSE 1 END, timestamp DESC
         LIMIT ?
       `).all(t, prio, n);
     }
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid, media_type AS mediaType, media_path AS mediaPath,
-             media_caption AS mediaCaption, text AS text
+             media_caption AS mediaCaption, text AS text,
+             media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError
       FROM messages
       WHERE tenant_id = ?
         AND media_path IS NOT NULL AND trim(media_path) != ''
         AND media_type IN ('image', 'audio', 'video', 'sticker', 'document')
-        AND media_ai_index IS NULL
+        AND (media_ai_index IS NULL OR media_index_status IN ('pending', 'failed'))
       ORDER BY timestamp DESC
       LIMIT ?
     `).all(t, n);
+  }
+
+  getPendingEmbeddingJobs(limit = 12, priorityChatJid = null, modelId = '') {
+    const n = Math.max(1, Math.min(Number(limit) || 12, 40));
+    const t = getCurrentTenantId();
+    const model = String(modelId || '');
+    const prio = priorityChatJid && String(priorityChatJid).trim()
+      ? String(priorityChatJid).trim()
+      : null;
+    const hasText = `(
+           (text IS NOT NULL AND trim(text) != '')
+           OR (media_caption IS NOT NULL AND trim(media_caption) != '')
+           OR (media_ai_index IS NOT NULL AND trim(media_ai_index) != '')
+         )`;
+    const select = `
+      SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid, m.sender, m.text,
+             m.media_caption AS mediaCaption, m.media_ai_index AS mediaAiIndex, m.timestamp
+      FROM messages m
+      LEFT JOIN message_embeddings e
+        ON e.message_rowid = m.id AND e.model = ?
+      WHERE m.tenant_id = ?
+        AND ${hasText}
+        AND e.message_rowid IS NULL
+    `;
+    if (prio) {
+      return this._db.prepare(`
+        ${select}
+        ORDER BY CASE WHEN m.chat_jid = ? THEN 0 ELSE 1 END, m.timestamp DESC
+        LIMIT ?
+      `).all(model, t, prio, n);
+    }
+    return this._db.prepare(`
+      ${select}
+      ORDER BY m.timestamp DESC
+      LIMIT ?
+    `).all(model, t, n);
+  }
+
+  upsertMessageEmbedding({ messageRowid, model, dim, vector, sourceHash }) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      INSERT INTO message_embeddings (message_rowid, tenant_id, model, dim, vector, source_hash)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(message_rowid) DO UPDATE SET
+        tenant_id = excluded.tenant_id,
+        model = excluded.model,
+        dim = excluded.dim,
+        vector = excluded.vector,
+        source_hash = excluded.source_hash,
+        created_at = unixepoch()
+    `).run(messageRowid, t, model, dim, vector, sourceHash);
+  }
+
+  iterateMessageEmbeddings(modelId, chatJid = null) {
+    const t = getCurrentTenantId();
+    const model = String(modelId || '');
+    const sql = chatJid
+      ? `SELECT e.message_rowid AS messageRowid, e.vector AS vector
+         FROM message_embeddings e
+         INNER JOIN messages m ON m.id = e.message_rowid
+         WHERE e.tenant_id = ? AND e.model = ? AND e.dim > 0 AND m.chat_jid = ?`
+      : `SELECT e.message_rowid AS messageRowid, e.vector AS vector
+         FROM message_embeddings e
+         WHERE e.tenant_id = ? AND e.model = ? AND e.dim > 0`;
+    return chatJid
+      ? this._db.prepare(sql).all(t, model, chatJid)
+      : this._db.prepare(sql).all(t, model);
+  }
+
+  getMessagesByRowIds(ids) {
+    const list = (ids || []).map((n) => Number(n)).filter((n) => Number.isFinite(n));
+    if (!list.length) return [];
+    const t = getCurrentTenantId();
+    const placeholders = list.map(() => '?').join(',');
+    const rows = this._db.prepare(`
+      SELECT id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
+             media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
+             media_ai_index AS mediaAiIndex,
+             media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError, timestamp
+      FROM messages
+      WHERE tenant_id = ? AND id IN (${placeholders})
+    `).all(t, ...list);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    return list.map((id) => byId.get(id)).filter(Boolean);
   }
 
   // ── Daily Summaries ───────────────────────────────────────────────────
@@ -1306,7 +1463,9 @@ export default class Database {
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
              m.chat_name AS chatName, m.sender, m.text,
              m.media_type AS mediaType, m.media_path AS mediaPath, m.media_caption AS mediaCaption,
-             m.media_ai_index AS mediaAiIndex, m.contact_payload AS contactPayload,
+             m.media_ai_index AS mediaAiIndex,
+             m.media_index_status AS mediaIndexStatus, m.media_index_error AS mediaIndexError,
+             m.contact_payload AS contactPayload,
              m.timestamp, bm25(messages_fts) AS rank
       FROM messages_fts
       INNER JOIN messages m ON m.id = messages_fts.rowid
@@ -1323,7 +1482,8 @@ export default class Database {
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
-             media_ai_index AS mediaAiIndex, timestamp
+             media_ai_index AS mediaAiIndex,
+             media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError, timestamp
       FROM messages
       WHERE tenant_id = ? AND chat_jid = ? AND date(timestamp, 'unixepoch', 'localtime') = ?
       ORDER BY timestamp ASC
@@ -1637,6 +1797,7 @@ export default class Database {
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_path AS mediaPath,
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
+             media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError,
              reactions_json AS reactionsJson, contact_payload AS contactPayload,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE tenant_id = ? AND chat_jid = ?
@@ -1661,6 +1822,7 @@ export default class Database {
              chat_name AS chatName, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_path AS mediaPath,
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
+             media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError,
              reactions_json AS reactionsJson, contact_payload AS contactPayload,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE tenant_id = ? AND chat_jid IN (${ph})
@@ -1785,13 +1947,15 @@ export default class Database {
     const sql = chatJid
       ? `SELECT id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
                 media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
-                media_ai_index AS mediaAiIndex, timestamp
+                media_ai_index AS mediaAiIndex,
+                media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError, timestamp
          FROM messages
          WHERE tenant_id = ? AND chat_jid = ? AND ${hasContent}
          ORDER BY timestamp DESC LIMIT ?`
       : `SELECT id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
                 media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
-                media_ai_index AS mediaAiIndex, timestamp
+                media_ai_index AS mediaAiIndex,
+                media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError, timestamp
          FROM messages
          WHERE tenant_id = ? AND ${hasContent}
          ORDER BY timestamp DESC LIMIT ?`;
@@ -1808,7 +1972,8 @@ export default class Database {
     const t = getCurrentTenantId();
     const rows = this._db.prepare(`
       SELECT message_id AS messageId, sender, text, media_type AS mediaType, media_path AS mediaPath,
-             media_caption AS mediaCaption, timestamp
+             media_caption AS mediaCaption, media_index_status AS mediaIndexStatus,
+             media_index_error AS mediaIndexError, timestamp
       FROM messages
       WHERE tenant_id = ? AND chat_jid = ?
       ORDER BY timestamp DESC
@@ -1866,14 +2031,36 @@ export default class Database {
   upsertThreadSummary({ chatJid, chatName = null, threadStart, threadEnd, summary, messageCount = 0 }) {
     const t = getCurrentTenantId();
     this._db.prepare(`
-      INSERT INTO thread_summaries (tenant_id, chat_jid, chat_name, thread_start, thread_end, summary, message_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO thread_summaries (tenant_id, chat_jid, chat_name, thread_start, thread_end, summary, message_count, facts_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
       ON CONFLICT(tenant_id, chat_jid, thread_start) DO UPDATE SET
         summary = excluded.summary,
         thread_end = excluded.thread_end,
         message_count = excluded.message_count,
-        chat_name = excluded.chat_name
+        chat_name = excluded.chat_name,
+        facts_status = NULL
     `).run(t, chatJid, chatName, threadStart, threadEnd, summary, messageCount);
+  }
+
+  getPendingFactThreads(limit = 12) {
+    const n = Math.max(1, Math.min(Number(limit) || 12, 40));
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT chat_jid AS chatJid, chat_name AS chatName,
+             thread_start AS threadStart, thread_end AS threadEnd
+      FROM thread_summaries
+      WHERE tenant_id = ? AND (facts_status IS NULL OR trim(facts_status) = '')
+      ORDER BY thread_end DESC
+      LIMIT ?
+    `).all(t, n);
+  }
+
+  setThreadFactsStatus(chatJid, threadStart, status) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      UPDATE thread_summaries SET facts_status = ?
+      WHERE tenant_id = ? AND chat_jid = ? AND thread_start = ?
+    `).run(status, t, chatJid, threadStart);
   }
 
   getAllThreadSummaries() {

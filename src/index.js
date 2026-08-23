@@ -5,6 +5,8 @@ import { LEGACY_TENANT_ID } from './storage/tenant-constants.js';
 import Database from './storage/database.js';
 import SmartSearch from './search/smart-search.js';
 import MediaIndexService from './search/media-index-service.js';
+import EmbeddingIndexService from './search/embedding-index-service.js';
+import { terminateMiniLmEncoder } from './search/minilm-encoder.js';
 import DailySummaryService from './search/daily-summary-service.js';
 import WebServer from './web/server.js';
 import ActionItemService from './search/action-item-service.js';
@@ -15,6 +17,7 @@ import {
   effectiveSummaryApiKey,
   effectiveMediaIndexApiKey,
 } from './llm/defaults.js';
+import { createIndexingSummaryProvider, resolveOllamaIndexingModel } from './search/indexing-profile.js';
 
 function assertJwtOnPublicHost() {
   const onPublic =
@@ -82,15 +85,24 @@ async function main() {
     try {
       const sumKey = runWithTenant(defaultTenantId, () => effectiveSummaryApiKey(db));
       const sumModel = runWithTenant(defaultTenantId, () => db.getSetting('summary_model')) || config.defaultSummaryModel;
-      summaryProvider = await createProvider(sumProvSetting, sumKey, sumModel || undefined);
+      summaryProvider = await createIndexingSummaryProvider(createProvider, sumProvSetting, sumKey, sumModel);
       console.log(`Summary provider: ${sumProvSetting} (${summaryProvider.model})`);
     } catch (err) {
       console.log(`Summary provider "${sumProvSetting}" failed to init, falling back to search provider: ${err.message}`);
       summaryProvider = provider;
     }
+  } else if (savedProvider === 'ollama' && savedModel) {
+    const indexModel = resolveOllamaIndexingModel(savedModel);
+    if (indexModel !== savedModel) {
+      try {
+        summaryProvider = await createProvider('ollama', '', indexModel);
+        console.log(`Summary provider: ollama (${summaryProvider.model}) — search stays on ${savedModel}`);
+      } catch (err) {
+        console.log(`Indexing model ${indexModel} failed to init: ${err.message}`);
+      }
+    }
   }
 
-  const searchEngine = new SmartSearch(db, provider);
   const summaryService = new DailySummaryService({
     db,
     provider: summaryProvider,
@@ -99,6 +111,11 @@ async function main() {
       if (webServer) webServer.onSummaryProgress(data);
     },
   });
+  const embeddingIndexService = new EmbeddingIndexService({
+    db,
+    getPriorityChatJid: () => summaryService.getPriorityChatForTenant(getCurrentTenantId()),
+  });
+  const searchEngine = new SmartSearch(db, provider, { embeddingIndex: embeddingIndexService });
   const mediaIndexService = new MediaIndexService({
     db,
     getProvider: () => mediaIndexProvider,
@@ -166,6 +183,7 @@ async function main() {
     searchEngine,
     summaryService,
     mediaIndexService,
+    embeddingIndexService,
     actionItemService,
     reloadMediaIndexProvider,
   });
@@ -221,12 +239,23 @@ async function main() {
     } catch { /* */ }
   }, 120_000);
 
+  let embeddingIndexInterval = setInterval(async () => {
+    try {
+      if (webServer.isTenantWaHistoryBusy(defaultTenantId)) return;
+      await runWithTenant(defaultTenantId, async () => {
+        await embeddingIndexService.processPending(12);
+      });
+    } catch { /* */ }
+  }, 120_000);
+
   const shutdown = async () => {
     console.log('\nShutting down...');
     clearInterval(summaryInterval);
     clearInterval(mediaIndexInterval);
+    clearInterval(embeddingIndexInterval);
     await webServer.destroyAllWhatsAppClients();
     webServer.stop();
+    await terminateMiniLmEncoder();
     db.close();
     process.exit(0);
   };

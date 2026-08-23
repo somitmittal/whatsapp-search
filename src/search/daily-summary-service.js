@@ -4,6 +4,7 @@ import { isWhatsAppLowPriorityFeed } from '../whatsapp/jid-filters.js';
 import { getCurrentTenantId } from '../storage/tenant-context.js';
 import { prioritizeChatFirst } from './priority-chat-queue.js';
 import { factExtractionAddon, getSmbProfileFromDb } from '../smb/profiles.js';
+import { isSmallLocalModel, localSummaryLlmExtras } from './indexing-profile.js';
 /** Messages per LLM call — keeps prompts bounded and allows parallel segment work. */
 const SUMMARY_CHUNK_CLOUD = 200;
 const SUMMARY_CHUNK_LOCAL = 150;
@@ -49,18 +50,6 @@ function getSummaryThreadConcurrency(isLocal, keyCount, modelName) {
   return Math.max(DEFAULT_CLOUD_SUMMARY_CONCURRENCY, keyCount || 1);
 }
 
-function isSmallLocalModel(modelName) {
-  if (!modelName) return false;
-  const m = String(modelName).toLowerCase();
-  const sizeMatch = m.match(/(\d+(?:\.\d+)?)\s*b/);
-  if (sizeMatch) {
-    const params = parseFloat(sizeMatch[1]);
-    if (params <= 4) return true;
-  }
-  if (m.includes(':1b') || m.includes(':3b') || m.includes(':1.5b') || m.includes(':2b')) return true;
-  return false;
-}
-
 const DELAY_LOCAL_SMALL_MS = 300;
 
 /** Optional delay between cloud thread batches (ms); default DELAY_CLOUD_MS. Raise if SUMMARY_CONCURRENCY > 1 causes 429s. */
@@ -79,8 +68,9 @@ function isAbortOrTimeoutErr(err) {
 }
 
 /** Options merged into every summary / merge / facts LLM call. */
-function summaryLlmOptions(extra = {}) {
-  return { timeoutMs: SUMMARY_LLM_TIMEOUT_MS, ...extra };
+function summaryLlmOptions(provider, extra = {}) {
+  const local = provider?.name === 'ollama' ? localSummaryLlmExtras() : {};
+  return { timeoutMs: SUMMARY_LLM_TIMEOUT_MS, ...local, ...extra };
 }
 
 function formatTime(ts) {
@@ -168,7 +158,7 @@ export default class DailySummaryService {
       try {
         const raw = await provider.chat(
           [{ role: 'user', content: prompt }],
-          summaryLlmOptions({ temperature: 0.1, maxTokens: 2000 }),
+          summaryLlmOptions(provider, { temperature: 0.1, maxTokens: 2000 }),
         );
         return parseFactsFromLlm(raw);
       } catch (err) {
@@ -450,6 +440,10 @@ export default class DailySummaryService {
         }
       }
 
+      if (totalGenerated === 0 && !this._restartPending) {
+        totalGenerated += await this._indexPendingFacts();
+      }
+
       return totalGenerated;
     } finally {
       this._running = false;
@@ -501,12 +495,50 @@ export default class DailySummaryService {
       });
       const segNote = chunks.length > 1 ? `, ${chunks.length}×${chunkSize} batches` : '';
       console.log(`[Summaries] ✓ ${timeLabel} (${thread.length} msgs${segNote})`);
+      return true;
+    } catch (err) {
+      console.error(`[Summaries] ✗ ${chatJid} ${timeLabel}:`, err.message.slice(0, 120));
+    }
+    return false;
+  }
 
+  async _indexPendingFacts() {
+    if (typeof this._db.getPendingFactThreads !== 'function') return 0;
+    const provider = await this._pickProvider();
+    if (!provider) return 0;
+
+    const isLocal = this._isLocal(provider);
+    const keyCount = provider._keys?.length ?? (isLocal ? 1 : DEFAULT_CONCURRENCY);
+    const concurrency = getSummaryThreadConcurrency(isLocal, keyCount, provider.model);
+    const pending = this._db.getPendingFactThreads(concurrency);
+    if (pending.length === 0) return 0;
+
+    console.log(`[Facts] Summaries caught up — extracting facts for ${pending.length} thread(s)`);
+    let done = 0;
+    const results = await Promise.allSettled(
+      pending.map((row) => this._extractFactsForThread(provider, row)),
+    );
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value) done += 1;
+    }
+    return done;
+  }
+
+  async _extractFactsForThread(provider, { chatJid, chatName, threadStart, threadEnd }) {
+    try {
+      const thread = this._db.getMessagesByTimeRange(chatJid, threadStart, threadEnd);
+      if (!thread.length) {
+        this._db.setThreadFactsStatus?.(chatJid, threadStart, 'empty');
+        return false;
+      }
+      const isLocal = this._isLocal(provider);
+      const chunkSize = isLocal ? SUMMARY_CHUNK_LOCAL : SUMMARY_CHUNK_CLOUD;
+      const chunks = this._splitIntoChunks(thread, chunkSize);
       const allFacts = [];
       for (let i = 0; i < chunks.length; i += CHUNK_SUMMARY_CONCURRENCY) {
         const slice = chunks.slice(i, i + CHUNK_SUMMARY_CONCURRENCY);
         const batchFacts = await Promise.all(
-          slice.map((chunk) => this._collectFactsFromTranscript(provider, this._formatTranscript(chunk, chunk.length)))
+          slice.map((chunk) => this._collectFactsFromTranscript(provider, this._formatTranscript(chunk, chunk.length))),
         );
         for (const chunkFacts of batchFacts) allFacts.push(...chunkFacts);
       }
@@ -516,13 +548,15 @@ export default class DailySummaryService {
           chatJid, chatName, threadStart, threadEnd, facts: mergedFacts,
         });
         if (n > 0) console.log(`[Facts] ✓ ${n} facts for thread ${threadStart}`);
+        this._db.setThreadFactsStatus?.(chatJid, threadStart, 'done');
+      } else {
+        this._db.setThreadFactsStatus?.(chatJid, threadStart, 'empty');
       }
-
       return true;
     } catch (err) {
-      console.error(`[Summaries] ✗ ${chatJid} ${timeLabel}:`, err.message.slice(0, 120));
+      console.error(`[Facts] ✗ ${chatJid} ${threadStart}:`, (err.message || '').slice(0, 120));
+      return false;
     }
-    return false;
   }
 
   _formatTranscript(messages, maxMessages) {
@@ -552,7 +586,7 @@ export default class DailySummaryService {
       try {
         const result = await provider.chat(
           [{ role: 'user', content: prompt }],
-          summaryLlmOptions({
+          summaryLlmOptions(provider, {
             temperature: 0.2,
             maxTokens: segment?.segmentTotal > 1 ? 500 : 450,
           }),
@@ -618,7 +652,7 @@ export default class DailySummaryService {
       try {
         const result = await provider.chat(
           [{ role: 'user', content: mergePrompt }],
-          summaryLlmOptions({ temperature: 0.15, maxTokens: 550 }),
+          summaryLlmOptions(provider, { temperature: 0.15, maxTokens: 550 }),
         );
         return result?.trim() || null;
       } catch (err) {

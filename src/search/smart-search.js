@@ -112,9 +112,10 @@ function toSource(m) {
 }
 
 export default class SmartSearch {
-  constructor(db, provider = null) {
+  constructor(db, provider = null, { embeddingIndex } = {}) {
     this._db = db;
     this._provider = provider;
+    this._embeddingIndex = embeddingIndex || null;
   }
 
   setProvider(provider) { this._provider = provider; }
@@ -136,7 +137,7 @@ export default class SmartSearch {
 
     // ── Instant search + health check in parallel ───────────────────
     const [instantRaw, llmAvailable] = await Promise.all([
-      Promise.resolve(this._instantSearch(q, chatJid)),
+      this._instantSearch(q, chatJid),
       this._checkLlm(),
     ]);
 
@@ -383,7 +384,7 @@ export default class SmartSearch {
   // Instant search (FTS + fuzzy — no LLM, <10ms)
   // ──────────────────────────────────────────────────────────────────
 
-  _instantSearch(query, chatJid) {
+  async _instantSearch(query, chatJid) {
     const allHits = new Map();
 
     try {
@@ -419,6 +420,18 @@ export default class SmartSearch {
         }
       }
     } catch {}
+
+    if (this._embeddingIndex?.searchSimilar && typeof this._db.getMessagesByRowIds === 'function') {
+      try {
+        const similar = await this._embeddingIndex.searchSimilar(query, chatJid, 30);
+        const ids = similar.map((s) => s.id);
+        for (const m of this._db.getMessagesByRowIds(ids)) {
+          if (!allHits.has(m.id)) allHits.set(m.id, { ...m, text: displayMessageText(m) });
+        }
+      } catch (err) {
+        console.warn('[Search] embeddings:', err.message);
+      }
+    }
 
     if (allHits.size < 15) {
       for (const h of this._fuzzySearch(query, chatJid)) {

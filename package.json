@@ -17,6 +17,7 @@
     "qa:search": "node scripts/search-qa-agent.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^11.7.0",
@@ -53,13 +54,17 @@
       "package.json"
     ],
     "asarUnpack": [
-      "node_modules/better-sqlite3/**/*"
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/sharp/**/*"
     ],
     "extraResources": [
       {
         "from": "build/node",
         "to": "node",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",

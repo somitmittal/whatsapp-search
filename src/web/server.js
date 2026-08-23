@@ -21,6 +21,7 @@ import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
 import { applyOllamaMemorySettings, getHardwareRecommendation, resolveSafeOllamaModel } from '../llm/ollama-recommend.js';
 import { canSpawnLocalOllama, localOllamaUnsupportedReason } from '../llm/deployment-env.js';
 import { clearProviderCache, createProvider, PROVIDER_META } from '../llm/provider.js';
+import { createIndexingSummaryProvider } from '../search/indexing-profile.js';
 import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
@@ -39,6 +40,8 @@ import WaClient from '../whatsapp/wa-client.js';
 import WabaIngestService, { verifyWabaSignature } from '../whatsapp/waba-client.js';
 import { getWabaConfig, publicWabaConfig, saveWabaConfig } from '../whatsapp/waba-settings.js';
 import { getLatestGitHubRelease, sendReleaseError } from '../releases/github-releases.js';
+import { normalizeUnixSeconds } from '../utils/timestamp.js';
+import { registerAuthRoutes } from './auth-routes.js';
 
 const require = createRequire(import.meta.url);
 const express = require('express');
@@ -61,6 +64,8 @@ function sanitizeClientMessage(m) {
     delete o.mediaPath;
   }
   o.mediaPending = !!(o.mediaType && !hadPath);
+  if (o.timestamp != null) o.timestamp = normalizeUnixSeconds(o.timestamp);
+  if (o.mediaIndexStatus) o.mediaIndexStatus = String(o.mediaIndexStatus);
   return o;
 }
 
@@ -133,6 +138,7 @@ export default class WebServer {
     searchEngine,
     summaryService,
     mediaIndexService,
+    embeddingIndexService,
     actionItemService,
     reloadMediaIndexProvider,
   }) {
@@ -140,6 +146,7 @@ export default class WebServer {
     this.searchEngine = searchEngine;
     this.summaryService = summaryService;
     this._mediaIndexService = mediaIndexService || null;
+    this._embeddingIndexService = embeddingIndexService || null;
     this._actionItemService = actionItemService || null;
     this._smbInbox = new SmbInboxService(db);
     this._appointmentBoard = new AppointmentBoardService(db);
@@ -325,6 +332,7 @@ export default class WebServer {
     st.waHistoryHooksDone = true;
     this._getCachedTotalStats(tid, { force: true });
     this._mediaIndexService?.scheduleProcess?.();
+    this._embeddingIndexService?.scheduleProcess?.();
     if (waClient?.syncResolvedNamesToDb) {
       setTimeout(() => {
         void runWithTenant(tid, async () => {
@@ -549,6 +557,7 @@ export default class WebServer {
             }, tid);
             if (!historyBusy) {
               this._mediaIndexService?.scheduleProcess?.();
+              this._embeddingIndexService?.scheduleProcess?.();
               this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
             }
           }
@@ -571,6 +580,7 @@ export default class WebServer {
             tid,
           );
           this._mediaIndexService?.scheduleProcess?.();
+          this._embeddingIndexService?.scheduleProcess?.();
         });
       },
       onReaction: (payload) => {
@@ -1106,9 +1116,11 @@ export default class WebServer {
         const tid = getCurrentTenantId();
         this.summaryService.setPriorityChatForTenant(tid, chatJid);
         this._mediaIndexService?.notePriorityChange?.();
+        this._embeddingIndexService?.notePriorityChange?.();
         void runWithTenant(tid, async () => {
           try {
             await this.summaryService.indexPendingDays();
+            await this._embeddingIndexService?.processPending?.(12);
           } catch (err) {
             console.error('[priority-index]', err.message);
           }
@@ -1641,7 +1653,10 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         this.summaryService.setFallbackProvider(instance);
         const sumP = this.db.getSetting('summary_provider');
         if (!sumP || sumP === 'same') {
-          this.summaryService.setProvider(instance);
+          const indexInstance = p === 'ollama'
+            ? await createIndexingSummaryProvider(createProvider, 'ollama', '', m)
+            : instance;
+          this.summaryService.setProvider(indexInstance);
           if (healthy) { this._triggerSummaryGen(); }
         }
 
@@ -1671,7 +1686,12 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           const mainP = this.db.getSetting('llm_provider') || config.defaultSearchProvider;
           const mainK = effectiveSearchApiKey(this.db);
           const mainM = this.db.getSetting('llm_model') || config.defaultSearchModel;
-          const mainInstance = await createProvider(mainP, mainK, mainM || undefined);
+          const mainInstance = await createIndexingSummaryProvider(
+            createProvider,
+            mainP,
+            mainK,
+            mainM || undefined,
+          );
           this.summaryService.setProvider(mainInstance);
           this._triggerSummaryGen();
           return res.json({ ok: true, healthy: true, provider: 'same', model: mainInstance.model });
@@ -1689,7 +1709,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const sm = model || this.db.getSetting('summary_model') || config.defaultSummaryModel;
         const sk = effectiveSummaryApiKey(this.db);
 
-        const instance = await createProvider(sp, sk, sm || undefined);
+        const instance = await createIndexingSummaryProvider(createProvider, sp, sk, sm || undefined);
         if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
         const healthy = await instance.checkHealth();
         const pulling = !healthy && instance.pullStatus?.status === 'downloading';
@@ -1714,6 +1734,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           this.db.setSetting('media_index_model', '');
           clearProviderCache();
           const meta = await this._reloadMediaIndexProvider?.();
+          this.db.resetUnsupportedMediaIndexes?.();
+          this._mediaIndexService?.scheduleProcess?.();
+          this._embeddingIndexService?.scheduleProcess?.();
           return res.json({
             ok: true,
             healthy: meta?.healthy ?? false,
@@ -1731,6 +1754,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         clearProviderCache();
 
         const meta = await this._reloadMediaIndexProvider?.();
+        this.db.resetUnsupportedMediaIndexes?.();
+        this._mediaIndexService?.scheduleProcess?.();
+        this._embeddingIndexService?.scheduleProcess?.();
         return res.json({
           ok: true,
           healthy: meta?.healthy ?? false,
@@ -1810,7 +1836,8 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         this.summaryService.setFallbackProvider(instance);
         const sumP = this.db.getSetting('summary_provider');
         if (!sumP || sumP === 'same') {
-          this.summaryService.setProvider(instance);
+          const indexInstance = await createIndexingSummaryProvider(createProvider, 'ollama', '', safe.model);
+          this.summaryService.setProvider(indexInstance);
         }
 
         const healthy = await healthPromise;
@@ -1973,6 +2000,8 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
             { type: 'new-messages', data: { count: totalInserted, stats: this.db.getTotalStats() } },
             tid,
           );
+          this._mediaIndexService?.scheduleProcess?.();
+          this._embeddingIndexService?.scheduleProcess?.();
         }
         this.summaryService.indexPendingDays().then((count) => {
           if (count > 0) console.log(`[Gmail sync] Generated ${count} daily summaries`);
@@ -2002,9 +2031,11 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const tid = getCurrentTenantId();
         this.summaryService.setPriorityChatForTenant(tid, chatJid);
         this._mediaIndexService?.notePriorityChange?.();
+        this._embeddingIndexService?.notePriorityChange?.();
         void runWithTenant(tid, async () => {
           try {
             await this.summaryService.indexPendingDays();
+            await this._embeddingIndexService?.processPending?.(12);
           } catch (err) {
             console.error('[summaries/priority-chat]', err.message);
           }
@@ -2096,6 +2127,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
             tid,
           );
           this._mediaIndexService?.scheduleProcess?.();
+          this._embeddingIndexService?.scheduleProcess?.();
         }
 
         this.summaryService.indexPendingDays().then((count) => {

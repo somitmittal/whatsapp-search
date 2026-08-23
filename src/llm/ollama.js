@@ -7,6 +7,11 @@ const HEALTH_CACHE_MS = 30_000;
 const START_COOLDOWN_MS = 15_000;
 const PULL_COOLDOWN_MS = 30_000;
 
+/** Existing provider default when `OLLAMA_KEEP_ALIVE` is unset. */
+export const OLLAMA_DEFAULT_KEEP_ALIVE_SEC = 300;
+/** Existing `/api/chat` fallback when `OLLAMA_NUM_CTX` is unset. */
+export const OLLAMA_DEFAULT_NUM_CTX = 4096;
+
 export default class OllamaProvider {
   constructor(_apiKey, model = 'llama3.2:3b') {
     this._baseUrl = (process.env.OLLAMA_HOST || 'http://localhost:11434').replace(/\/$/, '');
@@ -19,7 +24,7 @@ export default class OllamaProvider {
     // Seconds to keep model loaded after a request (avoids ~3s reload on each call).
     // Default 300s (5 min) balances speed vs memory. Set OLLAMA_KEEP_ALIVE=0 to unload immediately.
     const envKeepAlive = process.env.OLLAMA_KEEP_ALIVE;
-    this._keepAlive = envKeepAlive !== undefined ? Number(envKeepAlive) : 300;
+    this._keepAlive = envKeepAlive !== undefined ? Number(envKeepAlive) : OLLAMA_DEFAULT_KEEP_ALIVE_SEC;
   }
 
   get name() { return 'ollama'; }
@@ -59,9 +64,9 @@ export default class OllamaProvider {
       model: this._model,
       messages,
       stream: false,
-      keep_alive: this._keepAlive,
+      keep_alive: options.keepAlive ?? this._keepAlive,
       options: {
-        num_ctx: options.numCtx ?? (Number(process.env.OLLAMA_NUM_CTX) || 4096),
+        num_ctx: options.numCtx ?? (Number(process.env.OLLAMA_NUM_CTX) || OLLAMA_DEFAULT_NUM_CTX),
         temperature: options.temperature ?? 0.3,
       },
     };

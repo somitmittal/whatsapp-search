@@ -359,6 +359,13 @@
     }
     .msg-media-doc { color: var(--accent, #1a73e8); font-weight: 500; text-decoration: underline; }
     .media-pending { opacity: 0.85; font-style: italic; }
+    .media-index-state {
+      display: inline-block; margin-top: 6px; padding: 3px 7px; border-radius: 5px;
+      font-size: 11px; line-height: 1.25; background: rgba(102,119,129,0.12); color: var(--text2);
+    }
+    .media-index-state.unsupported { background: rgba(234,179,8,0.16); color: #8a6100; }
+    .media-index-state.failed { background: rgba(234,67,53,0.12); color: #b3261e; }
+    .media-index-state.indexed { background: rgba(0,168,132,0.12); color: var(--green-dark); }
     .media-wrap { display: block; max-width: 100%; }
     .media-cap { display: block; margin-top: 6px; font-size: 13px; color: inherit; opacity: 0.95; overflow-wrap: anywhere; word-break: break-word; }
 
@@ -2183,6 +2190,10 @@
   });
 
   let _ctxMenuJid = null;
+  // Tracked separately from _ctxMenuJid: the click that opens the confirm dialog keeps
+  // bubbling to the document listener below, which closes the context menu and clears
+  // _ctxMenuJid before the user can confirm.
+  let _pendingDeleteJid = null;
 
   function showSidebarContextMenu(e, jid) {
     e.preventDefault();
@@ -2219,7 +2230,7 @@
     const ch = chatData.find(c => c.chatJid === jid);
     const name = ch?.chatName || jid;
     $('#confirm-delete-msg').textContent = `All ${(ch?.messageCount || 0).toLocaleString()} messages and summaries for "${name}" will be permanently deleted.`;
-    _ctxMenuJid = jid;
+    _pendingDeleteJid = jid;
     $('#confirm-delete').classList.add('open');
   }
 
@@ -2231,12 +2242,12 @@
 
   $('#confirm-delete-no').addEventListener('click', () => {
     $('#confirm-delete').classList.remove('open');
-    _ctxMenuJid = null;
+    _pendingDeleteJid = null;
   });
   $('#confirm-delete-yes').addEventListener('click', async () => {
     $('#confirm-delete').classList.remove('open');
-    const jid = _ctxMenuJid || activeChat;
-    _ctxMenuJid = null;
+    const jid = _pendingDeleteJid;
+    _pendingDeleteJid = null;
     if (!jid) return;
     try {
       const res = await fetch(`/api/chats/${encodeURIComponent(jid)}`, { method: 'DELETE' });
@@ -3072,8 +3083,8 @@
   }
 
   function formatDate(ts) {
-    if (!ts) return '';
-    const d = new Date(ts * 1000);
+    const d = messageTimestampToDate(ts);
+    if (!d) return '';
     const now = new Date();
     const diff = (now - d) / 86400000;
     if (diff < 0) {
@@ -3473,7 +3484,8 @@
     const stage = $('#status-viewer-stage');
     if (titleEl) titleEl.textContent = peer.displayName || '';
     if (metaEl) {
-      metaEl.textContent = `${itemIdx + 1} / ${items.length} · ${new Date(item.timestamp * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
+      const itemDate = messageTimestampToDate(item.timestamp);
+      metaEl.textContent = `${itemIdx + 1} / ${items.length} · ${itemDate ? itemDate.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Unknown date'}`;
     }
     if (!stage) return;
     currentStatusSlideMessageId = item.messageId || null;
@@ -3839,7 +3851,8 @@
             inner = `<img class="status-slide-img" src="${escAttr(u)}" alt="">`;
           }
           const du = row.messageId ? mediaDownloadUrl(row.messageId) : '';
-          return `<div class="attach-card">${inner}${attWhen ? `<div class="attach-card-meta">${attWhen}</div>` : ''}<div class="attach-card-actions">${du ? `<a class="attach-dl" href="${escAttr(du)}" download>Download</a>` : ''}<button type="button" class="attach-open-msg" data-mid="${mid}">Show in chat</button></div></div>`;
+          const state = mediaIndexStateHtml(row);
+          return `<div class="attach-card">${inner}${attWhen ? `<div class="attach-card-meta">${attWhen}</div>` : ''}${state ? `<div class="attach-card-meta">${state}</div>` : ''}<div class="attach-card-actions">${du ? `<a class="attach-dl" href="${escAttr(du)}" download>Download</a>` : ''}<button type="button" class="attach-open-msg" data-mid="${mid}">Show in chat</button></div></div>`;
         }).join('') + '</div>';
       }
     } else if (tab === 'links') {
@@ -4078,6 +4091,18 @@
     return html;
   }
 
+  function mediaIndexStateHtml(m) {
+    const status = String(m?.mediaIndexStatus || '').toLowerCase();
+    if (!status || status === 'indexed') return '';
+    const labels = {
+      processing: 'Indexing…',
+      pending: 'Waiting to be indexed',
+      unsupported: 'Metadata only · media search unavailable with current AI provider',
+      failed: 'Indexing failed · filename/caption may still be searchable',
+    };
+    return `<span class="media-index-state ${escAttr(status)}" title="${escAttr(m.mediaIndexError || '')}">${esc(labels[status] || 'Index status unavailable')}</span>`;
+  }
+
   function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelowTs) {
     const isGroup = jid.includes('@g.us');
     let html = '', lastDate = '';
@@ -4114,19 +4139,19 @@
       if (contactHtml) {
         body = contactHtml;
       } else if (mediaUrl && (m.mediaType === 'image' || m.mediaType === 'sticker')) {
-        body = `<span class="media-wrap"><img class="msg-media-img" src="${escAttr(mediaUrl)}" alt="" loading="lazy">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaDl}</span>`;
+        body = `<span class="media-wrap"><img class="msg-media-img" src="${escAttr(mediaUrl)}" alt="" loading="lazy">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
       } else if (mediaUrl && m.mediaType === 'video') {
-        body = `<span class="media-wrap"><video class="msg-media-vid" src="${escAttr(mediaUrl)}" controls playsinline preload="metadata"></video>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaDl}</span>`;
+        body = `<span class="media-wrap"><video class="msg-media-vid" src="${escAttr(mediaUrl)}" controls playsinline preload="metadata"></video>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
       } else if (mediaUrl && m.mediaType === 'audio') {
-        body = `<span class="media-wrap"><audio class="msg-media-audio" src="${escAttr(mediaUrl)}" controls preload="metadata"></audio>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaDl}</span>`;
+        body = `<span class="media-wrap"><audio class="msg-media-audio" src="${escAttr(mediaUrl)}" controls preload="metadata"></audio>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
       } else if (mediaUrl && m.mediaType === 'document') {
         const joint = `${m.mediaCaption || ''} ${m.text || ''}`.toLowerCase();
         const isPdf = joint.includes('.pdf');
         const label = esc((m.mediaCaption || m.text || 'Document').trim() || 'Document');
         if (isPdf) {
-          body = `<span class="media-wrap"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : `<span class="media-cap">${label}</span>`}${mediaDl}</span>`;
+          body = `<span class="media-wrap"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : `<span class="media-cap">${label}</span>`}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
         } else {
-          body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(mediaUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaDl}</span>`;
+          body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(mediaUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
         }
       } else if (m.mediaPending && m.mediaType) {
         body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-pending">Loading ${esc(m.mediaType)}…${cap ? ' ' + cap : ''}</span></span>`;
@@ -4299,7 +4324,7 @@
       if (sum) sum.textContent = `Suggested follow-ups (${total})`;
       body.innerHTML = rows.map((r) => {
         const when = r.messageTimestamp
-          ? new Date(r.messageTimestamp * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+          ? (messageTimestampToDate(r.messageTimestamp)?.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || 'Unknown date')
           : '';
         const snip = (r.snippet || '').trim() || '(message)';
         const items = (r.items || []).map((t) => `<li>${esc(String(t))}</li>`).join('');
@@ -4337,7 +4362,7 @@
       if (sum) sum.textContent = `While you were away (${rows.length})`;
       body.innerHTML = rows.map((r) => {
         const when = r.threadEnd
-          ? new Date(r.threadEnd * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+          ? (messageTimestampToDate(r.threadEnd)?.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || 'Unknown date')
           : '';
         const s = (r.summary || '').trim();
         return `<div class="ai-group">
@@ -4558,8 +4583,8 @@
 
   function formatBizTs(ts) {
     if (!ts) return '';
-    const d = new Date(ts * 1000);
-    if (Number.isNaN(d.getTime())) return '';
+    const d = messageTimestampToDate(ts);
+    if (!d) return '';
     return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
   }
 
@@ -4801,7 +4826,8 @@
       for (const s of data.sources) {
         const k = `${s.chatName}|${s.sender}|${s.timestamp}`;
         if (seen.has(k)) continue; seen.add(k);
-        const ts = s.timestamp ? new Date(s.timestamp * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+        const sourceDate = messageTimestampToDate(s.timestamp);
+        const ts = sourceDate ? sourceDate.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) : 'Unknown date';
         const canJump = s.chatJid && s.messageId;
         const dis = canJump ? '' : ' src-disabled';
         const title = canJump ? 'View in chat' : 'Open the chat from the sidebar to jump (missing id)';

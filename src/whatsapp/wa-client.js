@@ -21,6 +21,7 @@ import {
 } from './chat-display-name.js';
 import { buildContactPayloadFromInner } from './contact-card.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
+import { normalizeUnixSeconds } from '../utils/timestamp.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -813,7 +814,8 @@ export default class WaClient {
           chatJid: c.id,
           chatName: c.name || null,
           messageCount: 0,
-          lastMessageTs: ts > 1e12 ? ts : ts > 0 ? ts * 1000 : 0,
+          // API contract: timestamps are always Unix seconds.
+          lastMessageTs: normalizeUnixSeconds(ts),
           summarizedCount: 0,
           participantCount: isJidGroup(c.id) ? 2 : 1,
         };

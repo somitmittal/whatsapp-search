@@ -144,7 +144,7 @@ export default class MediaIndexService {
     }
     const cap = String(mediaCaption || '').trim();
     const combined = [cap, fn, body].filter(Boolean).join('\n').trim().slice(0, 12000);
-    this._db.updateMediaAiIndex(messageId, combined || fn || cap || '');
+    this._db.updateMediaIndexResult?.(messageId, { text: combined || fn || cap || '', status: 'indexed' });
     return true;
   }
 
@@ -154,9 +154,11 @@ export default class MediaIndexService {
     const fallback = buildFallbackMediaIndex(job);
 
     if (!messageId || !mediaPath) {
-      this._db.updateMediaAiIndex(messageId, '');
+      this._db.updateMediaIndexResult?.(messageId, { status: 'failed', error: 'Media file is missing.' });
       return false;
     }
+
+    this._db.updateMediaIndexResult?.(messageId, { status: 'processing', error: null });
 
     let buffer;
     try {
@@ -164,10 +166,10 @@ export default class MediaIndexService {
     } catch (e) {
       console.warn(`[MediaIndex] read ${mediaPath}:`, e.message);
       if (fallback) {
-        this._db.updateMediaAiIndex(messageId, fallback);
+        this._db.updateMediaIndexResult?.(messageId, { text: fallback, status: 'failed', error: `Could not read media file: ${e.message}` });
         return true;
       }
-      this._db.updateMediaAiIndex(messageId, '');
+      this._db.updateMediaIndexResult?.(messageId, { status: 'failed', error: e.message });
       return false;
     }
 
@@ -196,7 +198,8 @@ export default class MediaIndexService {
       console.warn(`[MediaIndex] LLM ${messageId}:`, e.message);
     }
 
-    if (isUnsupportedProviderOutput(aiText)) {
+    const unsupported = isUnsupportedProviderOutput(aiText);
+    if (unsupported) {
       aiText = '';
     } else {
       aiText = String(aiText || '').trim();
@@ -210,11 +213,18 @@ export default class MediaIndexService {
     finalText = finalText.trim().slice(0, 12000);
 
     if (!finalText) {
-      this._db.updateMediaAiIndex(messageId, '');
+      this._db.updateMediaIndexResult?.(messageId, {
+        status: unsupported ? 'unsupported' : 'failed',
+        error: unsupported ? `Provider ${provider?.name || 'none'} does not support ${mediaType} indexing.` : 'No indexable content returned.',
+      });
       return false;
     }
 
-    this._db.updateMediaAiIndex(messageId, finalText);
+    this._db.updateMediaIndexResult?.(messageId, {
+      text: finalText,
+      status: unsupported ? 'unsupported' : 'indexed',
+      error: unsupported ? `Only filename/caption metadata is searchable; ${provider?.name || 'current provider'} does not support ${mediaType} indexing.` : null,
+    });
     return true;
   }
 }
