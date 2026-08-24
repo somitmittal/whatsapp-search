@@ -3,6 +3,7 @@ import {
   fallbackTitleForOneOnOneJid,
   formatPhoneLocalPart,
   isPlausibleHumanChatTitle,
+  isResolvedHumanChatTitle,
   looksLikeLidFallbackContactLabel,
   looksLikeOpaqueNumericId,
   looksLikeUrlOrSocialJunk,
@@ -46,6 +47,24 @@ describe('chat-display-name', () => {
 
   test('isPlausibleHumanChatTitle rejects Contact (…) placeholders', () => {
     expect(isPlausibleHumanChatTitle('Contact (1212)', 'xxx@lid')).toBe(false);
+  });
+
+  describe('isResolvedHumanChatTitle', () => {
+    const pn = '919876543210@s.whatsapp.net';
+    const lid = '65103131095263@lid';
+
+    test('accepts a saved contact or group name', () => {
+      expect(isResolvedHumanChatTitle('Mahesh Mittal', pn)).toBe(true);
+      expect(isResolvedHumanChatTitle('Amazon India', lid)).toBe(true);
+    });
+
+    test('skips phone numbers and placeholders instead of treating them as resolved', () => {
+      expect(isResolvedHumanChatTitle('+91 9876543210', pn)).toBe(false);
+      expect(isResolvedHumanChatTitle('919876543210', pn)).toBe(false);
+      expect(isResolvedHumanChatTitle('+91 8447726777', lid)).toBe(false);
+      expect(isResolvedHumanChatTitle('Contact (1212)', lid)).toBe(false);
+      expect(isResolvedHumanChatTitle('', pn)).toBe(false);
+    });
   });
 
   // /api/wa/chat-details persists whatever title the live WhatsApp lookup returns and

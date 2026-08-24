@@ -77,6 +77,16 @@ export function isPlausibleHumanChatTitle(name, chatJid) {
   return true;
 }
 
+/**
+ * A saved / push / business name worth writing to the DB. Formatted phone numbers are
+ * display fallbacks, not resolutions — persisting them makes a LID chat look "named"
+ * when WhatsApp still has no contact title.
+ */
+export function isResolvedHumanChatTitle(name, chatJid) {
+  if (!isPlausibleHumanChatTitle(name, chatJid)) return false;
+  return !looksLikePhoneDigitsOnly(name);
+}
+
 function titlePreferenceRank(s, chatJid) {
   if (!s || !String(s).trim()) return 0;
   const t = String(s).trim();

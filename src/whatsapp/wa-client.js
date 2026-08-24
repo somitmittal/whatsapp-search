@@ -12,6 +12,7 @@ import {
     fallbackTitleForOneOnOneJid,
     formatPhoneLocalPart,
     isPlausibleHumanChatTitle,
+    isResolvedHumanChatTitle,
     looksLikeLidFallbackContactLabel,
     looksLikeOpaqueNumericId,
     looksLikePhoneDigitsOnly,
@@ -159,7 +160,7 @@ function replaceLidPlaceholderWithPn(canonJid, chatName) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default class WaClient {
-  constructor({ authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction }) {
+  constructor({ authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction, onResolvedDisplayName }) {
     this._authDir = authDir || join(config.dataDir, '.baileys_auth');
     this._configFile = configFile || join(config.dataDir, 'wa-config.json');
     this._onQr          = onQr;
@@ -173,6 +174,7 @@ export default class WaClient {
     this._onDisconnected = onDisconnected;
     this._onMediaPath   = onMediaPath;
     this._onReaction    = onReaction;
+    this._onResolvedDisplayName = onResolvedDisplayName;
 
     this._sock          = null;
     this._state         = 'DISCONNECTED';
@@ -483,6 +485,9 @@ export default class WaClient {
         console.log(`[WA] ✅ Connected as ${name}`);
         this._onReady?.({ name, phone: this._ownerJid?.split('@')[0] });
         this._setState('SYNCING', 'Loading chat history…');
+        // Titles first: publish a named chat list before messages stream in. Deliberately
+        // not awaited — history ingestion must not wait on it.
+        void this.hydrateGroupTitlesForUi();
         this._historyDone = false;
         this._historySyncStarted = true;
         this._pendingHistoryRows = 0;
@@ -630,6 +635,9 @@ export default class WaClient {
     if (!s || looksLikeUrlOrSocialJunk(s) || looksLikeOpaqueNumericId(s)) return;
     this._chatNames.set(jid, s);
     await this._mirrorDisplayNameAcrossJids(jid, s);
+    if (isResolvedHumanChatTitle(s, jid)) {
+      try { this._onResolvedDisplayName?.(jid, s); } catch (_) { /* persist is best-effort */ }
+    }
   }
 
   /**
@@ -686,11 +694,8 @@ export default class WaClient {
     for (const jid of jids) {
       if (isJidGroup(jid)) continue;
       try {
-        const details = await this.getChatDetails(jid);
-        const name = details?.chatName || details?.displayName;
-        const bare = jid.split('@')[0] || '';
-        if (!name || name === bare) continue;
-        if (!isPlausibleHumanChatTitle(name, jid)) continue;
+        const name = await this._resolveContactTitleFromCache(jid);
+        if (!isResolvedHumanChatTitle(name, jid)) continue;
         rowsUpdated += await this._propagateChatNameToDb(db, jid, name);
       } catch (_) { /* ignore per-chat */ }
     }
@@ -749,6 +754,45 @@ export default class WaClient {
       console.log(`[WA] Refreshed group subjects on ${rowsUpdated} message row(s)`);
     }
     return rowsUpdated;
+  }
+
+  /**
+   * Publish every joined group's real subject to the sidebar before message ingestion.
+   *
+   * The roster in `messaging-history.set` carries a name only for chats WhatsApp happens
+   * to label, and groups usually arrive unnamed — so without this the sidebar shows
+   * numeric JIDs until something fetches subjects. One `groupFetchAllParticipating()`
+   * call covers every joined group, so running it at connect costs a single request and
+   * lets the UI render a named chat list while messages are still streaming in behind it.
+   *
+   * Names go through `_applyDisplayName`, so they also reach SQLite via the resolved-name
+   * hook rather than living only in memory.
+   */
+  async hydrateGroupTitlesForUi() {
+    if (typeof this._sock?.groupFetchAllParticipating !== 'function') return 0;
+    let allGroups = null;
+    try {
+      allGroups = await this._sock.groupFetchAllParticipating();
+    } catch (e) {
+      console.warn('[WA] Group title hydrate failed:', e.message);
+      return 0;
+    }
+    const updates = groupSubjectUpdates(allGroups);
+    if (!updates.length) return 0;
+    for (const { jid, subject } of updates) {
+      await this._applyDisplayName(jid, subject);
+    }
+    this._onChatsPreview?.(updates.map(({ jid, subject }) => ({
+      chatJid: jid,
+      chatName: subject,
+      sidebarTab: sidebarTabForJid(jid),
+      messageCount: 0,
+      lastMessageTs: 0,
+      summarizedCount: 0,
+      participantCount: 2,
+    })));
+    console.log(`[WA] Hydrated ${updates.length} group title(s) for the sidebar`);
+    return updates.length;
   }
 
   /** Server: when a new human-readable title is known for a chat, backfill SQLite for LID+PN pair. */
@@ -890,7 +934,9 @@ export default class WaClient {
         const ts = c.conversationTimestamp != null ? Number(c.conversationTimestamp) : 0;
         return {
           chatJid: c.id,
-          chatName: c.name || null,
+          // Roster entries are usually unnamed for groups; fall back to a title already
+          // hydrated into the cache so the preview carries a real name, not a bare JID.
+          chatName: c.name || this._nameFromChatMap(c.id) || null,
           sidebarTab: sidebarTabForJid(c.id),
           messageCount: 0,
           // API contract: timestamps are always Unix seconds.
@@ -1017,7 +1063,7 @@ export default class WaClient {
         }
       } catch (_) {}
     }
-    if (cachedName && isPlausibleHumanChatTitle(cachedName, jid)) return cachedName;
+    if (cachedName && isResolvedHumanChatTitle(cachedName, jid)) return cachedName;
     return null;
   }
 
@@ -1068,24 +1114,31 @@ export default class WaClient {
    * so the sidebar list matches the chat header and WhatsApp — `/api/chats` uses this.
    * Async: must mirror getChatDetails / _resolveContactTitleFromCache (LID↔PN), not only _nameFromChatMap(jid).
    */
-  async overlayResolvedChatNames(stats) {
+  async overlayResolvedChatNames(stats, { lidLookup = true } = {}) {
     if (!Array.isArray(stats) || !stats.length) return stats;
     const uniqueJids = [...new Set(stats.map((row) => row.chatJid).filter(Boolean))];
     const resolvedMap = new Map();
-    await Promise.all(
-      uniqueJids.map(async (jid) => {
-        try {
-          resolvedMap.set(jid, await this._resolveContactTitleFromCache(jid));
-        } catch {
-          resolvedMap.set(jid, null);
-        }
-      }),
-    );
+    if (lidLookup) {
+      await Promise.all(
+        uniqueJids.map(async (jid) => {
+          try {
+            resolvedMap.set(jid, await this._resolveContactTitleFromCache(jid));
+          } catch {
+            resolvedMap.set(jid, null);
+          }
+        }),
+      );
+    } else {
+      for (const jid of uniqueJids) {
+        const cached = this._nameFromChatMap(jid);
+        resolvedMap.set(jid, isResolvedHumanChatTitle(cached, jid) ? cached : null);
+      }
+    }
     return stats.map((row) => {
       const jid = row.chatJid;
       if (!jid) return row;
       const resolved = resolvedMap.get(jid);
-      if (resolved) return { ...row, chatName: resolved };
+      if (resolved && isResolvedHumanChatTitle(resolved, jid)) return { ...row, chatName: resolved };
       let next = row;
       if (
         (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@hosted'))

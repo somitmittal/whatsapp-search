@@ -3126,6 +3126,11 @@
         merged.messageCount = existing.messageCount;
         merged.lastMessageTs = existing.lastMessageTs || p.lastMessageTs;
       }
+      // A titles-only preview reports zero for counts it never looked up, which would
+      // blank the indexed badge until the next full refresh.
+      if ((existing.summarizedCount || 0) > (p.summarizedCount || 0)) {
+        merged.summarizedCount = existing.summarizedCount;
+      }
       // Sync previews are emitted before contact/subject resolution, so they often carry
       // the bare JID as the name. Letting one overwrite an already-resolved title makes
       // sidebar names flip as previews and /api/chats refreshes race each other.

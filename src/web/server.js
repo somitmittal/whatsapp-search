@@ -180,6 +180,7 @@ export default class WebServer {
      * }>}
      */
     this._tenantState = new Map();
+    this._chatNameBroadcastTimers = new Map();
 
     /** @type {Map<string, { ts: number, onboarding: boolean }>} */
     this._gmailOAuthState = new Map();
@@ -436,6 +437,23 @@ export default class WebServer {
   }
 
   /**
+   * Coalesce contact-name writes into one sidebar refresh. Matches the 2s delay already
+   * used after history completes before `syncResolvedNamesToDb`.
+   */
+  _scheduleChatNamesBroadcast(tid) {
+    const prev = this._chatNameBroadcastTimers.get(tid);
+    if (prev) clearTimeout(prev);
+    const timer = setTimeout(() => {
+      this._chatNameBroadcastTimers.delete(tid);
+      this._broadcast({
+        type: 'chat-names-refreshed',
+        data: { stats: this._getCachedTotalStats(tid, { force: true }) },
+      }, tid);
+    }, 2000);
+    this._chatNameBroadcastTimers.set(tid, timer);
+  }
+
+  /**
    * Coarse background-work phase for the sidebar sync indicator, in pipeline order.
    * The indexers are process-wide singletons, so only the `syncing` phase is tenant-scoped;
    * on a multi-tenant deployment the later phases read as "someone is indexing".
@@ -599,10 +617,26 @@ export default class WebServer {
       },
       onChatsPreview: (preview) => {
         if (Array.isArray(preview) && preview.length) {
+          // Persist the roster: previews are the only place we learn about chats that
+          // have no messages yet, and browser-side rows are dropped by the next
+          // refreshDash() since /api/chats is rebuilt from the messages table.
+          runWithTenant(tid, () => {
+            try {
+              this.db.upsertChatRoster(preview);
+            } catch (e) {
+              console.warn('[WA] chat roster upsert:', e.message);
+            }
+          });
           this._broadcast({ type: 'sync-chats-preview', data: { chats: preview } }, tid);
         }
       },
       onHistorySyncComplete: () => this._runWaHistoryCompleteHooks(tid, waClient),
+      onResolvedDisplayName: (jid, name) => {
+        runWithTenant(tid, () => {
+          this.db.propagateChatDisplayName(jid, name);
+        });
+        this._scheduleChatNamesBroadcast(tid);
+      },
       onMessages: (rows) => {
         const historyBusy = this.isTenantWaHistoryBusy(tid);
         runWithTenant(tid, () => {
@@ -1083,8 +1117,10 @@ export default class WebServer {
           const st = this._getTenantState(tid);
           const wa = st?.waClient;
           const skipHeavyOverlay = this.isTenantWaHistoryBusy(tid);
-          if (!skipHeavyOverlay && wa && typeof wa.overlayResolvedChatNames === 'function') {
-            stats = await wa.overlayResolvedChatNames(stats);
+          // Always overlay in-memory contact titles. Skipping this while history is busy
+          // is why 1:1 names only appeared after opening a chat (chat-details hits the cache).
+          if (wa && typeof wa.overlayResolvedChatNames === 'function') {
+            stats = await wa.overlayResolvedChatNames(stats, { lidLookup: !skipHeavyOverlay });
           }
           if (!skipHeavyOverlay && wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
             stats = await wa.mergeLinkedPersonalChatStats(stats);

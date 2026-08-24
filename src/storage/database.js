@@ -31,7 +31,9 @@ const SQLite = require('better-sqlite3');
 
 /** True if `name` is a better sidebar title than the bare JID local part (avoids last-outgoing-msg wiping the label). */
 function looksLikeContactDisplayName(name, chatJid) {
-  return isPlausibleHumanChatTitle(name, chatJid);
+  if (!isPlausibleHumanChatTitle(name, chatJid)) return false;
+  if (looksLikePhoneOnly(name)) return false;
+  return true;
 }
 
 /** True if the string is only a phone number (no letters) — poor sidebar title vs push names / saved names. */
@@ -270,6 +272,7 @@ export default class Database {
     this._migrateReactionsJsonAndDedupe();
     this._migrateContactPayloadColumn();
     this._migrateChatImportTouches();
+    this._migrateChatRoster();
     this._rebuildFtsIfEmpty();
   }
 
@@ -307,6 +310,70 @@ export default class Database {
     } catch (e) {
       console.warn('[DB] chat_import_touches:', e.message);
     }
+  }
+
+  /**
+   * Chats WhatsApp reports we are in, including ones with nothing ingested yet.
+   *
+   * `getChatStats()` is derived from the messages table, so a joined group cannot reach
+   * the sidebar until something has been stored for it. Keeping the roster separately
+   * lets the chat list show a real title while history is still streaming.
+   */
+  _migrateChatRoster() {
+    try {
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS chat_roster (
+          tenant_id TEXT NOT NULL,
+          chat_jid TEXT NOT NULL,
+          chat_name TEXT,
+          last_message_ts INTEGER,
+          updated_at INTEGER DEFAULT (unixepoch()),
+          PRIMARY KEY (tenant_id, chat_jid)
+        );
+      `);
+    } catch (e) {
+      console.warn('[DB] chat_roster:', e.message);
+    }
+  }
+
+  /**
+   * Record known chats. A name is only stored when it beats what we already have, so a
+   * later roster pass that has not resolved a title cannot erase a good one.
+   *
+   * @param {Array<{ chatJid: string, chatName?: string|null, lastMessageTs?: number|null }>} entries
+   * @returns {number} rows written
+   */
+  upsertChatRoster(entries) {
+    if (!Array.isArray(entries) || !entries.length) return 0;
+    const t = getCurrentTenantId();
+    const stmt = this._db.prepare(`
+      INSERT INTO chat_roster (tenant_id, chat_jid, chat_name, last_message_ts)
+      VALUES (@tenantId, @chatJid, @chatName, @lastMessageTs)
+      ON CONFLICT(tenant_id, chat_jid) DO UPDATE SET
+        chat_name = COALESCE(excluded.chat_name, chat_roster.chat_name),
+        last_message_ts = MAX(
+          COALESCE(excluded.last_message_ts, 0),
+          COALESCE(chat_roster.last_message_ts, 0)
+        ),
+        updated_at = unixepoch()
+    `);
+    let written = 0;
+    const txn = this._db.transaction((rows) => {
+      for (const r of rows) {
+        const chatJid = r?.chatJid;
+        if (!chatJid) continue;
+        const name = looksLikeContactDisplayName(r.chatName, chatJid) ? String(r.chatName).trim() : null;
+        stmt.run({
+          tenantId: t,
+          chatJid,
+          chatName: name,
+          lastMessageTs: Number(r.lastMessageTs) || null,
+        });
+        written += 1;
+      }
+    });
+    txn(entries);
+    return written;
   }
 
   /** Bump sidebar sort order after every successful import parse (including re-imports). */
@@ -1787,6 +1854,30 @@ export default class Database {
         searchIndexPct,
         aiSearchReady: summarizedThreads > 0,
         aiSearchComplete: summarizedThreads >= estThreads,
+      });
+    }
+
+    // Chats WhatsApp told us about that have nothing ingested yet. They carry no counts,
+    // so the sidebar shows a titled but empty row rather than hiding the chat entirely.
+    const seenJids = new Set(out.map((r) => r.chatJid));
+    for (const r of this._db.prepare(
+      'SELECT chat_jid AS chatJid, chat_name AS chatName, last_message_ts AS lastMessageTs FROM chat_roster WHERE tenant_id = ?',
+    ).all(t)) {
+      if (!r.chatJid || seenJids.has(r.chatJid)) continue;
+      out.push({
+        chatJid: r.chatJid,
+        chatName: r.chatName || r.chatJid,
+        sidebarTab: sidebarTabForJid(r.chatJid),
+        messageCount: 0,
+        participantCount: 0,
+        lastMessageTs: r.lastMessageTs || 0,
+        lastImportedAt: null,
+        totalThreads: 0,
+        summarizedThreads: 0,
+        searchIndexPct: 0,
+        aiSearchReady: false,
+        aiSearchComplete: false,
+        awaitingSync: true,
       });
     }
 
