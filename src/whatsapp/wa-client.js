@@ -25,6 +25,12 @@ import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { sidebarTabForJid } from './jid-filters.js';
 import { isControlOnlyContentType, placeholderForContentType } from './message-content.js';
 import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
+import {
+    isQrUsable,
+    qrTtlMsForIndex,
+    reconnectDelayMs,
+    shouldResetAuthAfterStaleCloses,
+} from './qr-lifecycle.js';
 import { groupSubjectUpdates } from './group-subjects.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
@@ -181,6 +187,10 @@ export default class WaClient {
     /** WhatsApp-reported unread count by chat JID (runtime state from chat events). */
     this._unreadByChat  = new Map();
     this._latestQr      = null;
+    this._qrIssuedAt    = 0;
+    this._qrTtlMs       = 0;
+    /** QRs emitted by the current socket — WhatsApp gives the first one a longer life. */
+    this._qrIndex       = 0;
     this._ownerJid      = null;
     this._ownerName     = null;
     this._chatNames     = new Map();   // jid → display name
@@ -221,7 +231,20 @@ export default class WaClient {
   }
 
   get state()    { return this._state; }
-  get latestQr() { return this._latestQr; }
+  /** Null once WhatsApp has expired the code — an unscannable QR is worse than none. */
+  get latestQr() {
+    return isQrUsable(this._qrIssuedAt, Date.now(), this._qrTtlMs) ? this._latestQr : null;
+  }
+  /** True while saved credentials exist, i.e. we are reconnecting rather than pairing. */
+  get hasSavedCreds() {
+    return existsSync(join(this._authDir, 'creds.json'));
+  }
+
+  _clearQr() {
+    this._latestQr = null;
+    this._qrIssuedAt = 0;
+    this._qrTtlMs = 0;
+  }
   /** True while Baileys may still send `messaging-history.set` batches (UI may already be READY). */
   get isInitialHistorySync() {
     return isHistorySyncInFlight({
@@ -232,6 +255,9 @@ export default class WaClient {
 
   async start() {
     if (this._sock || this._destroyed) return;
+    // An explicit start supersedes a pending backoff retry — the caller wants a QR now.
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
     mkdirSync(this._authDir, { recursive: true });
     await this._connect();
   }
@@ -250,7 +276,7 @@ export default class WaClient {
     clearTimeout(this._reconnectTimer);
     this._reconnectTimer = null;
     this._sock = null;
-    this._latestQr = null;
+    this._clearQr();
     this._reconnectAttempt = 0;
     this._staleSessionCloseCount = 0;
     try { rmSync(this._authDir, { recursive: true, force: true }); } catch {}
@@ -369,8 +395,35 @@ export default class WaClient {
     return this._connectSeq;
   }
 
+  /**
+   * Reopen the socket after a close.
+   *
+   * @param {boolean} qrExpired A pairing QR ran out. There is no session to protect and a
+   *   new code can only come from a new socket, so retry promptly — backing off here is
+   *   what leaves the QR panel blank for progressively longer on each retry.
+   */
+  _scheduleReconnect(qrExpired) {
+    const attempt = this._reconnectAttempt;
+    this._reconnectAttempt = qrExpired ? 0 : Math.min(attempt + 1, 12);
+    const delayMs = reconnectDelayMs({ hasCreds: !qrExpired, attempt });
+    if (qrExpired) {
+      console.log('[WA] QR expired — requesting a fresh one');
+      this._setState('LOADING', 'Refreshing QR code…');
+    } else {
+      console.log(`[WA] Reconnect in ${Math.round(delayMs / 1000)}s (attempt ${this._reconnectAttempt})`);
+      this._setState('LOADING', `Reconnecting in ${Math.round(delayMs / 1000)}s…`);
+    }
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      void this._connect();
+    }, delayMs);
+  }
+
   async _buildSocket() {
     if (this._destroyed) return;
+    // Each socket gets its own ref list, so QR lifetimes restart at the longer first TTL.
+    this._qrIndex = 0;
 
     const { state: authState, saveCreds } = await useMultiFileAuthState(this._authDir);
     if (this._destroyed) return;
@@ -412,6 +465,9 @@ export default class WaClient {
         try {
           const dataUrl = await QRCode.toDataURL(qr, { errorCorrectionLevel: 'M', margin: 2, width: 300 });
           this._latestQr = dataUrl;
+          this._qrIssuedAt = Date.now();
+          this._qrTtlMs = qrTtlMsForIndex(this._qrIndex);
+          this._qrIndex += 1;
           this._onQr?.(dataUrl);
           console.log(`[WA] QR ready — open ${publicWebBaseUrl()} to scan`);
         } catch (e) { console.error('[WA] QR error:', e.message); }
@@ -424,8 +480,18 @@ export default class WaClient {
         const staleSessionClose = code === DisconnectReason.connectionLost
           || code === DisconnectReason.connectionClosed
           || code === DisconnectReason.timedOut;
+        // Baileys ends the socket with `timedOut` once it runs out of QR refs, which is the
+        // same code a dropped session reports. Only read it as "the QR expired, get
+        // another" when this socket really was on the pairing screen: a close before any QR
+        // means WhatsApp is unreachable and still deserves backoff, and `restartRequired`
+        // after a successful scan must keep its existing path so freshly saved credentials
+        // have time to reach disk.
+        const qrExpired = staleSessionClose && !this.hasSavedCreds && this._qrIndex > 0;
         console.log(`[WA] Closed — code=${code}, loggedOut=${loggedOut}${boomMsg ? ` — ${boomMsg}` : ''}`);
         this._sock = null;
+        // Whatever QR this socket showed died with it; serving it again just gives the
+        // user a code their phone silently refuses.
+        this._clearQr();
         // No socket means no history is arriving. Reopen the indexing gate for the whole
         // disconnect / reconnect-backoff window; `connection: 'open'` closes it again.
         this._historySyncStarted = false;
@@ -443,32 +509,18 @@ export default class WaClient {
           this._onDisconnected?.();
         } else if (staleSessionClose) {
           this._staleSessionCloseCount += 1;
-          const shouldResetAuth = this._staleSessionCloseCount >= 3;
-          if (shouldResetAuth) {
+          if (shouldResetAuthAfterStaleCloses({
+            hasCreds: this.hasSavedCreds,
+            staleCloseCount: this._staleSessionCloseCount,
+          })) {
             console.log(`[WA] Forcing fresh QR after ${this._staleSessionCloseCount} stale disconnects`);
             await this._resetAuthAndRequestQr('Session timed out — generating a new QR…');
             return;
           }
-          const attempt = this._reconnectAttempt;
-          this._reconnectAttempt = Math.min(attempt + 1, 12);
-          const delayMs = Math.min(5000 * Math.pow(1.6, attempt), 120000);
-          console.log(`[WA] Reconnect in ${Math.round(delayMs / 1000)}s (attempt ${this._reconnectAttempt})`);
-          this._setState('LOADING', `Reconnecting in ${Math.round(delayMs / 1000)}s…`);
-          this._reconnectTimer = setTimeout(() => {
-            this._reconnectTimer = null;
-            void this._connect();
-          }, delayMs);
+          this._scheduleReconnect(qrExpired);
         } else {
           this._staleSessionCloseCount = 0;
-          const attempt = this._reconnectAttempt;
-          this._reconnectAttempt = Math.min(attempt + 1, 12);
-          const delayMs = Math.min(5000 * Math.pow(1.6, attempt), 120000);
-          console.log(`[WA] Reconnect in ${Math.round(delayMs / 1000)}s (attempt ${this._reconnectAttempt})`);
-          this._setState('LOADING', `Reconnecting in ${Math.round(delayMs / 1000)}s…`);
-          this._reconnectTimer = setTimeout(() => {
-            this._reconnectTimer = null;
-            void this._connect();
-          }, delayMs);
+          this._scheduleReconnect(qrExpired);
         }
       }
 
@@ -477,6 +529,7 @@ export default class WaClient {
         this._reconnectTimer = null;
         this._reconnectAttempt = 0;
         this._staleSessionCloseCount = 0;
+        this._clearQr();
         this._lastSyncingUiAt = 0;
         const user = this._sock.user;
         const name = user?.name || user?.verifiedName || user?.id?.split(':')[0] || 'unknown';

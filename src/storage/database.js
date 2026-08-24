@@ -23,6 +23,8 @@ import {
   looksLikeLidFallbackContactLabel,
 } from '../whatsapp/chat-display-name.js';
 import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
+import { isChatEligibleForIndex } from '../search/index-eligibility.js';
+import config from '../config.js';
 import { reactionParticipantSlotKey } from '../whatsapp/reaction-counts.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 
@@ -273,6 +275,7 @@ export default class Database {
     this._migrateContactPayloadColumn();
     this._migrateChatImportTouches();
     this._migrateChatRoster();
+    this._migrateIndexOptIn();
     this._rebuildFtsIfEmpty();
   }
 

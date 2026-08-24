@@ -98,6 +98,12 @@ const config = {
   /** Live chats active within this user-selected window form the first post-sync indexing queue. */
   liveRecentWindowDays: 5,
   /**
+   * Auto-index only chats above this size whose latest message is inside `indexRecentWindowDays`.
+   * Smaller or older chats stay unindexed until they grow, or the user opts them in.
+   */
+  indexMinMessageCount: 50,
+  indexRecentWindowDays: 10,
+  /**
    * If true, after each READY we auto-run `resyncAppState` + phone-book refresh (heavy; extra sync traffic/notifications).
    * Default false — use Settings → “Refresh contact names” or `POST /api/wa/sync-contacts` when you want names updated.
    * Set `WA_AUTO_APP_STATE_RESYNC=1` to restore automatic refresh (old behavior).

@@ -531,6 +531,8 @@
     .menu-item svg { width: 16px; height: 16px; color: var(--text2); }
     .menu-item.danger { color: var(--danger); }
     .menu-item.danger svg { color: var(--danger); }
+    .menu-item.disabled { color: var(--text2); opacity: 0.55; cursor: not-allowed; }
+    .menu-item.disabled:hover { background: transparent; }
 
     /* Chat-header dropdown */
     .chat-header-actions { position: relative; display: flex; gap: 2px; align-items: center; flex-shrink: 0; }
@@ -2235,12 +2237,44 @@
   $('#btn-chat-menu').addEventListener('click', (e) => {
     e.stopPropagation();
     closeMenu();
+    syncFetchOlderMenuItem();
     $('#chat-menu').classList.toggle('open');
   });
+
+  function activeChatHasLocalMessages() {
+    if (chatMessagesOffset > 0) return true;
+    const ch = chatData.find((c) => c.chatJid === activeChat);
+    return (ch?.messageCount || 0) > 0;
+  }
+
+  /**
+   * WhatsApp's on-demand history sync walks backwards from a message we already hold — the
+   * request carries that message's id as its cursor. A chat we only know by title has no
+   * cursor to send, so the action is disabled rather than left to fail.
+   */
+  const FETCH_OLDER_NEEDS_ANCHOR = 'Needs one message in this chat to sync backwards from — '
+    + 'waiting for the first message to arrive.';
+
+  function syncFetchOlderMenuItem() {
+    const item = $('#menu-fetch-older-history');
+    if (!item) return;
+    const usable = activeChatHasLocalMessages();
+    item.classList.toggle('disabled', !usable);
+    item.title = usable
+      ? 'Uses WhatsApp on-demand sync — phone must be online'
+      : FETCH_OLDER_NEEDS_ANCHOR;
+  }
 
   $('#menu-fetch-older-history')?.addEventListener('click', async () => {
     closeChatMenu();
     if (!activeChat) return;
+    if (!activeChatHasLocalMessages()) {
+      alert(FETCH_OLDER_NEEDS_ANCHOR
+        + '\n\nWhatsApp can only send history older than a message you already have, so there '
+        + 'is no starting point for a chat that is still empty. To pull in past conversations, '
+        + 'export the chat from your phone and import the file instead.');
+      return;
+    }
     try {
       const r = await fetch('/api/wa/fetch-older-history', {
         method: 'POST',
@@ -2700,6 +2734,12 @@
     }
   }
 
+  // WhatsApp gives each subsequent QR a 20s life. If nothing new has arrived in that long,
+  // the socket has stopped producing codes and will not recover on its own.
+  const QR_STALL_MS = 20000;
+  let _lastQrSeenAt = 0;
+  let _lastQrNudgeAt = 0;
+
   async function pollForQrWhileDisconnected() {
     if (_qrPollTimer || _waState === 'READY' || _waState === 'SYNCING') return;
     _qrPollTimer = setInterval(async () => {
@@ -2711,12 +2751,38 @@
       try {
         const [st, qr] = await Promise.all([
           fetch('/api/wa/status').then(r => r.json()).catch(() => null),
-          fetch('/api/wa/qr').then(r => r.json()).catch(() => null),
+          fetch('/api/wa/qr').then(r => (r.ok ? r.json() : null)).catch(() => null),
         ]);
         if (st) updateWaUI(st);
         if (qr?.qr) showQr(qr.qr);
+        else await recoverStalledQr(st);
       } catch { /* ignore */ }
     }, 3000);
+  }
+
+  /**
+   * The server has no QR to give. Flag that a new one is coming, and once the socket has
+   * been quiet for longer than a QR is meant to live, ask it to reconnect — without this
+   * the panel stays blank until the user reloads the page.
+   */
+  async function recoverStalledQr(st) {
+    if (!wantsLiveSyncUi()) return;
+    markQrRefreshing();
+    const now = Date.now();
+    if (now - _lastQrSeenAt < QR_STALL_MS || now - _lastQrNudgeAt < QR_STALL_MS) return;
+    const state = st?.state || _waState;
+    if (state === 'READY' || state === 'SYNCING') return;
+    _lastQrNudgeAt = now;
+    try { await fetch('/api/wa/connect', { method: 'POST' }); } catch { /* ignore */ }
+  }
+
+  function markQrRefreshing() {
+    // Drop the cached data URL so the next QR always repaints, even if it repeats.
+    _lastQrDataUrl = null;
+    const overlay = $('#wqr-refreshing');
+    if (overlay && $('#wqr-img')?.getAttribute('src')) overlay.style.display = 'flex';
+    const line = $('#wqr-status-line');
+    if (line) line.textContent = 'Fetching a fresh QR code…';
   }
 
   // deferred: bootstrapWhatsAppLinking
@@ -2928,6 +2994,7 @@
     if (!dataUrl || dataUrl === _lastQrDataUrl) return;
     if (_importFirstMvp && !_showLiveSyncUi) return;
     _lastQrDataUrl = dataUrl;
+    _lastQrSeenAt = Date.now();
 
     // Silently swap image — no expiry overlay
     $('#wqr-img').src = dataUrl;
@@ -4469,7 +4536,8 @@
     const jid = activeChat;
     if (!jid || chatLoadingOlder || activeFocusMessageId) return;
     if (!chatHasMoreLocal) {
-      if (!chatPhoneFetchAttempted) {
+      // Without a stored message there is no cursor for on-demand sync, so skip the call.
+      if (!chatPhoneFetchAttempted && activeChatHasLocalMessages()) {
         chatPhoneFetchAttempted = true;
         try {
           await fetch('/api/wa/fetch-older-history', {

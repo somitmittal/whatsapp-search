@@ -367,6 +367,19 @@ export default class WebServer {
     return st;
   }
 
+  /**
+   * The QR this tenant should currently be shown, or null.
+   *
+   * The live client is the source of truth: it drops its QR once WhatsApp expires it, and
+   * a code the phone will refuse must never be replayed from cache — a scan that silently
+   * does nothing is indistinguishable from a broken QR, and a stale cached QR also makes
+   * `hasQr` lie, so the browser never asks the server to reconnect.
+   */
+  _currentQr(st) {
+    if (st.waClient) st.waQrDataUrl = st.waClient.latestQr || null;
+    return st.waQrDataUrl;
+  }
+
   _runWaHistoryCompleteHooks(tid, waClient) {
     const st = this._getTenantState(tid);
     if (st.waHistoryHooksDone) return;
@@ -605,8 +618,11 @@ export default class WebServer {
         if (state === 'QR_READY' || state === 'DISCONNECTED' || state === 'LOADING') {
           st.waHistoryHooksDone = false;
         }
-        if (state === 'READY') {
+        if (state !== 'QR_READY') {
+          // The cached QR belongs to the socket that just left the pairing screen.
           st.waQrDataUrl = null;
+        }
+        if (state === 'READY') {
           st.extensionConnected = true;
         }
         const stats = this._getCachedTotalStats(tid);
@@ -854,8 +870,9 @@ export default class WebServer {
           type: 'wa-status',
           data: { state: st.waState, message: st.waMessage, stats: this.db.getTotalStats() },
         });
-        if (st.waQrDataUrl) {
-          this._sendTo(ws, { type: 'wa-qr', data: { qr: st.waQrDataUrl } });
+        const qr = this._currentQr(st);
+        if (qr) {
+          this._sendTo(ws, { type: 'wa-qr', data: { qr } });
         }
       });
     });
@@ -1438,19 +1455,14 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       res.json({
         state: st.waState,
         message: st.waMessage,
-        hasQr: !!st.waQrDataUrl,
+        hasQr: !!this._currentQr(st),
       });
     });
 
     this._app.get('/api/wa/qr', (_req, res) => {
       const st = this._getTenantState(getCurrentTenantId());
-      const wa = st.waClient;
-      // Always serve the freshest QR — from the live client if available
-      const liveQr = wa?.latestQr;
-      const qr = liveQr || st.waQrDataUrl;
+      const qr = this._currentQr(st);
       if (!qr) return res.status(404).json({ error: 'No QR available' });
-      // Update cache too
-      if (liveQr) st.waQrDataUrl = liveQr;
       res.json({ qr });
     });
 
@@ -1563,7 +1575,12 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       try {
         const anchorRow = this.db.getOldestMessageAnchor(chatJid);
         if (!anchorRow?.messageId) {
-          return res.status(400).json({ error: 'No messages indexed for this chat yet' });
+          // The PDO request identifies where to resume by message id, so a chat we only
+          // know by title (roster entry, nothing ingested) cannot be asked for history.
+          return res.status(400).json({
+            error: 'This chat has no messages yet, so there is no point to sync backwards from. '
+              + 'Import an exported chat to load its past conversations.',
+          });
         }
         const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid, ...anchorRow }, count);
         res.json({ ok: true, requestId: requestId ?? null });
