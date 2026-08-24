@@ -24,6 +24,7 @@ import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { sidebarTabForJid } from './jid-filters.js';
 import { isControlOnlyContentType, placeholderForContentType } from './message-content.js';
 import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
+import { groupSubjectUpdates } from './group-subjects.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
@@ -717,7 +718,37 @@ export default class WaClient {
   async refreshPhoneBookNamesInDb(db) {
     await this.resyncPhoneBookFromWhatsApp();
     await new Promise((r) => setTimeout(r, 6000));
-    return this.syncResolvedNamesToDb(db);
+    const contactRows = await this.syncResolvedNamesToDb(db);
+    const groupRows = await this.refreshGroupSubjectsInDb(db);
+    return (contactRows || 0) + groupRows;
+  }
+
+  /**
+   * Label groups with their WhatsApp subject instead of their numeric JID.
+   *
+   * Subjects are not part of the phone book, so the contact resync above never reaches
+   * them. One `groupFetchAllParticipating()` call covers every joined group, so this
+   * costs a single request rather than one per group. The in-memory title cache is
+   * updated alongside the DB so `/api/chats` reflects the new names on its next read.
+   */
+  async refreshGroupSubjectsInDb(db) {
+    if (typeof this._sock?.groupFetchAllParticipating !== 'function') return 0;
+    let allGroups = null;
+    try {
+      allGroups = await this._sock.groupFetchAllParticipating();
+    } catch (e) {
+      console.warn('[WA] Group subject refresh failed:', e.message);
+      return 0;
+    }
+    let rowsUpdated = 0;
+    for (const { jid, subject } of groupSubjectUpdates(allGroups)) {
+      this._chatNames.set(jid, subject);
+      rowsUpdated += db?.propagateChatDisplayName?.(jid, subject) || 0;
+    }
+    if (rowsUpdated > 0) {
+      console.log(`[WA] Refreshed group subjects on ${rowsUpdated} message row(s)`);
+    }
+    return rowsUpdated;
   }
 
   /** Server: when a new human-readable title is known for a chat, backfill SQLite for LID+PN pair. */

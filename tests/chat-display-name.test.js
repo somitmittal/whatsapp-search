@@ -47,4 +47,23 @@ describe('chat-display-name', () => {
   test('isPlausibleHumanChatTitle rejects Contact (…) placeholders', () => {
     expect(isPlausibleHumanChatTitle('Contact (1212)', 'xxx@lid')).toBe(false);
   });
+
+  // /api/wa/chat-details persists whatever title the live WhatsApp lookup returns and
+  // relies on this guard (via propagateChatDisplayName) to reject the fallbacks that
+  // getChatDetails substitutes when nothing better is known.
+  describe('guarding what chat-details is allowed to persist', () => {
+    const group = '120363202440432920@g.us';
+    const pn = '919876543210@s.whatsapp.net';
+
+    test('accepts a real group subject and contact name', () => {
+      expect(isPlausibleHumanChatTitle("Sovrenn Family AA Dec' 23", group)).toBe(true);
+      expect(isPlausibleHumanChatTitle('Mahesh Mittal', pn)).toBe(true);
+    });
+
+    test('rejects the JID-derived fallbacks so they never overwrite a stored name', () => {
+      expect(isPlausibleHumanChatTitle('120363202440432920', group)).toBe(false);
+      expect(isPlausibleHumanChatTitle('919876543210', pn)).toBe(false);
+      expect(isPlausibleHumanChatTitle('+91 9876543210', pn)).toBe(false);
+    });
+  });
 });

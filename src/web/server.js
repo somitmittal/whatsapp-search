@@ -1435,6 +1435,21 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const wa = st.waClient && typeof st.waClient.getChatDetails === 'function'
           ? await st.waClient.getChatDetails(chatJid)
           : null;
+        // getChatDetails reaches WhatsApp live (group subject, contact title) and so learns
+        // names the cached overlay behind /api/chats cannot. Without persisting, the good
+        // name lives only in the open chat header and the sidebar reverts to the number as
+        // soon as the list refreshes. propagateChatDisplayName applies the quality guard,
+        // so a phone number or placeholder passed here is rejected rather than stored.
+        const learnedTitle = wa?.subject || wa?.chatName || wa?.displayName || null;
+        if (learnedTitle) {
+          try {
+            if (typeof st.waClient?.propagateDisplayNameForChat === 'function') {
+              void st.waClient.propagateDisplayNameForChat(this.db, chatJid, learnedTitle).catch(() => {});
+            } else {
+              this.db.propagateChatDisplayName(chatJid, learnedTitle);
+            }
+          } catch (_) { /* naming is best-effort — never fail the details response */ }
+        }
         return res.json({ ...local, ...(wa || {}) });
       } catch (err) {
         return res.status(500).json({ error: err.message });
