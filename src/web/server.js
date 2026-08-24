@@ -25,6 +25,7 @@ import { selectPullStatus } from '../llm/pull-status.js';
 import { createIndexingSummaryProvider } from '../search/indexing-profile.js';
 import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
 import { effectiveUnreadCount, shouldShowGroupCatchup } from '../whatsapp/unread-tracker.js';
+import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
 import {
@@ -425,10 +426,13 @@ export default class WebServer {
     return st.waState === 'READY' || st.waState === 'SYNCING';
   }
 
+  /** True only while WhatsApp is actually delivering history — see `isWaIngestionActive`. */
   isTenantWaHistoryBusy(tenantId) {
     const st = this._getTenantState(tenantId);
-    if (st.waState === 'SYNCING' || st.waState === 'LOADING') return true;
-    return Boolean(st.waClient?.isInitialHistorySync);
+    return isWaIngestionActive({
+      waState: st.waState,
+      isInitialHistorySync: st.waClient?.isInitialHistorySync,
+    });
   }
 
   /**

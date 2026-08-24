@@ -34,6 +34,18 @@ const SUMMARY_LLM_TIMEOUT_MS = 180_000;
  * Matches the per-call retry budget in `_generateSummary()`.
  */
 const MAX_THREAD_SUMMARY_ATTEMPTS = 3;
+/**
+ * Log line for each reason a follow-up pass gets queued. A pass that only has fact
+ * extraction left announced itself as `[Summaries] Running queued pass`, which reads as
+ * though summarization is looping when it has actually finished.
+ */
+const RESTART_LOG_LINES = {
+  concurrent: '[Summaries] Running queued pass (new messages or concurrent trigger)...',
+  priority: '[Summaries] Running queued pass (priority chat changed)...',
+  remainingChats: '[Summaries] Running queued pass (chats held back by the initial priority pass)...',
+  secondarySource: '[Summaries] Running queued pass (secondary source queue)...',
+  facts: '[Facts] More threads pending — queueing another extraction pass',
+};
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -138,6 +150,14 @@ export default class DailySummaryService {
      * In-memory only, so a process restart gives every thread a fresh budget.
      */
     this._threadAttempts = new Map();
+    /** @type {keyof RESTART_LOG_LINES | null} why the queued pass was scheduled */
+    this._restartReason = null;
+  }
+
+  /** Queue a follow-up pass, recording why so the restart logs the work it will do. */
+  _queueRestart(reason) {
+    this._restartPending = true;
+    this._restartReason = reason;
   }
 
   _threadAttemptKey(chatJid, threadStart) {
@@ -303,7 +323,7 @@ export default class DailySummaryService {
       return 0;
     }
     if (this._running) {
-      this._restartPending = true;
+      this._queueRestart('concurrent');
       this._preemptRequested = true;
       this._caughtUp = false;
       console.log('[Summaries] Already running — current pass will yield for priority / queued restart');
@@ -404,7 +424,12 @@ export default class DailySummaryService {
       if (chatsTotal === 0) {
         console.log('[Summaries] All thread summaries up to date');
         this._onProgress?.({ phase: 'summary', done: true, chatsTotal: 0 });
-        return 0;
+        // An empty summary queue does not mean facts are done: threads summarized in an
+        // earlier pass can still be awaiting extraction, and this is the only path that
+        // reaches them once no chat has unsummarized threads left.
+        const factsOnly = await this._indexPendingFacts();
+        if (factsOnly > 0) this._queueRestart('facts');
+        return factsOnly;
       }
 
       this._onProgress?.({
@@ -424,7 +449,7 @@ export default class DailySummaryService {
         }
         if (this._preemptRequested) {
           this._preemptRequested = false;
-          this._restartPending = true;
+          this._queueRestart('priority');
           console.log('[Summaries] Preempted before chat — restarting with updated priority');
           break summaryPass;
         }
@@ -454,7 +479,7 @@ export default class DailySummaryService {
           }
           if (this._preemptRequested) {
             this._preemptRequested = false;
-            this._restartPending = true;
+            this._queueRestart('priority');
             console.log('[Summaries] Preempted between thread batches — restarting with updated priority');
             break summaryPass;
           }
@@ -517,7 +542,7 @@ export default class DailySummaryService {
           batchStart += concurrency;
           if (this._preemptRequested) {
             this._preemptRequested = false;
-            this._restartPending = true;
+            this._queueRestart('priority');
             console.log('[Summaries] Preempted after thread batch — restarting with updated priority');
             break summaryPass;
           }
@@ -553,13 +578,13 @@ export default class DailySummaryService {
         this._initialPassDone.set(String(tid), true);
         if (workQueue.length > INITIAL_PRIORITY_CHATS) {
           console.log(`[Summaries] Initial priority pass done — scheduling full pass for remaining ${workQueue.length - INITIAL_PRIORITY_CHATS} chats`);
-          this._restartPending = true;
+          this._queueRestart('remainingChats');
         }
       }
 
       if (secondarySourcePending && totalGenerated > 0 && !this._restartPending) {
         console.log('[Summaries] Primary source queue drained — scheduling separate secondary-source pass');
-        this._restartPending = true;
+        this._queueRestart('secondarySource');
       }
 
       if (totalGenerated === 0 && !this._restartPending && !deferredForIngestion) {
@@ -567,13 +592,15 @@ export default class DailySummaryService {
         totalGenerated += factsGenerated;
         if (factsGenerated > 0) {
           // Drain every facts batch before declaring text indexing caught up and releasing media.
-          this._restartPending = true;
+          this._queueRestart('facts');
         }
       }
 
       return totalGenerated;
     } finally {
       const willRestart = this._restartPending;
+      const restartReason = this._restartReason;
+      this._restartReason = null;
       this._running = false;
       if (deferredForIngestion) {
         this._restartPending = false;
@@ -581,7 +608,7 @@ export default class DailySummaryService {
       } else if (willRestart) {
         this._restartPending = false;
         this._caughtUp = false;
-        console.log('[Summaries] Running queued pass (new messages or concurrent trigger)...');
+        console.log(RESTART_LOG_LINES[restartReason] ?? RESTART_LOG_LINES.concurrent);
         setTimeout(() => this.indexPendingDays(), 500);
       } else {
         this._caughtUp = true;

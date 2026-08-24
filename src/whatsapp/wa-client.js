@@ -20,6 +20,7 @@ import {
     sanitizePeerSenderName,
 } from './chat-display-name.js';
 import { buildContactPayloadFromInner } from './contact-card.js';
+import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { sidebarTabForJid } from './jid-filters.js';
 import { isControlOnlyContentType, placeholderForContentType } from './message-content.js';
 import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
@@ -185,6 +186,12 @@ export default class WaClient {
     this._totalMsgs     = 0;
     this._syncDoneTimer = null;
     this._historyDone   = false;
+    /**
+     * True only between `connection: 'open'` and the end of that connection's history sync.
+     * Without it a client that is merely constructed, showing a QR nobody scans, or stuck in
+     * reconnect backoff would report an in-flight history sync forever and stall AI indexing.
+     */
+    this._historySyncStarted = false;
     /** Rows queued through setImmediate but not yet handed to SQLite. */
     this._pendingHistoryRows = 0;
     /** The idle timer fired while history rows were still draining. */
@@ -213,7 +220,12 @@ export default class WaClient {
   get state()    { return this._state; }
   get latestQr() { return this._latestQr; }
   /** True while Baileys may still send `messaging-history.set` batches (UI may already be READY). */
-  get isInitialHistorySync() { return !this._historyDone; }
+  get isInitialHistorySync() {
+    return isHistorySyncInFlight({
+      historySyncStarted: this._historySyncStarted,
+      historyDone: this._historyDone,
+    });
+  }
 
   async start() {
     if (this._sock || this._destroyed) return;
@@ -411,6 +423,9 @@ export default class WaClient {
           || code === DisconnectReason.timedOut;
         console.log(`[WA] Closed — code=${code}, loggedOut=${loggedOut}${boomMsg ? ` — ${boomMsg}` : ''}`);
         this._sock = null;
+        // No socket means no history is arriving. Reopen the indexing gate for the whole
+        // disconnect / reconnect-backoff window; `connection: 'open'` closes it again.
+        this._historySyncStarted = false;
         clearTimeout(this._reconnectTimer);
         this._reconnectTimer = null;
         if (loggedOut || this._destroyed) {
@@ -468,6 +483,7 @@ export default class WaClient {
         this._onReady?.({ name, phone: this._ownerJid?.split('@')[0] });
         this._setState('SYNCING', 'Loading chat history…');
         this._historyDone = false;
+        this._historySyncStarted = true;
         this._pendingHistoryRows = 0;
         this._finishSyncRequested = false;
         this._totalMsgs = 0;
