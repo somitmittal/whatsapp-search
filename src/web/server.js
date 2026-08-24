@@ -44,6 +44,7 @@ import { getWabaConfig, publicWabaConfig, saveWabaConfig } from '../whatsapp/wab
 import { getLatestGitHubRelease, sendReleaseError } from '../releases/github-releases.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 import { registerAuthRoutes } from './auth-routes.js';
+import { preserveTenantAcrossUpload } from './upload-tenant.js';
 
 const require = createRequire(import.meta.url);
 const express = require('express');
@@ -189,6 +190,7 @@ export default class WebServer {
     this._setupWebSocket();
     this._migrateLegacyDataToWaTenant();
     if (config.isDesktopApp) this._normalizeDesktopSessions();
+    else this._normalizeLocalSessions();
     this._setupRoutes();
   }
 
@@ -233,6 +235,41 @@ export default class WebServer {
 
   _desktopTenantId() {
     return config.defaultTenantId || LEGACY_TENANT_ID;
+  }
+
+  /**
+   * The one tenant a local install should use. `src/index.js` runs every background indexer
+   * (summaries, media, embeddings) under `config.defaultTenantId`, so a browser session bound
+   * to any other tenant sees chats that are never indexed — or, as with imports, no chats at all.
+   */
+  _localCanonicalTenantId() {
+    return this._findSoleTenantFromWaIdentity()
+      || this._findLocalTenantWithMostMessages()
+      || config.defaultTenantId
+      || LEGACY_TENANT_ID;
+  }
+
+  /**
+   * Sessions minted on a local install before `_localCanonicalTenantId()` existed point at
+   * throwaway UUID tenants that hold nothing, which hid already-imported chats from the sidebar.
+   * Only empty tenants are rebound, so two populated tenants are never merged into one session.
+   */
+  _normalizeLocalSessions() {
+    if (config.isDesktopApp) return;
+    if (this._isPublicInternetDeploy()) return;
+    if (!isJwtAuthEnabled()) return;
+    const canonical = this._localCanonicalTenantId();
+    try {
+      const sql = this.db.getSqliteDatabase();
+      const n = sql.prepare(`
+        UPDATE user_sessions SET tenant_id = ?
+        WHERE tenant_id != ?
+          AND tenant_id NOT IN (SELECT DISTINCT tenant_id FROM messages)
+      `).run(canonical, canonical).changes;
+      if (n > 0) console.log(`[Local] Rebound ${n} empty session tenant(s) to ${canonical}`);
+    } catch (e) {
+      console.warn('[Local] session normalize:', e.message);
+    }
   }
 
   _normalizeDesktopSessions() {
@@ -872,12 +909,10 @@ export default class WebServer {
         this._getTenantState(req.tenantId).sessionId = sid;
         return runWithTenant(req.tenantId, () => next());
       }
-      // On local-only installs, reuse the sole WA tenant (or existing message data) so the user
-      // isn't locked out of their own imports after clearing cookies. On deployed servers, always
-      // give new visitors a fresh isolated tenant — never leak User A's chats.
-      const reuseLocal = !this._isPublicInternetDeploy()
-        ? (this._findSoleTenantFromWaIdentity() || this._findLocalTenantWithMostMessages())
-        : null;
+      // On local-only installs, reuse the single workspace the background indexers run under so
+      // the user isn't locked out of their own imports after clearing cookies. On deployed
+      // servers, always give new visitors a fresh isolated tenant — never leak User A's chats.
+      const reuseLocal = !this._isPublicInternetDeploy() ? this._localCanonicalTenantId() : null;
       let c;
       if (reuseLocal) {
         const sessionId = this._userSessions.create(reuseLocal);
@@ -2135,7 +2170,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     });
 
     // ── Import (single or batch) ─────────────────────────────────────
-    this._app.post('/api/import', upload.array('file', 50), (req, res) => {
+    this._app.post('/api/import', preserveTenantAcrossUpload(upload.array('file', 50)), (req, res) => {
       try {
         const files = req.files || [];
         if (files.length === 0) return res.status(400).json({ error: 'No file uploaded' });
