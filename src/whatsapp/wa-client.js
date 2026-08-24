@@ -22,6 +22,7 @@ import {
 import { buildContactPayloadFromInner } from './contact-card.js';
 import { sidebarTabForJid } from './jid-filters.js';
 import { isControlOnlyContentType, placeholderForContentType } from './message-content.js';
+import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
@@ -184,10 +185,15 @@ export default class WaClient {
     this._totalMsgs     = 0;
     this._syncDoneTimer = null;
     this._historyDone   = false;
+    /** Rows queued through setImmediate but not yet handed to SQLite. */
+    this._pendingHistoryRows = 0;
+    /** The idle timer fired while history rows were still draining. */
+    this._finishSyncRequested = false;
     this._destroyed     = false;
     this._pendingBatch  = [];
     this._flushTimer    = null;
     this._mediaQueue    = [];
+    this._queuedMediaIds = new Set();
     this._mediaDraining = false;
     this._mediaLogger   = P({ level: 'silent' });
     /** Serialize connects — parallel _connect() calls used to create overlapping Baileys sockets → disconnect loop. */
@@ -324,6 +330,7 @@ export default class WaClient {
     clearTimeout(this._reconnectTimer);
     this._reconnectTimer = null;
     this._mediaQueue.length = 0;
+    this._queuedMediaIds.clear();
     try { this._sock?.end?.(new Error('destroy')); } catch {}
     this._sock = null;
     this._setState('DISCONNECTED', 'Stopped');
@@ -461,6 +468,8 @@ export default class WaClient {
         this._onReady?.({ name, phone: this._ownerJid?.split('@')[0] });
         this._setState('SYNCING', 'Loading chat history…');
         this._historyDone = false;
+        this._pendingHistoryRows = 0;
+        this._finishSyncRequested = false;
         this._totalMsgs = 0;
         this._uiPromotedAfterFirstHistoryBatch = false;
 
@@ -474,7 +483,6 @@ export default class WaClient {
     // or the DB stops updating (e.g. everything stuck on the last day the socket saw only `append` events).
     this._sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify' && type !== 'append') return;
-      await this._backfillLidPnChatNamesFromMessages(messages || []);
       const rows = [];
       for (const msg of messages) {
         const jid = msg.key.remoteJid;
@@ -482,13 +490,18 @@ export default class WaClient {
 
         const row = this._msgToRow(msg);
         if (!row) continue;
-        const enriched = await this._enrichRowWithMedia(msg, row);
-        rows.push(enriched);
+        // Save searchable text immediately. Media is intentionally queued behind the
+        // initial history insert so network/file work cannot hold up live messages.
+        rows.push(row);
+        this._queueMediaDownload(msg, row);
       }
       if (rows.length) {
         this._enqueueBatch(rows);
+        if (type === 'notify') this._flushPendingBatch();
         this._promoteUiWhileHistoryContinues();
       }
+      // Name cross-linking can touch the Signal store; it must not delay the DB-visible row.
+      void this._backfillLidPnChatNamesFromMessages(messages || []);
     });
 
     /** Incoming emoji reactions — aggregated per message in DB + UI via WebSocket. */
@@ -543,10 +556,14 @@ export default class WaClient {
         this._syncByChat.set(jid, (this._syncByChat.get(jid) || 0) + 1);
       }
 
-      const rows = (messages || [])
-        .filter(m => m.message && m.key?.remoteJid)
-        .map(m => this._msgToRow(m))
-        .filter(Boolean);
+      const rows = [];
+      for (const msg of messages || []) {
+        if (!msg.message || !msg.key?.remoteJid) continue;
+        const row = this._msgToRow(msg);
+        if (!row) continue;
+        rows.push(row);
+        this._queueMediaDownload(msg, row);
+      }
 
       if (rows.length) {
         this._ingestHistoryRowsChunked(rows);
@@ -844,11 +861,22 @@ export default class WaClient {
   _ingestHistoryRowsChunked(rows) {
     const chunkSize = config.waHistoryChunkSize;
     let offset = 0;
+    this._pendingHistoryRows += rows.length;
     const drain = () => {
-      if (offset >= rows.length) return;
+      if (offset >= rows.length) {
+        if (this._pendingHistoryRows === 0 && this._finishSyncRequested) {
+          this._finishSyncRequested = false;
+          this._finishSync();
+        }
+        return;
+      }
       const chunk = rows.slice(offset, offset + chunkSize);
       offset += chunk.length;
-      this._onMessages?.(chunk);
+      try {
+        this._onMessages?.(chunk);
+      } finally {
+        this._pendingHistoryRows = Math.max(0, this._pendingHistoryRows - chunk.length);
+      }
       this._totalMsgs += chunk.length;
       this._onProgress?.({
         completed: 0,
@@ -865,6 +893,10 @@ export default class WaClient {
       }
       this._promoteUiWhileHistoryContinues();
       if (offset < rows.length) setImmediate(drain);
+      else if (this._pendingHistoryRows === 0 && this._finishSyncRequested) {
+        this._finishSyncRequested = false;
+        this._finishSync();
+      }
     };
     drain();
   }
@@ -876,10 +908,20 @@ export default class WaClient {
 
   _finishSync() {
     if (this._historyDone) return;
+    // `append` upserts share the short live batch timer and are not counted as history rows.
+    // Flush them now so the indexing hook cannot observe an incomplete message database.
+    this._flushPendingBatch();
+    if (this._pendingHistoryRows > 0) {
+      this._finishSyncRequested = true;
+      console.log(`[WA] Waiting for ${this._pendingHistoryRows} queued message row(s) before indexing`);
+      return;
+    }
     this._historyDone = true;
     this._syncByChat.clear();
     console.log(`[WA] Sync complete — ${this._totalMsgs} messages`);
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
+    this._sortDeferredMediaQueue();
+    void this._drainMediaQueue();
     try { this._onHistorySyncComplete?.(); } catch (e) {
       console.warn('[WA] onHistorySyncComplete:', e.message);
     }
@@ -891,9 +933,16 @@ export default class WaClient {
     if (!this._flushTimer) {
       this._flushTimer = setTimeout(() => {
         this._flushTimer = null;
-        if (this._pendingBatch.length) this._onMessages?.(this._pendingBatch.splice(0));
+        this._flushPendingBatch();
       }, BATCH_MS);
     }
+  }
+
+  _flushPendingBatch() {
+    if (!this._pendingBatch.length) return;
+    clearTimeout(this._flushTimer);
+    this._flushTimer = null;
+    this._onMessages?.(this._pendingBatch.splice(0));
   }
 
   _setState(state, message) {
@@ -1161,19 +1210,40 @@ export default class WaClient {
 
   _queueMediaDownload(msg, row) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return;
-    this._mediaQueue.push({ msg, row });
-    this._drainMediaQueue().catch(() => {});
+    if (row.messageId && this._queuedMediaIds.has(row.messageId)) return;
+    if (row.messageId) this._queuedMediaIds.add(row.messageId);
+    // Retain only the fields Baileys needs for media download rather than the full history
+    // event object; large first syncs can otherwise keep substantial protocol metadata alive.
+    this._mediaQueue.push({
+      msg: { key: msg.key, message: msg.message },
+      row,
+    });
+    if (this._historyDone) this._drainMediaQueue().catch(() => {});
+  }
+
+  /**
+   * Media is the final ingestion queue. Rank by the chat's latest activity first, then by
+   * message recency, with the configured recent-chat window as an explicit first tier.
+   */
+  _sortDeferredMediaQueue() {
+    const cutoff = Math.floor(Date.now() / 1000)
+      - (config.liveRecentWindowDays * 24 * 60 * 60);
+    sortDeferredMediaByChatActivity(this._mediaQueue, cutoff);
   }
 
   async _drainMediaQueue() {
-    if (this._mediaDraining) return;
+    if (this._mediaDraining || !this._historyDone) return;
     this._mediaDraining = true;
     try {
       while (this._mediaQueue.length && !this._destroyed) {
         const { msg, row } = this._mediaQueue.shift();
-        const enriched = await this._enrichRowWithMedia(msg, row);
-        if (enriched.mediaPath && this._onMediaPath) {
-          this._onMediaPath(enriched.messageId, enriched.mediaPath);
+        try {
+          const enriched = await this._enrichRowWithMedia(msg, row);
+          if (enriched.mediaPath && this._onMediaPath) {
+            this._onMediaPath(enriched.messageId, enriched.mediaPath);
+          }
+        } finally {
+          if (row.messageId) this._queuedMediaIds.delete(row.messageId);
         }
         await new Promise((r) => setTimeout(r, 120));
       }

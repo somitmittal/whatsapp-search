@@ -370,6 +370,15 @@ export default class WebServer {
     if (st.waHistoryHooksDone) return;
     st.waHistoryHooksDone = true;
     this._getCachedTotalStats(tid, { force: true });
+    // The ingestion gate is now open. Start text/thread indexing first; media indexing
+    // remains self-gated until summaries report that both source queues have caught up.
+    void runWithTenant(tid, async () => {
+      try {
+        await this.summaryService?.indexPendingDays?.();
+      } catch (e) {
+        console.warn('[WA] post-history summary indexing:', e.message);
+      }
+    });
     this._mediaIndexService?.scheduleProcess?.();
     this._embeddingIndexService?.scheduleProcess?.();
     if (waClient?.syncResolvedNamesToDb) {
@@ -420,6 +429,20 @@ export default class WebServer {
     const st = this._getTenantState(tenantId);
     if (st.waState === 'SYNCING' || st.waState === 'LOADING') return true;
     return Boolean(st.waClient?.isInitialHistorySync);
+  }
+
+  /**
+   * Coarse background-work phase for the sidebar sync indicator, in pipeline order.
+   * The indexers are process-wide singletons, so only the `syncing` phase is tenant-scoped;
+   * on a multi-tenant deployment the later phases read as "someone is indexing".
+   *
+   * @returns {'syncing'|'indexing'|'media'|null}
+   */
+  getIndexingPhase(tenantId) {
+    if (this.isTenantWaHistoryBusy(tenantId)) return 'syncing';
+    if (this.summaryService?.isBusy?.() || this._embeddingIndexService?.isBusy?.()) return 'indexing';
+    if (this._mediaIndexService?.isBusy?.()) return 'media';
+    return null;
   }
 
   _getCachedTotalStats(tenantId, { force = false } = {}) {
@@ -973,12 +996,19 @@ export default class WebServer {
     });
 
     this._app.get('/api/status', (_req, res) => {
-      const st = this._getTenantState(getCurrentTenantId());
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
       res.json({
         connected: st.extensionConnected,
         syncStatus: { ...st.syncStats },
         stats: this.db.getTotalStats(),
+        indexingPhase: this.getIndexingPhase(tid),
       });
+    });
+
+    // Cheap poll for the sidebar sync indicator — flag reads only, no DB work.
+    this._app.get('/api/indexing-phase', (_req, res) => {
+      res.json({ phase: this.getIndexingPhase(getCurrentTenantId()) });
     });
 
     // ── Session transfer (WhatsApp Web–style “link this device”) ──────

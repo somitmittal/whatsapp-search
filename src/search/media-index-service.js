@@ -1,6 +1,7 @@
 import { createRequire } from 'module';
 import { readFileSync } from 'fs';
 import { basename, extname } from 'path';
+import config from '../config.js';
 
 const require = createRequire(import.meta.url);
 /** Lazy-load pdf-parse (CommonJS) for PDF text extraction — searchable without vision LLM. */
@@ -77,6 +78,11 @@ export default class MediaIndexService {
     this._preemptRequested = false;
   }
 
+  /** True while a captioning batch is in flight — drives the sidebar sync indicator. */
+  isBusy() {
+    return this._running;
+  }
+
   /** Call when the user picks a priority chat (same as thread-summary priority). */
   notePriorityChange() {
     this._preemptRequested = true;
@@ -126,7 +132,23 @@ export default class MediaIndexService {
     try {
       const prio = this._getPriorityChatJid?.() ?? null;
       const waLive = this._isWaLive ? this._isWaLive() !== false : true;
-      const jobs = this._db.getPendingMediaIndexJobs(limit, prio, waLive);
+      const recentCutoffTs = Math.floor(Date.now() / 1000)
+        - (config.liveRecentWindowDays * 24 * 60 * 60);
+      const sourceScopes = waLive ? ['live', 'imported'] : ['imported', 'live'];
+      let jobs = this._db.getPendingMediaIndexJobs(limit, prio, {
+        waLive,
+        sourceScope: sourceScopes[0],
+        recentCutoffTs,
+      });
+      // A batch belongs to exactly one source queue. Only inspect the secondary source
+      // after the primary queue has no pending work.
+      if (jobs.length === 0) {
+        jobs = this._db.getPendingMediaIndexJobs(limit, prio, {
+          waLive,
+          sourceScope: sourceScopes[1],
+          recentCutoffTs,
+        });
+      }
       for (const job of jobs) {
         if (this._preemptRequested || this._shouldDefer?.()) {
           brokeEarly = true;

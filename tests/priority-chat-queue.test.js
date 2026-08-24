@@ -1,5 +1,9 @@
 import { describe, it, expect } from '@jest/globals';
-import { prioritizeChatFirst, sortChatsForIndexing } from '../src/search/priority-chat-queue.js';
+import {
+  prioritizeChatFirst,
+  sortChatsForIndexing,
+  splitChatsBySource,
+} from '../src/search/priority-chat-queue.js';
 
 describe('prioritizeChatFirst', () => {
   it('moves matching jid to front', () => {
@@ -51,13 +55,13 @@ describe('sortChatsForIndexing', () => {
     expect(q[0].chatJid).toBe('import_archive@imported');
   });
 
-  it('ranks purely by score and feed tier once WhatsApp is live', () => {
+  it('keeps imported work behind all live chats while WhatsApp is live', () => {
     const q = sortChatsForIndexing(queue(), { waLive: true, indexScore });
     expect(q.map((x) => x.chatJid)).toEqual([
       'busy@g.us',
-      'import_archive@imported',
       'quiet@s.whatsapp.net',
       'status@broadcast',
+      'import_archive@imported',
     ]);
   });
 
@@ -69,5 +73,44 @@ describe('sortChatsForIndexing', () => {
       'quiet@s.whatsapp.net',
       'status@broadcast',
     ]);
+  });
+
+  it('puts live chats active in the recent window before higher-scoring old chats', () => {
+    const last = {
+      'old-busy@g.us': 100,
+      'recent-quiet@s.whatsapp.net': 950,
+    };
+    const q = sortChatsForIndexing([
+      { chatJid: 'old-busy@g.us' },
+      { chatJid: 'recent-quiet@s.whatsapp.net' },
+    ], {
+      waLive: true,
+      recentCutoffTs: 900,
+      lastMessageTs: (jid) => last[jid],
+      indexScore: (jid) => jid.startsWith('old') ? 1000 : 1,
+    });
+    expect(q.map((x) => x.chatJid)).toEqual([
+      'recent-quiet@s.whatsapp.net',
+      'old-busy@g.us',
+    ]);
+  });
+});
+
+describe('splitChatsBySource', () => {
+  const queue = [
+    { chatJid: 'live@g.us' },
+    { chatJid: 'archive@imported' },
+  ];
+
+  it('returns a live-only primary queue while WhatsApp is linked', () => {
+    const result = splitChatsBySource(queue, true);
+    expect(result.primary.map((x) => x.chatJid)).toEqual(['live@g.us']);
+    expect(result.secondary.map((x) => x.chatJid)).toEqual(['archive@imported']);
+  });
+
+  it('returns an imported-only primary queue while WhatsApp is offline', () => {
+    const result = splitChatsBySource(queue, false);
+    expect(result.primary.map((x) => x.chatJid)).toEqual(['archive@imported']);
+    expect(result.secondary.map((x) => x.chatJid)).toEqual(['live@g.us']);
   });
 });

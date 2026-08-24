@@ -65,3 +65,40 @@ describe('MediaIndexService defers until message indexing is done', () => {
     await expect(service.processPending(12)).resolves.toBe(0);
   });
 });
+
+describe('MediaIndexService source queues', () => {
+  test('checks the imported queue only after the live queue is empty', async () => {
+    const scopes = [];
+    const service = new MediaIndexService({
+      db: {
+        getPendingMediaIndexJobs: (limit, prio, opts) => {
+          scopes.push(opts.sourceScope);
+          return [];
+        },
+      },
+      getProvider: () => ({}),
+      isWaLive: () => true,
+    });
+
+    await expect(service.processPending(12)).resolves.toBe(0);
+    expect(scopes).toEqual(['live', 'imported']);
+  });
+
+  test('never mixes imported jobs into a non-empty live batch', async () => {
+    const scopes = [];
+    const service = new MediaIndexService({
+      db: {
+        getPendingMediaIndexJobs: (limit, prio, opts) => {
+          scopes.push(opts.sourceScope);
+          return opts.sourceScope === 'live' ? [{ messageId: 'live-1' }] : [{ messageId: 'import-1' }];
+        },
+      },
+      getProvider: () => ({}),
+      isWaLive: () => true,
+    });
+    service._indexOne = async () => true;
+
+    await expect(service.processPending(12)).resolves.toBe(1);
+    expect(scopes).toEqual(['live']);
+  });
+});

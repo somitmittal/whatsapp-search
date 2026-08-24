@@ -95,6 +95,8 @@ const config = {
   waHistoryChunkSize: Math.max(50, parseInt(process.env.WA_HISTORY_CHUNK_SIZE || '350', 10) || 350),
   /** Idle ms after the last history batch before marking sync complete (Baileys often pauses 5–30s between batches). */
   waSyncDoneDelayMs: Math.max(3000, parseInt(process.env.WA_SYNC_DONE_DELAY_MS || '15000', 10) || 15000),
+  /** Live chats active within this user-selected window form the first post-sync indexing queue. */
+  liveRecentWindowDays: 5,
   /**
    * If true, after each READY we auto-run `resyncAppState` + phone-book refresh (heavy; extra sync traffic/notifications).
    * Default false — use Settings → “Refresh contact names” or `POST /api/wa/sync-contacts` when you want names updated.

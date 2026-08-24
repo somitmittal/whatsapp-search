@@ -1,19 +1,26 @@
 import { embeddableText, embeddingSourceHash } from './embedding-text.js';
 import { encodeTexts, MINILM_MODEL_ID } from './minilm-encoder.js';
 import { packF32, unpackF32, topKByCosine } from './vector-math.js';
+import config from '../config.js';
 
 /** Same default batch as media indexing (`processPending(12)`). */
 const DEFAULT_BATCH = 12;
 
 export default class EmbeddingIndexService {
   constructor({
-    db, encode = encodeTexts, modelId = MINILM_MODEL_ID, getPriorityChatJid = null, isWaLive = null,
+    db,
+    encode = encodeTexts,
+    modelId = MINILM_MODEL_ID,
+    getPriorityChatJid = null,
+    isWaLive = null,
+    shouldDefer = null,
   }) {
     this._db = db;
     this._encode = encode;
     this._modelId = modelId;
     this._getPriorityChatJid = typeof getPriorityChatJid === 'function' ? getPriorityChatJid : null;
     this._isWaLive = typeof isWaLive === 'function' ? isWaLive : null;
+    this._shouldDefer = typeof shouldDefer === 'function' ? shouldDefer : null;
     this._scheduled = null;
     this._running = false;
     this._preemptRequested = false;
@@ -32,7 +39,13 @@ export default class EmbeddingIndexService {
     this._preemptRequested = true;
   }
 
+  /** True while an embedding batch is in flight — drives the sidebar sync indicator. */
+  isBusy() {
+    return this._running;
+  }
+
   async processPending(limit = DEFAULT_BATCH) {
+    if (this._shouldDefer?.()) return 0;
     if (this._unavailable) return 0;
     if (this._running) {
       this._preemptRequested = true;
@@ -44,7 +57,21 @@ export default class EmbeddingIndexService {
     try {
       const prio = this._getPriorityChatJid?.() ?? null;
       const waLive = this._isWaLive ? this._isWaLive() !== false : true;
-      const jobs = this._db.getPendingEmbeddingJobs(limit, prio, this._modelId, waLive);
+      const recentCutoffTs = Math.floor(Date.now() / 1000)
+        - (config.liveRecentWindowDays * 24 * 60 * 60);
+      const sourceScopes = waLive ? ['live', 'imported'] : ['imported', 'live'];
+      let jobs = this._db.getPendingEmbeddingJobs(limit, prio, this._modelId, {
+        waLive,
+        sourceScope: sourceScopes[0],
+        recentCutoffTs,
+      });
+      if (jobs.length === 0) {
+        jobs = this._db.getPendingEmbeddingJobs(limit, prio, this._modelId, {
+          waLive,
+          sourceScope: sourceScopes[1],
+          recentCutoffTs,
+        });
+      }
       const ready = [];
       for (const job of jobs) {
         const text = embeddableText(job);
@@ -66,6 +93,10 @@ export default class EmbeddingIndexService {
           throw new Error(`encoder returned ${vectors?.length ?? 0} vectors for ${ready.length} texts`);
         }
         for (let i = 0; i < ready.length; i++) {
+          if (this._shouldDefer?.()) {
+            brokeEarly = true;
+            break;
+          }
           const vec = vectors[i];
           this._db.upsertMessageEmbedding({
             messageRowid: ready[i].job.id,

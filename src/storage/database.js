@@ -1260,75 +1260,128 @@ export default class Database {
   }
 
   /**
+   * ORDER BY tier that pushes Status / broadcast / newsletter / bot feeds behind real
+   * conversations. Must stay in sync with `isWhatsAppLowPriorityFeed()` in
+   * src/whatsapp/jid-filters.js — `status@broadcast` is covered by the `%@broadcast` match.
+   * @param {string} col qualified `chat_jid` column for the surrounding query
+   */
+  _feedOrderSql(col = 'chat_jid') {
+    return `CASE WHEN ${col} LIKE '%@broadcast' OR ${col} LIKE '%@newsletter' OR ${col} LIKE '%@bot' THEN 1 ELSE 0 END, `;
+  }
+
+  /**
    * Rows with downloaded media that still need caption/transcribe (media_ai_index IS NULL).
    * When `priorityChatJid` is set, rows in that chat are ordered before others (same global newest-first within each tier).
    */
-  getPendingMediaIndexJobs(limit = 12, priorityChatJid = null, waLive = true) {
+  getPendingMediaIndexJobs(limit = 12, priorityChatJid = null, opts = {}) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();
+    const normalizedOpts = typeof opts === 'boolean' ? { waLive: opts } : (opts || {});
+    const {
+      waLive = true,
+      sourceScope = 'all',
+      recentCutoffTs = 0,
+    } = normalizedOpts;
     const prio = priorityChatJid && String(priorityChatJid).trim()
       ? String(priorityChatJid).trim()
       : null;
-    const vis = this._visibilityOrderSql(waLive);
+    const sourceFilter = sourceScope === 'live'
+      ? `AND m.chat_jid NOT LIKE '%@imported'`
+      : (sourceScope === 'imported' ? `AND m.chat_jid LIKE '%@imported'` : '');
+    const vis = sourceScope === 'all' ? this._visibilityOrderSql(waLive, 'm.chat_jid') : '';
+    const feed = this._feedOrderSql('m.chat_jid');
+    const recentOrder = Number(recentCutoffTs) > 0
+      ? 'CASE WHEN a.chat_last_ts >= ? THEN 0 ELSE 1 END, '
+      : '';
+    const orderArgs = Number(recentCutoffTs) > 0 ? [Number(recentCutoffTs)] : [];
     const select = `
-      SELECT id, message_id AS messageId, chat_jid AS chatJid, media_type AS mediaType, media_path AS mediaPath,
-             media_caption AS mediaCaption, text AS text,
-             media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError
-      FROM messages
-      WHERE tenant_id = ?
-        AND media_path IS NOT NULL AND trim(media_path) != ''
-        AND media_type IN ('image', 'audio', 'video', 'sticker', 'document')
-        AND (media_ai_index IS NULL OR media_index_status IN ('pending', 'failed'))
+      WITH chat_activity AS (
+        SELECT chat_jid, MAX(timestamp) AS chat_last_ts
+        FROM messages WHERE tenant_id = ? GROUP BY chat_jid
+      )
+      SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
+             m.media_type AS mediaType, m.media_path AS mediaPath,
+             m.media_caption AS mediaCaption, m.text AS text,
+             m.media_index_status AS mediaIndexStatus, m.media_index_error AS mediaIndexError
+      FROM messages m
+      INNER JOIN chat_activity a ON a.chat_jid = m.chat_jid
+      WHERE m.tenant_id = ?
+        ${sourceFilter}
+        AND m.media_path IS NOT NULL AND trim(m.media_path) != ''
+        AND m.media_type IN ('image', 'audio', 'video', 'sticker', 'document')
+        AND (m.media_ai_index IS NULL OR m.media_index_status IN ('pending', 'failed'))
     `;
     if (prio) {
       return this._db.prepare(`
         ${select}
-        ORDER BY CASE WHEN chat_jid = ? THEN 0 ELSE 1 END, ${vis}timestamp DESC
+        ORDER BY CASE WHEN m.chat_jid = ? THEN 0 ELSE 1 END,
+                 ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
         LIMIT ?
-      `).all(t, prio, n);
+      `).all(t, t, prio, ...orderArgs, n);
     }
     return this._db.prepare(`
       ${select}
-      ORDER BY ${vis}timestamp DESC
+      ORDER BY ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
       LIMIT ?
-    `).all(t, n);
+    `).all(t, t, ...orderArgs, n);
   }
 
-  getPendingEmbeddingJobs(limit = 12, priorityChatJid = null, modelId = '', waLive = true) {
+  getPendingEmbeddingJobs(limit = 12, priorityChatJid = null, modelId = '', opts = {}) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();
     const model = String(modelId || '');
+    const normalizedOpts = typeof opts === 'boolean' ? { waLive: opts } : (opts || {});
+    const {
+      waLive = true,
+      sourceScope = 'all',
+      recentCutoffTs = 0,
+    } = normalizedOpts;
     const prio = priorityChatJid && String(priorityChatJid).trim()
       ? String(priorityChatJid).trim()
       : null;
+    const sourceFilter = sourceScope === 'live'
+      ? `AND m.chat_jid NOT LIKE '%@imported'`
+      : (sourceScope === 'imported' ? `AND m.chat_jid LIKE '%@imported'` : '');
     const hasText = `(
            (text IS NOT NULL AND trim(text) != '')
            OR (media_caption IS NOT NULL AND trim(media_caption) != '')
            OR (media_ai_index IS NOT NULL AND trim(media_ai_index) != '')
          )`;
     const select = `
+      WITH chat_activity AS (
+        SELECT chat_jid, MAX(timestamp) AS chat_last_ts
+        FROM messages WHERE tenant_id = ? GROUP BY chat_jid
+      )
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid, m.sender, m.text,
              m.media_caption AS mediaCaption, m.media_ai_index AS mediaAiIndex, m.timestamp
       FROM messages m
+      INNER JOIN chat_activity a ON a.chat_jid = m.chat_jid
       LEFT JOIN message_embeddings e
         ON e.message_rowid = m.id AND e.model = ?
       WHERE m.tenant_id = ?
+        ${sourceFilter}
         AND ${hasText}
         AND e.message_rowid IS NULL
     `;
-    const vis = this._visibilityOrderSql(waLive, 'm.chat_jid');
+    const vis = sourceScope === 'all' ? this._visibilityOrderSql(waLive, 'm.chat_jid') : '';
+    const feed = this._feedOrderSql('m.chat_jid');
+    const recentOrder = Number(recentCutoffTs) > 0
+      ? 'CASE WHEN a.chat_last_ts >= ? THEN 0 ELSE 1 END, '
+      : '';
+    const orderArgs = Number(recentCutoffTs) > 0 ? [Number(recentCutoffTs)] : [];
     if (prio) {
       return this._db.prepare(`
         ${select}
-        ORDER BY CASE WHEN m.chat_jid = ? THEN 0 ELSE 1 END, ${vis}m.timestamp DESC
+        ORDER BY CASE WHEN m.chat_jid = ? THEN 0 ELSE 1 END,
+                 ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
         LIMIT ?
-      `).all(model, t, prio, n);
+      `).all(t, model, t, prio, ...orderArgs, n);
     }
     return this._db.prepare(`
       ${select}
-      ORDER BY ${vis}m.timestamp DESC
+      ORDER BY ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
       LIMIT ?
-    `).all(model, t, n);
+    `).all(t, model, t, ...orderArgs, n);
   }
 
   upsertMessageEmbedding({ messageRowid, model, dim, vector, sourceHash }) {
@@ -2102,17 +2155,39 @@ export default class Database {
     `).run(t, chatJid, chatName, threadStart, threadEnd, summary, messageCount);
   }
 
-  getPendingFactThreads(limit = 12, waLive = true) {
+  getPendingFactThreads(limit = 12, opts = {}) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();
+    const normalizedOpts = typeof opts === 'boolean' ? { waLive: opts } : (opts || {});
+    const {
+      waLive = true,
+      sourceScope = 'all',
+      recentCutoffTs = 0,
+    } = normalizedOpts;
+    const sourceFilter = sourceScope === 'live'
+      ? `AND s.chat_jid NOT LIKE '%@imported'`
+      : (sourceScope === 'imported' ? `AND s.chat_jid LIKE '%@imported'` : '');
+    const vis = sourceScope === 'all' ? this._visibilityOrderSql(waLive, 's.chat_jid') : '';
+    const feed = this._feedOrderSql('s.chat_jid');
+    const recentOrder = Number(recentCutoffTs) > 0
+      ? 'CASE WHEN a.chat_last_ts >= ? THEN 0 ELSE 1 END, '
+      : '';
+    const orderArgs = Number(recentCutoffTs) > 0 ? [Number(recentCutoffTs)] : [];
     return this._db.prepare(`
-      SELECT chat_jid AS chatJid, chat_name AS chatName,
-             thread_start AS threadStart, thread_end AS threadEnd
-      FROM thread_summaries
-      WHERE tenant_id = ? AND (facts_status IS NULL OR trim(facts_status) = '')
-      ORDER BY ${this._visibilityOrderSql(waLive)}thread_end DESC
+      WITH chat_activity AS (
+        SELECT chat_jid, MAX(thread_end) AS chat_last_ts
+        FROM thread_summaries WHERE tenant_id = ? GROUP BY chat_jid
+      )
+      SELECT s.chat_jid AS chatJid, s.chat_name AS chatName,
+             s.thread_start AS threadStart, s.thread_end AS threadEnd
+      FROM thread_summaries s
+      INNER JOIN chat_activity a ON a.chat_jid = s.chat_jid
+      WHERE s.tenant_id = ?
+        ${sourceFilter}
+        AND (s.facts_status IS NULL OR trim(s.facts_status) = '')
+      ORDER BY ${vis}${feed}${recentOrder}a.chat_last_ts DESC, s.thread_end DESC
       LIMIT ?
-    `).all(t, n);
+    `).all(t, t, ...orderArgs, n);
   }
 
   setThreadFactsStatus(chatJid, threadStart, status) {

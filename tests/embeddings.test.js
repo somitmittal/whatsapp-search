@@ -58,6 +58,49 @@ describe('EmbeddingIndexService', () => {
     const hits = await svc.searchSimilar('unpaid bill', null, 1);
     expect(hits[0].id).toBe(1);
   });
+
+  test('does no encoder work while initial history ingestion is busy', async () => {
+    let encoded = false;
+    const svc = new EmbeddingIndexService({
+      db: {
+        getPendingEmbeddingJobs: () => {
+          throw new Error('must not query while ingestion is busy');
+        },
+      },
+      encode: async () => {
+        encoded = true;
+        return [];
+      },
+      shouldDefer: () => true,
+    });
+
+    await expect(svc.processPending(12)).resolves.toBe(0);
+    expect(encoded).toBe(false);
+  });
+
+  test('keeps live and imported jobs in separate batches', async () => {
+    const scopes = [];
+    const stored = [];
+    const db = {
+      getPendingEmbeddingJobs: (limit, prio, model, opts) => {
+        scopes.push(opts.sourceScope);
+        return opts.sourceScope === 'live'
+          ? [{ id: 7, text: 'recent live message', chatJid: 'live@g.us' }]
+          : [{ id: 8, text: 'archive message', chatJid: 'archive@imported' }];
+      },
+      upsertMessageEmbedding: (row) => stored.push(row.messageRowid),
+    };
+    const svc = new EmbeddingIndexService({
+      db,
+      encode: async (texts) => texts.map(() => new Float32Array([1, 0])),
+      modelId: 'test',
+      isWaLive: () => true,
+    });
+
+    await expect(svc.processPending(12)).resolves.toBe(1);
+    expect(scopes).toEqual(['live']);
+    expect(stored).toEqual([7]);
+  });
 });
 
 describe('SmartSearch hybrid merge', () => {

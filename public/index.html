@@ -54,6 +54,17 @@
       font-size: 11px; font-weight: 500; padding: 3px 10px; border-radius: 12px;
     }
     .stored-badge svg { width: 12px; height: 12px; }
+    /* Small "still working" indicator — WhatsApp history sync, then AI indexing, then media */
+    .sync-chip {
+      display: none; align-items: center; gap: 5px;
+      background: rgba(0,168,132,0.1); color: var(--green-dark);
+      font-size: 11px; font-weight: 500; padding: 3px 10px; border-radius: 12px;
+      white-space: nowrap;
+    }
+    .sync-chip.visible { display: flex; }
+    .sync-chip svg { width: 12px; height: 12px; flex-shrink: 0; animation: spin 1.2s linear infinite; }
+    /* Only one badge fits next to the title — the sync state is the more useful one */
+    .sync-chip.visible ~ .stored-badge { display: none; }
     .sidebar-actions { display: flex; gap: 2px; }
     .icon-btn {
       width: 36px; height: 36px; min-width: 44px; min-height: 44px; border-radius: 50%; border: none; background: transparent;
@@ -1310,6 +1321,7 @@
       .mobile-back-btn { display: flex !important; }
       .sidebar-header h1 { font-size: 18px; }
       .stored-badge { font-size: 10px; padding: 2px 8px; }
+      .sync-chip { font-size: 10px; padding: 2px 8px; }
       .messages-area { padding: 8px 12px; }
       .bubble { max-width: 92%; }
       .global-search { padding: 8px 10px; }
@@ -1343,6 +1355,10 @@
     <div class="sidebar-header">
       <div class="sidebar-header-left">
         <h1>Chats</h1>
+        <div class="sync-chip" id="sync-chip" role="status" aria-live="polite" title="Background sync in progress">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          <span id="sync-chip-text">Syncing chats…</span>
+        </div>
         <div class="stored-badge">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
           stored locally
@@ -2930,6 +2946,7 @@
   }
 
   function updateSyncProgress(data) {
+    setSyncChipPhase('syncing');
     const { completed, total, messages, byChat } = data || {};
     if (byChat && typeof byChat === 'object') {
       waSyncByChat = { ...byChat };
@@ -2974,6 +2991,36 @@
   function applyWaSyncBars() {
     // Per-chat sync bars removed; sync progress is shown via the single sidebar-level bar.
   }
+
+  // ── Sidebar sync chip ──────────────────────────────────────────────
+  // One compact badge for the whole background pipeline, in the order the server runs it.
+  const SYNC_CHIP_LABELS = {
+    syncing: 'Syncing chats…',
+    indexing: 'Indexing chats…',
+    media: 'Indexing media…',
+  };
+  let _syncChipPhase = null;
+
+  function setSyncChipPhase(phase) {
+    const el = $('#sync-chip');
+    if (!el) return;
+    const next = SYNC_CHIP_LABELS[phase] ? phase : null;
+    if (next === _syncChipPhase) return;
+    _syncChipPhase = next;
+    el.classList.toggle('visible', Boolean(next));
+    if (next) $('#sync-chip-text').textContent = SYNC_CHIP_LABELS[next];
+  }
+
+  async function pollSyncChipPhase() {
+    try {
+      const r = await fetch('/api/indexing-phase');
+      if (!r.ok) return;
+      setSyncChipPhase((await r.json())?.phase);
+    } catch { /* transient — the next tick retries */ }
+  }
+  // Same cadence as the WhatsApp status poll; the endpoint only reads in-memory flags.
+  setInterval(pollSyncChipPhase, 3000);
+  void pollSyncChipPhase();
 
   // Fetch initial WA state on load
   async function bootstrapWhatsAppLinking(opts = {}) {
@@ -3219,8 +3266,11 @@
       summaryProgressByJid = {};
       applyChatSummaryBars();
       refreshDash();
+      // Media captioning starts once summaries drain — let the server say which phase is next.
+      void pollSyncChipPhase();
       return;
     }
+    setSyncChipPhase('indexing');
     if (d.started) return;
     if (!d.chatJid) return;
     const jid = d.chatJid;
@@ -3348,7 +3398,12 @@
 
   function sidebarTabOf(row) {
     if (row?.sidebarTab) return row.sidebarTab;
-    return String(row?.chatJid || '').endsWith('@imported') ? 'imported' : 'chat';
+    const jid = String(row?.chatJid || '');
+    if (jid.endsWith('@imported')) return 'imported';
+    if (jid.endsWith('@broadcast') || jid.endsWith('@newsletter') || jid.endsWith('@bot')) {
+      return 'feed';
+    }
+    return 'chat';
   }
 
   function chatsForCurrentSidebarTab() {
@@ -3514,9 +3569,11 @@
     if (chatList) chatList.style.display = isBusiness ? 'none' : '';
     if (filterWrap) filterWrap.style.display = isBusiness ? 'none' : '';
     const filterInput = $('#filter');
-    if (filterInput) filterInput.placeholder = sidebarListTab === 'imported'
-      ? 'Search imported chats...'
-      : 'Search WhatsApp chats...';
+    if (filterInput) {
+      filterInput.placeholder = sidebarListTab === 'imported'
+        ? 'Search imported chats...'
+        : (sidebarListTab === 'feed' ? 'Search status and feeds...' : 'Search WhatsApp chats...');
+    }
     if (isBusiness) void loadBusinessInbox();
     else renderChatsFromState();
     renderStatusStrip();
@@ -3572,7 +3629,7 @@
     const wrap = $('#status-strip-wrap');
     const strip = $('#status-strip');
     if (!wrap || !strip) return;
-    const show = sidebarListTab === 'chat' && isWaUiReady();
+    const show = sidebarListTab === 'feed' && isWaUiReady();
     const peers = statusFeedData.peers || [];
     if (!show || peers.length === 0) {
       wrap.hidden = true;

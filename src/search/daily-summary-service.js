@@ -1,7 +1,12 @@
 import { buildFactExtractionPrompt, parseFactsFromLlm } from './fact-extract.js';
 import { segmentIntoThreads, threadRangesNewestFirst } from './thread-segment.js';
 import { getCurrentTenantId } from '../storage/tenant-context.js';
-import { prioritizeChatFirst, sortChatsForIndexing } from './priority-chat-queue.js';
+import config from '../config.js';
+import {
+  prioritizeChatFirst,
+  sortChatsForIndexing,
+  splitChatsBySource,
+} from './priority-chat-queue.js';
 import { factExtractionAddon, getSmbProfileFromDb } from '../smb/profiles.js';
 import { isSmallLocalModel, localSummaryLlmExtras } from './indexing-profile.js';
 import { GROUNDING_PROMPT_RULES, enforceGroundedAnswer, filterGroundedFacts } from './grounding.js';
@@ -21,6 +26,14 @@ const SUMMARY_CONCURRENCY_MAX = 8;
 const DEFAULT_CLOUD_SUMMARY_CONCURRENCY = 7;
 /** Longer than default provider HTTP timeout — summaries + merges can be slow on large threads. */
 const SUMMARY_LLM_TIMEOUT_MS = 180_000;
+/**
+ * Attempts allowed per thread before it is dropped from the pending queue.
+ * A thread whose summary is fully stripped by the grounding filter fails identically on
+ * every retry, and nothing is written for it, so it stays "unsummarized" forever — without
+ * this budget one such thread makes the whole pass restart indefinitely.
+ * Matches the per-call retry budget in `_generateSummary()`.
+ */
+const MAX_THREAD_SUMMARY_ATTEMPTS = 3;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -93,13 +106,21 @@ const SUMMARY_PROMPT =
 
 export default class DailySummaryService {
   constructor(opts = {}) {
-    const { db, provider = null, isWaLive = null, onIdle = null } = opts;
+    const {
+      db,
+      provider = null,
+      isWaLive = null,
+      onIdle = null,
+      shouldDefer = null,
+    } = opts;
     this._db = db;
     this._provider = provider;
     this._fallback = opts.fallbackProvider ?? opts.fallbackProvider ?? null;
     this._onProgress = opts.onProgress ?? opts.onProgress ?? null;
     /** @type {(() => boolean)|null} */
     this._isWaLive = typeof isWaLive === 'function' ? isWaLive : null;
+    /** Stop between LLM batches while WhatsApp is still inserting initial history. */
+    this._shouldDefer = typeof shouldDefer === 'function' ? shouldDefer : null;
     /** Fired when a pass finishes with no queued restart (message indexing is idle). */
     this._onIdle = typeof onIdle === 'function' ? onIdle : null;
     this._running = false;
@@ -112,6 +133,36 @@ export default class DailySummaryService {
     this._priorityChatJidByTenant = new Map();
     /** @type {Map<string, boolean>} tenantId → true once the initial priority pass completed */
     this._initialPassDone = new Map();
+    /**
+     * @type {Map<string, number>} `tenantId|chatJid|threadStart` → failed attempts.
+     * In-memory only, so a process restart gives every thread a fresh budget.
+     */
+    this._threadAttempts = new Map();
+  }
+
+  _threadAttemptKey(chatJid, threadStart) {
+    return `${getCurrentTenantId()}|${chatJid}|${threadStart}`;
+  }
+
+  /** True once a thread has burned its retry budget and should be left out of the queue. */
+  _hasGivenUpOnThread(chatJid, threadStart) {
+    const attempts = this._threadAttempts.get(this._threadAttemptKey(chatJid, threadStart)) || 0;
+    return attempts >= MAX_THREAD_SUMMARY_ATTEMPTS;
+  }
+
+  _noteThreadFailure(chatJid, threadStart, timeLabel) {
+    const key = this._threadAttemptKey(chatJid, threadStart);
+    const attempts = (this._threadAttempts.get(key) || 0) + 1;
+    this._threadAttempts.set(key, attempts);
+    if (attempts >= MAX_THREAD_SUMMARY_ATTEMPTS) {
+      console.log(
+        `[Summaries] Giving up on ${chatJid} ${timeLabel} after ${attempts} attempts — no groundable summary`,
+      );
+    }
+  }
+
+  _noteThreadSuccess(chatJid, threadStart) {
+    this._threadAttempts.delete(this._threadAttemptKey(chatJid, threadStart));
   }
 
   /** True while a pass is in flight or about to restart. */
@@ -246,6 +297,11 @@ export default class DailySummaryService {
   }
 
   async indexPendingDays() {
+    if (this._shouldDefer?.()) {
+      this._caughtUp = false;
+      console.log('[Summaries] Waiting for WhatsApp message ingestion to finish');
+      return 0;
+    }
     if (this._running) {
       this._restartPending = true;
       this._preemptRequested = true;
@@ -268,10 +324,11 @@ export default class DailySummaryService {
       return 0;
     }
 
+    let deferredForIngestion = false;
     try {
       const chats = this._db.getChatStats();
       /** Chats that still have at least one unsummarized thread */
-      const workQueue = [];
+      const allWork = [];
       for (const { chatJid, chatName } of chats) {
         const timestamps = this._db.getMessageTimestampsForChat(chatJid);
         if (timestamps.length === 0) continue;
@@ -283,9 +340,9 @@ export default class DailySummaryService {
         // continues indexing in the background.
         const pendingThreadStarts = threadRangesNewestFirst(
           threads.filter(t => !summarizedStarts.has(t[0].timestamp)),
-        );
+        ).filter(spec => !this._hasGivenUpOnThread(chatJid, spec.start));
         if (pendingThreadStarts.length === 0) continue;
-        workQueue.push({ chatJid, chatName, pendingThreadStarts });
+        allWork.push({ chatJid, chatName, pendingThreadStarts });
       }
 
       const chatMeta = new Map(chats.map((c) => [c.chatJid, c]));
@@ -298,7 +355,29 @@ export default class DailySummaryService {
       };
 
       const waLive = this._isWaLive ? this._isWaLive() !== false : true;
-      sortChatsForIndexing(workQueue, { waLive, indexScore });
+      const lastMessageTs = (chatJid) => chatMeta.get(chatJid)?.lastMessageTs || 0;
+      const recentCutoffTs = Math.floor(Date.now() / 1000)
+        - (config.liveRecentWindowDays * 24 * 60 * 60);
+      sortChatsForIndexing(allWork, {
+        waLive,
+        indexScore,
+        lastMessageTs,
+        recentCutoffTs,
+      });
+      const sourceQueues = splitChatsBySource(allWork, waLive);
+      // Process only one source per pass. This keeps live and imported LLM work out of the
+      // same queue while still allowing the secondary source to run after the primary drains.
+      const workQueue = sourceQueues.primary.length > 0
+        ? sourceQueues.primary
+        : sourceQueues.secondary;
+      const secondarySourcePending = sourceQueues.primary.length > 0
+        && sourceQueues.secondary.length > 0;
+      if (workQueue.length > 0) {
+        const activeSource = sourceQueues.primary.length > 0
+          ? sourceQueues.primarySource
+          : (sourceQueues.primarySource === 'live' ? 'imported' : 'live');
+        console.log(`[Summaries] Processing ${activeSource} indexing queue (${workQueue.length} chats)`);
+      }
 
       const tid = getCurrentTenantId();
       const preferred = this._priorityChatJidByTenant.get(String(tid));
@@ -338,6 +417,11 @@ export default class DailySummaryService {
       let chatIndex = 0;
       let clearedPreferred = false;
       summaryPass: for (const { chatJid, chatName, pendingThreadStarts } of effectiveQueue) {
+        if (this._shouldDefer?.()) {
+          deferredForIngestion = true;
+          console.log('[Summaries] Pausing for WhatsApp message ingestion');
+          break summaryPass;
+        }
         if (this._preemptRequested) {
           this._preemptRequested = false;
           this._restartPending = true;
@@ -363,6 +447,11 @@ export default class DailySummaryService {
         let consecutiveFailures = 0;
 
         for (let batchStart = 0; batchStart < pendingCount; ) {
+          if (this._shouldDefer?.()) {
+            deferredForIngestion = true;
+            console.log('[Summaries] Pausing between thread batches for WhatsApp ingestion');
+            break summaryPass;
+          }
           if (this._preemptRequested) {
             this._preemptRequested = false;
             this._restartPending = true;
@@ -468,15 +557,28 @@ export default class DailySummaryService {
         }
       }
 
-      if (totalGenerated === 0 && !this._restartPending) {
-        totalGenerated += await this._indexPendingFacts();
+      if (secondarySourcePending && totalGenerated > 0 && !this._restartPending) {
+        console.log('[Summaries] Primary source queue drained — scheduling separate secondary-source pass');
+        this._restartPending = true;
+      }
+
+      if (totalGenerated === 0 && !this._restartPending && !deferredForIngestion) {
+        const factsGenerated = await this._indexPendingFacts();
+        totalGenerated += factsGenerated;
+        if (factsGenerated > 0) {
+          // Drain every facts batch before declaring text indexing caught up and releasing media.
+          this._restartPending = true;
+        }
       }
 
       return totalGenerated;
     } finally {
       const willRestart = this._restartPending;
       this._running = false;
-      if (willRestart) {
+      if (deferredForIngestion) {
+        this._restartPending = false;
+        this._caughtUp = false;
+      } else if (willRestart) {
         this._restartPending = false;
         this._caughtUp = false;
         console.log('[Summaries] Running queued pass (new messages or concurrent trigger)...');
@@ -513,30 +615,44 @@ export default class DailySummaryService {
         }
       }
 
-      if (partials.length === 0) return false;
+      if (partials.length === 0) {
+        this._noteThreadFailure(chatJid, threadStart, timeLabel);
+        return false;
+      }
 
       let summary;
       if (partials.length === 1) {
         summary = partials[0];
       } else {
         summary = await this._mergePartialSummaries(provider, partials, chatName, timeLabel);
-        if (!summary?.trim()) return false;
+        if (!summary?.trim()) {
+          this._noteThreadFailure(chatJid, threadStart, timeLabel);
+          return false;
+        }
       }
 
       this._db.upsertThreadSummary({
         chatJid, chatName, threadStart, threadEnd, summary: summary.trim(), messageCount: thread.length,
       });
+      this._noteThreadSuccess(chatJid, threadStart);
       const segNote = chunks.length > 1 ? `, ${chunks.length}×${chunkSize} batches` : '';
       console.log(`[Summaries] ✓ ${timeLabel} (${thread.length} msgs${segNote})`);
       return true;
     } catch (err) {
       console.error(`[Summaries] ✗ ${chatJid} ${timeLabel}:`, err.message.slice(0, 120));
+      this._noteThreadFailure(chatJid, threadStart, timeLabel);
     }
     return false;
   }
 
   async _indexPendingFacts() {
     if (typeof this._db.getPendingFactThreads !== 'function') return 0;
+    // Same ingestion gate the summary loops honour — fact extraction is just as heavy,
+    // so it must not hold the LLM while WhatsApp is still inserting history.
+    if (this._shouldDefer?.()) {
+      console.log('[Facts] Waiting for WhatsApp message ingestion to finish');
+      return 0;
+    }
     const provider = await this._pickProvider();
     if (!provider) return 0;
 
@@ -544,7 +660,21 @@ export default class DailySummaryService {
     const keyCount = provider._keys?.length ?? (isLocal ? 1 : DEFAULT_CONCURRENCY);
     const concurrency = getSummaryThreadConcurrency(isLocal, keyCount, provider.model);
     const waLive = this._isWaLive ? this._isWaLive() !== false : true;
-    const pending = this._db.getPendingFactThreads(concurrency, waLive);
+    const recentCutoffTs = Math.floor(Date.now() / 1000)
+      - (config.liveRecentWindowDays * 24 * 60 * 60);
+    const sourceScopes = waLive ? ['live', 'imported'] : ['imported', 'live'];
+    let pending = this._db.getPendingFactThreads(concurrency, {
+      waLive,
+      sourceScope: sourceScopes[0],
+      recentCutoffTs,
+    });
+    if (pending.length === 0) {
+      pending = this._db.getPendingFactThreads(concurrency, {
+        waLive,
+        sourceScope: sourceScopes[1],
+        recentCutoffTs,
+      });
+    }
     if (pending.length === 0) return 0;
 
     console.log(`[Facts] Summaries caught up — extracting facts for ${pending.length} thread(s)`);

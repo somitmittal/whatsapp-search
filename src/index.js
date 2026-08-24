@@ -104,6 +104,7 @@ async function main() {
   }
 
   const isWaLive = () => webServer?.isTenantWaLive?.(getCurrentTenantId()) ?? false;
+  const isWaHistoryBusy = () => webServer?.isTenantWaHistoryBusy?.(getCurrentTenantId()) ?? false;
 
   const summaryService = new DailySummaryService({
     db,
@@ -113,12 +114,14 @@ async function main() {
       if (webServer) webServer.onSummaryProgress(data);
     },
     isWaLive,
+    shouldDefer: isWaHistoryBusy,
     onIdle: () => mediaIndexService.scheduleProcess(),
   });
   const embeddingIndexService = new EmbeddingIndexService({
     db,
     getPriorityChatJid: () => summaryService.getPriorityChatForTenant(getCurrentTenantId()),
     isWaLive,
+    shouldDefer: isWaHistoryBusy,
   });
   const searchEngine = new SmartSearch(db, provider, { embeddingIndex: embeddingIndexService });
   const mediaIndexService = new MediaIndexService({
@@ -126,7 +129,7 @@ async function main() {
     getProvider: () => mediaIndexProvider,
     getPriorityChatJid: () => summaryService.getPriorityChatForTenant(getCurrentTenantId()),
     isWaLive,
-    shouldDefer: () => summaryService.isBusy() || !summaryService.hasCaughtUp(),
+    shouldDefer: () => isWaHistoryBusy() || summaryService.isBusy() || !summaryService.hasCaughtUp(),
   });
 
   async function reloadMediaIndexProvider() {
