@@ -1058,6 +1058,10 @@ export default class WebServer {
         syncStatus: { ...st.syncStats },
         stats: this.db.getTotalStats(),
         indexingPhase: this.getIndexingPhase(tid),
+        indexingPolicy: {
+          minMessages: config.indexMinMessageCount,
+          recentDays: config.indexRecentWindowDays,
+        },
       });
     });
 
@@ -2243,6 +2247,30 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           }
         });
         return res.json({ ok: true, priorityChatJid: chatJid });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    /** Persist an explicit request to index a chat that fails the auto-index size/recency gate. */
+    this._app.post('/api/summaries/opt-in-chat', (req, res) => {
+      try {
+        const chatJid = String(req.body?.chatJid ?? '').trim();
+        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const tid = getCurrentTenantId();
+        this.db.optInChatForIndex(chatJid);
+        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this._mediaIndexService?.notePriorityChange?.();
+        this._embeddingIndexService?.notePriorityChange?.();
+        void runWithTenant(tid, async () => {
+          try {
+            await this.summaryService.indexPendingDays();
+            await this._embeddingIndexService?.processPending?.(12);
+          } catch (err) {
+            console.error('[summaries/opt-in-chat]', err.message);
+          }
+        });
+        return res.json({ ok: true, chatJid, optedIn: true });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }

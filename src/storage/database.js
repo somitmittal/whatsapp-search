@@ -24,7 +24,6 @@ import {
 } from '../whatsapp/chat-display-name.js';
 import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 import { isChatEligibleForIndex } from '../search/index-eligibility.js';
-import config from '../config.js';
 import { reactionParticipantSlotKey } from '../whatsapp/reaction-counts.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 
@@ -337,6 +336,69 @@ export default class Database {
     } catch (e) {
       console.warn('[DB] chat_roster:', e.message);
     }
+  }
+
+  /**
+   * Chats the user asked to index even though they fail the auto-index size/recency gate.
+   * Survives restarts so a one-off request is not lost when the process recycles.
+   */
+  _migrateIndexOptIn() {
+    try {
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS index_opt_in (
+          tenant_id TEXT NOT NULL,
+          chat_jid TEXT NOT NULL,
+          opted_at INTEGER DEFAULT (unixepoch()),
+          PRIMARY KEY (tenant_id, chat_jid)
+        );
+      `);
+    } catch (e) {
+      console.warn('[DB] index_opt_in:', e.message);
+    }
+  }
+
+  optInChatForIndex(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return false;
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      INSERT INTO index_opt_in (tenant_id, chat_jid) VALUES (?, ?)
+      ON CONFLICT(tenant_id, chat_jid) DO UPDATE SET opted_at = unixepoch()
+    `).run(t, jid);
+    return true;
+  }
+
+  listIndexOptInJids() {
+    const t = getCurrentTenantId();
+    return this._db.prepare(
+      'SELECT chat_jid AS chatJid FROM index_opt_in WHERE tenant_id = ?',
+    ).all(t).map((r) => r.chatJid);
+  }
+
+  /**
+   * Restrict pending AI jobs to auto-eligible chats, plus any the user opted in.
+   * `activityAlias` must expose `msg_count` and `chat_last_ts`.
+   * @returns {{ sql: string, args: Array<number|string> }}
+   */
+  _indexEligibilitySql(chatJidExpr, activityAlias = 'a') {
+    const min = Number(config.indexMinMessageCount) || 0;
+    const cutoff = Math.floor(Date.now() / 1000)
+      - ((Number(config.indexRecentWindowDays) || 0) * 24 * 60 * 60);
+    const t = getCurrentTenantId();
+    const sql = `(
+      (
+        ${activityAlias}.msg_count > ?
+        AND ${activityAlias}.chat_last_ts >= ?
+        AND ${chatJidExpr} NOT LIKE '%@broadcast'
+        AND ${chatJidExpr} NOT LIKE '%@newsletter'
+        AND ${chatJidExpr} NOT LIKE '%@bot'
+      )
+      OR EXISTS (
+        SELECT 1 FROM index_opt_in o
+        WHERE o.tenant_id = ? AND o.chat_jid = ${chatJidExpr}
+      )
+    )`;
+    return { sql, args: [min, cutoff, t] };
   }
 
   /**
@@ -1364,9 +1426,10 @@ export default class Database {
       ? 'CASE WHEN a.chat_last_ts >= ? THEN 0 ELSE 1 END, '
       : '';
     const orderArgs = Number(recentCutoffTs) > 0 ? [Number(recentCutoffTs)] : [];
+    const gate = this._indexEligibilitySql('m.chat_jid');
     const select = `
       WITH chat_activity AS (
-        SELECT chat_jid, MAX(timestamp) AS chat_last_ts
+        SELECT chat_jid, MAX(timestamp) AS chat_last_ts, COUNT(*) AS msg_count
         FROM messages WHERE tenant_id = ? GROUP BY chat_jid
       )
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
@@ -1377,6 +1440,7 @@ export default class Database {
       INNER JOIN chat_activity a ON a.chat_jid = m.chat_jid
       WHERE m.tenant_id = ?
         ${sourceFilter}
+        AND ${gate.sql}
         AND m.media_path IS NOT NULL AND trim(m.media_path) != ''
         AND m.media_type IN ('image', 'audio', 'video', 'sticker', 'document')
         AND (m.media_ai_index IS NULL OR m.media_index_status IN ('pending', 'failed'))
@@ -1387,13 +1451,13 @@ export default class Database {
         ORDER BY CASE WHEN m.chat_jid = ? THEN 0 ELSE 1 END,
                  ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
         LIMIT ?
-      `).all(t, t, prio, ...orderArgs, n);
+      `).all(t, t, ...gate.args, prio, ...orderArgs, n);
     }
     return this._db.prepare(`
       ${select}
       ORDER BY ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
       LIMIT ?
-    `).all(t, t, ...orderArgs, n);
+    `).all(t, t, ...gate.args, ...orderArgs, n);
   }
 
   getPendingEmbeddingJobs(limit = 12, priorityChatJid = null, modelId = '', opts = {}) {
@@ -1417,9 +1481,10 @@ export default class Database {
            OR (media_caption IS NOT NULL AND trim(media_caption) != '')
            OR (media_ai_index IS NOT NULL AND trim(media_ai_index) != '')
          )`;
+    const gate = this._indexEligibilitySql('m.chat_jid');
     const select = `
       WITH chat_activity AS (
-        SELECT chat_jid, MAX(timestamp) AS chat_last_ts
+        SELECT chat_jid, MAX(timestamp) AS chat_last_ts, COUNT(*) AS msg_count
         FROM messages WHERE tenant_id = ? GROUP BY chat_jid
       )
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid, m.sender, m.text,
@@ -1430,6 +1495,7 @@ export default class Database {
         ON e.message_rowid = m.id AND e.model = ?
       WHERE m.tenant_id = ?
         ${sourceFilter}
+        AND ${gate.sql}
         AND ${hasText}
         AND e.message_rowid IS NULL
     `;
@@ -1445,13 +1511,13 @@ export default class Database {
         ORDER BY CASE WHEN m.chat_jid = ? THEN 0 ELSE 1 END,
                  ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
         LIMIT ?
-      `).all(t, model, t, prio, ...orderArgs, n);
+      `).all(t, model, t, ...gate.args, prio, ...orderArgs, n);
     }
     return this._db.prepare(`
       ${select}
       ORDER BY ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
       LIMIT ?
-    `).all(t, model, t, ...orderArgs, n);
+    `).all(t, model, t, ...gate.args, ...orderArgs, n);
   }
 
   upsertMessageEmbedding({ messageRowid, model, dim, vector, sourceHash }) {
@@ -1727,6 +1793,7 @@ export default class Database {
       'SELECT chat_jid AS chatJid, touched_at AS touchedAt FROM chat_import_touches WHERE tenant_id = ?',
     ).all(t);
     const importTouchedAt = new Map(touchRows.map((r) => [r.chatJid, r.touchedAt]));
+    const optedInJids = new Set(this.listIndexOptInJids());
 
     const goodNameRows = this._db.prepare(`
       SELECT chat_jid AS chatJid, chat_name AS chatName, sender
@@ -1857,6 +1924,12 @@ export default class Database {
         searchIndexPct,
         aiSearchReady: summarizedThreads > 0,
         aiSearchComplete: summarizedThreads >= estThreads,
+        indexOptedIn: optedInJids.has(chatJid),
+        indexEligible: isChatEligibleForIndex({
+          chatJid,
+          messageCount: agg.messageCount,
+          lastMessageTs: msgTs,
+        }, { optedIn: optedInJids.has(chatJid) }),
       });
     }
 
@@ -1881,6 +1954,12 @@ export default class Database {
         aiSearchReady: false,
         aiSearchComplete: false,
         awaitingSync: true,
+        indexOptedIn: optedInJids.has(r.chatJid),
+        indexEligible: isChatEligibleForIndex({
+          chatJid: r.chatJid,
+          messageCount: 0,
+          lastMessageTs: r.lastMessageTs || 0,
+        }, { optedIn: optedInJids.has(r.chatJid) }),
       });
     }
 
@@ -2267,10 +2346,11 @@ export default class Database {
       ? 'CASE WHEN a.chat_last_ts >= ? THEN 0 ELSE 1 END, '
       : '';
     const orderArgs = Number(recentCutoffTs) > 0 ? [Number(recentCutoffTs)] : [];
+    const gate = this._indexEligibilitySql('s.chat_jid');
     return this._db.prepare(`
       WITH chat_activity AS (
-        SELECT chat_jid, MAX(thread_end) AS chat_last_ts
-        FROM thread_summaries WHERE tenant_id = ? GROUP BY chat_jid
+        SELECT chat_jid, MAX(timestamp) AS chat_last_ts, COUNT(*) AS msg_count
+        FROM messages WHERE tenant_id = ? GROUP BY chat_jid
       )
       SELECT s.chat_jid AS chatJid, s.chat_name AS chatName,
              s.thread_start AS threadStart, s.thread_end AS threadEnd
@@ -2278,10 +2358,11 @@ export default class Database {
       INNER JOIN chat_activity a ON a.chat_jid = s.chat_jid
       WHERE s.tenant_id = ?
         ${sourceFilter}
+        AND ${gate.sql}
         AND (s.facts_status IS NULL OR trim(s.facts_status) = '')
       ORDER BY ${vis}${feed}${recentOrder}a.chat_last_ts DESC, s.thread_end DESC
       LIMIT ?
-    `).all(t, t, ...orderArgs, n);
+    `).all(t, t, ...gate.args, ...orderArgs, n);
   }
 
   setThreadFactsStatus(chatJid, threadStart, status) {

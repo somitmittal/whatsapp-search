@@ -31,6 +31,7 @@ function serviceWithThread(reply) {
     upsertThreadSummary: (row) => saved.push(row),
     getPendingFactThreads: () => [],
     getAllSettings: () => ({}),
+    listIndexOptInJids: () => [chatJid],
   };
 
   const service = new DailySummaryService({

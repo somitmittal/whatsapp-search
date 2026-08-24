@@ -1606,6 +1606,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="10"/></svg>
                 Load older messages from phone
               </div>
+              <div class="menu-item" id="menu-index-chat" title="Index this chat for AI search even if it is small or old">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15 8.5 22 9.5 17 14.5 18.2 21.5 12 18.2 5.8 21.5 7 14.5 2 9.5 9 8.5 12 2"/></svg>
+                Index this chat
+              </div>
               <div class="menu-item danger" id="menu-delete-chat">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
                 Delete chat
@@ -2238,6 +2242,7 @@
     e.stopPropagation();
     closeMenu();
     syncFetchOlderMenuItem();
+    syncIndexChatMenuItem();
     $('#chat-menu').classList.toggle('open');
   });
 
@@ -2264,6 +2269,34 @@
       ? 'Uses WhatsApp on-demand sync — phone must be online'
       : FETCH_OLDER_NEEDS_ANCHOR;
   }
+
+  function syncIndexChatMenuItem() {
+    const item = $('#menu-index-chat');
+    if (!item) return;
+    const ch = chatData.find((c) => c.chatJid === activeChat);
+    const hasMessages = (ch?.messageCount || 0) > 0;
+    const done = !!ch?.aiSearchComplete;
+    const opted = !!ch?.indexOptedIn;
+    const blocked = !hasMessages || done;
+    item.classList.toggle('disabled', blocked);
+    if (!hasMessages) {
+      item.title = 'Needs at least one stored message before it can be indexed';
+    } else if (done) {
+      item.title = 'This chat is already indexed';
+    } else if (opted || ch?.indexEligible) {
+      item.title = 'Run AI indexing for this chat before others';
+    } else {
+      item.title = 'Skipped until it has more than 50 messages in the last 10 days — index it anyway';
+    }
+  }
+
+  $('#menu-index-chat')?.addEventListener('click', () => {
+    closeChatMenu();
+    if (!activeChat) return;
+    const ch = chatData.find((c) => c.chatJid === activeChat);
+    if (!ch || ch.aiSearchComplete || !(ch.messageCount > 0)) return;
+    void priorityIndexChatFirst(activeChat);
+  });
 
   $('#menu-fetch-older-history')?.addEventListener('click', async () => {
     closeChatMenu();
@@ -3260,7 +3293,7 @@
 
   async function priorityIndexChatFirst(jid) {
     try {
-      const r = await fetch('/api/summaries/priority-chat', {
+      const r = await fetch('/api/summaries/opt-in-chat', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
@@ -3913,8 +3946,11 @@
       if (aiDone) { badgeClass = 'complete'; badgeText = 'AI ✓'; }
       else if (aiReady) { badgeClass = 'partial'; badgeText = pct + '%'; }
       const showPrioritize = (ch.messageCount > 0 && !aiDone);
+      const priTitle = (ch.indexEligible || ch.indexOptedIn)
+        ? 'Run AI indexing for this chat before others'
+        : 'Skipped until it has more than 50 messages in the last 10 days — click to index it anyway';
       const priBtn = showPrioritize
-        ? `<button type="button" class="chat-priority-first" title="Run AI indexing for this chat before others" aria-label="Index this chat first">↑</button>`
+        ? `<button type="button" class="chat-priority-first" title="${esc(priTitle)}" aria-label="Index this chat">↑</button>`
         : '';
       return `<div class="chat-item${activeChat === ch.chatJid ? ' active' : ''}" data-jid="${esc(ch.chatJid)}">
         <div class="chat-avatar">${esc(avatarText)}</div>

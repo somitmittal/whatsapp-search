@@ -7,6 +7,7 @@ import {
   sortChatsForIndexing,
   splitChatsBySource,
 } from './priority-chat-queue.js';
+import { isChatEligibleForIndex } from './index-eligibility.js';
 import { factExtractionAddon, getSmbProfileFromDb } from '../smb/profiles.js';
 import { isSmallLocalModel, localSummaryLlmExtras } from './indexing-profile.js';
 import { GROUNDING_PROMPT_RULES, enforceGroundedAnswer, filterGroundedFacts } from './grounding.js';
@@ -366,6 +367,20 @@ export default class DailySummaryService {
       }
 
       const chatMeta = new Map(chats.map((c) => [c.chatJid, c]));
+      const optedIn = new Set(this._db.listIndexOptInJids?.() || []);
+      const eligibleWork = allWork.filter((row) => {
+        const c = chatMeta.get(row.chatJid);
+        return isChatEligibleForIndex({
+          chatJid: row.chatJid,
+          messageCount: c?.messageCount,
+          lastMessageTs: c?.lastMessageTs,
+        }, { optedIn: optedIn.has(row.chatJid) });
+      });
+      const skipped = allWork.length - eligibleWork.length;
+      if (skipped > 0) {
+        console.log(`[Summaries] Skipping ${skipped} chat(s) below the auto-index bar (${config.indexMinMessageCount}+ messages in the last ${config.indexRecentWindowDays} days)`);
+      }
+
       const indexScore = (chatJid) => {
         const c = chatMeta.get(chatJid);
         if (!c) return 0;
@@ -378,13 +393,13 @@ export default class DailySummaryService {
       const lastMessageTs = (chatJid) => chatMeta.get(chatJid)?.lastMessageTs || 0;
       const recentCutoffTs = Math.floor(Date.now() / 1000)
         - (config.liveRecentWindowDays * 24 * 60 * 60);
-      sortChatsForIndexing(allWork, {
+      sortChatsForIndexing(eligibleWork, {
         waLive,
         indexScore,
         lastMessageTs,
         recentCutoffTs,
       });
-      const sourceQueues = splitChatsBySource(allWork, waLive);
+      const sourceQueues = splitChatsBySource(eligibleWork, waLive);
       // Process only one source per pass. This keeps live and imported LLM work out of the
       // same queue while still allowing the secondary source to run after the primary drains.
       const workQueue = sourceQueues.primary.length > 0
