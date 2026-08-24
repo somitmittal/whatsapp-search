@@ -20,6 +20,8 @@ import {
     sanitizePeerSenderName,
 } from './chat-display-name.js';
 import { buildContactPayloadFromInner } from './contact-card.js';
+import { sidebarTabForJid } from './jid-filters.js';
+import { isControlOnlyContentType, placeholderForContentType } from './message-content.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
@@ -117,10 +119,7 @@ function extractText(msg) {
 }
 
 function placeholderForUntracked(inner) {
-  const ct = getContentType(inner);
-  if (!ct) return '[message]';
-  const short = ct.replace(/Message$/, '').replace(/([A-Z])/g, ' $1').trim();
-  return `[${short || ct}]`;
+  return placeholderForContentType(getContentType(inner));
 }
 
 function normalizeNameForCompare(s) {
@@ -828,6 +827,7 @@ export default class WaClient {
         return {
           chatJid: c.id,
           chatName: c.name || null,
+          sidebarTab: sidebarTabForJid(c.id),
           messageCount: 0,
           // API contract: timestamps are always Unix seconds.
           lastMessageTs: normalizeUnixSeconds(ts),
@@ -1082,7 +1082,7 @@ export default class WaClient {
         ...a,
         chatJid: canon,
         chatName: mergedName,
-        sidebarTab: (a.sidebarTab === 'feed' || b.sidebarTab === 'feed') ? 'feed' : 'chat',
+        sidebarTab: sidebarTabForJid(canon),
         messageCount: mc,
         lastMessageTs: lastTs,
         summarizedThreads: sumT,
@@ -1189,6 +1189,8 @@ export default class WaClient {
       if (!jid || !msg.message) return null;
 
       const inner = extractMessageContent(msg.message) || msg.message;
+      // Protocol/key-exchange frames have no readable body — storing them showed "[protocol]".
+      if (isControlOnlyContentType(getContentType(inner))) return null;
       let rxPayload = null;
       if (Array.isArray(msg.reactions)) {
         const rxList = msg.reactions;

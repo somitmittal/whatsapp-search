@@ -113,6 +113,7 @@ async function main() {
       if (webServer) webServer.onSummaryProgress(data);
     },
     isWaLive,
+    onIdle: () => mediaIndexService.scheduleProcess(),
   });
   const embeddingIndexService = new EmbeddingIndexService({
     db,
@@ -125,6 +126,7 @@ async function main() {
     getProvider: () => mediaIndexProvider,
     getPriorityChatJid: () => summaryService.getPriorityChatForTenant(getCurrentTenantId()),
     isWaLive,
+    shouldDefer: () => summaryService.isBusy() || !summaryService.hasCaughtUp(),
   });
 
   async function reloadMediaIndexProvider() {

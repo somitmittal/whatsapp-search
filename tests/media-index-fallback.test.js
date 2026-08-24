@@ -42,3 +42,26 @@ describe('MediaIndexService pull status', () => {
     expect(service.getPullStatus()).toEqual(pullStatus);
   });
 });
+
+describe('MediaIndexService defers until message indexing is done', () => {
+  test('processPending is a no-op while shouldDefer is true', async () => {
+    const service = new MediaIndexService({
+      db: { getPendingMediaIndexJobs: () => { throw new Error('must not load media jobs yet'); } },
+      getProvider: () => ({}),
+      shouldDefer: () => true,
+    });
+    await expect(service.processPending(12)).resolves.toBe(0);
+  });
+
+  test('processPending runs after shouldDefer becomes false', async () => {
+    let defer = true;
+    const service = new MediaIndexService({
+      db: { getPendingMediaIndexJobs: () => [] },
+      getProvider: () => ({}),
+      shouldDefer: () => defer,
+    });
+    await expect(service.processPending(12)).resolves.toBe(0);
+    defer = false;
+    await expect(service.processPending(12)).resolves.toBe(0);
+  });
+});

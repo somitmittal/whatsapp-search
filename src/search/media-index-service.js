@@ -59,13 +59,16 @@ function providerSupportsInlineVideoCaption(provider) {
  * images, video, audio, stickers, and documents (PDF body + filenames).
  */
 export default class MediaIndexService {
-  constructor({ db, getProvider, getPriorityChatJid = null, isWaLive = null }) {
+  constructor({ db, getProvider, getPriorityChatJid = null, isWaLive = null, shouldDefer = null }) {
     this._db = db;
     this._getProvider = getProvider;
     /** @type {(() => string|null)|null} */
     this._getPriorityChatJid = typeof getPriorityChatJid === 'function' ? getPriorityChatJid : null;
     /** @type {(() => boolean)|null} */
     this._isWaLive = typeof isWaLive === 'function' ? isWaLive : null;
+    /** Heavy vision/transcription waits until message (thread) indexing has caught up. */
+    this._shouldDefer = typeof shouldDefer === 'function' ? shouldDefer : null;
+    this._loggedDefer = false;
     /** Set from WebServer when `/api/settings` updates the search LLM (same as SmartSearch). */
     this._overrideProvider = null;
     this._scheduled = null;
@@ -102,6 +105,15 @@ export default class MediaIndexService {
   }
 
   async processPending(limit = 12) {
+    if (this._shouldDefer?.()) {
+      if (!this._loggedDefer) {
+        this._loggedDefer = true;
+        console.log('[MediaIndex] Waiting until message indexing finishes before captioning media');
+      }
+      return 0;
+    }
+    this._loggedDefer = false;
+
     if (this._running) {
       this._preemptRequested = true;
       return 0;
@@ -110,13 +122,15 @@ export default class MediaIndexService {
     this._running = true;
     let done = 0;
     let brokeEarly = false;
+    let deferred = false;
     try {
       const prio = this._getPriorityChatJid?.() ?? null;
       const waLive = this._isWaLive ? this._isWaLive() !== false : true;
       const jobs = this._db.getPendingMediaIndexJobs(limit, prio, waLive);
       for (const job of jobs) {
-        if (this._preemptRequested) {
+        if (this._preemptRequested || this._shouldDefer?.()) {
           brokeEarly = true;
+          deferred = Boolean(this._shouldDefer?.()) && !this._preemptRequested;
           break;
         }
         const ok = await this._indexOne(job);
@@ -129,7 +143,7 @@ export default class MediaIndexService {
     if (done > 0) {
       console.log(`[MediaIndex] Indexed ${done} media item(s)`);
     }
-    if (brokeEarly) {
+    if (brokeEarly && !deferred) {
       this.scheduleProcess();
     }
     return done;

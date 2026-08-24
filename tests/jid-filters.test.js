@@ -6,6 +6,7 @@ import {
   isChatVisibleInSidebar,
   SIDEBAR_TAB_CHAT,
   SIDEBAR_TAB_FEED,
+  SIDEBAR_TAB_IMPORTED,
 } from '../src/whatsapp/jid-filters.js';
 
 describe('isWhatsAppLowPriorityFeed', () => {
@@ -27,6 +28,11 @@ describe('sidebarTabForJid', () => {
   test('maps feeds vs chats', () => {
     expect(sidebarTabForJid('status@broadcast')).toBe(SIDEBAR_TAB_FEED);
     expect(sidebarTabForJid('919811111111@s.whatsapp.net')).toBe(SIDEBAR_TAB_CHAT);
+    expect(sidebarTabForJid('120363123456@g.us')).toBe(SIDEBAR_TAB_CHAT);
+  });
+
+  test('import archives get their own tab, not the live chat tab', () => {
+    expect(sidebarTabForJid('import_family_group@imported')).toBe(SIDEBAR_TAB_IMPORTED);
   });
 });
 

@@ -16,6 +16,7 @@ import { LEGACY_TENANT_ID } from './tenant-constants.js';
 import { decryptName, deriveTenantContactKey, encryptName, hashPhone, normalizePhone } from '../privacy/contact-directory.js';
 import { groupStatusBroadcastRows } from '../status/status-feed.js';
 import { STATUS_BROADCAST_JID, sidebarTabForJid } from '../whatsapp/jid-filters.js';
+import { legacyControlFramePlaceholders } from '../whatsapp/message-content.js';
 import {
   formatPhoneLocalPart,
   isPlausibleHumanChatTitle,
@@ -56,6 +57,7 @@ export default class Database {
     migrateContactDirectory(this._db);
     this._ensureMessagesTenantChatTsIndex();
     this._prepareStatements();
+    this._purgeControlFrameMessages();
     this._migrateChatActionItemsTable();
     this._migrateOllamaCloudModelSettings();
     this._ensureMessageEmbeddingsTable();
@@ -269,6 +271,27 @@ export default class Database {
     this._migrateContactPayloadColumn();
     this._migrateChatImportTouches();
     this._rebuildFtsIfEmpty();
+  }
+
+  /**
+   * Earlier builds stored WhatsApp's protocol frames as ordinary messages, leaving rows whose
+   * only body was a placeholder like `[protocol]`. Ingestion now drops them, so clear out the
+   * ones already synced. Media rows are spared — a placeholder there is a real attachment.
+   */
+  _purgeControlFrameMessages() {
+    try {
+      if (this.getState('control_frame_messages_purged')) return;
+      const placeholders = legacyControlFramePlaceholders();
+      const slots = placeholders.map(() => '?').join(',');
+      const n = this._db.prepare(`
+        DELETE FROM messages
+        WHERE media_type IS NULL AND text IN (${slots})
+      `).run(...placeholders).changes;
+      this.setState('control_frame_messages_purged', '1');
+      if (n > 0) console.log(`[DB] Removed ${n} WhatsApp control-frame message row(s)`);
+    } catch (e) {
+      console.warn('[DB] control-frame purge:', e.message);
+    }
   }
 
   _migrateChatImportTouches() {

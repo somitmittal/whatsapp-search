@@ -92,20 +92,36 @@ const SUMMARY_PROMPT =
   '- Do NOT add opinions or filler. Factual + tonal summary only.\n\n';
 
 export default class DailySummaryService {
-  constructor({ db, provider = null, fallbackProvider = null, onProgress, isWaLive = null }) {
+  constructor(opts = {}) {
+    const { db, provider = null, isWaLive = null, onIdle = null } = opts;
     this._db = db;
     this._provider = provider;
-    this._fallback = fallbackProvider;
-    this._onProgress = onProgress ?? null;
+    this._fallback = opts.fallbackProvider ?? opts.fallbackProvider ?? null;
+    this._onProgress = opts.onProgress ?? opts.onProgress ?? null;
     /** @type {(() => boolean)|null} */
     this._isWaLive = typeof isWaLive === 'function' ? isWaLive : null;
+    /** Fired when a pass finishes with no queued restart (message indexing is idle). */
+    this._onIdle = typeof onIdle === 'function' ? onIdle : null;
     this._running = false;
     this._aborted = false;
     this._preemptRequested = false;
+    this._restartPending = false;
+    /** False until a summary pass completes with no remaining thread backlog. */
+    this._caughtUp = false;
     /** @type {Map<string, string>} tenantId → chatJid to process first on next run */
     this._priorityChatJidByTenant = new Map();
     /** @type {Map<string, boolean>} tenantId → true once the initial priority pass completed */
     this._initialPassDone = new Map();
+  }
+
+  /** True while a pass is in flight or about to restart. */
+  isBusy() {
+    return this._running || this._restartPending;
+  }
+
+  /** True after a finished pass found no remaining unsummarized threads. */
+  hasCaughtUp() {
+    return this._caughtUp && !this.isBusy();
   }
 
   /**
@@ -233,19 +249,24 @@ export default class DailySummaryService {
     if (this._running) {
       this._restartPending = true;
       this._preemptRequested = true;
+      this._caughtUp = false;
       console.log('[Summaries] Already running — current pass will yield for priority / queued restart');
-      return 0;
-    }
-
-    let firstProvider = await this._pickProvider();
-    if (!firstProvider) {
-      console.log('[Summaries] No LLM provider reachable — skipping');
       return 0;
     }
 
     this._running = true;
     this._restartPending = false;
     this._preemptRequested = false;
+    this._caughtUp = false;
+
+    let firstProvider = await this._pickProvider();
+    if (!firstProvider) {
+      console.log('[Summaries] No LLM provider reachable — skipping');
+      this._caughtUp = true;
+      this._running = false;
+      this._onIdle?.();
+      return 0;
+    }
 
     try {
       const chats = this._db.getChatStats();
@@ -453,11 +474,16 @@ export default class DailySummaryService {
 
       return totalGenerated;
     } finally {
+      const willRestart = this._restartPending;
       this._running = false;
-      if (this._restartPending) {
+      if (willRestart) {
         this._restartPending = false;
+        this._caughtUp = false;
         console.log('[Summaries] Running queued pass (new messages or concurrent trigger)...');
         setTimeout(() => this.indexPendingDays(), 500);
+      } else {
+        this._caughtUp = true;
+        this._onIdle?.();
       }
     }
   }

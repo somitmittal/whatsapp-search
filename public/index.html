@@ -125,15 +125,28 @@
     }
 
     .sidebar-chat-tabs {
-      display: flex; gap: 6px; padding: 4px 12px 8px; flex-shrink: 0;
+      display: flex; gap: 4px; padding: 4px 12px 8px; flex-shrink: 0;
       border-bottom: 1px solid var(--border);
     }
     .sidebar-tab {
-      flex: 1; padding: 8px 10px; font-size: 13px; font-weight: 500;
+      flex: 1; min-width: 0; padding: 8px 6px; font-size: 13px; font-weight: 500;
       border: none; border-radius: 8px; background: transparent; color: var(--text2);
       cursor: pointer; font-family: inherit;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .sidebar-tab.active { background: var(--hover); color: var(--text); }
+    .sidebar-tab-count { font-size: 11px; font-weight: 600; opacity: .65; margin-left: 5px; }
+    .sidebar-tab-count:empty { display: none; }
+    .live-sync-pill {
+      display: inline-flex; align-items: center; gap: 8px; margin-top: 8px;
+      padding: 7px 14px; border-radius: 20px; font-size: 13px; font-weight: 600;
+      background: #d8f5e6; color: #056b45; border: 1px solid #9fe3c4;
+    }
+    .live-sync-pill[hidden] { display: none !important; }
+    .live-sync-pill.pending { background: #fff3cd; color: #856404; border-color: #f3d98b; }
+    .live-sync-pill-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0;
+    }
     .business-inbox-panel {
       flex: 1; overflow-y: auto; padding: 10px 12px 16px; display: none;
     }
@@ -1356,9 +1369,10 @@
       </div>
     </div>
     <div class="sidebar-chat-tabs" role="tablist" aria-label="Chat categories">
-      <button type="button" class="sidebar-tab active" id="sidebar-tab-chat" data-sidebar-tab="chat" role="tab" aria-selected="true">Chats</button>
+      <button type="button" class="sidebar-tab active" id="sidebar-tab-imported" data-sidebar-tab="imported" role="tab" aria-selected="true">Imported<span class="sidebar-tab-count" data-tab-count="imported"></span></button>
+      <button type="button" class="sidebar-tab" id="sidebar-tab-chat" data-sidebar-tab="chat" role="tab" aria-selected="false">WhatsApp<span class="sidebar-tab-count" data-tab-count="chat"></span></button>
       <button type="button" class="sidebar-tab" id="sidebar-tab-business" data-sidebar-tab="business" role="tab" aria-selected="false" hidden>Business</button>
-      <button type="button" class="sidebar-tab" id="sidebar-tab-feed" data-sidebar-tab="feed" role="tab" aria-selected="false">Status &amp; feeds</button>
+      <button type="button" class="sidebar-tab" id="sidebar-tab-feed" data-sidebar-tab="feed" role="tab" aria-selected="false">Status &amp; feeds<span class="sidebar-tab-count" data-tab-count="feed"></span></button>
     </div>
     <div id="status-strip-wrap" class="status-strip-wrap" hidden>
       <div id="status-strip" class="status-strip-scroll" role="list" aria-label="Status updates"></div>
@@ -1852,7 +1866,11 @@
         </div>
         <div class="setting-group">
           <h3>Advanced</h3>
-          <p style="font-size:13px;color:var(--text2);">Live WhatsApp QR sync is optional. Import exports with <strong>+</strong> for the full archive.</p>
+          <p id="live-sync-blurb" style="font-size:13px;color:var(--text2);">Live WhatsApp QR sync is optional. Import exports with <strong>+</strong> for the full archive.</p>
+          <div id="live-sync-pill" class="live-sync-pill" hidden>
+            <span class="live-sync-pill-dot"></span>
+            <span id="live-sync-pill-text">QR sync enabled</span>
+          </div>
           <button type="button" class="btn btn-secondary" id="btn-enable-live-sync" style="margin-top:8px;">Enable live WhatsApp sync (QR)…</button>
         </div>
         </div>
@@ -1985,8 +2003,15 @@
   let smbState = { profile: 'personal', businessName: '', prompts: [] };
   let cvTab = 'chat';
   let attachmentsPayload = null;
-  /** Sidebar list: `chat` (DMs + groups) vs `feed` (Status, broadcasts, newsletters). */
-  let sidebarListTab = 'chat';
+  /**
+   * Sidebar list: `imported` (uploaded archives), `chat` (live WA DMs + groups),
+   * `feed` (Status, broadcasts, newsletters) or `business` (SMB inbox).
+   */
+  let sidebarListTab = 'imported';
+  /** Once the user picks a tab themselves, stop auto-selecting one when chats load. */
+  let sidebarTabPinnedByUser = false;
+  /** Guards the one-time jump to the live tab when WhatsApp finishes linking. */
+  let _waTabPromotedOnConnect = false;
   /** Grouped `status@broadcast` stacks from `/api/wa/status-feed`. */
   let statusFeedData = { peers: [] };
   /** @type {{ peerIdx: number, itemIdx: number }} */
@@ -2588,6 +2613,34 @@
     if (btnWa) btnWa.style.display = show ? "" : "none";
     const banner = document.getElementById("wa-banner");
     if (banner && _importFirstMvp && !show) banner.style.display = "none";
+    renderLiveSyncAdvanced();
+  }
+
+  /**
+   * Advanced settings card: swap the "enable" call to action for a status pill once the user
+   * has opted in, so a linked account doesn't keep offering to link.
+   */
+  function renderLiveSyncAdvanced() {
+    const pill = document.getElementById("live-sync-pill");
+    const pillText = document.getElementById("live-sync-pill-text");
+    const blurb = document.getElementById("live-sync-blurb");
+    const btn = document.getElementById("btn-enable-live-sync");
+    if (!pill || !pillText || !btn) return;
+    const optedIn = _showLiveSyncUi || isWaUiReady();
+    pill.hidden = !optedIn;
+    btn.style.display = optedIn ? "none" : "";
+    // Leave the opt-in blurb as authored — it carries markup the JS strings don't.
+    if (!optedIn) return;
+    const connected = isWaUiReady();
+    pill.classList.toggle("pending", !connected);
+    pillText.textContent = connected
+      ? (_waState === "SYNCING" ? "QR sync enabled \u00b7 syncing chats\u2026" : "QR sync enabled \u00b7 WhatsApp connected")
+      : "QR sync enabled \u00b7 waiting for QR scan";
+    if (blurb) {
+      blurb.textContent = connected
+        ? "Your phone is linked as a companion device. Live chats appear in the WhatsApp tab."
+        : "Scan the QR code in the WhatsApp Connection section above to finish linking.";
+    }
   }
 
   function enableLiveSyncUi() {
@@ -2772,6 +2825,15 @@
     }
 
     updateSidebarForWaState();
+    // Linking WhatsApp is a deliberate act, so let it win over an earlier tab choice — once.
+    if (isWaUiReady() && !_waTabPromotedOnConnect) {
+      _waTabPromotedOnConnect = true;
+      sidebarTabPinnedByUser = false;
+    }
+    // The tab pick depends on _waState, which only settled on the line above — re-run it here
+    // or a freshly linked account keeps showing the imported list with its live chats hidden.
+    applyLiveSyncVisibility();
+    autoSelectSidebarTab();
     renderChatsFromState();
 
     // Main panel: show correct screen based on state
@@ -3022,6 +3084,7 @@
     }
     chatData = [...byJid.values()];
     sortChatDataByRecency();
+    autoSelectSidebarTab();
     renderChatsFromState();
     adjustSyncingMainPanel();
   }
@@ -3045,6 +3108,7 @@
       }
       sortChatDataByRecency();
       if (canShowChatUI()) {
+        autoSelectSidebarTab();
         renderChatsFromState();
         adjustSyncingMainPanel();
         ensureImportFirstWelcome();
@@ -3282,8 +3346,42 @@
     return (d ? d[0] : (t.charAt(0) || '?')).toUpperCase();
   }
 
+  function sidebarTabOf(row) {
+    if (row?.sidebarTab) return row.sidebarTab;
+    return String(row?.chatJid || '').endsWith('@imported') ? 'imported' : 'chat';
+  }
+
   function chatsForCurrentSidebarTab() {
-    return chatData.filter((row) => (row.sidebarTab || 'chat') === sidebarListTab);
+    return chatData.filter((row) => sidebarTabOf(row) === sidebarListTab);
+  }
+
+  /** Counts on the tab labels, so live chats landing behind the current tab are still visible. */
+  function renderSidebarTabCounts() {
+    const counts = { imported: 0, chat: 0, feed: 0 };
+    const live = isWaUiReady();
+    for (const c of chatData) {
+      const tab = sidebarTabOf(c);
+      if (counts[tab] === undefined) continue;
+      if (tab !== 'imported' && !live) continue;
+      counts[tab] += 1;
+    }
+    document.querySelectorAll('[data-tab-count]').forEach((el) => {
+      const n = counts[el.getAttribute('data-tab-count')] || 0;
+      el.textContent = n ? String(n) : '';
+    });
+  }
+
+  /**
+   * Land on a tab that actually has something in it. Imports are the only chats visible
+   * while WhatsApp is offline, so an untouched "WhatsApp" default would look like data loss.
+   */
+  function autoSelectSidebarTab() {
+    if (sidebarTabPinnedByUser) return;
+    if (sidebarListTab === 'business') return;
+    const wanted = isWaUiReady() && chatData.some((c) => sidebarTabOf(c) === 'chat')
+      ? 'chat'
+      : (chatData.some((c) => sidebarTabOf(c) === 'imported') ? 'imported' : sidebarListTab);
+    if (wanted !== sidebarListTab) setSidebarListTab(wanted, { pin: false });
   }
 
   /** Match server getChatStats() ordering: recency × log(message volume). */
@@ -3378,10 +3476,9 @@
     sortChatDataByRecency();
     const fq = ($('#filter') && $('#filter').value || '').trim().toLowerCase();
     let list = chatsForCurrentSidebarTab();
-    // When WA is not connected, only show imported chats (not WA-synced ones).
-    if (!isWaUiReady()) {
-      list = list.filter((c) => c.chatJid && c.chatJid.endsWith('@imported'));
-    }
+    // WA-synced chats go stale the moment the link drops, so only imports stay listed.
+    if (!isWaUiReady() && sidebarListTab !== 'imported') list = [];
+    renderSidebarTabCounts();
     if (fq) {
       list = list.filter((c) => {
         const jid = String(c.chatJid || '');
@@ -3399,9 +3496,11 @@
     renderChats(list);
   }
 
-  function setSidebarListTab(tab) {
-    const next = tab === 'feed' ? 'feed' : (tab === 'business' ? 'business' : 'chat');
-    sidebarListTab = next;
+  const SIDEBAR_TABS = ['imported', 'chat', 'feed', 'business'];
+
+  function setSidebarListTab(tab, { pin = true } = {}) {
+    sidebarListTab = SIDEBAR_TABS.includes(tab) ? tab : 'imported';
+    if (pin) sidebarTabPinnedByUser = true;
     document.querySelectorAll('[data-sidebar-tab]').forEach((b) => {
       const on = b.getAttribute('data-sidebar-tab') === sidebarListTab;
       b.classList.toggle('active', on);
@@ -3414,6 +3513,10 @@
     if (bizPanel) bizPanel.classList.toggle('visible', isBusiness);
     if (chatList) chatList.style.display = isBusiness ? 'none' : '';
     if (filterWrap) filterWrap.style.display = isBusiness ? 'none' : '';
+    const filterInput = $('#filter');
+    if (filterInput) filterInput.placeholder = sidebarListTab === 'imported'
+      ? 'Search imported chats...'
+      : 'Search WhatsApp chats...';
     if (isBusiness) void loadBusinessInbox();
     else renderChatsFromState();
     renderStatusStrip();
@@ -3624,13 +3727,24 @@
     renderStatusViewerSlide();
   }
 
+  function sidebarEmptyMessage() {
+    const hint = (t) => `<br><span style="opacity:.85;font-size:13px">${t}</span>`;
+    if (sidebarListTab === 'imported') {
+      return `No imported chats yet.${hint('Click <strong>+</strong> to import a WhatsApp export.')}`;
+    }
+    if (!isWaUiReady()) {
+      return `WhatsApp isn\u2019t linked.${hint('Scan the QR code to see your live chats here.')}`;
+    }
+    if (sidebarListTab === 'feed') {
+      return `No status or channel entries yet.${hint('They are indexed after WhatsApp sync and appear here.')}`;
+    }
+    return `No WhatsApp chats synced yet.${hint('They appear here as sync progresses.')}`;
+  }
+
   function renderChats(chats) {
     const c = $('#chat-list');
     if (!chats.length) {
-      const emptyFeed = sidebarListTab === 'feed'
-        ? 'No status or channel entries yet.<br><span style="opacity:.85;font-size:13px">They are indexed after WhatsApp sync and appear here.</span>'
-        : 'No chats yet.<br>Click <strong>+</strong> to import.';
-      c.innerHTML = `<div class="sidebar-empty">${emptyFeed}</div>`;
+      c.innerHTML = `<div class="sidebar-empty">${sidebarEmptyMessage()}</div>`;
       return;
     }
     c.innerHTML = chats.map(ch => {
@@ -3995,9 +4109,9 @@
       chatPhoneFetchAttempted = false;
     }
     const ch = chatData.find(c => c.chatJid === jid);
-    if (ch && (ch.sidebarTab || 'chat') !== sidebarListTab) {
-      setSidebarListTab(ch.sidebarTab || 'chat');
-    }
+    // Follow the chat into its tab, but don't treat that as the user choosing a tab —
+    // linking WhatsApp later should still be able to surface the live list.
+    if (ch && sidebarTabOf(ch) !== sidebarListTab) setSidebarListTab(sidebarTabOf(ch), { pin: false });
     const n = displayChatTitle(jid, ch?.chatName || jid);
     const isGroup = jid.includes('@g.us') || (ch?.participantCount > 2);
     $('#cv-name').textContent = n;
