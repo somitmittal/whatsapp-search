@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-search-agent",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "description": "WhatsApp Search Agent - search all your chats using AI, 100% locally",
   "main": "electron/main.cjs",
   "type": "module",
