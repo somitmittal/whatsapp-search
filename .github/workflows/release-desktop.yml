@@ -17,6 +17,8 @@ permissions:
 jobs:
   build-mac-arm64:
     runs-on: macos-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,6 +39,8 @@ jobs:
 
   build-mac-x64:
     runs-on: macos-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -112,3 +116,22 @@ jobs:
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: release-assets/*
+          body: |
+            ## Downloads
+
+            Pick the installer for your OS from the assets below.
+
+            ### macOS first launch
+
+            These builds are **ad-hoc signed** (not Apple Developer–notarized). Clearing quarantine with `xattr` alone is **not enough** when the signature is incomplete — macOS may say the app is damaged.
+
+            Open the DMG, then run:
+
+            ```bash
+            cp -R /Volumes/Searchable/Searchable.app /Applications/
+            xattr -cr /Applications/Searchable.app
+            codesign --force --deep --sign - /Applications/Searchable.app
+            open /Applications/Searchable.app
+            ```
+
+            (Or drag into Applications instead of `cp`.) If Gatekeeper still blocks: right-click Searchable → **Open**.

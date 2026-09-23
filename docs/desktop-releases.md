@@ -43,6 +43,19 @@ npm run dist:linux       # on Linux or CI
 - On Render, set **`GITHUB_TOKEN`** (read-only PAT) to avoid API rate limits
 - Override repo with env `GITHUB_REPO=owner/repo` if needed
 
-## macOS note
+## macOS install (unsigned / ad-hoc builds)
 
-CI builds are **unsigned**. Users may need Right-click → Open the first time. For distribution outside friends/family, add Apple code signing + notarization to the workflow later.
+CI builds are **not** Apple Developer–signed or notarized. Clearing quarantine with `xattr` alone is **not enough** when the download has a broken or incomplete signature — macOS will still say the app is damaged.
+
+Open the DMG (or mount it), then run:
+
+```bash
+cp -R /Volumes/Searchable/Searchable.app /Applications/
+xattr -cr /Applications/Searchable.app
+codesign --force --deep --sign - /Applications/Searchable.app
+open /Applications/Searchable.app
+```
+
+(You can drag Searchable into Applications instead of the `cp` line.) If Gatekeeper still blocks: right-click the app → **Open**.
+
+For distribution beyond friends/family, add Apple Developer ID signing + notarization later (`hardenedRuntime: true`, real `identity`, entitlements, notarize).

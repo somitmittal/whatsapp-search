@@ -68,13 +68,15 @@
       }
     ],
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "afterPack": "scripts/after-pack-mac.cjs",
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "build/icon.icns",
       "target": [
         "dmg"
       ],
-      "hardenedRuntime": true,
+      "identity": "-",
+      "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "extendInfo": {
         "CFBundleDisplayName": "Searchable",

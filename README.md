@@ -77,6 +77,23 @@ public/index.html    Web UI (single page app)
 data/                Local SQLite DB + media (gitignored)
 ```
 
+## Desktop app (Searchable)
+
+Download DMGs/installers from [GitHub Releases](https://github.com/somitmittal/whatsapp-search/releases) or the in-app `/download` page. See [docs/desktop-releases.md](docs/desktop-releases.md).
+
+### macOS first launch
+
+Builds are ad-hoc signed (no Apple Developer account). **`xattr` alone is not enough** if Gatekeeper reports a damaged/invalid signature. With the DMG open:
+
+```bash
+cp -R /Volumes/Searchable/Searchable.app /Applications/
+xattr -cr /Applications/Searchable.app
+codesign --force --deep --sign - /Applications/Searchable.app
+open /Applications/Searchable.app
+```
+
+(Or drag into Applications instead of `cp`.) Right-click → **Open** if macOS still prompts.
+
 ## Dependencies
 
 - `better-sqlite3` — SQLite with FTS5

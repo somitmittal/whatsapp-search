@@ -108,6 +108,22 @@
         <p style="font-size:13px;font-weight:600;margin-bottom:12px;">All platforms <span id="version-tag" style="color:var(--text2);font-weight:400;"></span></p>
         <div class="platform-grid" id="platform-grid"></div>
       </div>
+
+      <div class="card" id="mac-install-card">
+        <p style="font-size:13px;font-weight:600;margin-bottom:8px;">macOS install</p>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">
+          Builds are not Apple-notarized. Clearing quarantine with <code>xattr</code> alone is
+          <strong>not enough</strong> when the signature is incomplete — macOS may still say the app is damaged.
+          Open the DMG, then run:
+        </p>
+        <pre style="font-size:12px;background:#f0f2f5;border-radius:8px;padding:12px 14px;overflow-x:auto;line-height:1.55;margin:0;">cp -R /Volumes/Searchable/Searchable.app /Applications/
+xattr -cr /Applications/Searchable.app
+codesign --force --deep --sign - /Applications/Searchable.app
+open /Applications/Searchable.app</pre>
+        <p style="font-size:12px;color:var(--text2);margin-top:10px;margin-bottom:0;">
+          (Or drag into Applications instead of <code>cp</code>.) If Gatekeeper still blocks: right-click Searchable → <strong>Open</strong>.
+        </p>
+      </div>
     </div>
 
     <p class="web-link">Prefer the browser? <a href="/">Use the web app</a></p>
