@@ -15,4 +15,7 @@ exports.default = async function afterPack(context) {
   execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], {
     stdio: 'inherit',
   });
+  execFileSync('codesign', ['--verify', '--deep', '--strict', appPath], {
+    stdio: 'inherit',
+  });
 };

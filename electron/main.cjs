@@ -2,16 +2,21 @@
  * Electron main process — bundles WhatsApp Search as a native Mac app.
  * Spawns the Node server as a child using a real Node binary (system or bundled).
  */
-const { app, BrowserWindow, shell } = require('electron');
-const { spawn, execSync } = require('child_process');
+const { app, BrowserWindow, shell, dialog, session } = require('electron');
+const { spawn, execFileSync } = require('child_process');
 const crypto = require('crypto');
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('fs');
 const path = require('path');
 const http = require('http');
+const {
+  resolveAppRoot,
+  resolveServerCwd,
+  resolveServerEntry,
+  assertServerLaunch,
+} = require('./server-launch.cjs');
 
 const APP_NAME = 'Searchable';
-const APP_ROOT = path.join(__dirname, '..');
-const SERVER_ENTRY = path.join(APP_ROOT, 'src', 'index.js');
+const APP_ROOT = resolveAppRoot(__dirname);
 const APP_ICON = path.join(APP_ROOT, 'build', 'icon.png');
 const DEFAULT_PORT = 3847;
 const HEALTH_PATH = '/api/health';
@@ -33,10 +38,10 @@ function resolveNodeExecutable() {
   if (!app.isPackaged) {
     try {
       if (process.platform === 'win32') {
-        const nodePath = execSync('where node', { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
+        const nodePath = execFileSync('where', ['node'], { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
         if (nodePath) return nodePath;
       } else {
-        const nodePath = execSync('which node', { encoding: 'utf8' }).trim();
+        const nodePath = execFileSync('which', ['node'], { encoding: 'utf8' }).trim();
         if (nodePath) return nodePath;
       }
     } catch { /* ignore */ }
@@ -98,11 +103,16 @@ function buildServerEnv() {
 function startServer() {
   return new Promise((resolve, reject) => {
     const nodeBin = resolveNodeExecutable();
+    const resourcesPath = app.isPackaged ? process.resourcesPath : APP_ROOT;
+    const cwd = resolveServerCwd(APP_ROOT, resourcesPath);
+    const serverEntry = resolveServerEntry(APP_ROOT, resourcesPath);
+    assertServerLaunch({ entry: serverEntry, cwd, nodeBin });
+
     const env = buildServerEnv();
     delete env.ELECTRON_RUN_AS_NODE;
 
-    serverProcess = spawn(nodeBin, [SERVER_ENTRY], {
-      cwd: APP_ROOT,
+    serverProcess = spawn(nodeBin, [serverEntry], {
+      cwd,
       env,
       stdio: 'pipe',
     });
@@ -161,8 +171,25 @@ function stopServer() {
   serverProcess = null;
 }
 
+function isSafeExternalUrl(url) {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol === 'https:') return true;
+    if (u.protocol === 'http:') {
+      const host = u.hostname.toLowerCase();
+      if (host !== '127.0.0.1' && host !== 'localhost') return false;
+      const port = Number(u.port || 80);
+      return port === Number(serverPort);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function createWindow() {
   const iconPath = existsSync(APP_ICON) ? APP_ICON : undefined;
+  const origin = `http://127.0.0.1:${serverPort}`;
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -172,21 +199,33 @@ function createWindow() {
     title: APP_NAME,
     icon: iconPath,
     backgroundColor: '#f0f2f5',
+    autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
 
-  mainWindow.loadURL(`http://127.0.0.1:${serverPort}/?desktop=1`);
+  mainWindow.loadURL(`${origin}/?desktop=1`);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://127.0.0.1:') || url.startsWith('http://localhost:')) {
-      return { action: 'allow' };
-    }
+    if (!isSafeExternalUrl(url)) return { action: 'deny' };
+    if (url.startsWith(origin)) return { action: 'allow' };
     shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    try {
+      const u = new URL(url);
+      if (url.startsWith(origin)) return;
+      if (u.protocol === 'https:') return;
+    } catch { /* fall through */ }
+    event.preventDefault();
   });
 
   mainWindow.on('closed', () => {
@@ -196,9 +235,14 @@ function createWindow() {
 
 app.isQuitting = false;
 app.setName(APP_NAME);
+app.enableSandbox();
 
 app.whenReady().then(async () => {
   try {
+    session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => {
+      callback(false);
+    });
+    session.defaultSession.setPermissionCheckHandler(() => false);
     if (process.platform === 'darwin' && existsSync(APP_ICON)) {
       app.dock.setIcon(APP_ICON);
     }
@@ -206,6 +250,9 @@ app.whenReady().then(async () => {
     createWindow();
   } catch (err) {
     console.error('[Desktop] Failed to start:', err.message);
+    try {
+      dialog.showErrorBox('Searchable failed to start', String(err.message || err));
+    } catch (_) { /* ignore */ }
     app.quit();
   }
 });
