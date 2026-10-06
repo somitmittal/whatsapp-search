@@ -401,6 +401,8 @@ export default class WebServer {
     if (st.waHistoryHooksDone) return;
     st.waHistoryHooksDone = true;
     this._getCachedTotalStats(tid, { force: true });
+    // Do not call fetchMessageHistory / cleanDirtyBits here — each PDO makes the phone
+    // notify “syncing with WhatsApp Search” / “syncing stopped, open WhatsApp to resume”.
     // The ingestion gate is now open. Start text/thread indexing first; media indexing
     // remains self-gated until summaries report that both source queues have caught up.
     void runWithTenant(tid, async () => {

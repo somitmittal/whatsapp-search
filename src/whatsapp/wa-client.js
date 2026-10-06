@@ -35,6 +35,7 @@ import { groupSubjectUpdates } from './group-subjects.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
+import { shouldSyncHistoryMessage } from './history-sync-policy.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -691,6 +692,11 @@ export default class WaClient {
       // Linked-device history depth is still capped by WhatsApp servers (often ~few months of rolling sync).
       // See fetchOlderHistoryFromPhone + POST /api/wa/fetch-older-history and chat export import for more.
       syncFullHistory: config.waSyncFullHistory,
+      // Required: Baileys otherwise maps this to `() => !!syncFullHistory` and drops
+      // RECENT history on every reconnect (sidebar stuck on the last online day).
+      shouldSyncHistoryMessage: (msg) => shouldSyncHistoryMessage(msg, {
+        syncFullHistory: config.waSyncFullHistory,
+      }),
       /**
        * Linked-device label on your phone (Settings → Linked devices).
        * Do **not** use "Chrome" here — WhatsApp surfaces that in OS notifications as
@@ -794,7 +800,7 @@ export default class WaClient {
         this._uiPromotedAfterFirstHistoryBatch = false;
 
         // Fallback if no history batches (unusual)
-        this._armSyncDoneTimer(Math.max(config.waSyncDoneDelayMs, 12_000));
+        this._armSyncDoneTimer(Math.max(config.waSyncDoneDelayMs, 25_000));
       }
     });
 
@@ -902,23 +908,33 @@ export default class WaClient {
       }
 
       this._captureUnreadCounts(chats);
-      const preview = this._buildHistoryChatsPreview(chats);
-      if (preview.length) {
-        this._onChatsPreview?.(preview);
-        this._promoteUiWhileHistoryContinues();
-      }
+      this._publishChatRoster(chats);
+      console.log(`[WA] History event: ${chats?.length || 0} chats, ${messages?.length || 0} msgs`);
 
       await this._backfillLidPnChatNamesFromMessages(messages || []);
 
-      for (const m of messages || []) {
+      const historyMsgs = [];
+      for (const m of messages || []) historyMsgs.push(m);
+      for (const c of chats || []) {
+        for (const wrap of c.messages || []) {
+          const inner = wrap?.message || wrap;
+          if (inner?.key) historyMsgs.push(inner);
+        }
+      }
+
+      for (const m of historyMsgs) {
         const jid = m.key?.remoteJid;
         if (!jid || !m.message) continue;
         this._syncByChat.set(jid, (this._syncByChat.get(jid) || 0) + 1);
       }
 
       const rows = [];
-      for (const msg of messages || []) {
+      const seenIds = new Set();
+      for (const msg of historyMsgs) {
         if (!msg.message || !msg.key?.remoteJid) continue;
+        const dedupe = `${msg.key.remoteJid}|${msg.key.id}`;
+        if (seenIds.has(dedupe)) continue;
+        seenIds.add(dedupe);
         const row = this._msgToRow(msg);
         if (!row) continue;
         rows.push(row);
@@ -937,6 +953,8 @@ export default class WaClient {
     // Chat / contact name updates
     this._sock.ev.on('chats.set', async ({ chats }) => {
       this._captureUnreadCounts(chats);
+      this._publishChatRoster(chats);
+      this._ingestEmbeddedChatMessages(chats);
       for (const c of chats || []) {
         if (!c?.name) continue;
         await this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
@@ -944,6 +962,8 @@ export default class WaClient {
     });
     this._sock.ev.on('chats.upsert', async (chats) => {
       this._captureUnreadCounts(chats);
+      this._publishChatRoster(chats);
+      this._ingestEmbeddedChatMessages(chats);
       for (const c of chats || []) {
         if (!c?.name) continue;
         await this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
@@ -951,6 +971,8 @@ export default class WaClient {
     });
     this._sock.ev.on('chats.update', async (updates) => {
       this._captureUnreadCounts(updates);
+      this._publishChatRoster(updates);
+      this._ingestEmbeddedChatMessages(updates);
       for (const u of updates || []) {
         if (!u?.name) continue;
         await this._applyLabelToLinkedJids(u.name, u.id, u.lidJid, u.pnJid, u.lid, u.phoneNumber);
@@ -1265,11 +1287,45 @@ export default class WaClient {
     this._setState('READY', msg);
   }
 
+  _ingestEmbeddedChatMessages(chats) {
+    const rows = [];
+    const seen = new Set();
+    for (const c of chats || []) {
+      for (const wrap of c.messages || []) {
+        const msg = wrap?.message || wrap;
+        if (!msg?.key?.id) continue;
+        if (!msg.message && !msg.messageStubType) continue;
+        const jid = msg.key.remoteJid || c.id;
+        if (!jid) continue;
+        const dedupe = `${jid}|${msg.key.id}`;
+        if (seen.has(dedupe)) continue;
+        seen.add(dedupe);
+        const normalized = msg.key.remoteJid ? msg : { ...msg, key: { ...msg.key, remoteJid: jid } };
+        const row = this._msgToRow(normalized);
+        if (!row) continue;
+        rows.push(row);
+        this._queueMediaDownload(normalized, row);
+      }
+    }
+    if (!rows.length) return;
+    this._enqueueBatch(rows);
+    this._flushPendingBatch();
+    console.log(`[WA] Chat-list last messages ingested: ${rows.length}`);
+  }
+
+  _publishChatRoster(chats) {
+    const preview = this._buildHistoryChatsPreview(chats);
+    if (!preview.length) return;
+    this._onChatsPreview?.(preview);
+    this._promoteUiWhileHistoryContinues();
+  }
+
   _buildHistoryChatsPreview(chats) {
     return (chats || [])
       .filter((c) => c?.id)
       .map((c) => {
-        const ts = c.conversationTimestamp != null ? Number(c.conversationTimestamp) : 0;
+        const raw = c.conversationTimestamp ?? c.lastMsgTimestamp ?? c.lastMessageRecvTimestamp ?? 0;
+        const ts = raw != null ? Number(raw) : 0;
         return {
           chatJid: c.id,
           // Roster entries are usually unnamed for groups; fall back to a title already
@@ -1793,8 +1849,8 @@ export default class WaClient {
   }
 
   /**
-   * Ask the primary phone for older messages before `anchor` (Baileys PDO history sync on demand).
-   * WhatsApp may still cap depth; repeat later or use exported chats for a full offline archive.
+   * User-initiated only (Settings / chat menu). Do not call in a loop — each request
+   * is a phone-side history sync and surfaces “syncing with WhatsApp Search” alerts.
    */
   async fetchOlderHistoryFromPhone(anchor, count = 50) {
     if (!this._sock?.fetchMessageHistory) throw new Error('WhatsApp not connected');

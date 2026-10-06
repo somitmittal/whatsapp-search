@@ -71,4 +71,18 @@ describe('roster rows yielding to real ingested chats', () => {
     expect(row.messageCount).toBe(1);
     expect(row.awaitingSync).toBeUndefined();
   });
+
+  test('sidebar last-activity uses WhatsApp roster time when it is newer than ingested messages', () => {
+    const jid = '918888888888@s.whatsapp.net';
+    db.insertMessageBatch([{
+      messageId: 'old-fri',
+      chatJid: jid,
+      chatName: 'Papa',
+      sender: 'Papa',
+      text: 'friday',
+      timestamp: 1_756_000_500,
+    }]);
+    db.upsertChatRoster([{ chatJid: jid, chatName: 'Papa', lastMessageTs: 1_759_000_000 }]);
+    expect(rosterRowFor(jid).lastMessageTs).toBe(1_759_000_000);
+  });
 });

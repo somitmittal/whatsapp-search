@@ -1328,6 +1328,23 @@ export default class Database {
     return row || null;
   }
 
+  /**
+   * Newest stored row — used to request on-demand history that can fill a gap
+   * after the archive froze (WhatsApp PDO still keys off a known message id).
+   */
+  getNewestMessageAnchor(chatJid) {
+    if (!chatJid) return null;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT message_id AS messageId, timestamp,
+             CASE WHEN sender = 'You' THEN 1 ELSE 0 END AS fromMe
+      FROM messages WHERE tenant_id = ? AND chat_jid = ?
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
+    `).get(t, chatJid);
+    return row || null;
+  }
+
   /** @param jsonStr JSON array string e.g. `["…","…"]` or `[]` after processing */
   updateMessageActionSuggestions(messageId, jsonStr) {
     if (!messageId) return 0;
@@ -1927,6 +1944,12 @@ export default class Database {
       'SELECT chat_jid AS chatJid, touched_at AS touchedAt FROM chat_import_touches WHERE tenant_id = ?',
     ).all(t);
     const importTouchedAt = new Map(touchRows.map((r) => [r.chatJid, r.touchedAt]));
+    const rosterTsByChat = new Map();
+    for (const r of this._db.prepare(
+      'SELECT chat_jid AS chatJid, last_message_ts AS lastMessageTs FROM chat_roster WHERE tenant_id = ?',
+    ).all(t)) {
+      if (r.chatJid) rosterTsByChat.set(r.chatJid, r.lastMessageTs || 0);
+    }
     const optedInJids = new Set(this.listIndexOptInJids());
 
     const goodNameRows = this._db.prepare(`
@@ -2048,13 +2071,14 @@ export default class Database {
 
       const msgTs = agg.lastMessageTs || 0;
       const touchTs = importTouchedAt.get(chatJid) || 0;
+      const rosterTs = rosterTsByChat.get(chatJid) || 0;
       out.push({
         chatJid,
         chatName: resolveTitle(chatJid, titlesByChat.get(chatJid)),
         sidebarTab: sidebarTabForJid(chatJid),
         messageCount: agg.messageCount,
         participantCount: agg.participantCount,
-        lastMessageTs: msgTs,
+        lastMessageTs: Math.max(msgTs, rosterTs),
         lastImportedAt: touchTs || null,
         totalThreads: estThreads,
         summarizedThreads,

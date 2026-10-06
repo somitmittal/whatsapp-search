@@ -276,7 +276,7 @@ async function main() {
 
   console.log('Server ready.');
   if (!config.waSyncFullHistory) {
-    console.log('[WA] WA_SYNC_FULL_HISTORY disabled — less linked-device sync traffic; less chat history on first connect.');
+    console.log('[WA] WA_SYNC_FULL_HISTORY disabled — skip FULL dump; RECENT catch-up on reconnect is still on.');
   }
   if (config.waAutoAppStateResync) {
     console.log('[WA] WA_AUTO_APP_STATE_RESYNC enabled — auto app-state sync after connect (more phone notifications).');

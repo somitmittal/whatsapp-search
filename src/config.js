@@ -87,8 +87,9 @@ const config = {
     (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || (onRender ? 'gemini-2.5-flash' : 'llama3.2:3b')).trim(),
 
   /**
-   * Baileys linked-device history: default `false` for fewer phone “syncing” alerts on connect.
-   * Set `WA_SYNC_FULL_HISTORY=true` if you explicitly want deeper automatic history on first connect.
+   * Baileys FULL history dump: default `false` for fewer phone “syncing” alerts on connect.
+   * RECENT history on reconnect is always ingested (otherwise chats freeze on the last online day).
+   * Set `WA_SYNC_FULL_HISTORY=true` if you explicitly want the deeper automatic dump.
    */
   waSyncFullHistory: (() => {
     const v = String(process.env.WA_SYNC_FULL_HISTORY ?? '').trim().toLowerCase();
