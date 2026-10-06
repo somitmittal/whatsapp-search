@@ -689,13 +689,12 @@ export default class WaClient {
       auth: authState,
       printQRInTerminal: false,
       generateHighQualityLinkPreview: false,
-      // Linked-device history depth is still capped by WhatsApp servers (often ~few months of rolling sync).
-      // See fetchOlderHistoryFromPhone + POST /api/wa/fetch-older-history and chat export import for more.
-      syncFullHistory: config.waSyncFullHistory,
-      // Required: Baileys otherwise maps this to `() => !!syncFullHistory` and drops
-      // RECENT history on every reconnect (sidebar stuck on the last online day).
+      markOnlineOnConnect: false,
+      syncFullHistory: false,
+      // Ingest RECENT if WhatsApp sends it on reconnect. Never request FULL / on-demand
+      // dumps — those need the phone screen on and retry-spam when it locks.
       shouldSyncHistoryMessage: (msg) => shouldSyncHistoryMessage(msg, {
-        syncFullHistory: config.waSyncFullHistory,
+        syncFullHistory: false,
       }),
       /**
        * Linked-device label on your phone (Settings → Linked devices).

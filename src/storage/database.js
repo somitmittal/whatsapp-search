@@ -1345,6 +1345,27 @@ export default class Database {
     return row || null;
   }
 
+  /**
+   * Live WhatsApp chats (not imports / status) whose newest stored message is older than `unixSec`.
+   */
+  countChatsWithNewestBefore(unixSec, { minMessages = 5 } = {}) {
+    const t = getCurrentTenantId();
+    const cutoff = Number(unixSec) || 0;
+    const minN = Math.max(1, Math.floor(Number(minMessages) || 5));
+    const row = this._db.prepare(`
+      SELECT COUNT(*) AS n FROM (
+        SELECT chat_jid
+        FROM messages
+        WHERE tenant_id = ?
+          AND chat_jid NOT LIKE '%@broadcast'
+          AND chat_jid NOT LIKE '%@imported'
+        GROUP BY chat_jid
+        HAVING COUNT(*) >= ? AND MAX(timestamp) < ?
+      )
+    `).get(t, minN, cutoff);
+    return Number(row?.n) || 0;
+  }
+
   /** @param jsonStr JSON array string e.g. `["…","…"]` or `[]` after processing */
   updateMessageActionSuggestions(messageId, jsonStr) {
     if (!messageId) return 0;

@@ -86,3 +86,23 @@ describe('roster rows yielding to real ingested chats', () => {
     expect(rosterRowFor(jid).lastMessageTs).toBe(1_759_000_000);
   });
 });
+
+describe('countChatsWithNewestBefore', () => {
+  test('counts only live chats whose newest row is older than the cutoff', () => {
+    const oldJid = '120363000000000001@g.us';
+    const newJid = '120363000000000002@g.us';
+    db.insertMessageBatch([
+      { messageId: 'o1', chatJid: oldJid, chatName: 'Old', sender: 'A', text: 'x', timestamp: 1_700_000_000 },
+      { messageId: 'o2', chatJid: oldJid, chatName: 'Old', sender: 'A', text: 'y', timestamp: 1_700_000_100 },
+      { messageId: 'o3', chatJid: oldJid, chatName: 'Old', sender: 'A', text: 'z', timestamp: 1_700_000_200 },
+      { messageId: 'o4', chatJid: oldJid, chatName: 'Old', sender: 'A', text: 'w', timestamp: 1_700_000_300 },
+      { messageId: 'o5', chatJid: oldJid, chatName: 'Old', sender: 'A', text: 'v', timestamp: 1_700_000_400 },
+      { messageId: 'n1', chatJid: newJid, chatName: 'New', sender: 'B', text: 'x', timestamp: 1_800_000_000 },
+      { messageId: 'n2', chatJid: newJid, chatName: 'New', sender: 'B', text: 'y', timestamp: 1_800_000_100 },
+      { messageId: 'n3', chatJid: newJid, chatName: 'New', sender: 'B', text: 'z', timestamp: 1_800_000_200 },
+      { messageId: 'n4', chatJid: newJid, chatName: 'New', sender: 'B', text: 'w', timestamp: 1_800_000_300 },
+      { messageId: 'n5', chatJid: newJid, chatName: 'New', sender: 'B', text: 'v', timestamp: 1_800_000_400 },
+    ]);
+    expect(db.countChatsWithNewestBefore(1_750_000_000, { minMessages: 5 })).toBe(1);
+  });
+});
