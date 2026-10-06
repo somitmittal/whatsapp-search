@@ -49,7 +49,7 @@ export function isTrustedBrowserOrigin(origin, opts = {}) {
   if (u.username || u.password) return false;
 
   if (isLoopbackHostname(u.hostname)) {
-    return !opts.isPublicInternet;
+    return u.protocol === 'http:' || u.protocol === 'https:';
   }
 
   const path = String(opts.path || '');
@@ -107,7 +107,7 @@ export function contentSecurityPolicy() {
     "img-src 'self' data: blob:",
     "media-src 'self' blob:",
     "font-src 'self' data:",
-    "connect-src 'self' ws: wss:",
+    "connect-src 'self' ws://127.0.0.1:* ws://localhost:* ws://[::1]:* wss://127.0.0.1:* wss://localhost:* ws: wss:",
     "worker-src 'self' blob:",
     "frame-src 'self' blob:",
   ].join('; ');

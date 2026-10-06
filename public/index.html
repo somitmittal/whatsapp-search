@@ -2891,6 +2891,24 @@
   }
   connectWS();
 
+  let _lastSeenMsgCount = 0;
+  setInterval(async () => {
+    try {
+      const st = await fetch('/api/status', { credentials: 'same-origin' }).then((r) => r.ok ? r.json() : null);
+      const n = Number(st?.stats?.totalMessages) || 0;
+      if (n && n !== _lastSeenMsgCount) {
+        const grew = n > _lastSeenMsgCount && _lastSeenMsgCount > 0;
+        _lastSeenMsgCount = n;
+        if (grew) {
+          void refreshDash();
+          void refreshActiveChatMessages();
+        }
+      } else if (n) {
+        _lastSeenMsgCount = n;
+      }
+    } catch { /* */ }
+  }, 6000);
+
   // ── WhatsApp connection UI ─────────────────────────────────────────
   let _waState = 'DISCONNECTED';
   let _waLoggedOut = false;
@@ -3828,11 +3846,9 @@
   /** Counts on the tab labels, so live chats landing behind the current tab are still visible. */
   function renderSidebarTabCounts() {
     const counts = { imported: 0, chat: 0, feed: 0 };
-    const live = isWaUiReady();
     for (const c of chatData) {
       const tab = sidebarTabOf(c);
       if (counts[tab] === undefined) continue;
-      if (tab !== 'imported' && !live) continue;
       counts[tab] += 1;
     }
     document.querySelectorAll('[data-tab-count]').forEach((el) => {
@@ -3848,9 +3864,11 @@
   function autoSelectSidebarTab() {
     if (sidebarTabPinnedByUser) return;
     if (sidebarListTab === 'business') return;
-    const wanted = isWaUiReady() && chatData.some((c) => sidebarTabOf(c) === 'chat')
+    const hasLive = chatData.some((c) => sidebarTabOf(c) === 'chat');
+    const hasImported = chatData.some((c) => sidebarTabOf(c) === 'imported');
+    const wanted = (isWaUiReady() || hasLive) && hasLive
       ? 'chat'
-      : (chatData.some((c) => sidebarTabOf(c) === 'imported') ? 'imported' : sidebarListTab);
+      : (hasImported ? 'imported' : sidebarListTab);
     if (wanted !== sidebarListTab) setSidebarListTab(wanted, { pin: false });
   }
 
@@ -3946,8 +3964,6 @@
     sortChatDataByRecency();
     const fq = ($('#filter') && $('#filter').value || '').trim().toLowerCase();
     let list = chatsForCurrentSidebarTab();
-    // WA-synced chats go stale the moment the link drops, so only imports stay listed.
-    if (!isWaUiReady() && sidebarListTab !== 'imported') list = [];
     renderSidebarTabCounts();
     if (fq) {
       list = list.filter((c) => {

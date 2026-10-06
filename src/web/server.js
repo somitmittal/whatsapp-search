@@ -520,20 +520,47 @@ export default class WebServer {
 
   /** @returns {boolean} */
   _verifyWsClient(info) {
-    const origin = info.origin || info.req?.headers?.origin;
+    const req = info.req;
+    const origin = info.origin || req?.headers?.origin;
     if (origin && !isTrustedBrowserOrigin(origin, this._originPolicy({ path: '/' }))) {
       return false;
     }
-    const req = info.req;
+
+    // Desktop / local: never drop the live-message socket for a missing cookie.
+    // The first page load races WebSocket vs the httpOnly session cookie; rejecting
+    // here left the UI on stale SQLite until a full reload.
+    if (config.isDesktopApp) {
+      const tid = this._desktopTenantId();
+      const cookies = parse(String(req.headers?.cookie || ''));
+      let sid = getSessionIdFromRequest({ cookies, headers: req.headers });
+      let row = sid ? this._userSessions.getById(sid) : null;
+      if (row && row.tenant_id !== tid) {
+        this._userSessions.rebindTenant(sid, tid);
+        row = { ...row, tenant_id: tid };
+      }
+      if (!row) sid = this._userSessions.create(tid);
+      req.tenantId = tid;
+      req.waSessionId = sid;
+      this._getTenantState(tid).sessionId = sid;
+      return true;
+    }
+
     if (isJwtAuthEnabled()) {
       const cookies = parse(String(req.headers?.cookie || ''));
       const sid = getSessionIdFromRequest({ cookies, headers: req.headers });
       const row = sid ? this._userSessions.getById(sid) : null;
-      if (!row) return false;
-      this._userSessions.touch(sid);
-      req.tenantId = row.tenant_id;
-      req.waSessionId = sid;
-      return true;
+      if (row) {
+        this._userSessions.touch(sid);
+        req.tenantId = row.tenant_id;
+        req.waSessionId = sid;
+        return true;
+      }
+      if (!this._isPublicInternetDeploy()) {
+        const tid = this._localCanonicalTenantId();
+        req.tenantId = tid;
+        return true;
+      }
+      return false;
     }
     req.tenantId = config.defaultTenantId || LEGACY_TENANT_ID;
     return true;
@@ -714,19 +741,23 @@ export default class WebServer {
             if (!historyBusy || inserted >= 200) {
               console.log(`[WA] Tenant ${tid} saved ${inserted} new messages`);
             }
+          }
+          // Always push a live tick so the sidebar/open chat refresh even when
+          // Baileys re-delivers a message we already stored (INSERT OR IGNORE).
+          if ((rows || []).length) {
             this._broadcast({
               type: 'new-messages',
               data: {
                 count: inserted,
-                stats: this._getCachedTotalStats(tid),
+                stats: this._getCachedTotalStats(tid, { force: true }),
                 chatTouches: summarizeChatTouchesFromRows(rows),
               },
             }, tid);
-            if (!historyBusy) {
-              this._mediaIndexService?.scheduleProcess?.();
-              this._embeddingIndexService?.scheduleProcess?.();
-              this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
-            }
+          }
+          if (inserted > 0 && !historyBusy) {
+            this._mediaIndexService?.scheduleProcess?.();
+            this._embeddingIndexService?.scheduleProcess?.();
+            this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
           }
         });
       },
@@ -1024,7 +1055,7 @@ export default class WebServer {
       next();
     });
     this._app.use(cookieParser());
-    this._app.use(express.json({ limit: '2mb' }));
+    this._app.use(express.json({ limit: '5mb' }));
 
     this._registerWabaWebhookRoutes();
 
@@ -1215,7 +1246,7 @@ export default class WebServer {
           if (wa && typeof wa.overlayResolvedChatNames === 'function') {
             stats = await wa.overlayResolvedChatNames(stats, { lidLookup: !skipHeavyOverlay });
           }
-          if (!skipHeavyOverlay && wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
+          if (wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
             stats = await wa.mergeLinkedPersonalChatStats(stats);
           }
           // Unread: prefer live WhatsApp map, fall back to persisted counts across restarts.

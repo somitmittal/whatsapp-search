@@ -802,7 +802,6 @@ export default class WaClient {
     // Baileys uses type `notify` for live traffic and `append` for offline/queued sync — both must be indexed
     // or the DB stops updating (e.g. everything stuck on the last day the socket saw only `append` events).
     this._sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify' && type !== 'append') return;
       const rows = [];
       for (const msg of messages) {
         const jid = msg.key.remoteJid;
@@ -817,7 +816,7 @@ export default class WaClient {
       }
       if (rows.length) {
         this._enqueueBatch(rows);
-        if (type === 'notify') this._flushPendingBatch();
+        if (type !== 'append' || rows.length <= 20) this._flushPendingBatch();
         this._promoteUiWhileHistoryContinues();
       }
       // Name cross-linking can touch the Signal store; it must not delay the DB-visible row.

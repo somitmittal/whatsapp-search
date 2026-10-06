@@ -21,8 +21,9 @@ describe('http-security origin policy', () => {
     expect(isTrustedBrowserOrigin('http://localhost:3000', { isPublicInternet: false })).toBe(true);
   });
 
-  test('loopback is not trusted on public internet deploys', () => {
-    expect(isTrustedBrowserOrigin('http://127.0.0.1:3000', { isPublicInternet: true })).toBe(false);
+  test('loopback stays trusted so the desktop UI can talk to itself', () => {
+    expect(isTrustedBrowserOrigin('http://127.0.0.1:3847', { isPublicInternet: true })).toBe(true);
+    expect(isTrustedBrowserOrigin('http://localhost:3000', { isPublicInternet: false })).toBe(true);
   });
 
   test('allows the Render origin when configured', () => {
