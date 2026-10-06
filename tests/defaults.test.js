@@ -31,6 +31,26 @@ describe('publicSettingsFromDb', () => {
     expect(pub.llm_api_key).toContain('…');
     expect(pub.summary_api_key).toBe('');
   });
+
+  test('strips OAuth and WABA secrets from the public blob', () => {
+    const db = {
+      getAllSettings: () => ({
+        llm_provider: 'groq',
+        gmail_refresh_token: '1//secret-refresh',
+        waba_access_token: 'EAAB-secret',
+        waba_app_secret: 'app-secret',
+        waba_verify_token: 'verify-me',
+        gmail_email: 'user@example.com',
+      }),
+    };
+    const pub = publicSettingsFromDb(db);
+    expect(pub.gmail_refresh_token).toBeUndefined();
+    expect(pub.waba_access_token).toBeUndefined();
+    expect(pub.waba_app_secret).toBeUndefined();
+    expect(pub.waba_verify_token).toBeUndefined();
+    expect(pub.gmail_email).toBe('user@example.com');
+    expect(pub.hasGmailRefreshToken).toBe(true);
+  });
 });
 
 describe('migrateAwayFromLocalOllama', () => {

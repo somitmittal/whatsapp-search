@@ -114,6 +114,17 @@ export function maskApiKeyForDisplay(raw) {
   return `${s.slice(0, 4)}…${s.slice(-4)}`;
 }
 
+/** Keys that must never leave the server in GET /api/settings. */
+export const SETTINGS_SECRET_KEYS = new Set([
+  'llm_api_key',
+  'summary_api_key',
+  'media_index_api_key',
+  'gmail_refresh_token',
+  'waba_access_token',
+  'waba_app_secret',
+  'waba_verify_token',
+]);
+
 /**
  * Settings blob safe for GET /api/settings: masks stored keys and adds hasLlmApiKey / hasSummaryApiKey.
  */
@@ -122,13 +133,19 @@ export function publicSettingsFromDb(db) {
   const llmRaw = (settings.llm_api_key || '').trim();
   const sumRaw = (settings.summary_api_key || '').trim();
   const mediaRaw = (settings.media_index_api_key || '').trim();
+  const pub = {};
+  for (const [k, v] of Object.entries(settings || {})) {
+    if (SETTINGS_SECRET_KEYS.has(k)) continue;
+    pub[k] = v;
+  }
   return {
-    ...settings,
+    ...pub,
     llm_api_key: llmRaw ? maskApiKeyForDisplay(llmRaw) : '',
     summary_api_key: sumRaw ? maskApiKeyForDisplay(sumRaw) : '',
     media_index_api_key: mediaRaw ? maskApiKeyForDisplay(mediaRaw) : '',
     hasLlmApiKey: !!llmRaw,
     hasSummaryApiKey: !!sumRaw,
     hasMediaIndexApiKey: !!mediaRaw,
+    hasGmailRefreshToken: !!(settings.gmail_refresh_token || '').trim(),
   };
 }

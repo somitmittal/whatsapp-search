@@ -333,10 +333,18 @@ export function extractMediaFromZip(zipBuffer, chatJid) {
   const zip = new AdmZip(zipBuffer);
   const mediaMap = new Map();
   const dir = join(config.mediaDir, safeJidDir(chatJid));
+  const MAX_ENTRIES = 4000;
+  const MAX_FILE_BYTES = 50 * 1024 * 1024;
+  const MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+  let seen = 0;
+  let totalBytes = 0;
 
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) continue;
-    const name = entry.entryName;
+    seen += 1;
+    if (seen > MAX_ENTRIES) break;
+    const name = entry.entryName || '';
+    if (name.includes('..') || name.includes('\0')) continue;
     const lower = name.toLowerCase();
     if (lower.endsWith('.txt') || lower.includes('__macosx')) continue;
 
@@ -345,10 +353,16 @@ export function extractMediaFromZip(zipBuffer, chatJid) {
     if (!mtype) continue;
 
     try {
+      const headerSize = Number(entry.header?.size);
+      if (Number.isFinite(headerSize) && headerSize > MAX_FILE_BYTES) continue;
       const buf = entry.getData();
       if (!buf || buf.length === 0) continue;
+      if (buf.length > MAX_FILE_BYTES) continue;
+      totalBytes += buf.length;
+      if (totalBytes > MAX_TOTAL_BYTES) break;
       mkdirSync(dir, { recursive: true });
       const safeName = basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+      if (!safeName || safeName === '.' || safeName === '..') continue;
       const fullPath = join(dir, safeName);
       if (!existsSync(fullPath)) writeFileSync(fullPath, buf);
       mediaMap.set(basename(name).toLowerCase(), { path: fullPath, type: mtype });

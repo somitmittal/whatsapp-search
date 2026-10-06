@@ -123,14 +123,19 @@ jobs:
 
             ### macOS first launch
 
-            These builds are **ad-hoc signed** (not Apple Developer–notarized). Clearing quarantine with `xattr` alone is **not enough** when the signature is incomplete — macOS may say the app is damaged.
+            These builds are **ad-hoc signed** (not Apple Developer–notarized). macOS Gatekeeper
+            will still warn that Apple could not verify the app. That warning is from Apple’s
+            unidentified-developer policy, not from a malware scan of this code.
+
+            Searchable only binds **127.0.0.1** (not your LAN), and the UI cannot be read by
+            other websites.
 
             Open the DMG, then run:
 
             ```bash
             cp -R /Volumes/Searchable/Searchable.app /Applications/
             xattr -cr /Applications/Searchable.app
-            codesign --force --deep --sign - /Applications/Searchable.app
+            codesign --force --deep --sign - --options runtime /Applications/Searchable.app
             open /Applications/Searchable.app
             ```
 

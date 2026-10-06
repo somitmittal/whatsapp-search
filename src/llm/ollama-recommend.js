@@ -1,5 +1,6 @@
 import os from 'os';
-import { execSync } from 'child_process';
+import { readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 
 /**
  * Max share of *available* RAM given to Ollama. The rest stays for macOS, Electron, and apps
@@ -55,8 +56,8 @@ function roundGb(n) {
 
 export function getMacAvailableRamGb() {
   try {
-    const pageSize = parseInt(execSync('sysctl -n hw.pagesize', { encoding: 'utf8', timeout: 3000 }).trim(), 10) || 4096;
-    const vm = execSync('vm_stat', { encoding: 'utf8', timeout: 3000 });
+    const pageSize = parseInt(execFileSync('sysctl', ['-n', 'hw.pagesize'], { encoding: 'utf8', timeout: 3000 }).trim(), 10) || 4096;
+    const vm = execFileSync('vm_stat', { encoding: 'utf8', timeout: 3000 });
     const pages = (label) => {
       const m = vm.match(new RegExp(`${label}:\\s*(\\d+)`, 'i'));
       return m ? parseInt(m[1], 10) : 0;
@@ -70,7 +71,7 @@ export function getMacAvailableRamGb() {
 
 export function getLinuxAvailableRamGb() {
   try {
-    const meminfo = execSync('grep -E "^(MemAvailable|MemFree):" /proc/meminfo', { encoding: 'utf8', timeout: 3000 });
+    const meminfo = readFileSync('/proc/meminfo', 'utf8');
     const avail = meminfo.match(/MemAvailable:\s*(\d+)\s*kB/i);
     if (avail) return roundGb(parseInt(avail[1], 10) / (1024 ** 2));
     const free = meminfo.match(/MemFree:\s*(\d+)\s*kB/i);
@@ -83,7 +84,7 @@ export function getLinuxAvailableRamGb() {
 export function getMemoryPressureLevel() {
   if (process.platform !== 'darwin') return 'normal';
   try {
-    const out = execSync('memory_pressure 2>/dev/null', { encoding: 'utf8', timeout: 2500 });
+    const out = execFileSync('memory_pressure', { encoding: 'utf8', timeout: 2500 });
     if (/critical|policy:\s*1[0-9]\./i.test(out)) return 'critical';
     if (/warn|policy:\s*[2-4][0-9]\./i.test(out)) return 'warn';
     const pct = out.match(/memory free percentage:\s*(\d+)%/i)?.[1];
@@ -199,14 +200,17 @@ export function resolveSafeOllamaModel(requestedModel) {
 function detectGpu() {
   try {
     if (process.platform === 'darwin') {
-      const out = execSync('system_profiler SPDisplaysDataType 2>/dev/null', { encoding: 'utf8', timeout: 5000 });
+      const out = execFileSync('system_profiler', ['SPDisplaysDataType'], { encoding: 'utf8', timeout: 5000 });
       const chip = out.match(/Chip(?:set)? Model:\s*(.+)/i)?.[1]?.trim();
       const vram = out.match(/VRAM.*?:\s*(\d+)/i)?.[1];
       if (chip) return { name: chip, vramGb: vram ? parseInt(vram, 10) / 1024 : null, type: 'apple' };
     }
     if (process.platform === 'linux') {
       try {
-        const nv = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null', { encoding: 'utf8', timeout: 5000 });
+        const nv = execFileSync('nvidia-smi', [
+          '--query-gpu=name,memory.total',
+          '--format=csv,noheader,nounits',
+        ], { encoding: 'utf8', timeout: 5000 });
         const [name, memMb] = nv.trim().split(',').map((s) => s.trim());
         if (name) return { name, vramGb: memMb ? Math.round(parseInt(memMb, 10) / 1024) : null, type: 'nvidia' };
       } catch { /* no nvidia */ }

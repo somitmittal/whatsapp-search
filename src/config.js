@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { defaultBindHost } from './web/http-security.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -39,8 +40,11 @@ const config = {
   dbPath: resolve(ROOT, process.env.DATA_DIR || './data', 'whatsapp_search.db'),
   /** Render/Heroku set `PORT`; local dev often uses `WEB_PORT`. */
   webPort: parseInt(process.env.PORT || process.env.WEB_PORT || '3000', 10),
-  /** Bind all interfaces so PaaS (e.g. Render) can route traffic. Override with `HOST` / `WEB_HOST`. */
-  webHost: process.env.HOST || process.env.WEB_HOST || '0.0.0.0',
+  /**
+   * Local / desktop: loopback only so chats are not advertised on the LAN.
+   * Render / PaaS: all interfaces. Override with `HOST` / `WEB_HOST`.
+   */
+  webHost: defaultBindHost({ isPublicInternet: onRender }),
   publicDir: resolve(ROOT, 'public'),
   /**
    * Gmail API (optional): set in `.env` to enable “Sync from Gmail” for WhatsApp `.txt` / `.zip` exports.

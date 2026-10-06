@@ -1,10 +1,10 @@
 import { parse } from 'cookie';
 import cookieParser from 'cookie-parser';
-import { existsSync, mkdirSync, renameSync } from 'fs';
+import { existsSync, mkdirSync, renameSync, realpathSync } from 'fs';
 import { createServer } from 'http';
 import { createRequire } from 'module';
 import { randomBytes } from 'node:crypto';
-import { basename, join, relative, resolve } from 'path';
+import { basename, isAbsolute, join, relative, resolve } from 'path';
 import { isJwtAuthEnabled } from '../auth/jwt-util.js';
 import { getSessionIdFromRequest, setSessionCookie, UserSessionService } from '../auth/user-session.js';
 import config from '../config.js';
@@ -50,6 +50,14 @@ import { getLatestGitHubRelease, sendReleaseError } from '../releases/github-rel
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 import { registerAuthRoutes } from './auth-routes.js';
 import { preserveTenantAcrossUpload } from './upload-tenant.js';
+import {
+  applySecurityHeaders,
+  applyTrustedCors,
+  extraAllowedOriginsFromEnv,
+  isTrustedBrowserOrigin,
+  rejectUntrustedOrigin,
+  renderPublicOrigin,
+} from './http-security.js';
 
 const require = createRequire(import.meta.url);
 const express = require('express');
@@ -101,12 +109,16 @@ function sanitizeMessageList(list) {
 }
 
 function assertPathUnderMediaRoot(absFilePath) {
-  const file = resolve(absFilePath);
-  const root = resolve(config.mediaDir);
-  const rel = relative(root, file);
-  if (!rel || rel.startsWith('..') || rel.includes('..')) return null;
-  if (!existsSync(file)) return null;
-  return file;
+  try {
+    const file = realpathSync(resolve(absFilePath));
+    const root = realpathSync(resolve(config.mediaDir));
+    const rel = relative(root, file);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
+    if (!existsSync(file)) return null;
+    return file;
+  } catch {
+    return null;
+  }
 }
 
 function contentTypeForMediaFile(filePath) {
@@ -497,8 +509,21 @@ export default class WebServer {
     return stats;
   }
 
+  _originPolicy(req) {
+    return {
+      isPublicInternet: this._isPublicInternetDeploy(),
+      renderOrigin: renderPublicOrigin(),
+      extraOrigins: extraAllowedOriginsFromEnv(),
+      path: req?.path || '',
+    };
+  }
+
   /** @returns {boolean} */
   _verifyWsClient(info) {
+    const origin = info.origin || info.req?.headers?.origin;
+    if (origin && !isTrustedBrowserOrigin(origin, this._originPolicy({ path: '/' }))) {
+      return false;
+    }
     const req = info.req;
     if (isJwtAuthEnabled()) {
       const cookies = parse(String(req.headers?.cookie || ''));
@@ -962,17 +987,22 @@ export default class WebServer {
     this._app.post('/api/waba/webhook', async (req, res) => {
       try {
         const tenantId = this._resolveTenantFromWabaBody(req.body);
+        let denied = false;
         await runWithTenant(tenantId, async () => {
           const cfg = getWabaConfig(this.db);
-          if (cfg.appSecret) {
-            const sig = req.headers['x-hub-signature-256'];
-            const raw = JSON.stringify(req.body);
-            if (!verifyWabaSignature(cfg.appSecret, raw, sig)) {
-              return res.sendStatus(403);
-            }
+          if (!cfg.appSecret) {
+            denied = true;
+            return;
+          }
+          const sig = req.headers['x-hub-signature-256'];
+          const raw = JSON.stringify(req.body);
+          if (!verifyWabaSignature(cfg.appSecret, raw, sig)) {
+            denied = true;
+            return;
           }
           await this._wabaIngest.ingestWebhookBody(req.body, tenantId);
         });
+        if (denied) return res.sendStatus(403);
         return res.sendStatus(200);
       } catch (err) {
         console.error('[WABA] webhook:', err.message);
@@ -982,15 +1012,19 @@ export default class WebServer {
   }
 
   _setupRoutes() {
-    this._app.use((_req, res, next) => {
-      res.header('Access-Control-Allow-Origin', '*');
-      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie');
-      if (_req.method === 'OPTIONS') return res.sendStatus(204);
+    this._app.disable('x-powered-by');
+    this._app.use((req, res, next) => {
+      applySecurityHeaders(req, res);
+      applyTrustedCors(req, res, this._originPolicy(req));
+      if (req.method === 'OPTIONS') {
+        if (rejectUntrustedOrigin(req, res, this._originPolicy(req))) return;
+        return res.sendStatus(204);
+      }
+      if (rejectUntrustedOrigin(req, res, this._originPolicy(req))) return;
       next();
     });
     this._app.use(cookieParser());
-    this._app.use(express.json({ limit: '10mb' }));
+    this._app.use(express.json({ limit: '2mb' }));
 
     this._registerWabaWebhookRoutes();
 
@@ -1074,7 +1108,6 @@ export default class WebServer {
         desktop: config.isDesktopApp,
         platform: process.platform,
         arch: process.arch,
-        dataDir: config.isDesktopApp ? config.dataDir : undefined,
       });
     });
 
@@ -1274,6 +1307,7 @@ export default class WebServer {
           q.download === 'true' ||
           String(q.disposition || '').toLowerCase() === 'attachment';
         res.setHeader('Content-Type', contentTypeForMediaFile(safe));
+        res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Cache-Control', 'private, max-age=3600');
         if (wantDownload) {
           const fname = attachmentFilenameFromPath(safe, messageId);
