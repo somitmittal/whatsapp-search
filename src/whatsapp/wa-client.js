@@ -711,13 +711,13 @@ export default class WaClient {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        this._setState('QR_READY', 'Scan with WhatsApp');
         try {
           const dataUrl = await QRCode.toDataURL(qr, { errorCorrectionLevel: 'M', margin: 2, width: 300 });
           this._latestQr = dataUrl;
           this._qrIssuedAt = Date.now();
           this._qrTtlMs = qrTtlMsForIndex(this._qrIndex);
           this._qrIndex += 1;
+          this._setState('QR_READY', 'Scan with WhatsApp');
           this._onQr?.(dataUrl);
           console.log(`[WA] QR ready — open ${publicWebBaseUrl()} to scan`);
         } catch (e) { console.error('[WA] QR error:', e.message); }

@@ -3192,7 +3192,10 @@
     // Settings panel sub-sections
     const qrPanel = $('#wa-qr-panel');
     const readyPanel = $('#wa-ready-panel');
-    if (qrPanel) qrPanel.style.display = state === 'QR_READY' ? '' : 'none';
+    if (qrPanel) {
+      qrPanel.style.display = state === 'QR_READY' ? '' : 'none';
+      if (state === 'QR_READY' && _lastQrDataUrl) applyQrImages(_lastQrDataUrl);
+    }
     if (readyPanel) readyPanel.style.display = state === 'READY' ? '' : 'none';
     if (state === 'READY' && $('#wa-ready-msg')) $('#wa-ready-msg').textContent = message || 'Connected';
 
@@ -3294,8 +3297,16 @@
     if (activeChat && hasIndexedArchive()) switchPanel();
   }
 
+  function applyQrImages(dataUrl) {
+    if (!dataUrl) return;
+    const welcome = $('#wqr-img');
+    const settings = $('#wa-qr-img');
+    if (welcome) welcome.src = dataUrl;
+    if (settings) settings.src = dataUrl;
+  }
+
   function showQr(dataUrl) {
-    if (!dataUrl || dataUrl === _lastQrDataUrl) return;
+    if (!dataUrl) return;
     if (_importFirstMvp && !_showLiveSyncUi) return;
     // Already linked (or mid-history-sync): never force the QR panel back over chats.
     // Late/stale wa-qr events were why a broken QR showed while "Syncing chats…" ran.
@@ -3304,13 +3315,15 @@
       $('#wqr-loading').style.display = 'none';
       return;
     }
+    const isRepeat = dataUrl === _lastQrDataUrl;
     _lastQrDataUrl = dataUrl;
     _lastQrSeenAt = Date.now();
+    applyQrImages(dataUrl);
 
-    // Silently swap image — no expiry overlay
-    $('#wqr-img').src = dataUrl;
     $('#wqr-loading').style.display = 'none';
     $('#wqr-refreshing').style.display = 'none';
+    pollForQrWhileDisconnected();
+    if (isRepeat) return;
     if (activeChat && hasIndexedArchive()) {
       switchPanel();
       return;
@@ -3319,8 +3332,6 @@
     $('#welcome-default').style.display = 'none';
     $('#sync-progress-panel').style.display = 'none';
     $('#wqr-status-line').textContent = 'Scan with your phone — refreshes automatically';
-
-    pollForQrWhileDisconnected();
   }
 
   function updateSyncProgress(data) {
