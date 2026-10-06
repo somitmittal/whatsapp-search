@@ -101,6 +101,10 @@ export default class MediaIndexService {
     return this._activeProvider()?.pullStatus ?? null;
   }
 
+  cancelPull() {
+    this._activeProvider()?.cancelPull?.();
+  }
+
   /** Debounced kick after new rows or path updates. */
   scheduleProcess() {
     if (this._scheduled) clearTimeout(this._scheduled);

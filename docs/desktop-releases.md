@@ -50,12 +50,16 @@ CI builds are **not** Apple Developer–signed or notarized. Clearing quarantine
 Open the DMG (or mount it), then run:
 
 ```bash
-cp -R /Volumes/Searchable/Searchable.app /Applications/
+# Eject any older Searchable DMG first so /Volumes/Searchable is this version.
+rm -rf /Applications/Searchable.app
+ditto /Volumes/Searchable/Searchable.app /Applications/Searchable.app
 xattr -cr /Applications/Searchable.app
 codesign --force --deep --sign - /Applications/Searchable.app
 open /Applications/Searchable.app
 ```
 
-(You can drag Searchable into Applications instead of the `cp` line.) If Gatekeeper still blocks: right-click the app → **Open**.
+Do **not** add `--options runtime` unless you also sign with `build/entitlements.mac.plist`. That combination without entitlements crashes immediately; macOS then shows a misleading “check with the developer / this version of macOS” dialog.
+
+If Gatekeeper still blocks: right-click the app → **Open**.
 
 For distribution beyond friends/family, add Apple Developer ID signing + notarization later (`hardenedRuntime: true`, real `identity`, entitlements, notarize).

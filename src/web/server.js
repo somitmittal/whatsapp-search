@@ -2266,7 +2266,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
         const instance = await createProvider(p, k, m || undefined);
         if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
-        const healthy = await instance.checkHealth();
+        const healthy = await instance.checkHealth(p === 'ollama' ? { forcePull: true } : undefined);
         const pulling = !healthy && instance.pullStatus?.status === 'downloading';
 
         this.searchEngine.setProvider(instance);
@@ -2333,7 +2333,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
         const instance = await createIndexingSummaryProvider(createProvider, sp, sk, sm || undefined);
         if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
-        const healthy = await instance.checkHealth();
+        const healthy = await instance.checkHealth(sp === 'ollama' ? { forcePull: true } : undefined);
         const pulling = !healthy && instance.pullStatus?.status === 'downloading';
 
         this.summaryService.setProvider(instance);
@@ -2413,6 +2413,14 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       return res.json(status);
     });
 
+    this._app.post('/api/pull-cancel', (_req, res) => {
+      this.searchEngine?._provider?.cancelPull?.();
+      this.summaryService?._provider?.cancelPull?.();
+      this.summaryService?._fallback?.cancelPull?.();
+      this._mediaIndexService?.cancelPull?.();
+      return res.json({ ok: true });
+    });
+
     // ── Ollama Hardware Recommendation ─────────────────────────────────
     this._app.get('/api/ollama/recommend', async (_req, res) => {
       try {
@@ -2438,7 +2446,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           return res.status(400).json({ error: localOllamaUnsupportedReason() });
         }
         const { model } = req.body;
-        const safe = resolveSafeOllamaModel(model || undefined);
+        const rec = await getHardwareRecommendation(this.searchEngine?._provider);
+        const chosen = model || rec.recommended?.model;
+        const safe = resolveSafeOllamaModel(chosen);
         if (safe.warning) {
           console.warn(`[Ollama] ${safe.warning}`);
         }
@@ -2452,7 +2462,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
 
         // Fire health check — this starts Ollama + triggers background pull if needed.
-        const healthPromise = instance.checkHealth();
+        const healthPromise = instance.checkHealth({ forcePull: true });
 
         this.searchEngine.setProvider(instance);
         await this._reloadMediaIndexProvider?.();

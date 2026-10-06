@@ -4,7 +4,10 @@ import {
   RAM_BUDGET_RATIO,
   computeModelBudgetGb,
   pickModelTierForBudget,
+  pickInstalledFitTier,
   resolveSafeOllamaModel,
+  resolveStartupOllamaModel,
+  isAutoDownloadModel,
   numCtxForBudget,
 } from '../src/llm/ollama-recommend.js';
 
@@ -40,6 +43,52 @@ describe('ollama-recommend', () => {
       expect(safe.warning).not.toMatch(/Using .* instead/i);
       expect(safe.suggestedModel).toBeTruthy();
     }
+  });
+
+  test('auto-download allows 3B and below, not 9B', () => {
+    expect(isAutoDownloadModel('llama3.2:1b')).toBe(true);
+    expect(isAutoDownloadModel('llama3.2:3b')).toBe(true);
+    expect(isAutoDownloadModel('gemma2:9b')).toBe(false);
+    expect(isAutoDownloadModel('qwen3.5:4b')).toBe(false);
+  });
+
+  test('best-fit recommendation on a large budget is gemma2:9b', () => {
+    expect(pickModelTierForBudget(12).model).toBe('gemma2:9b');
+  });
+
+  test('installed-fit prefers 3B over 1B when both are present', () => {
+    const pick = pickInstalledFitTier(12, ['llama3.2:3b', 'llama3.2:1b']);
+    expect(pick.model).toBe('llama3.2:3b');
+  });
+
+  test('startup skips pulling gemma2:9b when a smaller model is already installed', () => {
+    const resolved = resolveStartupOllamaModel({
+      requestedModel: 'gemma2:9b',
+      localModels: ['llama3.2:1b'],
+      budgetGb: 12,
+    });
+    expect(resolved.model).toBe('llama3.2:1b');
+    expect(resolved.reason).toMatch(/skip-download/);
+  });
+
+  test('startup keeps gemma2:9b if it is already on disk', () => {
+    const resolved = resolveStartupOllamaModel({
+      requestedModel: 'gemma2:9b',
+      localModels: ['gemma2:9b'],
+      budgetGb: 12,
+    });
+    expect(resolved.model).toBe('gemma2:9b');
+    expect(resolved.reason).toBe('keep-installed');
+  });
+
+  test('startup does not invent an installed model when none exist — waits for confirm', () => {
+    const resolved = resolveStartupOllamaModel({
+      requestedModel: 'gemma2:9b',
+      localModels: [],
+      budgetGb: 12,
+    });
+    expect(resolved.model).toBe('gemma2:9b');
+    expect(resolved.reason).toBe('await-confirm');
   });
 
   test('numCtx scales down on tight budgets', () => {

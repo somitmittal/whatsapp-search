@@ -117,12 +117,15 @@
           Searchable only listens on <code>127.0.0.1</code> and does not share chats on your LAN.
           Open the DMG, then run:
         </p>
-        <pre style="font-size:12px;background:#f0f2f5;border-radius:8px;padding:12px 14px;overflow-x:auto;line-height:1.55;margin:0;">cp -R /Volumes/Searchable/Searchable.app /Applications/
+        <pre style="font-size:12px;background:#f0f2f5;border-radius:8px;padding:12px 14px;overflow-x:auto;line-height:1.55;margin:0;"># Eject any older Searchable DMG first so /Volumes/Searchable is this version.
+rm -rf /Applications/Searchable.app
+ditto /Volumes/Searchable/Searchable.app /Applications/Searchable.app
 xattr -cr /Applications/Searchable.app
-codesign --force --deep --sign - --options runtime /Applications/Searchable.app
+codesign --force --deep --sign - /Applications/Searchable.app
 open /Applications/Searchable.app</pre>
         <p style="font-size:12px;color:var(--text2);margin-top:10px;margin-bottom:0;">
-          (Or drag into Applications instead of <code>cp</code>.) If Gatekeeper still blocks: right-click Searchable → <strong>Open</strong>.
+          Do not pass <code>--options runtime</code> unless you also sign with <code>build/entitlements.mac.plist</code>. Hardened Runtime without those entitlements crashes on launch with a false “incompatible with this macOS” dialog.
+          If Gatekeeper still blocks: right-click Searchable → <strong>Open</strong>.
         </p>
       </div>
     </div>

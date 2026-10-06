@@ -117,24 +117,40 @@ function startServer() {
       stdio: 'pipe',
     });
 
+    let settled = false;
+    const stderrChunks = [];
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else resolve();
+    };
+
     serverProcess.stdout?.on('data', (chunk) => {
       process.stdout.write(`[server] ${chunk}`);
     });
     serverProcess.stderr?.on('data', (chunk) => {
+      stderrChunks.push(chunk);
       process.stderr.write(`[server] ${chunk}`);
     });
 
-    serverProcess.on('error', reject);
+    serverProcess.on('error', (err) => finish(err));
     serverProcess.on('exit', (code, signal) => {
       if (code !== null && code !== 0 && !app.isQuitting) {
         console.error(`[Desktop] Server exited: code=${code} signal=${signal}`);
+      }
+      if (!settled && !app.isQuitting) {
+        const tail = Buffer.concat(stderrChunks).toString('utf8').trim().slice(-2000);
+        finish(new Error(
+          `Server exited before ready (code=${code} signal=${signal})${tail ? `\n${tail}` : ''}`,
+        ));
       }
       serverProcess = null;
     });
 
     waitForHealth()
-      .then(resolve)
-      .catch(reject);
+      .then(() => finish())
+      .catch((err) => finish(err));
   });
 }
 

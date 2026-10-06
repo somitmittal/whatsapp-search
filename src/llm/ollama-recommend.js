@@ -62,7 +62,9 @@ export function getMacAvailableRamGb() {
       const m = vm.match(new RegExp(`${label}:\\s*(\\d+)`, 'i'));
       return m ? parseInt(m[1], 10) : 0;
     };
-    const availablePages = pages('Pages free') + pages('Pages inactive') + pages('Pages purgeable');
+    // Free + speculative + purgeable only. Counting all inactive pages treats
+    // reclaimable-but-in-use app memory as headroom and auto-picks 9B models.
+    const availablePages = pages('Pages free') + pages('Pages speculative') + pages('Pages purgeable');
     return roundGb((availablePages * pageSize) / (1024 ** 3));
   } catch {
     return null;
@@ -149,6 +151,65 @@ export function pickModelTierForBudget(budgetGb, tiers = MODEL_TIERS) {
 
 export function tierForModel(modelName) {
   return MODEL_TIERS.find((t) => t.model === modelName) || null;
+}
+
+/** Models the app may download by itself (3B and below). Larger ones are Settings-only. */
+export function isAutoDownloadModel(modelName) {
+  const t = tierForModel(modelName);
+  return !!t && t.minBudgetGb <= 5;
+}
+
+export function localHasModel(localModels, name) {
+  if (!name) return false;
+  return (localModels || []).some(
+    (m) => m === name || m === `${name}:latest` || m.startsWith(`${name}:`),
+  );
+}
+
+export async function listLocalOllamaModels(baseUrl) {
+  const root = (baseUrl || process.env.OLLAMA_HOST || 'http://localhost:11434').replace(/\/$/, '');
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`${root}/api/tags`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.models || []).map((m) => m.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Prefer an already-installed model that fits. Does not pick a 9B download.
+ * Used only at process startup so we never pull without confirmation.
+ */
+export function pickInstalledFitTier(budgetGb, localModels = []) {
+  const fit = MODEL_TIERS.filter((t) => budgetGb >= t.minBudgetGb);
+  const installedFit = fit.filter((t) => localHasModel(localModels, t.model));
+  return installedFit[0] || null;
+}
+
+/**
+ * Keep a requested model if it is already on disk. Otherwise use the best
+ * installed fit. Never implies a download — missing models wait for confirmation.
+ */
+export function resolveStartupOllamaModel({ requestedModel, localModels = [], budgetGb }) {
+  if (requestedModel && localHasModel(localModels, requestedModel)) {
+    return { model: requestedModel, reason: 'keep-installed' };
+  }
+  const installed = pickInstalledFitTier(budgetGb, localModels);
+  if (installed) {
+    return {
+      model: installed.model,
+      reason: requestedModel ? `skip-download:${requestedModel}` : 'installed',
+    };
+  }
+  return {
+    model: requestedModel || pickModelTierForBudget(budgetGb).model,
+    reason: 'await-confirm',
+  };
 }
 
 /**
@@ -240,11 +301,7 @@ export async function getHardwareRecommendation(ollamaProvider) {
   const cpuModel = os.cpus()[0]?.model || 'Unknown';
   const gpu = detectGpu();
 
-  const recommended = pickModelTierForBudget(budgetGb);
-  const numCtx = numCtxForBudget(budgetGb);
-
   let localModels = [];
-  let modelAvailable = false;
   try {
     if (ollamaProvider) {
       const controller = new AbortController();
@@ -255,12 +312,13 @@ export async function getHardwareRecommendation(ollamaProvider) {
       if (res.ok) {
         const data = await res.json();
         localModels = (data.models || []).map((m) => m.name);
-        modelAvailable = localModels.some(
-          (m) => m === recommended.model || m === `${recommended.model}:latest` || m.startsWith(`${recommended.model}:`),
-        );
       }
     }
   } catch { /* ollama not running */ }
+
+  const recommended = pickModelTierForBudget(budgetGb);
+  const numCtx = numCtxForBudget(budgetGb);
+  const modelAvailable = localHasModel(localModels, recommended.model);
 
   return {
     hardware: {
@@ -280,7 +338,7 @@ export async function getHardwareRecommendation(ollamaProvider) {
     recommended: {
       model: recommended.model,
       sizeGb: recommended.sizeGb,
-      label: recommended.label,
+      label: 'Best for this Mac',
       reason: buildReason(recommended, availableRamGb, budgetGb, pressure),
       available: modelAvailable,
       numCtx,

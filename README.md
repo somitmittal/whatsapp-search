@@ -86,13 +86,15 @@ Download DMGs/installers from [GitHub Releases](https://github.com/somitmittal/w
 Builds are ad-hoc signed (no Apple Developer account). **`xattr` alone is not enough** if Gatekeeper reports a damaged/invalid signature. With the DMG open:
 
 ```bash
-cp -R /Volumes/Searchable/Searchable.app /Applications/
+# Eject any older Searchable DMG first so /Volumes/Searchable is this version.
+rm -rf /Applications/Searchable.app
+ditto /Volumes/Searchable/Searchable.app /Applications/Searchable.app
 xattr -cr /Applications/Searchable.app
 codesign --force --deep --sign - /Applications/Searchable.app
 open /Applications/Searchable.app
 ```
 
-(Or drag into Applications instead of `cp`.) Right-click → **Open** if macOS still prompts.
+Do **not** add `--options runtime` unless you also sign with `build/entitlements.mac.plist`. Right-click → **Open** if macOS still prompts.
 
 ## Dependencies
 

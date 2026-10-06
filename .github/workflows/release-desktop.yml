@@ -133,10 +133,14 @@ jobs:
             Open the DMG, then run:
 
             ```bash
-            cp -R /Volumes/Searchable/Searchable.app /Applications/
+            # Eject any older Searchable DMG first so /Volumes/Searchable is this version.
+            rm -rf /Applications/Searchable.app
+            ditto /Volumes/Searchable/Searchable.app /Applications/Searchable.app
             xattr -cr /Applications/Searchable.app
-            codesign --force --deep --sign - --options runtime /Applications/Searchable.app
+            codesign --force --deep --sign - /Applications/Searchable.app
             open /Applications/Searchable.app
             ```
 
-            (Or drag into Applications instead of `cp`.) If Gatekeeper still blocks: right-click Searchable → **Open**.
+            Do **not** use `--options runtime` unless you also pass `build/entitlements.mac.plist`. That flag alone crashes on launch (dyld Team ID mismatch) and macOS shows a false “incompatible with this version of macOS” dialog.
+
+            If Gatekeeper still blocks: right-click Searchable → **Open**.

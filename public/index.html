@@ -1383,6 +1383,12 @@
     .pb-text strong { font-size: 13px; color: var(--text); }
     .pb-text span { font-size: 12px; color: var(--text2); display: block; margin-top: 1px; }
     .pb-pct { font-size: 13px; font-weight: 600; color: var(--text); min-width: 40px; text-align: right; }
+    .pb-cancel {
+      display: none; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 6px;
+      border: 1px solid #e0a100; background: #fff; color: #6d4c00; cursor: pointer;
+    }
+    .pull-banner.can-cancel .pb-cancel { display: inline-block; }
+    .pb-cancel:hover { background: #fff3cd; }
     .pb-bar { width: 100%; height: 4px; background: #ffe082; border-radius: 2px; overflow: hidden; }
     .pull-banner.done .pb-bar { background: #a5d6a7; }
     .pb-fill {
@@ -1414,6 +1420,10 @@
     }
     .hw-recommend .hw-model-size { font-size: 11px; color: var(--text2); margin-left: auto; }
     .hw-recommend .hw-reason { font-size: 12px; color: var(--text2); margin-top: 8px; line-height: 1.4; }
+    .hw-recommend .hw-need {
+      font-size: 12px; color: var(--text); margin-top: 8px; line-height: 1.4;
+      background: rgba(255,255,255,0.65); border-radius: 6px; padding: 8px 10px;
+    }
     .hw-recommend .hw-actions { display: flex; gap: 8px; margin-top: 10px; }
     .hw-recommend .hw-btn {
       font-size: 12px; padding: 6px 16px; border-radius: 6px; border: none;
@@ -1609,6 +1619,7 @@
           <span id="pb-detail">This may take a few minutes</span>
         </div>
         <div class="pb-pct" id="pb-pct">0%</div>
+        <button type="button" class="pb-cancel" id="pb-cancel">Stop</button>
       </div>
       <div class="pb-bar"><div class="pb-fill" id="pb-fill"></div></div>
     </div>
@@ -1719,6 +1730,7 @@
           </svg>
           <h2>WhatsApp Search</h2>
           <p id="welcome-default-lead">Select a chat from the left, or search your chats with AI.<br>Click <strong>+</strong> to import more chat exports.</p>
+          <p id="welcome-ai-model-note" style="font-size:12px;color:var(--text2);margin-top:10px;max-width:520px;line-height:1.5;">AI Search needs a local model (Settings → AI). Download it once — until then, Ask AI will not work.</p>
           <p style="font-size:12px;color:var(--text2);margin-top:14px;max-width:520px;line-height:1.5;">Live WhatsApp link syncs a <strong>limited window</strong> of recent history (often months — controlled by WhatsApp). For a full long archive, export chats on your phone and import the .zip here. In an open chat, use ⋮ → <strong>Load older messages from phone</strong> to pull older batches when your phone is online.</p>
           <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px;">
             <button class="btn btn-primary" id="btn-restore-backup" type="button" style="min-width:220px;">
@@ -1947,7 +1959,7 @@
         <div class="settings-tab-panel active" data-settings-panel="ai" role="tabpanel">
         <div class="setting-group">
           <h3>Search AI Model</h3>
-          <p>Used for search queries. Default: <strong>Ollama local</strong> (llama3.2:3b) — no API key needed, downloads once (~2 GB), unloads from RAM when idle.</p>
+          <p>Used for <strong>AI Search</strong>. Ollama must download a local model once — until that finishes, Ask AI will not work (browsing chats still does). Default: local Ollama, no API key, unloads from RAM when idle.</p>
           <div class="setting-row"><label>Provider</label><select id="s-provider"><option value="ollama" selected>Ollama — Local (no key)</option><option value="groq">Groq — Fast Llama (Free)</option><option value="gemini">Google Gemini (Free)</option><option value="openrouter">OpenRouter (Free models)</option><option value="ollama_cloud">Ollama Cloud</option><option value="openai">OpenAI</option><option value="claude">Anthropic Claude</option><option value="grok">Grok / xAI (Free Tier)</option></select></div>
           <div class="setting-row" id="s-key-row" style="align-items:flex-start;"><label style="padding-top:6px;">API Keys</label><div style="flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;">
             <textarea id="s-key" rows="3" placeholder="Paste one key per line, or comma-separated. Multiple keys are rotated automatically." style="width:100%;resize:vertical;font-family:monospace;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);min-height:60px;"></textarea>
@@ -1960,7 +1972,7 @@
           <div class="hw-recommend" id="hw-recommend">
             <div class="hw-header">
               <span class="hw-icon">&#9881;&#65039;</span>
-              <span class="hw-title">Recommended model for your hardware</span>
+              <span class="hw-title">Best model for this Mac</span>
             </div>
             <div class="hw-specs" id="hw-specs"></div>
             <div class="hw-model-pick">
@@ -1969,6 +1981,7 @@
               <span class="hw-model-size" id="hw-model-size"></span>
             </div>
             <div class="hw-reason" id="hw-reason"></div>
+            <p class="hw-need" id="hw-need">AI Search needs this model downloaded on your Mac. Until it is installed, you can browse chats but Ask AI will not run.</p>
             <div class="hw-actions" id="hw-actions">
               <button class="hw-btn hw-btn-apply" id="hw-apply">Use this model</button>
               <button class="hw-btn hw-btn-dismiss" id="hw-dismiss">Keep current</button>
@@ -6238,6 +6251,36 @@
   let _hwRecCache = null;
   let _hwRecFetching = false;
 
+  function ollamaLocalHas(name, localModels) {
+    const local = localModels || _hwRecCache?.localModels || obOllamaRec?.localModels || [];
+    return (local || []).some((m) => m === name || m === `${name}:latest` || m.startsWith(`${name}:`));
+  }
+
+  function ollamaDownloadSizeGb(name) {
+    const tiers = _hwRecCache?.allTiers || obOllamaRec?.allTiers || [];
+    const t = (tiers || []).find((x) => x.model === name);
+    return t ? t.sizeGb : null;
+  }
+
+  async function ensureOllamaRecCache() {
+    if (_hwRecCache?.localModels) return _hwRecCache;
+    try {
+      const data = await fetch('/api/ollama/recommend').then((r) => r.json());
+      if (data && data.supported !== false && !data.error) _hwRecCache = data;
+    } catch { /* ignore */ }
+    return _hwRecCache;
+  }
+
+  async function confirmOllamaDownload(model) {
+    await ensureOllamaRecCache();
+    if (ollamaLocalHas(model)) return true;
+    const gb = ollamaDownloadSizeGb(model);
+    const size = gb != null ? ` (~${gb} GB)` : '';
+    return window.confirm(
+      `Download ${model}${size}?\n\nAI Search needs this model on your Mac. Until it finishes, Ask AI will not work.\n\nYou can press Stop on the yellow banner to cancel.`,
+    );
+  }
+
   async function checkHardwareRecommendation() {
     const panel = $('#hw-recommend');
     if ($('#s-provider').value !== 'ollama') { panel.classList.remove('visible'); return; }
@@ -6267,6 +6310,12 @@
     $('#hw-model-badge').textContent = rec.label;
     $('#hw-model-size').textContent = `~${rec.sizeGb} GB download`;
     $('#hw-reason').textContent = rec.reason;
+    const needEl = $('#hw-need');
+    if (needEl) {
+      needEl.textContent = rec.available
+        ? 'AI Search uses this local model on your Mac.'
+        : 'AI Search needs this model downloaded on your Mac. Until it is installed, you can browse chats but Ask AI will not run.';
+    }
 
     const curModel = $('#s-model').value;
     const isCurrent = curModel === rec.model;
@@ -6276,16 +6325,14 @@
     if (isCurrent && rec.available) {
       actionsEl.style.display = 'none';
       statusEl.style.display = 'block';
-      statusEl.innerHTML = '<span class="health-dot ok"></span> Already using recommended model — ready to go!';
-    } else if (isCurrent && !rec.available) {
-      actionsEl.style.display = 'none';
-      statusEl.style.display = 'block';
-      statusEl.innerHTML = '<span class="spinner" style="width:12px;height:12px;"></span> Model selected — click <strong>Save &amp; Connect</strong> to download';
+      statusEl.innerHTML = '<span class="health-dot ok"></span> Already using the best model for this Mac.';
     } else {
       actionsEl.style.display = 'flex';
       statusEl.style.display = 'none';
       const applyBtn = $('#hw-apply');
-      applyBtn.textContent = rec.available ? `Use ${rec.model}` : `Download & use ${rec.model} (~${rec.sizeGb} GB)`;
+      applyBtn.textContent = rec.available
+        ? `Use ${rec.model}`
+        : `Download ${rec.model} (~${rec.sizeGb} GB)`;
     }
 
     panel.classList.add('visible');
@@ -6297,9 +6344,15 @@
     const applyBtn = $('#hw-apply');
     const statusEl = $('#hw-status');
     const actionsEl = $('#hw-actions');
+    const downloadLabel = rec.available ? `Use ${rec.model}` : `Download ${rec.model} (~${rec.sizeGb} GB)`;
+
+    if (!rec.available) {
+      const ok = await confirmOllamaDownload(rec.model);
+      if (!ok) return;
+    }
 
     applyBtn.disabled = true;
-    applyBtn.textContent = 'Setting up...';
+    applyBtn.textContent = rec.available ? 'Setting up...' : 'Starting download...';
 
     try {
       const data = await fetch('/api/ollama/apply-recommendation', {
@@ -6318,7 +6371,7 @@
         statusEl.innerHTML = `<span class="health-dot ok"></span> ${esc(rec.model)} is ready!`;
         $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(rec.model)}`;
       } else if (data.pulling) {
-        statusEl.innerHTML = `<span class="spinner" style="width:12px;height:12px;"></span> Downloading ${esc(rec.model)} in the background...`;
+        statusEl.innerHTML = `<span class="spinner" style="width:12px;height:12px;"></span> Downloading ${esc(data.model || rec.model)} — press <strong>Stop</strong> on the banner to cancel`;
         startPullPolling();
       } else {
         statusEl.innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it <a href="https://ollama.com/download" target="_blank">installed</a>?';
@@ -6326,13 +6379,15 @@
 
       $('#s-provider').value = 'ollama';
       updateModelOptions();
-      $('#s-model').value = rec.model;
+      $('#s-model').value = data.model || rec.model;
+      _hwRecCache = null;
       void loadSettings();
     } catch (err) {
       statusEl.style.display = 'block';
       statusEl.innerHTML = `<span class="health-dot fail"></span> ${esc(err.message)}`;
     }
     applyBtn.disabled = false;
+    applyBtn.textContent = downloadLabel;
   });
 
   $('#hw-dismiss').addEventListener('click', () => {
@@ -6457,6 +6512,10 @@
     else if (settingsKeyState.pendingClearLlm) body.apiKey = '';
     else if (!settingsKeyState.hasLlm) body.apiKey = '';
     const isOllama = provider === 'ollama';
+    if (isOllama) {
+      const ok = await confirmOllamaDownload(model);
+      if (!ok) return;
+    }
     $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> ${isOllama ? `Starting Ollama &amp; loading ${esc(model)}...` : 'Connecting...'}`;
     $('#s-save').disabled = true;
     try {
@@ -6469,7 +6528,7 @@
       } else if (data.healthy) {
         $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
       } else if (data.pulling) {
-        $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> Downloading ${esc(data.model)}... check progress below`;
+        $('#s-status').innerHTML = `<span class="spinner" style="width:14px;height:14px;"></span> Downloading ${esc(data.model)} — press Stop on the banner to cancel`;
         startPullPolling();
       } else if (isOllama) {
         $('#s-status').innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it <a href="https://ollama.com/download" target="_blank">installed</a>?';
@@ -6539,6 +6598,10 @@
     const provider = $('#ss-provider').value;
     const model = provider !== 'same' ? $('#ss-model').value : '';
     const isOllama = provider === 'ollama';
+    if (isOllama && model) {
+      const ok = await confirmOllamaDownload(model);
+      if (!ok) return;
+    }
     const body = { provider, model };
     if (provider !== 'same' && provider !== 'ollama') {
       const keyInput = normaliseKeys($('#ss-key').value);
@@ -6643,7 +6706,7 @@
     },
     {
       title: 'Set Up Local AI',
-      subtitle: 'Recommended Ollama model for your Mac',
+      subtitle: 'Best Ollama model for this Mac — confirm before download',
       html: `<div id="ob-ollama-root" class="ob-ollama"><span class="spinner" style="width:18px;height:18px;"></span> Detecting RAM and picking the best model...</div>`,
       ollama: true,
     },
@@ -6683,13 +6746,14 @@
           <span class="ob-ollama-size">~${rec.sizeGb} GB</span>
         </div>
         <p class="ob-ollama-reason">${esc(rec.reason)}</p>
+        <p class="ob-desc" style="margin-top:0;margin-bottom:12px;">AI Search needs this model downloaded once. Until then you can import and browse chats, but Ask AI will not work.</p>
         <div class="ob-ollama-actions">
-          <button type="button" class="ob-ollama-apply" id="ob-ollama-apply">${rec.available ? 'Use this model' : `Download & use ${esc(rec.model)}`}</button>
+          <button type="button" class="ob-ollama-apply" id="ob-ollama-apply">${rec.available ? 'Use this model' : `Download ${esc(rec.model)} (~${rec.sizeGb} GB)`}</button>
           <button type="button" class="ob-ollama-skip-local" id="ob-ollama-skip-local">Choose later</button>
         </div>
         <div class="ob-ollama-status" id="ob-ollama-status"></div>
         <div class="ob-ollama-bar" id="ob-ollama-bar"><div class="ob-ollama-bar-fill" id="ob-ollama-bar-fill"></div></div>
-        <p class="ob-desc" style="margin-top:14px;font-size:11px;color:var(--text2);">Runs 100% on your Mac — no API keys, no cloud. Ollama will start automatically if installed.</p>`;
+        <p class="ob-desc" style="margin-top:14px;font-size:11px;color:var(--text2);">Runs 100% on your Mac — no API keys, no cloud. Choose later if you only want to browse chats first.</p>`;
     } catch (err) {
       root.innerHTML = `<p class="ob-desc">Setup check failed. You can configure AI in Settings later.</p>`;
     }
@@ -6702,7 +6766,11 @@
     const status = $('#ob-ollama-status');
     const bar = $('#ob-ollama-bar');
     const fill = $('#ob-ollama-bar-fill');
-    if (btn) { btn.disabled = true; btn.textContent = 'Setting up...'; }
+    if (!rec.available) {
+      const ok = await confirmOllamaDownload(rec.model);
+      if (!ok) return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = rec.available ? 'Setting up...' : 'Starting download...'; }
     try {
       const data = await fetch('/api/ollama/apply-recommendation', {
         method: 'POST',
@@ -6720,7 +6788,7 @@
         return;
       }
       if (data.pulling) {
-        if (status) status.innerHTML = `<span class="spinner" style="width:12px;height:12px;"></span> Downloading in background — you can continue`;
+        if (status) status.innerHTML = `<span class="spinner" style="width:12px;height:12px;"></span> Downloading — press <strong>Stop</strong> on the yellow banner to cancel`;
         if (bar) bar.classList.add('visible');
         startObOllamaPullWatch(fill, status, rec.model);
         startPullPolling();
@@ -6748,6 +6816,12 @@
           if (statusEl) statusEl.innerHTML = `<span class="health-dot ok"></span> ${esc(modelName)} ready!`;
           const btn = $('#ob-ollama-apply');
           if (btn) { btn.textContent = 'Done'; btn.disabled = true; }
+        } else if (data.status === 'cancelled') {
+          clearInterval(obOllamaPullTimer);
+          obOllamaPullTimer = null;
+          if (statusEl) statusEl.innerHTML = '<span class="health-dot warn"></span> Download stopped';
+          const btn = $('#ob-ollama-apply');
+          if (btn) { btn.textContent = `Download ${esc(modelName)}`; btn.disabled = false; }
         } else if (data.status === 'error') {
           clearInterval(obOllamaPullTimer);
           obOllamaPullTimer = null;
@@ -6932,14 +7006,22 @@
       if (!data) { banner.classList.remove('visible', 'error', 'done'); return; }
 
       banner.classList.add('visible');
-      banner.classList.remove('error', 'done');
+      banner.classList.remove('error', 'done', 'can-cancel');
       $('#pb-fill').style.width = data.percent + '%';
       $('#pb-pct').textContent = data.percent + '%';
 
       if (data.status === 'downloading') {
+        banner.classList.add('can-cancel');
         $('#pb-icon').innerHTML = '&#11015;&#65039;';
         $('#pb-title').textContent = `Downloading ${data.model}...`;
-        $('#pb-detail').textContent = data.detail || 'This may take a few minutes';
+        $('#pb-detail').textContent = data.detail || 'Required for AI Search — you can press Stop to cancel';
+      } else if (data.status === 'cancelled') {
+        banner.classList.add('error');
+        $('#pb-icon').innerHTML = '&#10060;';
+        $('#pb-title').textContent = 'Download stopped';
+        $('#pb-detail').textContent = data.detail || 'You can pick a smaller model in Settings';
+        $('#pb-pct').textContent = '';
+        setTimeout(() => { banner.classList.remove('visible'); stopPullPolling(); }, 5000);
       } else if (data.status === 'done') {
         banner.classList.add('done');
         $('#pb-icon').innerHTML = '&#9989;';
@@ -6962,6 +7044,15 @@
       }
     } catch { /* server not reachable */ }
   }
+
+  $('#pb-cancel')?.addEventListener('click', async () => {
+    $('#pb-cancel').disabled = true;
+    try {
+      await fetch('/api/pull-cancel', { method: 'POST' });
+      await checkPullStatus();
+    } catch { /* ignore */ }
+    $('#pb-cancel').disabled = false;
+  });
 
   startPullPolling();
   // Re-arm after a completed/error pull so later provider changes are also observed.

@@ -58,8 +58,21 @@ async function main() {
   if (savedProvider === 'ollama') {
     const { canSpawnLocalOllama } = await import('./llm/deployment-env.js');
     if (canSpawnLocalOllama()) {
-      const { resolveSafeOllamaModel, applyOllamaMemorySettings } = await import('./llm/ollama-recommend.js');
+      const { resolveSafeOllamaModel, applyOllamaMemorySettings, resolveStartupOllamaModel, listLocalOllamaModels } = await import('./llm/ollama-recommend.js');
       const safe = resolveSafeOllamaModel(savedModel);
+      const localModels = await listLocalOllamaModels();
+      const startup = resolveStartupOllamaModel({
+        requestedModel: savedModel,
+        localModels,
+        budgetGb: safe.budgetGb,
+      });
+      if (startup.reason === 'await-confirm') {
+        console.warn(`[Ollama] ${savedModel} is not installed — waiting for you to confirm the download`);
+      } else if (startup.model !== savedModel) {
+        console.warn(`[Ollama] Using ${startup.model} instead of ${savedModel} (${startup.reason})`);
+        savedModel = startup.model;
+        runWithTenant(defaultTenantId, () => db.setSetting('llm_model', savedModel));
+      }
       runWithTenant(defaultTenantId, () => applyOllamaMemorySettings(db, safe));
       if (safe.warning) {
         console.warn(`[Ollama] Startup: ${safe.warning}`);

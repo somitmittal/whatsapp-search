@@ -5,6 +5,7 @@
 export function selectPullStatus(statuses) {
   const available = (statuses || []).filter(Boolean);
   return available.find((status) => status.status === 'downloading')
+    ?? available.find((status) => status.status === 'cancelled')
     ?? available.find((status) => status.status === 'error')
     ?? available.find((status) => status.status === 'done')
     ?? null;

@@ -21,6 +21,7 @@ export default class OllamaProvider {
     this._lastPullAttempt = 0;
     this._warmedUp = false;
     this.pullStatus = null;
+    this._pullController = null;
     // Seconds to keep model loaded after a request (avoids ~3s reload on each call).
     // Default 300s (5 min) balances speed vs memory. Set OLLAMA_KEEP_ALIVE=0 to unload immediately.
     const envKeepAlive = process.env.OLLAMA_KEEP_ALIVE;
@@ -33,7 +34,7 @@ export default class OllamaProvider {
 
   resetHealthCache() { this._healthyAt = 0; }
 
-  async checkHealth() {
+  async checkHealth(options = {}) {
     if (Date.now() - this._healthyAt < HEALTH_CACHE_MS) return true;
 
     const running = await this._isRunning();
@@ -44,7 +45,11 @@ export default class OllamaProvider {
 
     const hasModel = await this._hasModel(this._model);
     if (!hasModel) {
-      this._tryPull(this._model).catch(e => console.error('[Ollama] Pull error:', e.message));
+      if (!options.forcePull) {
+        console.warn(`[Ollama] Model "${this._model}" is not installed — download starts only after you confirm`);
+        return false;
+      }
+      this._tryPull(this._model, { force: true }).catch(e => console.error('[Ollama] Pull error:', e.message));
       // Give it a brief moment — small models on fast connections may finish quickly.
       for (let i = 0; i < 5; i++) {
         await new Promise(r => setTimeout(r, 2000));
@@ -173,7 +178,26 @@ export default class OllamaProvider {
     }
   }
 
-  async _tryPull(modelName) {
+  cancelPull() {
+    if (this._pullController) {
+      this._pullController.abort();
+      this._pullController = null;
+    }
+    if (this.pullStatus?.status === 'downloading') {
+      this.pullStatus = {
+        model: this.pullStatus.model,
+        status: 'cancelled',
+        percent: this.pullStatus.percent || 0,
+        detail: 'Download cancelled',
+      };
+    }
+  }
+
+  async _tryPull(modelName, { force = false } = {}) {
+    if (!force) {
+      console.warn(`[Ollama] Refusing to download ${modelName} without user confirmation`);
+      return;
+    }
     if (this.pullStatus?.status === 'downloading') return;
     if (Date.now() - this._lastPullAttempt < PULL_COOLDOWN_MS) return;
     this._lastPullAttempt = Date.now();
@@ -182,13 +206,13 @@ export default class OllamaProvider {
     this.pullStatus = { model: modelName, status: 'downloading', percent: 0, detail: 'Starting download...' };
 
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 600_000);
+      this._pullController = new AbortController();
+      const timer = setTimeout(() => this._pullController.abort(), 600_000);
       const res = await fetch(`${this._baseUrl}/api/pull`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: modelName, stream: true }),
-        signal: controller.signal,
+        signal: this._pullController.signal,
       });
       clearTimeout(timer);
 
@@ -204,6 +228,7 @@ export default class OllamaProvider {
       let buf = '';
 
       while (true) {
+        if (this.pullStatus?.status === 'cancelled') break;
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
@@ -228,12 +253,24 @@ export default class OllamaProvider {
         }
       }
 
+      if (this.pullStatus?.status === 'cancelled') return;
       console.log(`[Ollama] Pulled "${modelName}" successfully`);
       this.pullStatus = { model: modelName, status: 'done', percent: 100, detail: 'Download complete!' };
       setTimeout(() => { this.pullStatus = null; }, 10_000);
     } catch (err) {
+      if (err?.name === 'AbortError' || this.pullStatus?.status === 'cancelled') {
+        this.pullStatus = {
+          model: modelName,
+          status: 'cancelled',
+          percent: this.pullStatus?.percent || 0,
+          detail: 'Download cancelled',
+        };
+        return;
+      }
       console.error(`[Ollama] Pull failed: ${err.message}`);
       this.pullStatus = { model: modelName, status: 'error', percent: 0, detail: err.message };
+    } finally {
+      this._pullController = null;
     }
   }
 

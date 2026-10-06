@@ -19,4 +19,10 @@ describe('selectPullStatus', () => {
   test('returns null when no provider has pull state', () => {
     expect(selectPullStatus([null, undefined])).toBeNull();
   });
+
+  test('cancelled wins over done when no download is active', () => {
+    const done = { model: 'search-model', status: 'done', percent: 100 };
+    const cancelled = { model: 'gemma2:9b', status: 'cancelled', percent: 12 };
+    expect(selectPullStatus([done, cancelled])).toBe(cancelled);
+  });
 });
