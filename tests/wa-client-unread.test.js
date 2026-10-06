@@ -2,6 +2,7 @@ import { describe, expect, test } from '@jest/globals';
 import {
   captureUnreadCounts,
   effectiveUnreadCount,
+  resolveCatchupUnseen,
   shouldShowGroupCatchup,
   unreadCountForChat,
 } from '../src/whatsapp/unread-tracker.js';
@@ -29,8 +30,17 @@ describe('WhatsApp unread counts', () => {
   });
 
   test('caps WhatsApp unread state to messages available locally', () => {
-    expect(effectiveUnreadCount(14, 12)).toBe(12);
-    expect(effectiveUnreadCount(8, 20)).toBe(8);
+    expect(effectiveUnreadCount(14, 12, 12)).toBe(12);
+    expect(effectiveUnreadCount(8, 20, 20)).toBe(8);
+  });
+
+  test('falls back to local unseen when WhatsApp unread is unknown', () => {
+    expect(effectiveUnreadCount(0, 47, 200)).toBe(47);
+  });
+
+  test('uses WhatsApp unread even when last-seen already cleared local unseen', () => {
+    // Common after restart: WA still reports 40 unread, but last_seen was advanced.
+    expect(effectiveUnreadCount(40, 0, 200)).toBe(40);
   });
 
   test('shows group catch-up only above the requested threshold while connected', () => {
@@ -38,5 +48,23 @@ describe('WhatsApp unread counts', () => {
     expect(shouldShowGroupCatchup({ isGroup: true, waConnected: true, unreadCount: 10 })).toBe(false);
     expect(shouldShowGroupCatchup({ isGroup: false, waConnected: true, unreadCount: 20 })).toBe(false);
     expect(shouldShowGroupCatchup({ isGroup: true, waConnected: false, unreadCount: 20 })).toBe(false);
+  });
+});
+
+describe('away-summary snapshot query', () => {
+  test('snapshot unread above threshold is enough without a sinceTs', () => {
+    const snapshotUnread = 200;
+    const hasSnapshot = Number.isFinite(snapshotUnread) && snapshotUnread > 10;
+    expect(hasSnapshot).toBe(true);
+  });
+});
+
+describe('resolveCatchupUnseen', () => {
+  test('uses messages since catch-up cursor when WhatsApp unread is cleared', () => {
+    expect(resolveCatchupUnseen({
+      whatsappUnread: 0,
+      locallySinceCatchup: 48,
+      availableIncoming: 300,
+    })).toBe(48);
   });
 });

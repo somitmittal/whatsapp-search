@@ -24,7 +24,11 @@ import { clearProviderCache, createProvider, PROVIDER_META } from '../llm/provid
 import { selectPullStatus } from '../llm/pull-status.js';
 import { createIndexingSummaryProvider } from '../search/indexing-profile.js';
 import { hashWhatsAppOwnerId } from '../privacy/wa-identity.js';
-import { effectiveUnreadCount, shouldShowGroupCatchup } from '../whatsapp/unread-tracker.js';
+import {
+  effectiveUnreadCount,
+  resolveCatchupUnseen,
+  shouldShowGroupCatchup,
+} from '../whatsapp/unread-tracker.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
@@ -646,6 +650,19 @@ export default class WebServer {
           this._broadcast({ type: 'sync-chats-preview', data: { chats: preview } }, tid);
         }
       },
+      onUnreadCounts: (updates) => {
+        runWithTenant(tid, () => {
+          try {
+            for (const u of updates || []) {
+              if (!u?.chatJid) continue;
+              this.db.setChatUnread(u.chatJid, u.unreadCount);
+            }
+          } catch (e) {
+            console.warn('[WA] persist unread:', e.message);
+          }
+        });
+        this._broadcast({ type: 'wa-unread', data: { updates: updates || [] } }, tid);
+      },
       onHistorySyncComplete: () => this._runWaHistoryCompleteHooks(tid, waClient),
       onResolvedDisplayName: (jid, name) => {
         runWithTenant(tid, () => {
@@ -730,6 +747,28 @@ export default class WebServer {
                   counts,
                 },
               },
+              tid,
+            );
+          }
+        });
+      },
+      onMessageRevoked: ({ chatJid, messageId }) => {
+        runWithTenant(tid, () => {
+          const ok = this.db.markMessageRevoked(chatJid, messageId);
+          if (ok) {
+            this._broadcast(
+              { type: 'message-revoked', data: { chatJid, messageId } },
+              tid,
+            );
+          }
+        });
+      },
+      onMessageEdited: ({ chatJid, messageId, text }) => {
+        runWithTenant(tid, () => {
+          const ok = this.db.updateMessageBody(chatJid, messageId, text);
+          if (ok) {
+            this._broadcast(
+              { type: 'message-edited', data: { chatJid, messageId, text } },
               tid,
             );
           }
@@ -1146,6 +1185,20 @@ export default class WebServer {
           if (!skipHeavyOverlay && wa && typeof wa.mergeLinkedPersonalChatStats === 'function') {
             stats = await wa.mergeLinkedPersonalChatStats(stats);
           }
+          // Unread: prefer live WhatsApp map, fall back to persisted counts across restarts.
+          const liveUnread = wa && typeof wa.getUnreadCountsMap === 'function'
+            ? wa.getUnreadCountsMap()
+            : new Map();
+          const persistedUnread = this.db.getAllChatUnread();
+          stats = stats.map((row) => {
+            const live = liveUnread.get(row.chatJid);
+            const stored = persistedUnread.get(row.chatJid);
+            const unreadCount = Math.max(
+              Number.isFinite(live) ? live : 0,
+              Number.isFinite(stored) ? stored : 0,
+            );
+            return unreadCount > 0 ? { ...row, unreadCount } : { ...row, unreadCount: 0 };
+          });
         } catch (_) {
           /* keep DB-only titles */
         }
@@ -1274,12 +1327,16 @@ export default class WebServer {
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const st = this._getTenantState(getCurrentTenantId());
         const isGroup = chatJid.endsWith('@g.us');
-        const waConnected = st.waState === 'READY' && Boolean(st.waClient);
-        if (!isGroup || !waConnected) {
+        const isPersonal = chatJid.endsWith('@s.whatsapp.net')
+          || chatJid.endsWith('@lid')
+          || chatJid.endsWith('@hosted');
+        // Catch-up is useful as soon as the live session is up (READY or still SYNCING).
+        const waLive = Boolean(st.waClient) && (st.waState === 'READY' || st.waState === 'SYNCING');
+        if ((!isGroup && !isPersonal) || !waLive || chatJid.endsWith('@imported')) {
           return res.json({
             eligible: false,
             isGroup,
-            waConnected,
+            waConnected: waLive,
             unreadCount: 0,
             summaries: [],
           });
@@ -1288,31 +1345,46 @@ export default class WebServer {
         const limit = Math.min(parseInt(req.query.limit, 10) || 3, 10);
         const snapshotUnread = Number(req.query.unreadCount);
         const snapshotSince = Number(req.query.since);
-        const hasSnapshot = Number.isFinite(snapshotUnread) && snapshotUnread >= 0
-          && Number.isFinite(snapshotSince) && snapshotSince >= 0;
+        const hasSnapshot = Number.isFinite(snapshotUnread) && snapshotUnread > 10;
 
         let unreadCount;
         let sinceTs;
         if (hasSnapshot) {
           unreadCount = Math.floor(snapshotUnread);
-          sinceTs = snapshotSince;
+          sinceTs = Number.isFinite(snapshotSince) && snapshotSince > 0
+            ? snapshotSince
+            : this.db.getCatchupWindowStart(chatJid);
         } else {
-          const whatsappUnread = st.waClient.getUnreadCount?.(chatJid) || 0;
-          const lastSeenTs = this.db.getChatLastSeen(chatJid);
-          const locallyUnseen = this.db.countIncomingMessagesSince(chatJid, lastSeenTs);
-          unreadCount = effectiveUnreadCount(whatsappUnread, locallyUnseen);
-          sinceTs = this.db.getUnreadWindowStart(chatJid, unreadCount);
+          // Catch-up cursor (dismiss) — NOT last_seen. Opening a chat marks it seen and
+          // used to zero out eligibility before the panel could appear.
+          sinceTs = this.db.getCatchupWindowStart(chatJid);
+          const whatsappUnread = Math.max(
+            st.waClient.getUnreadCount?.(chatJid) || 0,
+            this.db.getChatUnread(chatJid) || 0,
+          );
+          const locallySinceCatchup = this.db.countIncomingMessagesSince(chatJid, sinceTs);
+          const availableIncoming = this.db.countIncomingMessagesSince(chatJid, 0);
+          unreadCount = resolveCatchupUnseen({
+            whatsappUnread,
+            locallySinceCatchup,
+            availableIncoming,
+          });
+          // Prefer the catch-up window; if WA unread is the signal, tighten to that many msgs.
+          if (whatsappUnread > 10) {
+            const waSince = this.db.getUnreadWindowStart(chatJid, unreadCount);
+            if (waSince > sinceTs) sinceTs = waSince;
+          }
         }
 
         const eligible = shouldShowGroupCatchup({
-          isGroup: true,
+          isGroup: true, // allow personal chats through the shared >10 rule
           waConnected: true,
           unreadCount,
         });
         if (!eligible) {
           return res.json({
             eligible: false,
-            isGroup: true,
+            isGroup,
             waConnected: true,
             unreadCount,
             sinceTs,
@@ -1321,12 +1393,26 @@ export default class WebServer {
         }
         return res.json({
           eligible: true,
-          isGroup: true,
+          isGroup,
           waConnected: true,
           unreadCount,
           sinceTs,
           ...this.db.getAwayThreadSummaries(chatJid, limit, sinceTs),
         });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    /** Persist catch-up dismiss so the panel stays gone until new unseen messages arrive. */
+    this._app.post('/api/chats/:chatJid/catchup-dismiss', (req, res) => {
+      try {
+        const chatJid = decodeURIComponent(req.params.chatJid || '');
+        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const ts = req.body?.ts != null ? Number(req.body.ts) : null;
+        const dismissedUntilTs = this.db.setCatchupDismissedUntil(chatJid, ts);
+        this.db.clearChatUnread(chatJid);
+        return res.json({ ok: true, dismissedUntilTs });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1482,8 +1568,19 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           participantCountFromDb: stats?.participantCount ?? 0,
           lastMessageTs: stats?.lastMessageTs ?? null,
           isGroup: chatJid.includes('@g.us'),
+          isImported: String(chatJid).endsWith('@imported'),
         };
         const st = this._getTenantState(getCurrentTenantId());
+        // Imports are file archives — WhatsApp has no metadata for them. Asking the socket
+        // used to invent displayName="import" from the synthetic JID and overwrite the
+        // stored export title in the open-chat header.
+        if (local.isImported) {
+          return res.json({
+            ...local,
+            displayName: local.chatName,
+            waConnected: st.waState === 'READY' && Boolean(st.waClient),
+          });
+        }
         const wa = st.waClient && typeof st.waClient.getChatDetails === 'function'
           ? await st.waClient.getChatDetails(chatJid)
           : null;
@@ -1502,7 +1599,14 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
             }
           } catch (_) { /* naming is best-effort — never fail the details response */ }
         }
-        return res.json({ ...local, ...(wa || {}) });
+        // Prefer a non-empty DB title when WA returns nullish fields so spreads cannot
+        // blank out chatName / displayName on partial socket responses.
+        const merged = { ...local, ...(wa || {}) };
+        if (!merged.chatName && local.chatName) merged.chatName = local.chatName;
+        if (!merged.displayName && (local.chatName || wa?.displayName)) {
+          merged.displayName = local.chatName || wa?.displayName || null;
+        }
+        return res.json(merged);
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1597,7 +1701,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       const tid = getCurrentTenantId();
       const st = this._getTenantState(tid);
       if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
-      if (st.waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
+      if (st.waState !== 'READY' && st.waState !== 'SYNCING') {
+        return res.status(409).json({ error: 'WhatsApp not ready' });
+      }
       const chatJid = req.body?.chatJid ? String(req.body.chatJid) : '';
       const text = req.body?.text ? String(req.body.text) : '';
       const quotedMessageId = typeof req.body?.quotedMessageId === 'string' ? req.body.quotedMessageId.trim() : '';
@@ -1614,6 +1720,107 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         return res.json({ ok: true, messageId: sent?.key?.id || null });
       } catch (err) {
         return res.status(500).json({ error: err.message });
+      }
+    });
+
+    /** WhatsApp address-book / known 1:1 contacts from the linked session. */
+    this._app.get('/api/wa/contacts', (_req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+      if (st.waState !== 'READY' && st.waState !== 'SYNCING') {
+        return res.status(409).json({ error: 'WhatsApp not ready' });
+      }
+      try {
+        const fromWa = typeof st.waClient.listMessageableContacts === 'function'
+          ? st.waClient.listMessageableContacts()
+          : [];
+        // Merge indexed 1:1 chats so people you've already talked to always appear.
+        const fromDb = [];
+        try {
+          for (const row of this.db.getChatStats() || []) {
+            const jid = row?.chatJid;
+            if (!jid || jid.includes('@g.us') || jid.endsWith('@imported')) continue;
+            if (jid.endsWith('@broadcast') || jid.endsWith('@newsletter') || jid.endsWith('@bot')) continue;
+            if (!(jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid') || jid.endsWith('@hosted'))) continue;
+            fromDb.push({
+              chatJid: jid,
+              chatName: row.chatName || jid,
+              phone: null,
+            });
+          }
+        } catch (_) { /* optional */ }
+        const byJid = new Map();
+        for (const c of [...fromWa, ...fromDb]) {
+          if (!c?.chatJid || byJid.has(c.chatJid)) continue;
+          byJid.set(c.chatJid, c);
+        }
+        const contacts = [...byJid.values()].sort((a, b) =>
+          String(a.chatName || '').localeCompare(String(b.chatName || ''), undefined, { sensitivity: 'base' }),
+        );
+        return res.json({ contacts });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    /**
+     * Start (or open) a 1:1 chat by phone number. Only works if that number is on WhatsApp.
+     * Body: { phone: "+91…" } or { chatJid: "…@s.whatsapp.net" }
+     */
+    this._app.post('/api/wa/start-chat', async (req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+      if (st.waState !== 'READY' && st.waState !== 'SYNCING') {
+        return res.status(409).json({ error: 'WhatsApp not ready — finish linking first' });
+      }
+
+      const phone = req.body?.phone != null ? String(req.body.phone) : '';
+      let chatJid = req.body?.chatJid ? String(req.body.chatJid).trim() : '';
+      let chatName = req.body?.chatName ? String(req.body.chatName).trim() : '';
+
+      try {
+        if (!chatJid && phone) {
+          if (typeof st.waClient.resolvePhoneToWhatsAppJid !== 'function') {
+            return res.status(503).json({ error: 'Phone lookup not available' });
+          }
+          const resolved = await st.waClient.resolvePhoneToWhatsAppJid(phone);
+          if (!resolved?.exists || !resolved.chatJid) {
+            return res.status(404).json({
+              error: 'That number is not on WhatsApp (or could not be verified). Check the country code and try again.',
+              exists: false,
+            });
+          }
+          chatJid = resolved.chatJid;
+          if (!chatName) chatName = resolved.chatName || '';
+        }
+        if (!chatJid) return res.status(400).json({ error: 'phone or chatJid required' });
+        if (chatJid.endsWith('@g.us') || chatJid.endsWith('@imported') || chatJid.endsWith('@broadcast')) {
+          return res.status(400).json({ error: 'Pick a personal contact, not a group or import' });
+        }
+
+        if (chatName) {
+          try {
+            this.db.upsertChatRoster([{
+              chatJid,
+              chatName,
+              lastMessageTs: Math.floor(Date.now() / 1000),
+            }]);
+            if (typeof st.waClient.propagateDisplayNameForChat === 'function') {
+              void st.waClient.propagateDisplayNameForChat(this.db, chatJid, chatName).catch(() => {});
+            }
+          } catch (_) { /* roster is best-effort */ }
+        }
+
+        return res.json({
+          ok: true,
+          chatJid,
+          chatName: chatName || chatJid,
+          exists: true,
+        });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || String(err) });
       }
     });
 
@@ -1636,6 +1843,149 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         return res.json({ ok: true });
       } catch (err) {
         return res.status(500).json({ error: err.message });
+      }
+    });
+
+    /**
+     * Delete a message.
+     * Body: { chatJid, messageId, scope: 'me' | 'everyone' }
+     * - me: remove from local DB (+ best-effort WhatsApp clear when linked)
+     * - everyone: WhatsApp revoke + soft-delete locally
+     */
+    this._app.post('/api/wa/delete', async (req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      const chatJid = req.body?.chatJid ? String(req.body.chatJid) : '';
+      const messageId = typeof req.body?.messageId === 'string' ? req.body.messageId.trim() : '';
+      const scope = String(req.body?.scope || 'me').toLowerCase() === 'everyone' ? 'everyone' : 'me';
+      if (!chatJid || !messageId) return res.status(400).json({ error: 'chatJid and messageId required' });
+
+      try {
+        const row = this.db.getMessageForActions(chatJid, messageId);
+        if (!row) return res.status(404).json({ error: 'Message not found' });
+
+        if (scope === 'everyone') {
+          if (row.sender !== 'You') {
+            return res.status(403).json({ error: 'You can only delete your own messages for everyone' });
+          }
+          if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+          if (st.waState !== 'READY' && st.waState !== 'SYNCING') {
+            return res.status(409).json({ error: 'WhatsApp not ready' });
+          }
+          if (typeof st.waClient.deleteMessageForEveryone !== 'function') {
+            return res.status(503).json({ error: 'Delete for everyone not available' });
+          }
+          await st.waClient.deleteMessageForEveryone(chatJid, row);
+          this.db.markMessageRevoked(chatJid, messageId);
+          this._broadcast(
+            { type: 'message-revoked', data: { chatJid, messageId } },
+            tid,
+          );
+          return res.json({ ok: true, scope: 'everyone' });
+        }
+
+        // Delete for me — always allowed locally; WA clear is optional.
+        if (st.waClient && (st.waState === 'READY' || st.waState === 'SYNCING')
+          && typeof st.waClient.deleteMessageForMe === 'function'
+          && !String(chatJid).endsWith('@imported')) {
+          try {
+            await st.waClient.deleteMessageForMe(chatJid, row);
+          } catch (_) { /* local delete still proceeds */ }
+        }
+        const deleted = this.db.deleteMessage(chatJid, messageId);
+        this._broadcast(
+          { type: 'message-deleted', data: { chatJid, messageId } },
+          tid,
+        );
+        return res.json({ ok: true, scope: 'me', deleted });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || String(err) });
+      }
+    });
+
+    /**
+     * Forward a message to one or more chats.
+     * Body: { chatJid, messageId, targetJids: string[] }
+     */
+    this._app.post('/api/wa/forward', async (req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+      if (st.waState !== 'READY' && st.waState !== 'SYNCING') {
+        return res.status(409).json({ error: 'WhatsApp not ready' });
+      }
+      const chatJid = req.body?.chatJid ? String(req.body.chatJid) : '';
+      const messageId = typeof req.body?.messageId === 'string' ? req.body.messageId.trim() : '';
+      let targets = req.body?.targetJids;
+      if (!Array.isArray(targets) && req.body?.targetJid) targets = [req.body.targetJid];
+      targets = (targets || []).map((j) => String(j || '').trim()).filter(Boolean);
+      if (!chatJid || !messageId) return res.status(400).json({ error: 'chatJid and messageId required' });
+      if (!targets.length) return res.status(400).json({ error: 'targetJids required' });
+      if (targets.length > 20) return res.status(400).json({ error: 'Forward to at most 20 chats at once' });
+
+      try {
+        const row = this.db.getMessageForActions(chatJid, messageId);
+        if (!row) return res.status(404).json({ error: 'Message not found' });
+        if (typeof st.waClient.forwardMessage !== 'function') {
+          return res.status(503).json({ error: 'Forward not available' });
+        }
+        const results = [];
+        for (const targetJid of targets) {
+          try {
+            const sent = await st.waClient.forwardMessage(targetJid, row);
+            results.push({ targetJid, ok: true, messageId: sent?.key?.id || null });
+          } catch (e) {
+            results.push({ targetJid, ok: false, error: e?.message || String(e) });
+          }
+        }
+        const okCount = results.filter((r) => r.ok).length;
+        if (!okCount) {
+          return res.status(500).json({
+            error: results[0]?.error || 'Forward failed',
+            results,
+          });
+        }
+        return res.json({ ok: true, forwarded: okCount, results });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || String(err) });
+      }
+    });
+
+    /**
+     * Edit your own text message.
+     * Body: { chatJid, messageId, text }
+     */
+    this._app.post('/api/wa/edit', async (req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+      if (st.waState !== 'READY' && st.waState !== 'SYNCING') {
+        return res.status(409).json({ error: 'WhatsApp not ready' });
+      }
+      const chatJid = req.body?.chatJid ? String(req.body.chatJid) : '';
+      const messageId = typeof req.body?.messageId === 'string' ? req.body.messageId.trim() : '';
+      const text = req.body?.text != null ? String(req.body.text) : '';
+      if (!chatJid || !messageId) return res.status(400).json({ error: 'chatJid and messageId required' });
+      if (!text.trim()) return res.status(400).json({ error: 'text required' });
+
+      try {
+        const row = this.db.getMessageForActions(chatJid, messageId);
+        if (!row) return res.status(404).json({ error: 'Message not found' });
+        if (row.sender !== 'You') {
+          return res.status(403).json({ error: 'You can only edit your own messages' });
+        }
+        if (typeof st.waClient.editMessage !== 'function') {
+          return res.status(503).json({ error: 'Edit not available' });
+        }
+        await st.waClient.editMessage(chatJid, row, text);
+        this.db.updateMessageBody(chatJid, messageId, text.trim());
+        this._broadcast(
+          { type: 'message-edited', data: { chatJid, messageId, text: text.trim() } },
+          tid,
+        );
+        return res.json({ ok: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || String(err) });
       }
     });
 

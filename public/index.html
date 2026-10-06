@@ -14,27 +14,46 @@
       --teal: #008069;
       --teal-bg: #00a884;
       --bg: #efeae2;
-      --bg-app: #f0f2f5;
+      --bg-app: #e8ecf0;
       --sidebar-bg: #fff;
-      --header-bg: #f0f2f5;
+      --header-bg: #f7f8fa;
       --text: #111b21;
       --text2: #667781;
       --border: #e9edef;
-      --hover: #f5f6f6;
+      --hover: #f0f2f5;
       --input-bg: #f0f2f5;
       --msg-out: #d9fdd3;
       --msg-in: #fff;
-      --shadow: rgba(0,0,0,0.06);
+      --shadow: rgba(11, 20, 26, 0.08);
       --pill-bg: #e1f3fb;
       --pill-text: #667781;
       --danger: #ea4335;
       --blue: #027eb5;
       --badge-bg: #25d366;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --accent-soft: rgba(0, 168, 132, 0.1);
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html { -webkit-text-size-adjust: 100%; }
-    body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg-app); color: var(--text); height: 100vh; height: 100dvh; overflow: hidden; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
-    .app { display: flex; height: 100%; max-height: 100dvh; max-width: 1600px; margin: 0 auto; box-shadow: 0 0 20px rgba(0,0,0,0.08); min-width: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(0,168,132,0.12), transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, rgba(124,58,237,0.08), transparent 50%),
+        var(--bg-app);
+      color: var(--text); height: 100vh; height: 100dvh; overflow: hidden;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+    .app {
+      display: flex; height: 100%; max-height: 100dvh; max-width: 1600px; margin: 0 auto;
+      box-shadow: 0 8px 40px rgba(11, 20, 26, 0.12); min-width: 0;
+      border-radius: 0; overflow: hidden; background: #fff;
+    }
+    @media (min-width: 1100px) {
+      body { padding: 12px; }
+      .app { border-radius: var(--radius-lg); height: calc(100dvh - 24px); max-height: calc(100dvh - 24px); }
+    }
 
     /* ── Sidebar ───────────────────────────────── */
     .sidebar {
@@ -43,11 +62,15 @@
       position: relative;
     }
     .sidebar-header {
-      padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
-      background: var(--header-bg); min-height: 56px;
+      padding: 14px 16px; display: flex; align-items: center; justify-content: space-between;
+      background: linear-gradient(180deg, #ffffff 0%, var(--header-bg) 100%);
+      min-height: 60px; border-bottom: 1px solid rgba(233,237,239,0.85);
     }
     .sidebar-header-left { display: flex; align-items: center; gap: 10px; }
-    .sidebar-header-left h1 { font-size: 20px; font-weight: 600; color: var(--text); }
+    .sidebar-header-left h1 {
+      font-size: 21px; font-weight: 700; color: var(--text);
+      letter-spacing: -0.02em;
+    }
     .stored-badge {
       display: flex; align-items: center; gap: 5px;
       background: rgba(0,168,132,0.1); color: var(--green-dark);
@@ -73,13 +96,38 @@
     }
     .icon-btn:hover { background: var(--hover); }
     .mobile-back-btn { display: none; margin-right: 4px; flex-shrink: 0; }
+    .new-msg-contacts {
+      max-height: min(52vh, 420px); overflow-y: auto; border: 1px solid var(--border);
+      border-radius: 12px; background: #fff;
+    }
+    .new-msg-contact {
+      display: flex; align-items: center; gap: 12px; width: 100%;
+      padding: 10px 12px; border: none; border-bottom: 1px solid var(--border);
+      background: transparent; cursor: pointer; text-align: left; font-family: inherit;
+    }
+    .new-msg-contact:last-child { border-bottom: none; }
+    .new-msg-contact:hover { background: var(--hover); }
+    .new-msg-contact-avatar {
+      width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+      background: linear-gradient(145deg, #1fa855, #008069); color: #fff;
+      display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 15px;
+    }
+    .new-msg-contact-meta { min-width: 0; flex: 1; }
+    .new-msg-contact-name { font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .new-msg-contact-phone { font-size: 12px; color: var(--text2); margin-top: 2px; }
+    .new-msg-empty { padding: 24px 16px; text-align: center; color: var(--text2); font-size: 13px; line-height: 1.5; }
 
     .sidebar-search { padding: 6px 12px 8px; background: var(--header-bg); }
     .search-wrap { position: relative; }
     .search-wrap svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text2); }
     .sidebar-search input {
-      width: 100%; background: #fff; border: none; border-radius: 8px;
-      padding: 8px 14px 8px 36px; font-size: 13px; color: var(--text); outline: none;
+      width: 100%; background: #fff; border: 1px solid transparent; border-radius: 22px;
+      padding: 10px 14px 10px 38px; font-size: 13px; color: var(--text); outline: none;
+      box-shadow: 0 1px 2px rgba(11,20,26,0.04); transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .sidebar-search input:focus {
+      border-color: rgba(0,168,132,0.45);
+      box-shadow: 0 0 0 3px rgba(0,168,132,0.12);
     }
     .sidebar-search input::placeholder { color: var(--text2); }
 
@@ -108,15 +156,27 @@
       display: inline-block; margin-top: 4px; font-size: 11px; color: var(--blue); cursor: pointer; text-decoration: underline;
     }
     #away-summary-bar {
-      margin: 10px 14px;
+      position: absolute;
+      top: 72px;
+      right: 16px;
+      width: min(340px, 42%);
+      max-height: min(52vh, 420px);
+      z-index: 8;
+      margin: 0;
       padding: 0;
       border: 1px solid rgba(0,168,132,0.22);
       border-radius: 14px;
       background: linear-gradient(135deg, #ecfdf7 0%, #f5f3ff 100%);
-      box-shadow: 0 6px 20px rgba(0, 92, 75, 0.08);
-      overflow: hidden;
+      box-shadow: 0 10px 28px rgba(0, 92, 75, 0.14);
+      overflow: auto;
+      /* Must stay none here; JS sets inline display:block when eligible.
+         Never use display:'' — that falls back to this rule and hides the card. */
+      display: none;
     }
-    #away-summary-bar details { padding: 12px 14px 14px; }
+    #away-summary-bar.is-visible {
+      display: block !important;
+    }
+    #away-summary-bar details { padding: 12px 40px 14px 14px; }
     #away-summary-summary {
       display: flex; align-items: center; gap: 8px;
       padding: 0 0 8px; font-size: 13px; color: #075e54;
@@ -130,23 +190,37 @@
       padding: 9px 10px; margin-top: 7px; border-left: none;
       border-radius: 10px; background: rgba(255,255,255,0.78);
     }
+    .away-summary-dismiss {
+      position: absolute; top: 8px; right: 8px; z-index: 2;
+      width: 28px; height: 28px; border: none; border-radius: 50%;
+      background: rgba(17, 27, 33, 0.06); color: var(--text2);
+      font-size: 18px; line-height: 1; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    .away-summary-dismiss:hover { background: rgba(17, 27, 33, 0.12); color: var(--text); }
     .away-summary-loading {
       color: var(--text2); font-size: 12px; line-height: 1.5;
       padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.7);
     }
 
     .sidebar-chat-tabs {
-      display: flex; gap: 4px; padding: 4px 12px 8px; flex-shrink: 0;
-      border-bottom: 1px solid var(--border);
+      display: flex; gap: 6px; padding: 6px 12px 10px; flex-shrink: 0;
+      border-bottom: 1px solid var(--border); background: #fff;
     }
     .sidebar-tab {
-      flex: 1; min-width: 0; padding: 8px 6px; font-size: 13px; font-weight: 500;
-      border: none; border-radius: 8px; background: transparent; color: var(--text2);
+      flex: 1; min-width: 0; padding: 8px 8px; font-size: 12.5px; font-weight: 600;
+      border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--text2);
       cursor: pointer; font-family: inherit;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
     }
-    .sidebar-tab.active { background: var(--hover); color: var(--text); }
-    .sidebar-tab-count { font-size: 11px; font-weight: 600; opacity: .65; margin-left: 5px; }
+    .sidebar-tab:hover { background: var(--hover); color: var(--text); }
+    .sidebar-tab.active {
+      background: var(--accent-soft); color: var(--green-dark);
+      border-color: rgba(0,168,132,0.22);
+    }
+    .sidebar-tab-count { font-size: 11px; font-weight: 700; opacity: .7; margin-left: 5px; }
     .sidebar-tab-count:empty { display: none; }
     .live-sync-pill {
       display: inline-flex; align-items: center; gap: 8px; margin-top: 8px;
@@ -420,11 +494,11 @@
     .media-wrap { display: block; max-width: 100%; }
     .media-cap { display: block; margin-top: 6px; font-size: 13px; color: inherit; opacity: 0.95; overflow-wrap: anywhere; word-break: break-word; }
 
-    .chat-list { flex: 1; overflow-y: auto; scrollbar-width: thin; }
+    .chat-list { flex: 1; overflow-y: auto; scrollbar-width: thin; background: #fafbfc; }
     .chat-item {
-      display: flex; flex-wrap: wrap; align-items: center; padding: 10px 16px 8px; cursor: pointer;
-      gap: 14px; border-bottom: 1px solid var(--border); transition: background 0.1s;
-      overflow: hidden; min-width: 0;
+      display: flex; flex-wrap: wrap; align-items: center; padding: 12px 16px 10px; cursor: pointer;
+      gap: 14px; border-bottom: 1px solid rgba(233,237,239,0.9); transition: background 0.15s, box-shadow 0.15s;
+      overflow: hidden; min-width: 0; background: #fff;
     }
     .chat-index-track {
       flex: 1 0 100%;
@@ -486,29 +560,29 @@
       color: var(--text2);
     }
     .chat-priority-first:hover { opacity: 1; background: rgba(147, 51, 234, 0.12); color: #5b21b6; }
-    .cv-contact {
-      display: none;
-      margin-top: 6px;
-      padding-top: 8px;
-      border-top: 1px solid var(--border);
-      font-size: 12px;
-      color: var(--text2);
-      line-height: 1.45;
+    .cv-contact,
+    .cv-contact.visible,
+    #cv-info {
+      display: none !important;
     }
-    .cv-contact.visible { display: block; }
     .cv-contact-row { margin-bottom: 4px; }
     .cv-contact-row strong { color: var(--text); margin-right: 6px; }
     .cv-contact code { font-size: 11px; word-break: break-all; background: var(--input-bg); padding: 2px 6px; border-radius: 4px; }
-    .chat-item:hover { background: var(--hover); }
-    .chat-item.active { background: #f0f2f5; }
+    .chat-item:hover { background: #f6f8f9; }
+    .chat-item.active {
+      background: linear-gradient(90deg, rgba(0,168,132,0.08), #f3faf7 40%, #f3faf7);
+      box-shadow: inset 3px 0 0 var(--green);
+    }
     .chat-avatar {
-      width: 48px; height: 48px; border-radius: 50%; background: var(--teal-bg);
+      width: 48px; height: 48px; border-radius: 50%;
+      background: linear-gradient(145deg, #1fa855 0%, #00a884 55%, #008069 100%);
       display: flex; align-items: center; justify-content: center;
-      font-size: 20px; color: #fff; font-weight: 500; flex-shrink: 0; text-transform: uppercase;
+      font-size: 18px; color: #fff; font-weight: 600; flex-shrink: 0; text-transform: uppercase;
+      box-shadow: 0 2px 8px rgba(0,128,105,0.22);
     }
     .chat-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
     .chat-meta-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; width: 100%; }
-    .chat-name { flex: 1; min-width: 0; font-size: 16px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .chat-name { flex: 1; min-width: 0; font-size: 15.5px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .chat-meta-badges { display: flex; align-items: center; flex-shrink: 0; gap: 2px; }
     .chat-date { font-size: 12px; color: var(--text2); white-space: nowrap; margin-left: 8px; flex-shrink: 0; }
     .chat-meta-bottom { display: flex; align-items: center; justify-content: space-between; }
@@ -585,21 +659,28 @@
 
     /* Global search bar — always visible */
     .global-search {
-      background: var(--header-bg); padding: 8px 12px;
-      display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); z-index: 3;
+      background: linear-gradient(180deg, #ffffff 0%, var(--header-bg) 100%);
+      padding: 12px 14px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      border-bottom: 1px solid var(--border); z-index: 3;
       flex-shrink: 0;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.8);
     }
     .global-search .gs-wrap { flex: 1 1 160px; min-width: 0; position: relative; display: flex; align-items: center; }
-    .global-search .gs-wrap svg { position: absolute; left: 12px; width: 16px; height: 16px; color: var(--text2); pointer-events: none; }
+    .global-search .gs-wrap svg { position: absolute; left: 14px; width: 16px; height: 16px; color: var(--text2); pointer-events: none; }
     .global-search input {
-      width: 100%; background: #fff; border: none; border-radius: 8px;
-      padding: 9px 14px 9px 36px; font-size: 14px; color: var(--text); outline: none;
+      width: 100%; background: #fff; border: 1px solid var(--border); border-radius: 999px;
+      padding: 11px 16px 11px 40px; font-size: 14px; color: var(--text); outline: none;
+      box-shadow: 0 1px 2px rgba(11,20,26,0.04); transition: border-color 0.15s, box-shadow 0.15s;
     }
     .global-search input::placeholder { color: var(--text2); }
-    .global-search input:focus { box-shadow: 0 0 0 1.5px var(--green); }
+    .global-search input:focus {
+      border-color: rgba(0,168,132,0.55);
+      box-shadow: 0 0 0 3px rgba(0,168,132,0.14);
+    }
     .global-search select {
-      background: #fff; border: 1px solid var(--border); border-radius: 8px;
-      padding: 7px 8px; font-size: 12px; color: var(--text); outline: none; cursor: pointer;
+      background: #fff; border: 1px solid var(--border); border-radius: 999px;
+      padding: 9px 12px; font-size: 12px; color: var(--text); outline: none; cursor: pointer;
     }
     .search-go {
       background: linear-gradient(135deg, var(--green), var(--teal));
@@ -883,7 +964,9 @@
       font-family: inherit;
     }
     .wa-tb:hover { background: var(--hover); }
-    .wa-tb-reply { font-size: 14px; color: var(--text2); }
+    .wa-tb-reply, .wa-tb-forward, .wa-tb-edit, .wa-tb-delete { font-size: 13px; color: var(--text2); font-weight: 600; }
+    .wa-tb-delete { color: #c62828; }
+    .wa-tb-delete:hover { background: rgba(198, 40, 40, 0.1); }
     .wa-tb-ai {
       display: inline-flex;
       align-items: center;
@@ -893,6 +976,59 @@
     }
     .wa-tb-ai:hover { background: rgba(147, 51, 234, 0.12); color: #4c1d95; }
     .wa-tb-ai svg { flex-shrink: 0; }
+    .msg-deleted-label {
+      font-style: italic;
+      color: var(--text2);
+      font-size: 13.5px;
+    }
+    .confirm-box .confirm-actions-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+    }
+    .confirm-box .confirm-actions-stack button {
+      width: 100%;
+      padding: 10px 16px;
+      border-radius: 8px;
+      border: none;
+      font-size: 14px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .fwd-chat {
+      display: flex; align-items: center; gap: 12px; width: 100%;
+      padding: 12px 14px; border: none; border-bottom: 1px solid var(--border);
+      background: transparent; cursor: pointer; text-align: left; font-family: inherit;
+    }
+    .fwd-chat:last-child { border-bottom: none; }
+    .fwd-chat:hover { background: var(--hover); }
+    .fwd-chat.selected { background: rgba(0,168,132,0.12); }
+    .fwd-chat-avatar {
+      width: 40px; height: 40px; border-radius: 50%; background: var(--green);
+      color: #fff; display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 15px; flex-shrink: 0;
+    }
+    .fwd-chat-name { font-size: 14px; font-weight: 600; color: var(--text); flex: 1; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .fwd-check { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--border); flex-shrink: 0; }
+    .fwd-chat.selected .fwd-check { background: var(--green); border-color: var(--green);
+      box-shadow: inset 0 0 0 3px #fff; }
+    .fwd-footer {
+      display: flex; gap: 8px; justify-content: flex-end; padding: 12px 0 0;
+      border-top: 1px solid var(--border); margin-top: 12px; position: sticky; bottom: 0;
+      background: var(--bg, #fff);
+    }
+    .edit-to-bar {
+      flex-shrink: 0;
+      padding: 8px 12px;
+      border-top: 1px solid var(--border);
+      background: rgba(26, 115, 232, 0.08);
+      font-size: 13px;
+    }
+    .edit-to-inner { display: flex; align-items: flex-start; gap: 8px; }
+    .edit-to-label { color: #1a73e8; font-weight: 600; flex-shrink: 0; }
+    .edit-to-preview { flex: 1; min-width: 0; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .bubble-reactions {
       display: flex;
       flex-wrap: wrap;
@@ -968,13 +1104,27 @@
     /* Welcome */
     .welcome-panel {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      height: 100%; text-align: center; padding: 40px; z-index: 1;
+      height: 100%; text-align: center; padding: 48px 32px; z-index: 1;
+      background:
+        radial-gradient(600px 280px at 50% 0%, rgba(0,168,132,0.1), transparent 70%),
+        transparent;
     }
     .welcome-icon { width: 200px; height: 200px; margin-bottom: 28px; opacity: 0.15; }
-    .welcome-panel h2 { font-size: 28px; font-weight: 300; margin-bottom: 12px; }
+    .welcome-panel h2 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 12px; color: var(--text); }
     .welcome-panel p { font-size: 14px; color: var(--text2); max-width: 500px; line-height: 1.7; }
-    .welcome-panel .lock-note { margin-top: 24px; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text2); }
+    .welcome-panel .lock-note {
+      margin-top: 24px; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text2);
+      padding: 10px 14px; border-radius: 999px; background: rgba(255,255,255,0.7); border: 1px solid var(--border);
+    }
     .welcome-panel .lock-note svg { width: 14px; height: 14px; }
+    .empty-messages-state {
+      text-align: center; padding: 56px 28px; color: var(--text2);
+      max-width: 420px; margin: 40px auto;
+      background: rgba(255,255,255,0.72); border: 1px dashed rgba(0,168,132,0.28);
+      border-radius: 16px;
+    }
+    .empty-messages-title { font-size: 16px; font-weight: 650; color: var(--text); margin-bottom: 8px; }
+    .empty-messages-hint { font-size: 13px; line-height: 1.55; }
 
     /* Search results — displayed as right panel alongside chat */
     #panel-search {
@@ -1367,6 +1517,9 @@
         </div>
       </div>
       <div class="sidebar-actions">
+        <button class="icon-btn live-sync-ui" id="btn-new-message" title="New message" aria-label="New message" style="display:none;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg>
+        </button>
         <button class="icon-btn" id="btn-import" title="Add chats — upload export files or sync from Gmail" aria-label="Add chats">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
@@ -1492,6 +1645,7 @@
       </details>
     </div>
     <div id="away-summary-bar" class="chat-action-items-bar" style="display:none;">
+      <button type="button" id="away-summary-dismiss" class="away-summary-dismiss" title="Dismiss catch-up" aria-label="Dismiss catch-up">×</button>
       <details id="away-summary-details" open>
         <summary id="away-summary-summary">While you were away</summary>
         <div id="away-summary-body"></div>
@@ -1591,8 +1745,8 @@
           <div class="chat-avatar" id="cv-avatar"></div>
           <div class="chat-header-info">
             <h3 id="cv-name"></h3>
-            <span id="cv-info"></span>
-            <div id="cv-contact" class="cv-contact" aria-label="Contact details"></div>
+            <span id="cv-info" hidden></span>
+            <div id="cv-contact" class="cv-contact" hidden aria-hidden="true"></div>
           </div>
           <div class="chat-header-actions">
             <button type="button" class="icon-btn cv-ai-search-btn" id="btn-chat-ai-search" style="display:none" title="AI search in this chat (uses the search bar)" aria-label="AI search in this chat">
@@ -1632,6 +1786,13 @@
             <button type="button" class="reply-to-clear" id="reply-to-clear" aria-label="Cancel reply">×</button>
           </div>
         </div>
+        <div id="edit-to-bar" class="edit-to-bar" style="display:none;" aria-live="polite">
+          <div class="edit-to-inner">
+            <span class="edit-to-label">Editing</span>
+            <span id="edit-to-preview" class="edit-to-preview"></span>
+            <button type="button" class="reply-to-clear" id="edit-to-clear" aria-label="Cancel edit">×</button>
+          </div>
+        </div>
         <div class="chat-composer" id="chat-composer" style="display:none;">
           <input id="msg-text" type="text" placeholder="Type a message…" autocomplete="off" />
           <button id="msg-send" type="button">Send</button>
@@ -1649,6 +1810,61 @@
         </div>
         <div id="search-loading" class="search-loading"><div class="spinner"></div><span>Searching…</span></div>
         <div id="search-results" class="search-results-panel"></div>
+      </div>
+    </div>
+
+    <!-- New message overlay — WhatsApp contacts + phone number -->
+    <div class="overlay-panel" id="overlay-new-message">
+      <div class="overlay-header">
+        <button class="overlay-close" id="close-new-message" type="button" aria-label="Close">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <div class="overlay-header-text">
+          <h2>New message</h2>
+          <p class="overlay-header-sub">Message anyone on WhatsApp from your linked account</p>
+        </div>
+      </div>
+      <div class="overlay-body">
+        <p style="font-size:13px;color:var(--text2);margin:0 0 14px;line-height:1.45;">
+          Pick a WhatsApp contact, or enter a phone number with country code.
+          Desktop browsers cannot silently read your phone address book — use a number, or sync contacts from the mobile companion app for names.
+        </p>
+        <label for="new-msg-phone" style="display:block;font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;">Phone number</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+          <input type="tel" id="new-msg-phone" placeholder="+91 98765 43210" autocomplete="tel"
+            style="flex:1;min-width:180px;padding:10px 14px;border:1px solid var(--border);border-radius:12px;font-size:14px;outline:none;" />
+          <button type="button" class="btn btn-primary" id="new-msg-phone-go">Message</button>
+        </div>
+        <p id="new-msg-status" style="font-size:12px;color:var(--text2);min-height:18px;margin:0 0 14px;"></p>
+        <div class="search-wrap" style="margin-bottom:10px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="new-msg-filter" placeholder="Search WhatsApp contacts…" />
+        </div>
+        <div id="new-msg-contacts" class="new-msg-contacts" role="list" aria-label="WhatsApp contacts"></div>
+      </div>
+    </div>
+
+    <!-- Forward message — pick one or more chats -->
+    <div class="overlay-panel" id="overlay-forward">
+      <div class="overlay-header">
+        <button class="overlay-close" id="close-forward" type="button" aria-label="Close">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <div class="overlay-header-text">
+          <h2>Forward message</h2>
+          <p class="overlay-header-sub" id="forward-preview-sub">Select chats to forward to</p>
+        </div>
+      </div>
+      <div class="overlay-body">
+        <div class="search-wrap" style="margin-bottom:10px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="forward-filter" placeholder="Search chats…" />
+        </div>
+        <div id="forward-chats" class="new-msg-contacts" role="list" aria-label="Forward targets"></div>
+        <div class="fwd-footer">
+          <button type="button" class="btn btn-secondary" id="forward-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="forward-send" disabled>Forward</button>
+        </div>
       </div>
     </div>
 
@@ -1962,6 +2178,19 @@
   </div>
 </div>
 
+<!-- Delete message dialog (for me / for everyone) -->
+<div class="confirm-overlay" id="confirm-delete-message">
+  <div class="confirm-box">
+    <h4>Delete message?</h4>
+    <p id="confirm-delete-message-msg">Choose how you want to delete this message.</p>
+    <div class="confirm-actions-stack">
+      <button type="button" class="btn-danger" id="confirm-del-msg-everyone" style="display:none;">Delete for everyone</button>
+      <button type="button" class="btn-danger" id="confirm-del-msg-me">Delete for me</button>
+      <button type="button" class="btn-cancel" id="confirm-del-msg-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- WhatsApp-style Status story viewer -->
 <div id="status-viewer" class="status-viewer" hidden aria-hidden="true">
   <div class="status-viewer-top">
@@ -2042,6 +2271,10 @@
   let currentStatusSlideMessageId = null;
   /** @type {{ messageId: string, preview: string } | null} */
   let replyTarget = null;
+  let editTarget = null;
+  let forwardTarget = null; // { chatJid, messageId, preview }
+  let forwardSelected = new Set();
+  let _pendingDeleteMsg = null;
   /** Snapshot retained after marking a chat seen while its unread summary finishes indexing. */
   let awaySummarySnapshot = null;
   /** @type {Record<string, { pct: number, show: boolean }>} */
@@ -2086,6 +2319,10 @@
 
   // ── Navigation ──────────────────────────────────────────────────────
   $('#btn-import').addEventListener('click', () => openOverlay('import'));
+  $('#btn-new-message')?.addEventListener('click', () => openNewMessageOverlay());
+  $('#close-new-message')?.addEventListener('click', () => closeOverlay('new-message'));
+  $('#close-forward')?.addEventListener('click', () => { closeOverlay('forward'); forwardTarget = null; forwardSelected.clear(); });
+  $('#forward-cancel')?.addEventListener('click', () => { closeOverlay('forward'); forwardTarget = null; forwardSelected.clear(); });
   $('#menu-settings').addEventListener('click', () => { closeMenu(); openOverlay('settings'); loadSettings(); });
   $('#close-import').addEventListener('click', () => closeOverlay('import'));
   $('#close-settings').addEventListener('click', () => closeOverlay('settings'));
@@ -2638,9 +2875,13 @@
           if (!(_importFirstMvp && !_showLiveSyncUi)) showQr(msg.data.qr);
         }
         else if (msg.type === 'sync-chats-preview') { mergeSyncChatsPreview(msg.data?.chats); }
+        else if (msg.type === 'wa-unread') { applyUnreadUpdates(msg.data?.updates); }
         else if (msg.type === 'sync-progress') { updateSyncProgress(msg.data); }
         else if (msg.type === 'summary-progress') { handleSummaryProgress(msg.data); }
         else if (msg.type === 'message-reaction' && msg.data) { applyIncomingReactionToDom(msg.data); }
+        else if (msg.type === 'message-revoked' && msg.data) { applyMessageRevokedToDom(msg.data); }
+        else if (msg.type === 'message-deleted' && msg.data) { applyMessageDeletedToDom(msg.data); }
+        else if (msg.type === 'message-edited' && msg.data) { applyMessageEditedToDom(msg.data); }
         else if (msg.type === 'message-media-ready' && msg.data?.chatJid === activeChat) {
           void refreshActiveChatMessages();
         }
@@ -3015,10 +3256,9 @@
     }
     applyLiveSyncVisibility();
     updateComposerVisibility();
-    if (state !== 'READY') {
+    if (state !== 'READY' && state !== 'SYNCING') {
       awaySummarySnapshot = null;
-      const away = $('#away-summary-bar');
-      if (away) away.style.display = 'none';
+      hideAwaySummaryBar();
     }
     if (activeChat && hasIndexedArchive()) switchPanel();
   }
@@ -3026,6 +3266,13 @@
   function showQr(dataUrl) {
     if (!dataUrl || dataUrl === _lastQrDataUrl) return;
     if (_importFirstMvp && !_showLiveSyncUi) return;
+    // Already linked (or mid-history-sync): never force the QR panel back over chats.
+    // Late/stale wa-qr events were why a broken QR showed while "Syncing chats…" ran.
+    if (_waState === 'READY' || _waState === 'SYNCING' || isWaUiReady()) {
+      $('#welcome-qr').style.display = 'none';
+      $('#wqr-loading').style.display = 'none';
+      return;
+    }
     _lastQrDataUrl = dataUrl;
     _lastQrSeenAt = Date.now();
 
@@ -3211,6 +3458,22 @@
   document.getElementById('wa-refresh-names')?.addEventListener('click', refreshContactNames);
 
   // ── Dashboard ──────────────────────────────────────────────────────
+  function applyUnreadUpdates(updates) {
+    if (!Array.isArray(updates) || !updates.length) return;
+    let changed = false;
+    for (const u of updates) {
+      if (!u?.chatJid) continue;
+      const row = chatData.find((c) => c.chatJid === u.chatJid);
+      if (!row) continue;
+      const next = Math.max(0, Number(u.unreadCount) || 0);
+      if (row.unreadCount !== next) {
+        row.unreadCount = next;
+        changed = true;
+      }
+    }
+    if (changed) renderChatsFromState();
+  }
+
   function mergeSyncChatsPreview(preview) {
     if (!Array.isArray(preview) || !preview.length || !canShowChatUI()) return;
     const byJid = new Map((chatData || []).map((c) => [c.chatJid, c]));
@@ -3458,10 +3721,30 @@
     return /^contact\s*\(\s*[\d\s]{1,14}\s*\)\s*$/i.test(String(s || '').trim());
   }
 
+  function prettyImportedChatTitle(name) {
+    let t = String(name || '').trim();
+    if (!t) return '';
+    t = t
+      .replace(/^WhatsApp Chat with\s+/i, '')
+      .replace(/^WhatsApp Chat\s*[-–—:]\s*/i, '')
+      .replace(/^WhatsApp Chat\s+/i, '')
+      .trim();
+    return t || String(name || '').trim();
+  }
+
   function displayChatTitle(chatJid, chatName) {
     const jid = String(chatJid || '').trim();
     const raw = String(chatName || '').trim();
     const isGroup = jid.endsWith('@g.us');
+    const isImported = jid.endsWith('@imported');
+
+    if (isImported) {
+      // Never fall back to the synthetic slug (`import_…@imported`) — that is what made
+      // titles flicker between the export name and "import" / "Sovrenn".
+      const pretty = prettyImportedChatTitle(raw);
+      if (pretty && pretty !== jid && pretty !== (jid.split('@')[0] || '')) return pretty;
+      return pretty || 'Imported chat';
+    }
 
     if (isGroup) {
       return raw || jid;
@@ -3513,6 +3796,12 @@
     if (!raw) return false;
     // Groups fall back to the full JID, so a bare local part would otherwise look resolved.
     if (raw === jid || raw === (jid.split('@')[0] || '')) return false;
+    if (jid.endsWith('@imported')) {
+      // Synthetic slug leftovers ("import", "import_family…") are never a real title.
+      if (/^import(_|$)/i.test(raw)) return false;
+      const pretty = prettyImportedChatTitle(raw);
+      if (!pretty || pretty === 'Imported chat') return false;
+    }
     return displayChatTitle(jid, raw) !== displayChatTitle(jid, '');
   }
 
@@ -3731,15 +4020,333 @@
   }
 
   function canSendMessageToJid(jid) {
-    return _waState === 'READY' && !shouldHideComposerForJid(jid);
+    return (_waState === 'READY' || _waState === 'SYNCING') && !shouldHideComposerForJid(jid);
   }
 
   function updateComposerVisibility() {
     const composer = document.getElementById('chat-composer');
     const canSend = canSendMessageToJid(activeChat);
     if (composer) composer.style.display = canSend ? '' : 'none';
-    if (!canSend) clearReplyTarget();
+    if (!canSend) { clearReplyTarget(); clearEditTarget(); }
+    const newMsgBtn = document.getElementById('btn-new-message');
+    if (newMsgBtn) {
+      const show = wantsLiveSyncUi() && (_waState === 'READY' || _waState === 'SYNCING');
+      newMsgBtn.style.display = show ? '' : 'none';
+    }
   }
+
+  let _waContactsCache = [];
+
+  async function openNewMessageOverlay() {
+    if (_waState !== 'READY' && _waState !== 'SYNCING') {
+      alert('Link WhatsApp first to send messages.');
+      return;
+    }
+    openOverlay('new-message');
+    const status = $('#new-msg-status');
+    const list = $('#new-msg-contacts');
+    const filter = $('#new-msg-filter');
+    if (status) status.textContent = 'Loading contacts…';
+    if (list) list.innerHTML = '<div class="new-msg-empty">Loading…</div>';
+    if (filter) filter.value = '';
+    try {
+      const data = await fetch('/api/wa/contacts').then((r) => r.json());
+      _waContactsCache = Array.isArray(data?.contacts) ? data.contacts : [];
+      // Also offer existing 1:1 chats from the sidebar that may not be in the name cache yet.
+      const fromChats = (chatData || [])
+        .filter((c) => c?.chatJid && !c.chatJid.includes('@g.us') && !c.chatJid.endsWith('@imported')
+          && !c.chatJid.endsWith('@broadcast') && !c.chatJid.endsWith('@newsletter'))
+        .map((c) => ({
+          chatJid: c.chatJid,
+          chatName: displayChatTitle(c.chatJid, c.chatName || c.chatJid),
+          phone: null,
+        }));
+      const byJid = new Map();
+      for (const row of [..._waContactsCache, ...fromChats]) {
+        if (!row?.chatJid || byJid.has(row.chatJid)) continue;
+        byJid.set(row.chatJid, row);
+      }
+      _waContactsCache = [...byJid.values()].sort((a, b) =>
+        String(a.chatName || '').localeCompare(String(b.chatName || ''), undefined, { sensitivity: 'base' }),
+      );
+      if (status) {
+        status.textContent = _waContactsCache.length
+          ? `${_waContactsCache.length} contact${_waContactsCache.length === 1 ? '' : 's'} from WhatsApp`
+          : 'No named contacts yet — enter a phone number with country code below.';
+      }
+      renderNewMessageContacts('');
+    } catch (e) {
+      if (status) status.textContent = e.message || 'Could not load contacts';
+      if (list) list.innerHTML = '<div class="new-msg-empty">Could not load contacts.</div>';
+    }
+  }
+
+  function renderNewMessageContacts(query) {
+    const list = $('#new-msg-contacts');
+    if (!list) return;
+    const q = String(query || '').trim().toLowerCase();
+    const rows = !_waContactsCache.length
+      ? []
+      : _waContactsCache.filter((c) => {
+        if (!q) return true;
+        const blob = `${c.chatName || ''} ${c.phone || ''} ${c.chatJid || ''}`.toLowerCase();
+        return blob.includes(q);
+      });
+    if (!rows.length) {
+      list.innerHTML = `<div class="new-msg-empty">${q ? 'No matches.' : 'No WhatsApp contacts loaded yet. Enter a phone number above.'}</div>`;
+      return;
+    }
+    list.innerHTML = rows.slice(0, 200).map((c) => {
+      const name = c.chatName || c.chatJid;
+      const letter = sidebarAvatarLetter(name);
+      const sub = c.phone || (c.chatJid?.endsWith('@s.whatsapp.net') ? formatPhoneLikeName(c.chatJid) : '');
+      return `<button type="button" class="new-msg-contact" data-jid="${escAttr(c.chatJid)}" data-name="${escAttr(name)}" role="listitem">
+        <span class="new-msg-contact-avatar">${esc(letter)}</span>
+        <span class="new-msg-contact-meta">
+          <span class="new-msg-contact-name">${esc(name)}</span>
+          ${sub ? `<span class="new-msg-contact-phone">${esc(sub)}</span>` : ''}
+        </span>
+      </button>`;
+    }).join('');
+    list.querySelectorAll('.new-msg-contact').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        void startChatWithContact(btn.dataset.jid, btn.dataset.name);
+      });
+    });
+  }
+
+  function promptDeleteMessage({ chatJid, messageId, fromMe }) {
+    _pendingDeleteMsg = { chatJid, messageId, fromMe: !!fromMe };
+    const everyoneBtn = $('#confirm-del-msg-everyone');
+    const live = (_waState === 'READY' || _waState === 'SYNCING')
+      && chatJid && !String(chatJid).endsWith('@imported')
+      && !String(chatJid).endsWith('@broadcast');
+    const showEveryone = !!fromMe && live;
+    if (everyoneBtn) everyoneBtn.style.display = showEveryone ? '' : 'none';
+    const msg = $('#confirm-delete-message-msg');
+    if (msg) {
+      msg.textContent = showEveryone
+        ? 'Delete this message only on this device, or for everyone in the chat (WhatsApp time limits apply).'
+        : 'This removes the message from your local archive' + (live ? ' and clears it on the linked WhatsApp account when possible.' : '.');
+    }
+    $('#confirm-delete-message')?.classList.add('open');
+  }
+
+  async function runDeleteMessage(scope) {
+    const pending = _pendingDeleteMsg;
+    _pendingDeleteMsg = null;
+    $('#confirm-delete-message')?.classList.remove('open');
+    if (!pending?.chatJid || !pending?.messageId) return;
+    try {
+      const r = await fetch('/api/wa/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatJid: pending.chatJid,
+          messageId: pending.messageId,
+          scope,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || 'Delete failed');
+      if (scope === 'everyone') {
+        applyMessageRevokedToDom({ chatJid: pending.chatJid, messageId: pending.messageId });
+      } else {
+        applyMessageDeletedToDom({ chatJid: pending.chatJid, messageId: pending.messageId });
+      }
+    } catch (err) {
+      alert(err.message || 'Delete failed');
+    }
+  }
+
+  $('#confirm-del-msg-cancel')?.addEventListener('click', () => {
+    _pendingDeleteMsg = null;
+    $('#confirm-delete-message')?.classList.remove('open');
+  });
+  $('#confirm-del-msg-me')?.addEventListener('click', () => void runDeleteMessage('me'));
+  $('#confirm-del-msg-everyone')?.addEventListener('click', () => void runDeleteMessage('everyone'));
+
+  function forwardableChats() {
+    const out = [];
+    const seen = new Set();
+    for (const c of chatData || []) {
+      const jid = c?.chatJid;
+      if (!jid || seen.has(jid)) continue;
+      if (jid.endsWith('@imported') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter') || jid.endsWith('@bot')) continue;
+      if (jid === 'status@broadcast') continue;
+      seen.add(jid);
+      out.push({ chatJid: jid, chatName: c.chatName || jid });
+    }
+    out.sort((a, b) => String(a.chatName).localeCompare(String(b.chatName), undefined, { sensitivity: 'base' }));
+    return out;
+  }
+
+  function openForwardOverlay({ chatJid, messageId, preview }) {
+    if (_waState !== 'READY' && _waState !== 'SYNCING') {
+      alert('Link WhatsApp first to forward messages.');
+      return;
+    }
+    forwardTarget = { chatJid, messageId, preview: String(preview || '').slice(0, 160) };
+    forwardSelected = new Set();
+    const sub = $('#forward-preview-sub');
+    if (sub) sub.textContent = forwardTarget.preview
+      ? `Forwarding: ${forwardTarget.preview}`
+      : 'Select chats to forward to';
+    const filter = $('#forward-filter');
+    if (filter) filter.value = '';
+    openOverlay('forward');
+    renderForwardChats('');
+    const sendBtn = $('#forward-send');
+    if (sendBtn) sendBtn.disabled = true;
+  }
+
+  function renderForwardChats(query) {
+    const list = $('#forward-chats');
+    if (!list) return;
+    const q = String(query || '').trim().toLowerCase();
+    const rows = forwardableChats().filter((c) => {
+      if (forwardTarget?.chatJid && c.chatJid === forwardTarget.chatJid) return false;
+      if (!q) return true;
+      return `${c.chatName || ''} ${c.chatJid || ''}`.toLowerCase().includes(q);
+    });
+    if (!rows.length) {
+      list.innerHTML = `<div class="new-msg-empty">${q ? 'No matches.' : 'No chats available to forward to.'}</div>`;
+      return;
+    }
+    list.innerHTML = rows.slice(0, 300).map((c) => {
+      const name = c.chatName || c.chatJid;
+      const letter = sidebarAvatarLetter(name);
+      const sel = forwardSelected.has(c.chatJid) ? ' selected' : '';
+      return `<button type="button" class="fwd-chat${sel}" data-jid="${escAttr(c.chatJid)}" role="listitem">
+        <span class="fwd-chat-avatar">${esc(letter)}</span>
+        <span class="fwd-chat-name">${esc(name)}</span>
+        <span class="fwd-check" aria-hidden="true"></span>
+      </button>`;
+    }).join('');
+    list.querySelectorAll('.fwd-chat').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const jid = btn.dataset.jid;
+        if (!jid) return;
+        if (forwardSelected.has(jid)) forwardSelected.delete(jid);
+        else {
+          if (forwardSelected.size >= 20) {
+            alert('You can forward to at most 20 chats at once.');
+            return;
+          }
+          forwardSelected.add(jid);
+        }
+        btn.classList.toggle('selected', forwardSelected.has(jid));
+        const sendBtn = $('#forward-send');
+        if (sendBtn) sendBtn.disabled = forwardSelected.size === 0;
+      });
+    });
+  }
+
+  $('#forward-filter')?.addEventListener('input', (e) => renderForwardChats(e.target.value));
+  $('#forward-send')?.addEventListener('click', async () => {
+    if (!forwardTarget?.messageId || !forwardSelected.size) return;
+    const btn = $('#forward-send');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch('/api/wa/forward', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatJid: forwardTarget.chatJid,
+          messageId: forwardTarget.messageId,
+          targetJids: [...forwardSelected],
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || 'Forward failed');
+      const n = j.forwarded || forwardSelected.size;
+      closeOverlay('forward');
+      forwardTarget = null;
+      forwardSelected.clear();
+      scheduleRefreshDash([...((j.results || []).filter((x) => x.ok).map((x) => ({
+        chatJid: x.targetJid,
+        lastMessageTs: Math.floor(Date.now() / 1000),
+        count: 1,
+      })))]);
+      alert(n === 1 ? 'Message forwarded.' : `Message forwarded to ${n} chats.`);
+    } catch (err) {
+      alert(err.message || 'Forward failed');
+      if (btn) btn.disabled = forwardSelected.size === 0;
+    }
+  });
+
+  async function startChatWithContact(chatJid, chatName) {
+    const status = $('#new-msg-status');
+    if (!chatJid) return;
+    if (status) status.textContent = 'Opening chat…';
+    try {
+      const r = await fetch('/api/wa/start-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatJid, chatName }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Could not open chat');
+      const jid = data.chatJid || chatJid;
+      const name = data.chatName || chatName || jid;
+      // Ensure the chat appears in the WhatsApp tab immediately.
+      if (!chatData.find((c) => c.chatJid === jid)) {
+        chatData.unshift({
+          chatJid: jid,
+          chatName: name,
+          messageCount: 0,
+          participantCount: 1,
+          lastMessageTs: Math.floor(Date.now() / 1000),
+          sidebarTab: 'chat',
+          unreadCount: 0,
+        });
+      } else {
+        const row = chatData.find((c) => c.chatJid === jid);
+        if (row && name) row.chatName = name;
+      }
+      setSidebarListTab('chat', { pin: false });
+      closeOverlay('new-message');
+      await openChat(jid);
+      updateComposerVisibility();
+      const input = document.getElementById('msg-text');
+      if (input) input.focus();
+    } catch (e) {
+      if (status) status.textContent = e.message || 'Failed';
+      else alert(e.message || 'Failed');
+    }
+  }
+
+  async function startChatWithPhone() {
+    const phoneEl = $('#new-msg-phone');
+    const status = $('#new-msg-status');
+    const phone = String(phoneEl?.value || '').trim();
+    if (!phone) {
+      if (status) status.textContent = 'Enter a phone number with country code.';
+      return;
+    }
+    if (status) status.textContent = 'Checking WhatsApp…';
+    try {
+      const r = await fetch('/api/wa/start-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Number not on WhatsApp');
+      await startChatWithContact(data.chatJid, data.chatName);
+    } catch (e) {
+      if (status) status.textContent = e.message || 'Failed';
+    }
+  }
+
+  $('#new-msg-filter')?.addEventListener('input', (e) => renderNewMessageContacts(e.target.value));
+  $('#new-msg-phone-go')?.addEventListener('click', () => void startChatWithPhone());
+  $('#new-msg-phone')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void startChatWithPhone();
+    }
+  });
 
   async function refreshStatusFeed() {
     try {
@@ -3952,6 +4559,10 @@
       const priBtn = showPrioritize
         ? `<button type="button" class="chat-priority-first" title="${esc(priTitle)}" aria-label="Index this chat">↑</button>`
         : '';
+      const unread = Math.max(0, Number(ch.unreadCount) || 0);
+      const unreadBadge = unread > 0
+        ? `<span class="chat-count-badge" title="${unread} unread">${esc(formatCount(unread))}</span>`
+        : '';
       return `<div class="chat-item${activeChat === ch.chatJid ? ' active' : ''}" data-jid="${esc(ch.chatJid)}">
         <div class="chat-avatar">${esc(avatarText)}</div>
         <div class="chat-meta">
@@ -3961,9 +4572,9 @@
               ${priBtn}
               <span class="search-badge ${badgeClass}" title="Thread summaries for AI search">${esc(badgeText)}</span>
               <span class="chat-date">${esc(formatDate(ch.lastMessageTs))}</span>
+              ${unreadBadge}
             </span>
           </div>
-          <div class="chat-meta-bottom"><span class="chat-participants">${isGroup ? ch.participantCount + ' participants' : ''}</span><span class="chat-count-badge">${formatCount(ch.messageCount)}</span></div>
         </div>
         <div class="search-index-track${aiDone ? ' done' : ''}" data-jid="${esc(ch.chatJid)}"
           data-search-pct="${pct}" data-search-complete="${aiDone ? '1' : '0'}"
@@ -4020,36 +4631,12 @@
   });
 
   // ── Open chat ──────────────────────────────────────────────────────
-  function renderCvContact(d, jid) {
+  /** Technical chat metadata (JID, owner, participant counts) stays hidden — name is enough. */
+  function renderCvContact(_d, _jid) {
     const el = $('#cv-contact');
     if (!el) return;
-    if (!d) {
-      el.classList.remove('visible');
-      el.innerHTML = '';
-      return;
-    }
-    const g = d.isGroup || jid.includes('@g.us');
-    const rows = [];
-    rows.push(`<div class="cv-contact-row"><strong>Type</strong> ${g ? 'Group' : 'Contact'}</div>`);
-    rows.push(`<div class="cv-contact-row"><strong>JID</strong> <code>${esc(jid)}</code></div>`);
-    if (d.waConnected === false) {
-      rows.push(`<div class="cv-contact-row" style="opacity:0.85">WhatsApp not connected — details from local index only.</div>`);
-    }
-    if (g) {
-      const subj = d.subject || d.displayName || d.chatName;
-      if (subj) rows.push(`<div class="cv-contact-row"><strong>Name</strong> ${esc(String(subj))}</div>`);
-      const pc = d.participantCount != null ? d.participantCount : d.participantCountFromDb;
-      if (pc != null) rows.push(`<div class="cv-contact-row"><strong>Participants</strong> ${Number(pc).toLocaleString()}</div>`);
-      if (d.description) rows.push(`<div class="cv-contact-row"><strong>Description</strong> ${esc(d.description)}</div>`);
-      if (d.owner) rows.push(`<div class="cv-contact-row"><strong>Owner</strong> <code>${esc(String(d.owner))}</code></div>`);
-    } else {
-      const indivName = d.chatName || (d.displayName && String(d.displayName) !== String(d.phone) ? d.displayName : null);
-      if (indivName) rows.push(`<div class="cv-contact-row"><strong>Name</strong> ${esc(String(indivName))}</div>`);
-      if (d.phone) rows.push(`<div class="cv-contact-row"><strong>Phone</strong> ${esc(String(d.phone))}</div>`);
-    }
-    if (d.error) rows.push(`<div class="cv-contact-row" style="color:var(--danger)">Could not load live metadata: ${esc(d.error)}</div>`);
-    el.innerHTML = rows.join('');
-    el.classList.add('visible');
+    el.classList.remove('visible');
+    el.innerHTML = '';
   }
 
   function clearReplyTarget() {
@@ -4060,13 +4647,79 @@
     if (prev) prev.textContent = '';
   }
 
+  function clearEditTarget() {
+    editTarget = null;
+    const bar = $('#edit-to-bar');
+    if (bar) bar.style.display = 'none';
+    const prev = $('#edit-to-preview');
+    if (prev) prev.textContent = '';
+    const btn = document.getElementById('msg-send');
+    if (btn) btn.textContent = 'Send';
+    const input = document.getElementById('msg-text');
+    if (input) input.placeholder = 'Type a message…';
+  }
+
   function setReplyTarget(messageId, preview) {
+    clearEditTarget();
     replyTarget = { messageId: String(messageId || ''), preview: String(preview || '').slice(0, 200) };
     const bar = $('#reply-to-bar');
     const prev = $('#reply-to-preview');
     if (prev) prev.textContent = replyTarget.preview || '(message)';
     if (bar) bar.style.display = '';
     document.getElementById('msg-text')?.focus?.();
+  }
+
+  function setEditTarget(messageId, preview) {
+    clearReplyTarget();
+    editTarget = { messageId: String(messageId || ''), preview: String(preview || '').slice(0, 200) };
+    const bar = $('#edit-to-bar');
+    const prev = $('#edit-to-preview');
+    if (prev) prev.textContent = editTarget.preview || '(message)';
+    if (bar) bar.style.display = '';
+    const btn = document.getElementById('msg-send');
+    if (btn) btn.textContent = 'Save';
+    const input = document.getElementById('msg-text');
+    if (input) {
+      input.placeholder = 'Edit message…';
+      input.value = String(preview || '');
+      input.focus?.();
+      try { input.setSelectionRange(input.value.length, input.value.length); } catch { /* */ }
+    }
+  }
+
+  function applyMessageRevokedToDom(data) {
+    const mid = data?.messageId != null ? String(data.messageId) : '';
+    if (!mid) return;
+    document.querySelectorAll('#cv-messages .msg-block[data-message-id]').forEach((block) => {
+      if (String(block.dataset.messageId) !== mid) return;
+      const bubble = block.querySelector('.bubble');
+      if (!bubble) return;
+      const time = bubble.querySelector('.time');
+      const timeHtml = time ? time.outerHTML : '';
+      const sender = bubble.querySelector('.sender');
+      const senderHtml = sender ? sender.outerHTML : '';
+      bubble.innerHTML = `${senderHtml}<span class="msg-deleted-label">This message was deleted</span>${timeHtml}`;
+      block.querySelector('.bubble-toolbar')?.remove();
+      block.querySelector('.bubble-reactions')?.remove();
+    });
+  }
+
+  function applyMessageDeletedToDom(data) {
+    const mid = data?.messageId != null ? String(data.messageId) : '';
+    if (!mid) return;
+    document.querySelectorAll(`#cv-messages .msg-block[data-message-id]`).forEach((block) => {
+      if (String(block.dataset.messageId) === mid) block.remove();
+    });
+  }
+
+  function applyMessageEditedToDom(data) {
+    const mid = data?.messageId != null ? String(data.messageId) : '';
+    if (!mid || data?.text == null) return;
+    document.querySelectorAll(`#cv-messages .msg-block[data-message-id]`).forEach((block) => {
+      if (String(block.dataset.messageId) !== mid) return;
+      const textEl = block.querySelector('.bubble .text');
+      if (textEl) textEl.innerHTML = formatMessageTextHtml(String(data.text));
+    });
   }
 
   function telHrefFromPhone(phone) {
@@ -4264,6 +4917,7 @@
 
   async function openChat(jid, focusMessageId = null) {
     clearReplyTarget();
+    clearEditTarget();
     activeChat = jid;
     cvTab = 'chat';
     attachmentsPayload = null;
@@ -4301,9 +4955,9 @@
     const n = displayChatTitle(jid, ch?.chatName || jid);
     const isGroup = jid.includes('@g.us') || (ch?.participantCount > 2);
     $('#cv-name').textContent = n;
-    $('#cv-info').textContent = isGroup
-      ? `${ch?.participantCount || 0} participants \u00b7 ${(ch?.messageCount || 0).toLocaleString()} messages`
-      : `${(ch?.messageCount || 0).toLocaleString()} messages`;
+    // Keep the subtitle empty — no participant / message-count metadata in the header.
+    const infoEl = $('#cv-info');
+    if (infoEl) infoEl.textContent = '';
     $('#cv-avatar').textContent = isGroup
       ? (n.trim().charAt(0) + (n.trim().charAt(1) || '')).toUpperCase()
       : sidebarAvatarLetter(n);
@@ -4327,20 +4981,6 @@
       ]);
       const msgs = msgsRes;
       if (activeChat !== jid) return;
-      // Update header message count from actual fetched messages (chatData may be stale).
-      if (msgs.length > 0) {
-        const infoEl = $('#cv-info');
-        if (infoEl) {
-          const isGrp = jid.includes('@g.us') || (ch?.participantCount > 2);
-          const chRow = chatData.find((c) => c.chatJid === jid);
-          const total = typeof chRow?.messageCount === 'number' ? chRow.messageCount : msgs.length;
-          const hasMore = typeof chRow?.messageCount === 'number' && msgs.length < chRow.messageCount;
-          const countLabel = `${total.toLocaleString()}${hasMore ? '+' : ''} messages`;
-          infoEl.textContent = isGrp
-            ? `${ch?.participantCount || 0} participants \u00b7 ${countLabel}`
-            : countLabel;
-        }
-      }
       renderMessages(msgs, jid, focusMessageId);
       if (!focusMessageId && msgs.length) {
         const sorted = [...msgs].sort((a, b) => {
@@ -4359,7 +4999,11 @@
         }
       }
       if (details && activeChat === jid) {
-        const displayRaw = details.subject || details.chatName || details.displayName || n;
+        // Prefer an already-resolved sidebar/header title over WA placeholders so imported
+        // chats never flip from "Sovrenn Family…" to "import" after chat-details returns.
+        const incomingRaw = details.subject || details.chatName || details.displayName || '';
+        const keepExisting = isResolvedChatName(jid, ch?.chatName) && !isResolvedChatName(jid, incomingRaw);
+        const displayRaw = keepExisting ? (ch?.chatName || n) : (incomingRaw || n);
         const display = displayChatTitle(jid, displayRaw);
         $('#cv-name').textContent = display;
         const avGroup = jid.includes('@g.us') || (ch?.participantCount > 2);
@@ -4367,13 +5011,18 @@
           ? (display.trim().charAt(0) + (display.trim().charAt(1) || '')).toUpperCase()
           : sidebarAvatarLetter(display);
         const row = chatData.find(c => c.chatJid === jid);
-        if (row && display) row.chatName = display;
-        const fq = ($('#filter') && $('#filter').value || '').toLowerCase();
+        if (row && display && isResolvedChatName(jid, display)) row.chatName = display;
         renderChatsFromState();
-        renderCvContact(details, jid);
+        renderCvContact(null, jid);
       }
       void loadActionItemsForChat(jid);
-      await loadAwaySummaryForChat(jid);
+      // Snapshot sidebar unread when present; server also counts messages since the
+      // catch-up dismiss cursor so the panel still appears after mark-seen.
+      const unreadSnap = Math.max(0, Number(ch?.unreadCount) || 0);
+      const openSnapshot = unreadSnap > 10
+        ? { unreadCount: unreadSnap, sinceTs: 0, lastThreadsDone: 0 }
+        : null;
+      await loadAwaySummaryForChat(jid, openSnapshot);
       void fetchChatAttachments(jid);
       fetch('/api/summaries/priority-chat', {
         method: 'POST',
@@ -4386,6 +5035,12 @@
     }
     // Mark seen only after the unread-summary request captured its window.
     fetch(`/api/chats/${encodeURIComponent(jid)}/seen`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+    // Clear local unread badge immediately so the list matches "opened".
+    const openedRow = chatData.find((c) => c.chatJid === jid);
+    if (openedRow && openedRow.unreadCount) {
+      openedRow.unreadCount = 0;
+      renderChatsFromState();
+    }
     setMobileChatOpen(true);
   }
 
@@ -4406,6 +5061,7 @@
 
     $('#btn-mobile-chat-back').addEventListener('click', () => {
     clearReplyTarget();
+    clearEditTarget();
     activeChat = null;
     activeFocusMessageId = null;
     cvTab = 'chat';
@@ -4418,8 +5074,7 @@
     $('#panel-search').classList.remove('visible');
     const aibar = $('#chat-action-items-bar');
     if (aibar) aibar.style.display = 'none';
-    const away = $('#away-summary-bar');
-    if (away) away.style.display = 'none';
+    hideAwaySummaryBar();
     const composer = document.getElementById('chat-composer');
     if (composer) composer.style.display = 'none';
     const aiChatBtnBack = document.getElementById('btn-chat-ai-search');
@@ -4522,29 +5177,60 @@
       const storageJid = m.chatJid || jid;
       const storageAttr = ` data-storage-jid="${escAttr(storageJid)}"`;
       const midAttr = mid ? ` data-message-id="${escAttr(mid)}"` : '';
+      const isDeleted = String(m.text || '').trim() === 'This message was deleted' && !m.mediaType;
+      if (isDeleted) {
+        body = `<span class="msg-deleted-label">This message was deleted</span>`;
+      }
       const previewTxt = (m.text || m.mediaCaption || (m.mediaType ? `[${m.mediaType}]` : '')).trim().slice(0, 160);
-      const rxHtml = reactionCountsHtml(m.reactionsJson);
+      const rxHtml = isDeleted ? '' : reactionCountsHtml(m.reactionsJson);
       const aiSvg = '<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z"/></svg>';
-      const toolbar = mid ? `<div class="bubble-toolbar">
+      const liveOk = canSendMessageToJid(jid);
+      const canReply = liveOk && !isDeleted;
+      const canForward = (_waState === 'READY' || _waState === 'SYNCING') && !isDeleted && !jid.endsWith('@imported');
+      const canEdit = liveOk && out && !isDeleted && !!(m.text && String(m.text).trim()) && !m.mediaType;
+      const canDelete = !!mid && !isDeleted;
+      let actionBtns = '';
+      if (canReply) {
+        actionBtns += `<button type="button" class="wa-tb wa-tb-reply" data-wa-reply="1" data-reply-preview="${escAttr(previewTxt)}" title="Reply">↩︎</button>`;
+      }
+      if (canForward) {
+        actionBtns += `<button type="button" class="wa-tb wa-tb-forward" data-wa-forward="1" data-forward-preview="${escAttr(previewTxt)}" title="Forward">↪</button>`;
+      }
+      if (canEdit) {
+        actionBtns += `<button type="button" class="wa-tb wa-tb-edit" data-wa-edit="1" data-edit-preview="${escAttr(String(m.text || '').slice(0, 2000))}" title="Edit">✎</button>`;
+      }
+      if (canDelete) {
+        actionBtns += `<button type="button" class="wa-tb wa-tb-delete" data-wa-delete="1" data-from-me="${out ? '1' : '0'}" title="Delete">🗑</button>`;
+      }
+      const toolbar = mid && !isDeleted ? `<div class="bubble-toolbar">
           <div class="bubble-toolbar-reacts">
           <button type="button" class="wa-tb wa-tb-ai" data-wa-ai-search="1" data-ai-preview="${escAttr(previewTxt)}" title="AI Search using this message as context" aria-label="AI Search using this message">${aiSvg}</button>
+          ${liveOk ? `
           <button type="button" class="wa-tb" data-wa-react="👍" title="React 👍">👍</button>
           <button type="button" class="wa-tb" data-wa-react="❤️" title="React ❤️">❤️</button>
           <button type="button" class="wa-tb" data-wa-react="😂" title="React 😂">😂</button>
           <button type="button" class="wa-tb" data-wa-react="😮" title="React 😮">😮</button>
           <button type="button" class="wa-tb" data-wa-react="😢" title="React 😢">😢</button>
-          <button type="button" class="wa-tb" data-wa-react="🙏" title="React 🙏">🙏</button>
-          <button type="button" class="wa-tb wa-tb-reply" data-wa-reply="1" data-reply-preview="${escAttr(previewTxt)}" title="Reply">↩︎</button>
+          <button type="button" class="wa-tb" data-wa-react="🙏" title="React 🙏">🙏</button>` : ''}
+          ${actionBtns}
           </div>
         </div>` : '';
-      html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr}>${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<div class="time">${ts ? esc(ts) : '—'}</div></div>${rxHtml}</div>`;
+      html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<div class="time">${ts ? esc(ts) : '—'}</div></div>${rxHtml}</div>`;
     }
     return html;
   }
 
   function renderMessages(msgs, jid, focusMessageId = null) {
     const c = $('#cv-messages');
-    if (!msgs.length) { c.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2);">No messages</div>'; return; }
+    if (!msgs.length) {
+      const ch = chatData.find((row) => row.chatJid === jid);
+      const claimed = Number(ch?.messageCount) || 0;
+      const hint = claimed > 0
+        ? `This chat reports ${claimed.toLocaleString()} messages, but none loaded. Try refreshing, or re-import the chat export.`
+        : 'No messages in this chat yet.';
+      c.innerHTML = `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">${esc(hint)}</div></div>`;
+      return;
+    }
     const sorted = [...msgs].sort((a, b) => {
       const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
       const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
@@ -4703,24 +5389,69 @@
     }
   }
 
+  function awaySummaryDismissKey(jid, sinceTs) {
+    return `away_summary_dismissed:${jid}:${sinceTs || 0}`;
+  }
+
+  function isAwaySummaryDismissed(jid, sinceTs) {
+    try { return localStorage.getItem(awaySummaryDismissKey(jid, sinceTs)) === '1'; }
+    catch { return false; }
+  }
+
+  function hideAwaySummaryBar() {
+    const wrap = $('#away-summary-bar');
+    if (!wrap) return;
+    wrap.classList.remove('is-visible');
+    wrap.style.display = 'none';
+  }
+
+  function showAwaySummaryBar() {
+    const wrap = $('#away-summary-bar');
+    if (!wrap) return;
+    wrap.classList.add('is-visible');
+    wrap.style.display = 'block';
+  }
+
+  function dismissAwaySummaryForChat(jid, sinceTs) {
+    try { localStorage.setItem(awaySummaryDismissKey(jid, sinceTs), '1'); } catch { /* ignore */ }
+    awaySummarySnapshot = null;
+    hideAwaySummaryBar();
+    // Persist dismiss cursor on the server so reopen doesn't immediately re-show.
+    if (jid) {
+      fetch(`/api/chats/${encodeURIComponent(jid)}/catchup-dismiss`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ts: Math.floor(Date.now() / 1000) }),
+      }).catch(() => {});
+    }
+  }
+
+  function isCatchupEligibleJid(jid) {
+    if (!jid) return false;
+    if (jid.endsWith('@imported') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) return false;
+    return jid.endsWith('@g.us')
+      || jid.endsWith('@s.whatsapp.net')
+      || jid.endsWith('@lid')
+      || jid.endsWith('@hosted');
+  }
+
   async function loadAwaySummaryForChat(jid, snapshot = null) {
     const wrap = $('#away-summary-bar');
     const body = $('#away-summary-body');
     const sum = $('#away-summary-summary');
     const det = $('#away-summary-details');
     if (!wrap || !body) return;
-    const ch = chatData.find((row) => row.chatJid === jid);
-    const isGroup = jid?.endsWith('@g.us') || (ch?.participantCount > 2);
-    if (!jid || !isGroup || _waState !== 'READY') {
+    // Allow during SYNCING — unread catch-up should not wait for history to finish.
+    if (!isCatchupEligibleJid(jid) || (_waState !== 'READY' && _waState !== 'SYNCING')) {
       awaySummarySnapshot = null;
-      wrap.style.display = 'none';
+      hideAwaySummaryBar();
       return;
     }
     try {
       const params = new URLSearchParams({ limit: '3' });
-      if (snapshot?.sinceTs != null && snapshot?.unreadCount != null) {
-        params.set('since', String(snapshot.sinceTs));
+      if (snapshot?.unreadCount != null && Number(snapshot.unreadCount) > 10) {
         params.set('unreadCount', String(snapshot.unreadCount));
+        if (snapshot.sinceTs != null) params.set('since', String(snapshot.sinceTs));
       }
       const data = await fetch(
         `/api/chats/${encodeURIComponent(jid)}/away-summary?${params.toString()}`,
@@ -4728,7 +5459,12 @@
       if (activeChat !== jid) return;
       if (!data?.eligible || data.unreadCount <= 10) {
         awaySummarySnapshot = null;
-        wrap.style.display = 'none';
+        hideAwaySummaryBar();
+        return;
+      }
+      if (isAwaySummaryDismissed(jid, data.sinceTs)) {
+        awaySummarySnapshot = null;
+        hideAwaySummaryBar();
         return;
       }
 
@@ -4739,8 +5475,8 @@
         lastThreadsDone: snapshot?.lastThreadsDone || 0,
       };
       const rows = data?.summaries || [];
-      wrap.style.display = '';
-      if (sum) sum.textContent = `Group catch-up · ${data.unreadCount} unread messages`;
+      showAwaySummaryBar();
+      if (sum) sum.textContent = `While you were away · ${data.unreadCount} unseen`;
       if (!rows.length) {
         body.innerHTML = '<div class="away-summary-loading">Creating a summary of the latest discussion… You can keep reading while AI indexing catches up.</div>';
         if (det) det.open = true;
@@ -4759,9 +5495,17 @@
       if (det) det.open = true;
     } catch {
       awaySummarySnapshot = null;
-      wrap.style.display = 'none';
+      hideAwaySummaryBar();
     }
   }
+
+  $('#away-summary-dismiss')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const jid = activeChat || awaySummarySnapshot?.jid;
+    if (!jid) return;
+    dismissAwaySummaryForChat(jid, awaySummarySnapshot?.sinceTs);
+  });
 
   // ── Search ─────────────────────────────────────────────────────────
   $('#q-btn').addEventListener('click', doSearch);
@@ -4785,6 +5529,21 @@
     if (!text) return;
     btn.disabled = true;
     try {
+      if (editTarget?.messageId) {
+        const mid = editTarget.messageId;
+        const r = await fetch('/api/wa/edit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chatJid: jid, messageId: mid, text }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j?.error || 'Edit failed');
+        input.value = '';
+        clearEditTarget();
+        applyMessageEditedToDom({ chatJid: jid, messageId: mid, text });
+        setTimeout(() => { if (activeChat === jid) void refreshActiveChatMessages(); }, 600);
+        return;
+      }
       const payload = { chatJid: jid, text };
       if (replyTarget?.messageId) payload.quotedMessageId = replyTarget.messageId;
       const r = await fetch('/api/wa/send', {
@@ -4811,6 +5570,11 @@
     if (e.key === 'Enter') { e.preventDefault(); sendCurrentMessage(); }
   });
   $('#reply-to-clear')?.addEventListener('click', clearReplyTarget);
+  $('#edit-to-clear')?.addEventListener('click', () => {
+    clearEditTarget();
+    const input = document.getElementById('msg-text');
+    if (input) input.value = '';
+  });
   let cvOlderScrollArmed = true;
   $('#cv-messages')?.addEventListener('scroll', () => {
     if (!activeChat || activeFocusMessageId || chatLoadingOlder || !chatHasMoreLocal) return;
@@ -4858,6 +5622,42 @@
       } catch (err) {
         alert(err.message || 'Reaction failed');
       }
+      return;
+    }
+    const fwd = e.target.closest('[data-wa-forward]');
+    if (fwd) {
+      const block = e.target.closest('.msg-block');
+      if (!block?.dataset?.messageId) return;
+      e.stopPropagation();
+      openForwardOverlay({
+        chatJid: block.dataset.storageJid || activeChat,
+        messageId: block.dataset.messageId,
+        preview: fwd.getAttribute('data-forward-preview') || '',
+      });
+      return;
+    }
+    const editBtn = e.target.closest('[data-wa-edit]');
+    if (editBtn) {
+      const block = e.target.closest('.msg-block');
+      if (!block?.dataset?.messageId) return;
+      e.stopPropagation();
+      if (!canSendMessageToJid(activeChat)) {
+        alert('Link WhatsApp to edit messages.');
+        return;
+      }
+      setEditTarget(block.dataset.messageId, editBtn.getAttribute('data-edit-preview') || '');
+      return;
+    }
+    const delBtn = e.target.closest('[data-wa-delete]');
+    if (delBtn) {
+      const block = e.target.closest('.msg-block');
+      if (!block?.dataset?.messageId) return;
+      e.stopPropagation();
+      promptDeleteMessage({
+        chatJid: block.dataset.storageJid || activeChat,
+        messageId: block.dataset.messageId,
+        fromMe: delBtn.getAttribute('data-from-me') === '1' || block.dataset.fromMe === '1',
+      });
     }
   });
   $('#status-viewer-rx')?.addEventListener('click', async (e) => {

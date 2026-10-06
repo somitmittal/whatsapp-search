@@ -4,6 +4,7 @@ import {
   sidebarTabForJid,
   isImportedChatJid,
   isChatVisibleInSidebar,
+  shouldPreserveRawChatJid,
   SIDEBAR_TAB_CHAT,
   SIDEBAR_TAB_FEED,
   SIDEBAR_TAB_IMPORTED,
@@ -42,6 +43,14 @@ describe('isImportedChatJid', () => {
     expect(isImportedChatJid('919811111111@s.whatsapp.net')).toBe(false);
     expect(isImportedChatJid('120363123456@g.us')).toBe(false);
     expect(isImportedChatJid(null)).toBe(false);
+  });
+});
+
+describe('shouldPreserveRawChatJid', () => {
+  test('preserves imports and feed JIDs from Baileys normalize', () => {
+    expect(shouldPreserveRawChatJid('import_family_group@imported')).toBe(true);
+    expect(shouldPreserveRawChatJid('status@broadcast')).toBe(true);
+    expect(shouldPreserveRawChatJid('919811111111@s.whatsapp.net')).toBe(false);
   });
 });
 

@@ -27,6 +27,20 @@ export function isImportedChatJid(jid) {
 }
 
 /**
+ * Baileys' `jidNormalizedUser` strips everything after the first `_` in the local part
+ * (it treats `_` like a device suffix separator, same as `:`). That turns distinct
+ * import archives such as `import_family@imported` and `import_work@imported` into the
+ * same broken key `import@imported`, which merges their sidebar rows and makes
+ * `/api/messages` return zero rows for the collapsed JID.
+ *
+ * Call this before any Baileys normalize so archive / feed JIDs stay verbatim.
+ */
+export function shouldPreserveRawChatJid(jid) {
+  if (!jid || typeof jid !== 'string') return true;
+  return isImportedChatJid(jid) || isWhatsAppLowPriorityFeed(jid);
+}
+
+/**
  * @returns {'chat' | 'feed' | 'imported'}
  */
 export function sidebarTabForJid(jid) {

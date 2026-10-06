@@ -29,6 +29,7 @@ function loadInlineFunctions(names) {
 const { displayChatTitle, isResolvedChatName } = loadInlineFunctions([
   'formatPhoneLikeName',
   'looksLikeLidFallbackContactLabel',
+  'prettyImportedChatTitle',
   'displayChatTitle',
   'isResolvedChatName',
 ]);
@@ -88,5 +89,25 @@ describe('sidebar title stability across sync previews', () => {
 
   test('an unresolved chat still falls back to the formatted number, not the raw JID', () => {
     expect(displayChatTitle(pn, nameAfterPreview(pn, pn, pn))).toBe('+91 9876543210');
+  });
+});
+
+describe('imported chat title stability', () => {
+  const importJid = 'import_whatsapp_chat_-_sovrenn_family_aa_dec_23@imported';
+
+  test('strips export boilerplate and never falls back to the synthetic slug', () => {
+    expect(displayChatTitle(importJid, "WhatsApp Chat - Sovrenn Family AA Dec' 23"))
+      .toBe("Sovrenn Family AA Dec' 23");
+    expect(displayChatTitle(importJid, '')).toBe('Imported chat');
+    expect(displayChatTitle(importJid, 'import')).toBe('import');
+  });
+
+  test('a resolved export title is not downgraded by an unresolved preview', () => {
+    const existing = "Sovrenn Family AA Dec' 23";
+    const keep = isResolvedChatName(importJid, existing) && !isResolvedChatName(importJid, 'import')
+      ? existing
+      : 'import';
+    expect(keep).toBe(existing);
+    expect(displayChatTitle(importJid, keep)).toBe(existing);
   });
 });

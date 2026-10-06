@@ -121,6 +121,66 @@ export default class SmartSearch {
 
   setProvider(provider) { this._provider = provider; }
 
+  _archiveBounds(chatJid = null) {
+    try {
+      if (typeof this._db.getMessageTimeBounds !== 'function') return null;
+      const bounds = this._db.getMessageTimeBounds(chatJid);
+      if (!bounds?.minTs || !bounds?.maxTs) return null;
+      return bounds;
+    } catch {
+      return null;
+    }
+  }
+
+  _formatBoundDate(ts) {
+    return new Date(ts * 1000).toLocaleDateString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+    });
+  }
+
+  /**
+   * If the user asked about a specific year and the archive does not cover it,
+   * return a peer-like boundary message (no sources).
+   */
+  _yearOutsideArchiveAnswer(query, chatJid = null) {
+    const years = [...String(query || '').matchAll(/\b((?:19|20)\d{2})\b/g)].map((m) => Number(m[1]));
+    if (!years.length) return null;
+    const bounds = this._archiveBounds(chatJid);
+    if (!bounds) return null;
+    const minY = new Date(bounds.minTs * 1000).getFullYear();
+    const maxY = new Date(bounds.maxTs * 1000).getFullYear();
+    const outside = years.filter((y) => y < minY || y > maxY);
+    if (!outside.length) return null;
+    const y = outside[0];
+    return {
+      answer:
+        `I searched your history, but my chat logs only go from ${this._formatBoundDate(bounds.minTs)} ` +
+        `to ${this._formatBoundDate(bounds.maxTs)}. I couldn't find any messages from ${y}. ` +
+        'Is there a more recent discussion I can look up?',
+      sources: [],
+    };
+  }
+
+  /** Polite empty-state copy when nothing in the archive matches. */
+  _emptySearchAnswer(query, chatJid = null) {
+    const bounds = this._archiveBounds(chatJid);
+    const rangeHint = bounds
+      ? ` Your indexed chats currently cover roughly ${this._formatBoundDate(bounds.minTs)} to ${this._formatBoundDate(bounds.maxTs)}.`
+      : '';
+    const yearMatch = String(query || '').match(/\b(19|20)\d{2}\b/);
+    if (yearMatch && rangeHint) {
+      return (
+        `I searched your history, but I could not find anything matching that request.${rangeHint} ` +
+        `I do not have messages from ${yearMatch[0]} in this archive. ` +
+        'Want me to look for a more recent discussion instead?'
+      );
+    }
+    return (
+      `I searched your chats but could not find a clear match for that.${rangeHint} ` +
+      'Try a different name, keyword, or time window — or open a specific chat and search inside it.'
+    );
+  }
+
   /**
    * Pipeline (2 LLM calls max):
    *   1. Instant FTS + fuzzy (0ms LLM) — runs in parallel with health check
@@ -135,6 +195,11 @@ export default class SmartSearch {
     }
 
     const t0 = Date.now();
+
+    // Explicit calendar years far outside the archive should fail politely up front
+    // instead of synthesizing an answer from unrelated recent hits.
+    const yearBoundary = this._yearOutsideArchiveAnswer(q, chatJid);
+    if (yearBoundary) return yearBoundary;
 
     // ── Instant search + health check in parallel ───────────────────
     const [instantRaw, llmAvailable] = await Promise.all([
@@ -190,7 +255,7 @@ export default class SmartSearch {
     console.log(`[Search] Merged: ${allMessages.length} msgs (${Date.now() - t0}ms)`);
 
     if (allMessages.length === 0) {
-      return { answer: 'No relevant results found for this query.', sources: [] };
+      return { answer: this._emptySearchAnswer(q, chatJid), sources: [] };
     }
 
     // ── Synthesis (single LLM call) ─────────────────────────────────
@@ -513,8 +578,11 @@ export default class SmartSearch {
           '- ALWAYS cite sources as [1], [2] etc. matching the message numbers provided.\n' +
           '- Text inside quotation marks must be copied character for character from that message. Never reword it.\n' +
           '- Focus on ANSWERING the question, not just listing messages.\n' +
-          '- If the messages don\'t contain a clear answer, say so honestly.\n' +
-          '- Ignore messages unrelated to the question.',
+          '- If the messages do not clearly answer the question, say so in one short friendly paragraph and suggest a tighter query. Do NOT invent an answer from unrelated chatter.\n' +
+          '- When several media items or contacts could match an ambiguous ask (e.g. "where is my passport photo?"), ' +
+          'do NOT dump every match. Ask one short clarification naming the top 2 options with who sent them and roughly when.\n' +
+          '- Bold the core entity the user is looking for (codes, names, places, amounts) using **double asterisks**.\n' +
+          '- Ignore messages unrelated to the question. If every message is unrelated, say you found no matching discussion.',
       },
       { role: 'user', content: `${transcript}\n\n---\nQuestion: ${query}` },
     ], { maxTokens: 1500, temperature: 0 });

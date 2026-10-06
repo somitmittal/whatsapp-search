@@ -46,9 +46,31 @@ export function formatPhoneLocalPart(bare) {
   return `+${d}`;
 }
 
+/**
+ * WhatsApp export filenames become chat names like "WhatsApp Chat with Alice" or
+ * "WhatsApp Chat - Family Group". Strip the boilerplate so the sidebar/header stay
+ * stable and human-readable (and match the live group title when the same chat is linked).
+ */
+export function prettyImportedChatTitle(name) {
+  let t = String(name || '').trim();
+  if (!t) return '';
+  t = t
+    .replace(/^WhatsApp Chat with\s+/i, '')
+    .replace(/^WhatsApp Chat\s*[-–—:]\s*/i, '')
+    .replace(/^WhatsApp Chat\s+/i, '')
+    .trim();
+  return t || String(name || '').trim();
+}
+
 export function fallbackTitleForOneOnOneJid(jid) {
   if (!jid || typeof jid !== 'string') return '';
   const bare = jid.split('@')[0] || '';
+  if (jid.endsWith('@imported')) {
+    // Never surface the synthetic slug (`import_…`) as a display title — callers must
+    // supply the stored chat_name. Returning '' keeps pickBetterChatTitle / overlays
+    // from overwriting a real import title with junk.
+    return '';
+  }
   if (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@hosted')) {
     return formatPhoneLocalPart(bare);
   }

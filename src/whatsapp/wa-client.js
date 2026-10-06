@@ -22,7 +22,7 @@ import {
 } from './chat-display-name.js';
 import { buildContactPayloadFromInner } from './contact-card.js';
 import { isHistorySyncInFlight } from './ingestion-gate.js';
-import { sidebarTabForJid } from './jid-filters.js';
+import { isImportedChatJid, isWhatsAppLowPriorityFeed, shouldPreserveRawChatJid, sidebarTabForJid } from './jid-filters.js';
 import { isControlOnlyContentType, placeholderForContentType } from './message-content.js';
 import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
 import {
@@ -166,7 +166,11 @@ function replaceLidPlaceholderWithPn(canonJid, chatName) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default class WaClient {
-  constructor({ authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete, onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction, onResolvedDisplayName }) {
+  constructor({
+    authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete,
+    onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction,
+    onResolvedDisplayName, onUnreadCounts, onMessageRevoked, onMessageEdited,
+  }) {
     this._authDir = authDir || join(config.dataDir, '.baileys_auth');
     this._configFile = configFile || join(config.dataDir, 'wa-config.json');
     this._onQr          = onQr;
@@ -181,6 +185,9 @@ export default class WaClient {
     this._onMediaPath   = onMediaPath;
     this._onReaction    = onReaction;
     this._onResolvedDisplayName = onResolvedDisplayName;
+    this._onUnreadCounts = onUnreadCounts;
+    this._onMessageRevoked = onMessageRevoked;
+    this._onMessageEdited = onMessageEdited;
 
     this._sock          = null;
     this._state         = 'DISCONNECTED';
@@ -302,12 +309,101 @@ export default class WaClient {
     return await this._sock.sendMessage(chatJid, { text: t });
   }
 
+  /**
+   * People you can start / continue a 1:1 chat with from the linked WhatsApp session.
+   * Drawn from contact/push-name cache (not the phone OS address book — browsers cannot
+   * silently read that). Groups, status, and imports are excluded.
+   */
+  listMessageableContacts({ limit = 500 } = {}) {
+    const out = [];
+    const seen = new Set();
+    const max = Math.max(1, Math.min(Number(limit) || 500, 2000));
+    for (const [jid, name] of this._chatNames.entries()) {
+      if (!jid || seen.has(jid)) continue;
+      if (isJidGroup(jid) || isImportedChatJid(jid) || isWhatsAppLowPriorityFeed(jid)) continue;
+      if (!(jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid') || jid.endsWith('@hosted'))) continue;
+      const label = String(name || '').trim();
+      if (!label || !isResolvedHumanChatTitle(label, jid)) continue;
+      seen.add(jid);
+      out.push({
+        chatJid: jid,
+        chatName: label,
+        phone: jid.endsWith('@s.whatsapp.net') || jid.endsWith('@hosted')
+          ? formatPhoneLocalPart(jid.split('@')[0])
+          : null,
+      });
+      if (out.length >= max) break;
+    }
+    out.sort((a, b) => String(a.chatName).localeCompare(String(b.chatName), undefined, { sensitivity: 'base' }));
+    return out;
+  }
+
+  /**
+   * Resolve a typed phone number to a WhatsApp JID (only if that number is on WhatsApp).
+   * @param {string} rawPhone e.g. "+91 98765 43210" or "919876543210"
+   */
+  async resolvePhoneToWhatsAppJid(rawPhone) {
+    if (!this._sock) throw new Error('WhatsApp not connected');
+    const digits = String(rawPhone || '').replace(/[^\d]/g, '');
+    if (digits.length < 8 || digits.length > 15) {
+      throw new Error('Enter a full phone number with country code (8–15 digits)');
+    }
+    const candidates = [digits];
+    // Common India shortcut: 10-digit national → try +91
+    if (digits.length === 10) candidates.push(`91${digits}`);
+
+    let match = null;
+    for (const phone of candidates) {
+      try {
+        const results = await this._sock.onWhatsApp(phone);
+        const hit = Array.isArray(results) ? results.find((r) => r?.exists && r?.jid) : null;
+        if (hit) {
+          match = {
+            exists: true,
+            chatJid: jidNormalizedUser(hit.jid) || hit.jid,
+            phone: phone,
+          };
+          break;
+        }
+      } catch (e) {
+        console.warn('[WA] onWhatsApp:', e.message);
+      }
+    }
+    if (!match) {
+      return { exists: false, chatJid: null, phone: digits };
+    }
+    const cached = this._nameFromChatMap(match.chatJid);
+    return {
+      ...match,
+      chatName: cached && isResolvedHumanChatTitle(cached, match.chatJid) ? cached : formatPhoneLocalPart(match.phone),
+    };
+  }
+
   getUnreadCount(chatJid) {
     return unreadCountForChat(this._unreadByChat, chatJid);
   }
 
+  /** Snapshot of in-memory WhatsApp unread counts for sidebar overlay. */
+  getUnreadCountsMap() {
+    return new Map(this._unreadByChat);
+  }
+
   _captureUnreadCounts(chats) {
     captureUnreadCounts(this._unreadByChat, chats);
+    if (typeof this._onUnreadCounts !== 'function') return;
+    const updates = [];
+    for (const chat of chats || []) {
+      if (!chat?.id || !Number.isFinite(chat.unreadCount)) continue;
+      updates.push({
+        chatJid: String(chat.id),
+        unreadCount: Math.max(0, Number(chat.unreadCount)),
+      });
+    }
+    if (updates.length) {
+      try { this._onUnreadCounts(updates); } catch (e) {
+        console.warn('[WA] onUnreadCounts:', e.message);
+      }
+    }
   }
 
   /** React to a chat or status message (`statusJidList` set for `status@broadcast`). */
@@ -325,6 +421,155 @@ export default class WaClient {
       { react: { text: e, key } },
       opts,
     );
+  }
+
+  /**
+   * Delete a message for everyone (WhatsApp revoke). Usually only works for your own
+   * messages within WhatsApp's time window.
+   */
+  async deleteMessageForEveryone(chatJid, row) {
+    if (!this._sock) throw new Error('WhatsApp not connected');
+    if (!row?.messageId) throw new Error('message row required');
+    if (isImportedChatJid(chatJid) || isImportedChatJid(row.chatJid)) {
+      throw new Error('Cannot delete-for-everyone on imported chats');
+    }
+    const key = this._buildReactionKey(row, chatJid);
+    return await this._sock.sendMessage(chatJid, { delete: key });
+  }
+
+  /**
+   * Best-effort "delete for me" on the linked WhatsApp account via chatModify.
+   * Local DB deletion is handled by the caller regardless of this result.
+   */
+  async deleteMessageForMe(chatJid, row) {
+    if (!this._sock) throw new Error('WhatsApp not connected');
+    if (!row?.messageId) throw new Error('message row required');
+    if (isImportedChatJid(chatJid) || isImportedChatJid(row.chatJid)) {
+      return { ok: true, skipped: true };
+    }
+    const fromMe = row.sender === 'You';
+    let ts = Number(row.timestamp);
+    if (!Number.isFinite(ts) || ts <= 0) ts = Math.floor(Date.now() / 1000);
+    if (ts > 1e12) ts = Math.floor(ts / 1000);
+    try {
+      await this._sock.chatModify(
+        {
+          clear: {
+            messages: [{
+              id: String(row.messageId),
+              fromMe,
+              timestamp: String(ts),
+            }],
+          },
+        },
+        chatJid,
+      );
+      return { ok: true };
+    } catch (e) {
+      // Local delete still proceeds; WhatsApp clear is best-effort.
+      console.warn('[WA] delete for me (chatModify):', e?.message || e);
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+
+  /**
+   * Forward a stored message to another chat. Rebuilds content from DB (+ local media
+   * when available) because we do not keep full Baileys message protos.
+   */
+  async forwardMessage(targetJid, row, { force = true } = {}) {
+    if (!this._sock) throw new Error('WhatsApp not connected');
+    if (!targetJid) throw new Error('targetJid required');
+    if (!row?.messageId) throw new Error('message row required');
+    if (isImportedChatJid(targetJid)) throw new Error('Cannot forward to an imported chat');
+    if (isWhatsAppLowPriorityFeed(targetJid)) throw new Error('Cannot forward to this chat');
+
+    const mediaPath = row.mediaPath && existsSync(row.mediaPath) ? String(row.mediaPath) : '';
+    const caption = String(row.mediaCaption || row.text || '').trim();
+    const contextInfo = { isForwarded: true, forwardingScore: force ? 1 : 0 };
+
+    if (mediaPath && row.mediaType === 'image') {
+      return await this._sock.sendMessage(targetJid, {
+        image: readFileSync(mediaPath),
+        caption: caption || undefined,
+        contextInfo,
+      });
+    }
+    if (mediaPath && row.mediaType === 'video') {
+      return await this._sock.sendMessage(targetJid, {
+        video: readFileSync(mediaPath),
+        caption: caption || undefined,
+        contextInfo,
+      });
+    }
+    if (mediaPath && row.mediaType === 'audio') {
+      return await this._sock.sendMessage(targetJid, {
+        audio: readFileSync(mediaPath),
+        mimetype: 'audio/ogg; codecs=opus',
+        ptt: false,
+        contextInfo,
+      });
+    }
+    if (mediaPath && row.mediaType === 'sticker') {
+      return await this._sock.sendMessage(targetJid, {
+        sticker: readFileSync(mediaPath),
+        contextInfo,
+      });
+    }
+    if (mediaPath && row.mediaType === 'document') {
+      const name = String(row.mediaCaption || row.text || 'document').trim() || 'document';
+      return await this._sock.sendMessage(targetJid, {
+        document: readFileSync(mediaPath),
+        mimetype: 'application/octet-stream',
+        fileName: name.slice(0, 120),
+        caption: caption || undefined,
+        contextInfo,
+      });
+    }
+
+    // Text / missing media: forward via a minimal reconstructed WAMessage.
+    let snippet = String(row.text || row.mediaCaption || '').trim();
+    if (!snippet) {
+      snippet = row.mediaType ? `[${row.mediaType}]` : '';
+    }
+    if (!snippet) throw new Error('Nothing to forward');
+
+    const fromMe = row.sender === 'You';
+    const sourceJid = row.chatJid || targetJid;
+    const key = {
+      remoteJid: sourceJid,
+      id: row.messageId,
+      fromMe,
+    };
+    if (isJidGroup(sourceJid) && !fromMe && row.senderJid) {
+      key.participant = jidNormalizedUser(row.senderJid);
+    }
+    const msg = {
+      key,
+      message: { conversation: snippet.slice(0, 65536) },
+    };
+    try {
+      return await this._sock.sendMessage(targetJid, { forward: msg, force: !!force });
+    } catch (e) {
+      // Fallback: plain send marked as forwarded.
+      return await this._sock.sendMessage(targetJid, {
+        text: snippet,
+        contextInfo,
+      });
+    }
+  }
+
+  /** Edit your own text message in place. */
+  async editMessage(chatJid, row, newText) {
+    if (!this._sock) throw new Error('WhatsApp not connected');
+    if (!row?.messageId) throw new Error('message row required');
+    if (row.sender !== 'You') throw new Error('You can only edit your own messages');
+    const t = String(newText || '').trim();
+    if (!t) throw new Error('text required');
+    if (isImportedChatJid(chatJid) || isImportedChatJid(row.chatJid)) {
+      throw new Error('Cannot edit imported chat messages on WhatsApp');
+    }
+    const key = this._buildReactionKey(row, chatJid);
+    return await this._sock.sendMessage(chatJid, { text: t, edit: key });
   }
 
   _buildReactionKey(row, chatJid) {
@@ -596,6 +841,47 @@ export default class WaClient {
           groupingKey: reactionBody.groupingKey != null ? String(reactionBody.groupingKey) : '',
           reactionKey: u.reaction?.key || null,
         });
+      }
+    });
+
+    /**
+     * Revokes ("delete for everyone") and in-place edits arrive as messages.update
+     * after Baileys unwraps protocolMessage frames.
+     */
+    this._sock.ev.on('messages.update', (updates) => {
+      for (const u of updates || []) {
+        const key = u?.key;
+        const update = u?.update || {};
+        if (!key?.remoteJid || !key?.id) continue;
+        const chatJid = String(key.remoteJid);
+        const messageId = String(key.id);
+
+        const stub = update.messageStubType;
+        const isRevoke = update.message === null
+          || stub === 1
+          || stub === 'REVOKE';
+        if (isRevoke) {
+          try {
+            this._onMessageRevoked?.({ chatJid, messageId });
+          } catch (e) {
+            console.warn('[WA] onMessageRevoked:', e?.message || e);
+          }
+          continue;
+        }
+
+        const editedInner = update.message?.editedMessage?.message
+          || update.message?.protocolMessage?.editedMessage
+          || null;
+        if (editedInner) {
+          const text = extractTextFromInner(extractMessageContent(editedInner) || editedInner);
+          if (text) {
+            try {
+              this._onMessageEdited?.({ chatJid, messageId, text });
+            } catch (e) {
+              console.warn('[WA] onMessageEdited:', e?.message || e);
+            }
+          }
+        }
       }
     });
 
@@ -1125,6 +1411,18 @@ export default class WaClient {
    */
   async getChatDetails(jid) {
     if (!jid) return null;
+    // File/Gmail imports are not WhatsApp contacts — never invent a phone/displayName
+    // from the synthetic JID (that produced the flickering "import" title).
+    if (isImportedChatJid(jid)) {
+      return {
+        chatJid: jid,
+        displayName: null,
+        chatName: null,
+        isGroup: false,
+        isImported: true,
+        waConnected: Boolean(this._sock),
+      };
+    }
     const resolvedTitle = await this._resolveContactTitleFromCache(jid);
     const displayName =
       resolvedTitle
@@ -1207,7 +1505,7 @@ export default class WaClient {
    * Resolve LID ↔ phone-number JID for one 1:1 contact so APIs can query merged history.
    */
   async getLinked1on1Jids(jid) {
-    if (!jid || isJidGroup(jid)) return [jid];
+    if (!jid || isJidGroup(jid) || shouldPreserveRawChatJid(jid)) return [jid];
     const lm = this._sock?.signalRepository?.lidMapping;
     if (!lm) return [jidNormalizedUser(jid) || jid];
     const out = new Set();
@@ -1237,7 +1535,7 @@ export default class WaClient {
     if (!lm) return stats;
 
     const resolveCanonical = async (jid) => {
-      if (!jid || isJidGroup(jid)) return jid;
+      if (!jid || isJidGroup(jid) || shouldPreserveRawChatJid(jid)) return jid;
       try {
         if (isLidUser(jid)) {
           const pn = await lm.getPNForLID(jid);

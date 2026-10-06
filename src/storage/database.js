@@ -15,12 +15,13 @@ import {
 import { LEGACY_TENANT_ID } from './tenant-constants.js';
 import { decryptName, deriveTenantContactKey, encryptName, hashPhone, normalizePhone } from '../privacy/contact-directory.js';
 import { groupStatusBroadcastRows } from '../status/status-feed.js';
-import { STATUS_BROADCAST_JID, sidebarTabForJid } from '../whatsapp/jid-filters.js';
+import { STATUS_BROADCAST_JID, isImportedChatJid, sidebarTabForJid } from '../whatsapp/jid-filters.js';
 import { legacyControlFramePlaceholders } from '../whatsapp/message-content.js';
 import {
   formatPhoneLocalPart,
   isPlausibleHumanChatTitle,
   looksLikeLidFallbackContactLabel,
+  prettyImportedChatTitle,
 } from '../whatsapp/chat-display-name.js';
 import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 import { isChatEligibleForIndex } from '../search/index-eligibility.js';
@@ -275,6 +276,8 @@ export default class Database {
     this._migrateChatImportTouches();
     this._migrateChatRoster();
     this._migrateIndexOptIn();
+    this._migrateChatUnread();
+    this._migrateChatCatchup();
     this._rebuildFtsIfEmpty();
   }
 
@@ -354,6 +357,47 @@ export default class Database {
       `);
     } catch (e) {
       console.warn('[DB] index_opt_in:', e.message);
+    }
+  }
+
+  /**
+   * Last WhatsApp-reported unread counts. In-memory maps are lost on restart; this
+   * keeps group catch-up working until the user opens the chat (mark seen clears it).
+   */
+  _migrateChatUnread() {
+    try {
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS chat_unread (
+          tenant_id TEXT NOT NULL,
+          chat_jid TEXT NOT NULL,
+          unread_count INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER DEFAULT (unixepoch()),
+          PRIMARY KEY (tenant_id, chat_jid)
+        );
+      `);
+    } catch (e) {
+      console.warn('[DB] chat_unread:', e.message);
+    }
+  }
+
+  /**
+   * Catch-up dismiss cursor. Unlike last_seen (advanced on every open), this only
+   * moves when the user closes the "while you were away" card — so reopening a busy
+   * chat still shows the summary until they dismiss it.
+   */
+  _migrateChatCatchup() {
+    try {
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS chat_catchup (
+          tenant_id TEXT NOT NULL,
+          chat_jid TEXT NOT NULL,
+          dismissed_until_ts INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER DEFAULT (unixepoch()),
+          PRIMARY KEY (tenant_id, chat_jid)
+        );
+      `);
+    } catch (e) {
+      console.warn('[DB] chat_catchup:', e.message);
     }
   }
 
@@ -971,7 +1015,97 @@ export default class Database {
     const t = getCurrentTenantId();
     const when = ts != null ? Number(ts) : Math.floor(Date.now() / 1000);
     this._stmtUpsertChatLastSeen.run(t, chatJid, when);
+    this.clearChatUnread(chatJid);
     return when;
+  }
+
+  setChatUnread(chatJid, unreadCount) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return;
+    const n = Math.max(0, Math.floor(Number(unreadCount) || 0));
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      INSERT INTO chat_unread (tenant_id, chat_jid, unread_count, updated_at)
+      VALUES (?, ?, ?, unixepoch())
+      ON CONFLICT(tenant_id, chat_jid) DO UPDATE SET
+        unread_count = excluded.unread_count,
+        updated_at = excluded.updated_at
+    `).run(t, jid, n);
+  }
+
+  getChatUnread(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return 0;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(
+      'SELECT unread_count AS unreadCount FROM chat_unread WHERE tenant_id = ? AND chat_jid = ?',
+    ).get(t, jid);
+    return Math.max(0, Number(row?.unreadCount) || 0);
+  }
+
+  /** Map of chatJid → unreadCount for sidebar overlay. */
+  getAllChatUnread() {
+    const t = getCurrentTenantId();
+    const rows = this._db.prepare(
+      'SELECT chat_jid AS chatJid, unread_count AS unreadCount FROM chat_unread WHERE tenant_id = ? AND unread_count > 0',
+    ).all(t);
+    const map = new Map();
+    for (const r of rows || []) {
+      if (r?.chatJid) map.set(r.chatJid, Math.max(0, Number(r.unreadCount) || 0));
+    }
+    return map;
+  }
+
+  clearChatUnread(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return;
+    const t = getCurrentTenantId();
+    this._db.prepare('DELETE FROM chat_unread WHERE tenant_id = ? AND chat_jid = ?').run(t, jid);
+  }
+
+  getCatchupDismissedUntil(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return null;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(
+      'SELECT dismissed_until_ts AS dismissedUntilTs FROM chat_catchup WHERE tenant_id = ? AND chat_jid = ?',
+    ).get(t, jid);
+    if (!row) return null;
+    return Math.max(0, Number(row.dismissedUntilTs) || 0);
+  }
+
+  /** Mark catch-up as handled up through `ts` (unix seconds). */
+  setCatchupDismissedUntil(chatJid, ts = null) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return 0;
+    const t = getCurrentTenantId();
+    const when = ts != null ? Number(ts) : Math.floor(Date.now() / 1000);
+    this._db.prepare(`
+      INSERT INTO chat_catchup (tenant_id, chat_jid, dismissed_until_ts, updated_at)
+      VALUES (?, ?, ?, unixepoch())
+      ON CONFLICT(tenant_id, chat_jid) DO UPDATE SET
+        dismissed_until_ts = excluded.dismissed_until_ts,
+        updated_at = excluded.updated_at
+    `).run(t, jid, when);
+    return when;
+  }
+
+  /**
+   * Window start for catch-up: last dismiss cursor, or (if never dismissed) roughly
+   * the last week of traffic so we don't dump the entire archive on first open.
+   */
+  getCatchupWindowStart(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return 0;
+    const dismissed = this.getCatchupDismissedUntil(jid);
+    if (dismissed != null) return dismissed;
+    const t = getCurrentTenantId();
+    const maxTs = this._db.prepare(
+      'SELECT MAX(timestamp) AS maxTs FROM messages WHERE tenant_id = ? AND chat_jid = ?',
+    ).get(t, jid)?.maxTs || 0;
+    if (!maxTs) return 0;
+    const weekAgo = Math.max(0, Number(maxTs) - 7 * 86400);
+    return weekAgo;
   }
 
   getChatLastSeen(chatJid) {
@@ -1895,6 +2029,9 @@ export default class Database {
       ) {
         title = formatPhoneLocalPart(chatJid.split('@')[0]);
       }
+      if (isImportedChatJid(chatJid)) {
+        title = prettyImportedChatTitle(title) || title;
+      }
       return title;
     };
 
@@ -2047,9 +2184,13 @@ export default class Database {
       WHERE tenant_id = ? AND chat_jid = ? AND chat_name IS NOT NULL AND chat_name != ''
       ORDER BY timestamp DESC LIMIT 1
     `).get(t, chatJid) : null;
+    let chatName = nameRow?.chat_name || fallbackRow?.chat_name || null;
+    if (chatName && isImportedChatJid(chatJid)) {
+      chatName = prettyImportedChatTitle(chatName) || chatName;
+    }
     return {
       chatJid,
-      chatName: nameRow?.chat_name || fallbackRow?.chat_name || null,
+      chatName,
       messageCount: agg?.messageCount || 0,
       participantCount: agg?.participantCount || 0,
       lastMessageTs: agg?.lastMessageTs || null,
@@ -2074,6 +2215,21 @@ export default class Database {
       dailySummaries: row.dailySummaries,
       threadFacts: row.threadFacts || 0,
     };
+  }
+
+  /** Earliest / latest message timestamps (unix seconds) for empty-search UX. */
+  getMessageTimeBounds(chatJid = null) {
+    const t = getCurrentTenantId();
+    if (chatJid) {
+      return this._db.prepare(`
+        SELECT MIN(timestamp) AS minTs, MAX(timestamp) AS maxTs
+        FROM messages WHERE tenant_id = ? AND chat_jid = ?
+      `).get(t, chatJid) || { minTs: null, maxTs: null };
+    }
+    return this._db.prepare(`
+      SELECT MIN(timestamp) AS minTs, MAX(timestamp) AS maxTs
+      FROM messages WHERE tenant_id = ?
+    `).get(t) || { minTs: null, maxTs: null };
   }
 
   getMessagesPaginated(chatJid, limit = 80, offset = 0) {
@@ -2202,24 +2358,86 @@ export default class Database {
   }
 
   /**
-   * For reactions / quoted send: load the exact row (chat must match) or any row with that id (LID/PN merge).
+   * For reactions / quoted send / delete / forward / edit: load the exact row
+   * (chat must match) or any row with that id (LID/PN merge).
    * @returns {object | null}
    */
   getMessageForActions(chatJid, messageId) {
     if (!messageId) return null;
     const t = getCurrentTenantId();
+    const cols = `message_id AS messageId, chat_jid AS chatJid, sender, sender_jid AS senderJid,
+             text, media_type AS mediaType, media_caption AS mediaCaption, media_path AS mediaPath,
+             timestamp`;
     const row = this._db.prepare(`
-      SELECT message_id AS messageId, chat_jid AS chatJid, sender, sender_jid AS senderJid,
-             text, media_type AS mediaType, media_caption AS mediaCaption, timestamp
+      SELECT ${cols}
       FROM messages WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?
     `).get(t, chatJid, messageId);
     if (row) return row;
     return this._db.prepare(`
-      SELECT message_id AS messageId, chat_jid AS chatJid, sender, sender_jid AS senderJid,
-             text, media_type AS mediaType, media_caption AS mediaCaption, timestamp
+      SELECT ${cols}
       FROM messages WHERE tenant_id = ? AND message_id = ?
       LIMIT 1
     `).get(t, messageId);
+  }
+
+  /**
+   * Hard-delete one message from local storage (Delete for me).
+   * FTS triggers keep the search index in sync.
+   * @returns {number} rows removed
+   */
+  deleteMessage(chatJid, messageId) {
+    if (!messageId) return 0;
+    const t = getCurrentTenantId();
+    let changes = 0;
+    if (chatJid) {
+      changes = this._db.prepare(
+        'DELETE FROM messages WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?',
+      ).run(t, chatJid, messageId).changes;
+    }
+    if (!changes) {
+      changes = this._db.prepare(
+        'DELETE FROM messages WHERE tenant_id = ? AND message_id = ?',
+      ).run(t, messageId).changes;
+    }
+    return changes;
+  }
+
+  /**
+   * Soft-delete after "delete for everyone" / remote revoke — keep the bubble,
+   * replace body with WhatsApp's placeholder.
+   * @returns {boolean}
+   */
+  markMessageRevoked(chatJid, messageId) {
+    if (!messageId) return false;
+    const t = getCurrentTenantId();
+    const placeholder = 'This message was deleted';
+    const sql = `
+      UPDATE messages
+      SET text = ?, media_type = NULL, media_path = NULL, media_caption = NULL,
+          media_ai_index = NULL, contact_payload = NULL, reactions_json = NULL
+      WHERE tenant_id = ? AND message_id = ?
+        AND (? IS NULL OR chat_jid = ?)
+    `;
+    const r = this._db.prepare(sql).run(
+      placeholder, t, messageId, chatJid || null, chatJid || null,
+    );
+    return r.changes > 0;
+  }
+
+  /**
+   * Apply an in-place edit (own message) to the local row.
+   * @returns {boolean}
+   */
+  updateMessageBody(chatJid, messageId, text) {
+    if (!messageId) return false;
+    const t = getCurrentTenantId();
+    const body = text != null ? String(text) : '';
+    const r = this._db.prepare(`
+      UPDATE messages SET text = ?
+      WHERE tenant_id = ? AND message_id = ?
+        AND (? IS NULL OR chat_jid = ?)
+    `).run(body, t, messageId, chatJid || null, chatJid || null);
+    return r.changes > 0;
   }
 
   getAllMessagesLight(chatJid = null, limit = 5000) {

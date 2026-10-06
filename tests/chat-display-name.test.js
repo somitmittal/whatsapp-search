@@ -8,6 +8,7 @@ import {
   looksLikeOpaqueNumericId,
   looksLikeUrlOrSocialJunk,
   pickBetterChatTitle,
+  prettyImportedChatTitle,
 } from '../src/whatsapp/chat-display-name.js';
 
 describe('chat-display-name', () => {
@@ -84,5 +85,15 @@ describe('chat-display-name', () => {
       expect(isPlausibleHumanChatTitle('919876543210', pn)).toBe(false);
       expect(isPlausibleHumanChatTitle('+91 9876543210', pn)).toBe(false);
     });
+  });
+
+  test('prettyImportedChatTitle strips WhatsApp export prefixes', () => {
+    expect(prettyImportedChatTitle("WhatsApp Chat - Sovrenn Family AA Dec' 23"))
+      .toBe("Sovrenn Family AA Dec' 23");
+    expect(prettyImportedChatTitle('WhatsApp Chat with Bob')).toBe('Bob');
+  });
+
+  test('import JIDs have no invented fallback title', () => {
+    expect(fallbackTitleForOneOnOneJid('import_family@imported')).toBe('');
   });
 });
