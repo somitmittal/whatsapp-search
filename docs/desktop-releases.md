@@ -40,8 +40,11 @@ npm run dist:linux       # on Linux or CI
 
 - Web: `https://your-host.onrender.com/download`
 - Fetches latest release via `/api/releases/latest` (GitHub API, cached 1 hour)
+- Download buttons use tracked redirects: `/api/releases/download/{mac-arm64|mac-x64|windows|linux}` (supports `utm_source`, `utm_campaign`)
+- Stats: `/analytics` or `GET /api/analytics/downloads` with `Authorization: Bearer $SESSION_SECRET`
 - On Render, set **`GITHUB_TOKEN`** (read-only PAT) to avoid API rate limits
 - Override repo with env `GITHUB_REPO=owner/repo` if needed
+- Accounts / trial / Stripe: [monetization.md](./monetization.md)
 
 ## macOS install (unsigned / ad-hoc builds)
 

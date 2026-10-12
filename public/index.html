@@ -2229,6 +2229,7 @@
   </div>
 </div>
 
+<script src="/account-gate.js"></script>
 <script>
 (function() {
   const $ = s => document.querySelector(s);
@@ -3416,6 +3417,7 @@
     const forceConnect = !!opts.forceConnect;
     try {
       const cfg = await fetch('/api/app-config').then((r) => r.json()).catch(() => ({}));
+      window.__searchableAppConfig = cfg;
       _importFirstMvp = cfg.importFirstMvp !== false;
       _waLiveSyncAutoConnect = !!cfg.waLiveSyncAutoConnect;
       isDesktopApp = isDesktopApp || cfg.desktop === true;
@@ -3425,6 +3427,9 @@
         _showLiveSyncUi = localStorage.getItem('wa_show_live_sync') === '1';
       } else {
         _showLiveSyncUi = localStorage.getItem('wa_show_live_sync') !== '0';
+      }
+      if (window.SearchableAccount) {
+        try { await window.SearchableAccount.initAccountGate(cfg); } catch (_) { /* ignore */ }
       }
 
       await refreshDash();
@@ -6018,18 +6023,47 @@
     switchPanel();
     $('#search-loading').classList.add('visible');
     try {
-      const data = await fetch('/api/search', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const headers = { 'Content-Type': 'application/json' };
+      if (window.SearchableAccount) Object.assign(headers, window.SearchableAccount.authHeaders());
+      const installId = window.SearchableAccount ? window.SearchableAccount.getInstallId() : undefined;
+      const res = await fetch('/api/search', {
+        method: 'POST', headers,
         body: JSON.stringify({
           query,
           chatJid,
           mediaType,
           businessContext: sidebarListTab === 'business' && isSmbBusinessMode(),
+          installId,
         }),
-      }).then(r => r.json());
-      if (data.error) {
+      });
+      const data = await res.json();
+      if (res.status === 402 || data.code === 'trial_expired' || data.code === 'account_required') {
+        const reason = data.code || data.entitlement?.reason || 'account_required';
+        let actions = '';
+        if (reason === 'trial_expired' && window.__searchableAppConfig?.stripeEnabled && window.SearchableAccount) {
+          actions = `<button type="button" class="btn" id="sr-checkout" style="margin-top:12px;background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;">Subscribe to Pro</button>`;
+        } else if (window.SearchableAccount) {
+          actions = `<button type="button" class="btn" id="sr-signin" style="margin-top:12px;background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;">Sign in for AI search</button>`;
+        }
+        $('#search-results').innerHTML = `<div style="text-align:center;padding:48px 24px;color:var(--text)">
+          <p style="font-weight:600;margin-bottom:8px">${esc(data.error || 'AI search requires an account')}</p>
+          <p style="font-size:13px;color:var(--text2)">Browse and import stay free. Pro unlocks AI search.</p>
+          ${actions}
+        </div>`;
+        const checkout = $('#sr-checkout');
+        if (checkout) checkout.onclick = () => {
+          window.SearchableAccount.startCheckout(window.__searchableAppConfig || {}).catch((e) => alert(e.message));
+        };
+        const signin = $('#sr-signin');
+        if (signin) signin.onclick = () => {
+          window.SearchableAccount.openGate(window.__searchableAppConfig || {});
+        };
+      } else if (data.error) {
         $('#search-results').innerHTML = `<div style="text-align:center;padding:60px;color:var(--danger)">${esc(data.error)}</div>`;
       } else {
+        if (window.SearchableAccount) {
+          window.SearchableAccount.track(window.__searchableAppConfig || {}, 'ai_search_run', {});
+        }
         renderSearch(data, query, chatJid);
       }
     } catch (err) {

@@ -81,6 +81,8 @@ data/                Local SQLite DB + media (gitignored)
 
 Download DMGs/installers from [GitHub Releases](https://github.com/somitmittal/whatsapp-search/releases) or the in-app `/download` page. See [docs/desktop-releases.md](docs/desktop-releases.md).
 
+**Monetization / analytics:** tracked downloads, accounts, 14-day Pro trial, Stripe, and LinkedIn GTM — see [docs/monetization.md](docs/monetization.md) and [docs/linkedin-gtm.md](docs/linkedin-gtm.md). Admin download stats: `/analytics`.
+
 ### macOS first launch
 
 Builds are ad-hoc signed (no Apple Developer account). **`xattr` alone is not enough** if Gatekeeper reports a damaged/invalid signature. With the DMG open:

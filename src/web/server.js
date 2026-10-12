@@ -47,6 +47,10 @@ import WaClient from '../whatsapp/wa-client.js';
 import WabaIngestService, { verifyWabaSignature } from '../whatsapp/waba-client.js';
 import { getWabaConfig, publicWabaConfig, saveWabaConfig } from '../whatsapp/waba-settings.js';
 import { getLatestGitHubRelease, sendReleaseError } from '../releases/github-releases.js';
+import { getControlPlaneStore } from '../control-plane/store.js';
+import { registerControlPlaneRoutes } from '../control-plane/routes.js';
+import { isLicenseGateEnabled } from '../control-plane/license-gate.js';
+import { resolveSearchEntitlement, paywallResponse } from '../control-plane/entitlement-check.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 import { registerAuthRoutes } from './auth-routes.js';
 import { preserveTenantAcrossUpload } from './upload-tenant.js';
@@ -1068,7 +1072,14 @@ export default class WebServer {
     this._app.use((req, res, next) => {
       if (req.method === 'OPTIONS') return next();
       const path = req.path || '';
-      if (!path.startsWith('/api/') || path === '/api/health' || path === '/api/gmail/oauth/callback') {
+      if (
+        !path.startsWith('/api/')
+        || path === '/api/health'
+        || path === '/api/gmail/oauth/callback'
+        || path.startsWith('/api/releases/download/')
+        || path.startsWith('/api/control/')
+        || path === '/api/analytics/downloads'
+      ) {
         return runWithTenant(LEGACY_TENANT_ID, () => next());
       }
       if (this._applyDesktopTenantSession(req, res, next)) return;
@@ -1116,6 +1127,9 @@ export default class WebServer {
       isSecureCookie: () => this._isSecureCookieDeployment(),
     });
 
+    this._controlPlane = getControlPlaneStore(config.controlPlaneDbPath);
+    registerControlPlaneRoutes(this._app, { store: this._controlPlane });
+
     // WhatsApp + Chrome extension ingest are tenant-scoped via the JWT middleware above.
 
     // Render / load balancers: use Health Check Path = /health or /api/health
@@ -1152,6 +1166,12 @@ export default class WebServer {
         importFirstMvp: config.importFirstMvp,
         waLiveSyncAutoConnect: config.waLiveSyncAutoConnect && !config.importFirstMvp,
         desktop: config.isDesktopApp,
+        controlPlaneUrl: config.controlPlaneUrl || '',
+        licenseGate: isLicenseGateEnabled(),
+        stripeEnabled: Boolean(
+          (process.env.STRIPE_SECRET_KEY || '').trim()
+          && (process.env.STRIPE_PRICE_ID || '').trim(),
+        ),
       });
     });
 
@@ -1530,12 +1550,23 @@ export default class WebServer {
           return res.status(400).json({ error: 'query is required' });
         }
 
+        const entitlement = await resolveSearchEntitlement(req, this._controlPlane);
+        if (!entitlement.allowed) {
+          const installId = String(req.get('x-install-id') || req.body?.installId || '').trim();
+          return paywallResponse(res, entitlement, this._controlPlane, installId);
+        }
+
         const result = await this.searchEngine.search(
           query,
           chatJid || null,
           mediaType || null,
           { businessContext: !!businessContext },
         );
+        this._controlPlane.logProductEvent({
+          event: 'ai_search_run',
+          installId: String(req.get('x-install-id') || '').trim() || null,
+          props: { plan: entitlement.plan },
+        });
         return res.json(result);
       } catch (err) {
         console.error('Search API error:', err.message);

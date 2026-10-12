@@ -97,6 +97,10 @@ function buildServerEnv() {
     // Unload idle model quickly — avoids RAM spikes when app is in background
     OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || '60',
     OLLAMA_NUM_PARALLEL: process.env.OLLAMA_NUM_PARALLEL || '2',
+    // Hosted control plane for accounts/billing (optional). When unset, local control_plane.db is used.
+    CONTROL_PLANE_URL: process.env.CONTROL_PLANE_URL || '',
+    CONTROL_PLANE_PUBLIC_URL: process.env.CONTROL_PLANE_PUBLIC_URL || process.env.CONTROL_PLANE_URL || '',
+    LICENSE_GATE: process.env.LICENSE_GATE || '1',
   };
 }
 

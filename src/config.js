@@ -134,6 +134,18 @@ const config = {
   githubRepo: (process.env.GITHUB_REPO || 'somitmittal/whatsapp-search').trim(),
   /** WhatsApp export date order for ambiguous DD/MM vs MM/DD: `auto`, `DMY`, or `MDY`. */
   importDateOrder: (process.env.IMPORT_DATE_ORDER || 'auto').trim().toUpperCase(),
+  /**
+   * Control-plane DB (accounts, licenses, download analytics). Separate from chat DB.
+   * Default: `<DATA_DIR>/control_plane.db`
+   */
+  controlPlaneDbPath: process.env.CONTROL_PLANE_DB
+    ? resolve(ROOT, process.env.CONTROL_PLANE_DB)
+    : resolve(ROOT, process.env.DATA_DIR || './data', 'control_plane.db'),
+  /**
+   * When the desktop app should use a hosted control plane (Render) for accounts/billing.
+   * Example: `https://your-service.onrender.com`
+   */
+  controlPlaneUrl: (process.env.CONTROL_PLANE_URL || '').trim().replace(/\/$/, ''),
 };
 
 export default config;

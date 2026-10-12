@@ -31,6 +31,7 @@ function mapRelease(release, repo) {
     name: a.name,
     url: a.browser_download_url,
     size: a.size,
+    downloadCount: typeof a.download_count === 'number' ? a.download_count : 0,
   }));
   return {
     version: release.tag_name,
@@ -38,6 +39,7 @@ function mapRelease(release, repo) {
     publishedAt: release.published_at,
     releasePage: release.html_url || releasePageUrl(repo),
     allAssets,
+    githubDownloadsTotal: allAssets.reduce((n, a) => n + (a.downloadCount || 0), 0),
     cached: false,
   };
 }
