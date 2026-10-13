@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'fs';
-import { dirname, resolve } from 'path';
+import { dirname, isAbsolute, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { defaultBindHost } from './web/http-security.js';
+import { resolveWritableDataDir } from './storage/resolve-data-dir.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -34,10 +35,24 @@ const onRender =
   process.env.RENDER === 'true'
   || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
 
+const { dataDir, requestedDir: requestedDataDir, fellBack: dataDirFellBack } = resolveWritableDataDir(
+  ROOT,
+  process.env.DATA_DIR,
+);
+
+function resolveUnderRootOrAbsolute(raw, fallbackRelative) {
+  const v = String(raw || '').trim();
+  if (!v) return resolve(ROOT, fallbackRelative);
+  return isAbsolute(v) ? v : resolve(ROOT, v);
+}
+
 const config = {
-  dataDir: resolve(ROOT, process.env.DATA_DIR || './data'),
-  mediaDir: resolve(ROOT, process.env.DATA_DIR || './data', 'media'),
-  dbPath: resolve(ROOT, process.env.DATA_DIR || './data', 'whatsapp_search.db'),
+  dataDir,
+  mediaDir: resolve(dataDir, 'media'),
+  dbPath: resolve(dataDir, 'whatsapp_search.db'),
+  /** True when DATA_DIR was unwritable and we fell back to ./data */
+  dataDirFellBack,
+  requestedDataDir,
   /** Render/Heroku set `PORT`; local dev often uses `WEB_PORT`. */
   webPort: parseInt(process.env.PORT || process.env.WEB_PORT || '3000', 10),
   /**
@@ -139,8 +154,8 @@ const config = {
    * Default: `<DATA_DIR>/control_plane.db`
    */
   controlPlaneDbPath: process.env.CONTROL_PLANE_DB
-    ? resolve(ROOT, process.env.CONTROL_PLANE_DB)
-    : resolve(ROOT, process.env.DATA_DIR || './data', 'control_plane.db'),
+    ? resolveUnderRootOrAbsolute(process.env.CONTROL_PLANE_DB, 'data/control_plane.db')
+    : resolve(dataDir, 'control_plane.db'),
   /**
    * When the desktop app should use a hosted control plane (Render) for accounts/billing.
    * Example: `https://your-service.onrender.com`
