@@ -43,6 +43,11 @@ async function main() {
 
   mkdirSync(config.dataDir, { recursive: true });
   mkdirSync(config.mediaDir, { recursive: true });
+  if (config.dataDirFellBack) {
+    console.warn(`[startup] Using dataDir=${config.dataDir} (requested ${config.requestedDataDir} was not writable)`);
+  } else {
+    console.log(`[startup] dataDir=${config.dataDir}`);
+  }
 
   console.log('Initializing database...');
   const db = new Database();
