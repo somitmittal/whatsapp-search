@@ -10,6 +10,7 @@ import { terminateMiniLmEncoder } from './search/minilm-encoder.js';
 import DailySummaryService from './search/daily-summary-service.js';
 import WebServer from './web/server.js';
 import ActionItemService from './search/action-item-service.js';
+import ExpenseReconciliationService from './expenses/expense-reconciliation-service.js';
 import { createProvider } from './llm/provider.js';
 import {
   applyLlmDefaultsIfUnset,
@@ -206,6 +207,14 @@ async function main() {
       webServer?._broadcast?.({ type: 'chat-action-items', data: { chatJid } }, defaultTenantId);
     },
   });
+  const expenseReconciliationService = new ExpenseReconciliationService({
+    db,
+    getProvider: () => searchEngine.getProvider(),
+    getWaClient: (tenantId) => webServer?.getTenantWaClient?.(tenantId),
+    onProgress: (data, tenantId) => {
+      webServer?._broadcast?.({ type: 'expense-reconciliation', data }, tenantId);
+    },
+  });
   webServer = new WebServer({
     db,
     searchEngine,
@@ -213,8 +222,10 @@ async function main() {
     mediaIndexService,
     embeddingIndexService,
     actionItemService,
+    expenseReconciliationService,
     reloadMediaIndexProvider,
   });
+  expenseReconciliationService.recoverPending(defaultTenantId);
 
   if (provider) {
     provider.checkHealth().then(healthy => {
@@ -229,29 +240,26 @@ async function main() {
   const effectiveSumProvider = summaryProvider || provider;
   if (effectiveSumProvider) {
     effectiveSumProvider.checkHealth().then(healthy => {
+      const pName = sumProvSetting && sumProvSetting !== 'same' ? sumProvSetting : savedProvider;
       if (healthy) {
-        const pName = sumProvSetting && sumProvSetting !== 'same' ? sumProvSetting : savedProvider;
         console.log(`Summary LLM connected: ${pName} (${effectiveSumProvider.model})`);
-        const stats = runWithTenant(defaultTenantId, () => db.getTotalStats());
-        if (stats.totalMessages > 0 && !webServer.isTenantWaHistoryBusy(defaultTenantId)) {
-          console.log('Generating daily summaries in background...');
-          void runWithTenant(defaultTenantId, async () => {
-            try {
-              const count = await summaryService.indexPendingDays();
-              if (count > 0) console.log(`Generated ${count} daily summaries`);
-              else console.log('All summaries up to date');
-            } catch (err) {
-              console.error('Summary error:', err.message);
-            }
-          });
-        }
+        // Do not auto-start indexing on boot — wait for per-chat AI toggles.
+      } else {
+        console.log(`Summary LLM configured: ${pName} — but not reachable`);
       }
     }).catch(err => console.log(`Summary LLM health check failed: ${err.message}`));
+  }
+
+  /** Only poll when at least one chat is toggled on (or legacy auto-index is enabled). */
+  function hasIndexWork() {
+    if (config.indexAutoEnabled) return true;
+    return runWithTenant(defaultTenantId, () => (db.listIndexOptInJids?.() || []).length > 0);
   }
 
   let summaryInterval = setInterval(async () => {
     try {
       if (webServer.isTenantWaHistoryBusy(defaultTenantId)) return;
+      if (!hasIndexWork()) return;
       await runWithTenant(defaultTenantId, async () => {
         await summaryService.indexPendingDays();
       });
@@ -261,6 +269,7 @@ async function main() {
   let mediaIndexInterval = setInterval(async () => {
     try {
       if (webServer.isTenantWaHistoryBusy(defaultTenantId)) return;
+      if (!hasIndexWork()) return;
       await runWithTenant(defaultTenantId, async () => {
         await mediaIndexService.processPending(12);
       });
@@ -270,6 +279,7 @@ async function main() {
   let embeddingIndexInterval = setInterval(async () => {
     try {
       if (webServer.isTenantWaHistoryBusy(defaultTenantId)) return;
+      if (!hasIndexWork()) return;
       await runWithTenant(defaultTenantId, async () => {
         await embeddingIndexService.processPending(12);
       });

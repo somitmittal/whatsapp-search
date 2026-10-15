@@ -14,6 +14,7 @@ const PROVIDERS = {
   grok: () => import('./grok.js'),
   groq: () => import('./groq.js'),
   openrouter: () => import('./openrouter.js'),
+  munito: () => import('./munito.js'),
 };
 
 export const PROVIDER_META = {
@@ -27,6 +28,19 @@ export const PROVIDER_META = {
       'mistralai/mistral-7b-instruct:free',
       'qwen/qwen-2.5-7b-instruct:free',
       'meta-llama/llama-3.2-1b-instruct:free',
+    ],
+  },
+  munito: {
+    name: 'Munito (EU · zero retention)',
+    free: true,
+    keyRequired: true,
+    privacyNote: 'European inference (EU by default). Zero data retention for normal requests — prompts are not stored or used for training.',
+    models: [
+      'qwen/qwen3.8-27b',
+      'qwen/qwen3-32b',
+      'mistralai/mistral-small-3.2-24b-instruct',
+      'google/gemma-3-27b-it',
+      'meta-llama/llama-3.3-70b-instruct',
     ],
   },
   ollama_cloud: {

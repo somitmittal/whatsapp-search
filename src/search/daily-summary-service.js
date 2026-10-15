@@ -10,6 +10,7 @@ import {
 import { isChatEligibleForIndex } from './index-eligibility.js';
 import { factExtractionAddon, getSmbProfileFromDb } from '../smb/profiles.js';
 import { isSmallLocalModel, localSummaryLlmExtras } from './indexing-profile.js';
+import { isOllamaModelMemoryConstrained } from '../llm/ollama-recommend.js';
 import { GROUNDING_PROMPT_RULES, enforceGroundedAnswer, filterGroundedFacts } from './grounding.js';
 /** Messages per LLM call — keeps prompts bounded and allows parallel segment work. */
 const SUMMARY_CHUNK_CLOUD = 200;
@@ -67,10 +68,11 @@ function parseSummaryConcurrencyEnv() {
 /** Small local models (≤ 4B params) can handle parallel requests without saturating memory. */
 const LOCAL_SMALL_MODEL_CONCURRENCY = 3;
 
-function getSummaryThreadConcurrency(isLocal, keyCount, modelName) {
+export function getSummaryThreadConcurrency(isLocal, keyCount, modelName) {
   const override = parseSummaryConcurrencyEnv();
   if (override !== null) return override;
   if (isLocal) {
+    if (isOllamaModelMemoryConstrained(modelName)) return 1;
     return isSmallLocalModel(modelName) ? LOCAL_SMALL_MODEL_CONCURRENCY : 1;
   }
   return Math.max(DEFAULT_CLOUD_SUMMARY_CONCURRENCY, keyCount || 1);
@@ -347,6 +349,15 @@ export default class DailySummaryService {
 
     let deferredForIngestion = false;
     try {
+      // Opt-in-only mode: do not scan every chat when nothing is toggled on.
+      if (!config.indexAutoEnabled) {
+        const opted = this._db.listIndexOptInJids?.() || [];
+        if (opted.length === 0) {
+          this._caughtUp = true;
+          return 0;
+        }
+      }
+
       const chats = this._db.getChatStats();
       /** Chats that still have at least one unsummarized thread */
       const allWork = [];
@@ -378,7 +389,11 @@ export default class DailySummaryService {
       });
       const skipped = allWork.length - eligibleWork.length;
       if (skipped > 0) {
-        console.log(`[Summaries] Skipping ${skipped} chat(s) below the auto-index bar (${config.indexMinMessageCount}+ messages in the last ${config.indexRecentWindowDays} days)`);
+        if (config.indexAutoEnabled) {
+          console.log(`[Summaries] Skipping ${skipped} chat(s) below the auto-index bar (${config.indexMinMessageCount}+ messages in the last ${config.indexRecentWindowDays} days)`);
+        } else {
+          console.log(`[Summaries] Skipping ${skipped} chat(s) not toggled on for AI indexing`);
+        }
       }
 
       const indexScore = (chatJid) => {

@@ -1,0 +1,76 @@
+{
+  "businessDate": "2026-10-15",
+  "messages": [
+    {
+      "id": "andheri-ravi",
+      "sender": "Supervisor",
+      "text": "Paid ₹1,250.50 to Ravi labour team for daily wages. Bill B-9."
+    },
+    {
+      "id": "andheri-fuel",
+      "sender": "Supervisor",
+      "text": "Paid ₹500 to HP Petrol Pump for diesel. Bill F-22."
+    },
+    {
+      "id": "andheri-cement",
+      "sender": "Supervisor",
+      "text": "Paid ₹800 to Shyam for cement bags."
+    },
+    {
+      "id": "andheri-refund",
+      "sender": "Supervisor",
+      "text": "Received ₹200 refund from Hardware store. Bill R-1."
+    },
+    {
+      "id": "andheri-auto-1",
+      "sender": "Supervisor",
+      "text": "Paid ₹300 to Auto driver for material transport. Bill T-4."
+    },
+    {
+      "id": "andheri-auto-2",
+      "sender": "Supervisor",
+      "text": "Paid ₹300 to Auto driver for material transport. Bill T-4."
+    },
+    {
+      "id": "andheri-mason",
+      "sender": "Supervisor",
+      "text": "Paid ₹900 to Mason crew for block work."
+    },
+    {
+      "id": "andheri-usd",
+      "sender": "Supervisor",
+      "text": "Paid $100 to Imported pump for pump hire. Bill U-1."
+    },
+    {
+      "id": "andheri-scrap",
+      "sender": "Supervisor",
+      "text": "Received ₹150 from Scrap buyer for scrap sale."
+    },
+    {
+      "id": "andheri-chatter",
+      "sender": "Supervisor",
+      "text": "Site meeting at 5pm. No expense."
+    },
+    {
+      "id": "andheri-yesterday",
+      "sender": "Supervisor",
+      "text": "Paid ₹999 to Old vendor for yesterday’s cement."
+    },
+    {
+      "id": "bandra-fuel",
+      "sender": "Accountant",
+      "text": "Paid ₹750 to City Fuel for diesel."
+    },
+    {
+      "id": "powai-wire",
+      "sender": "Supervisor",
+      "text": "Paid ₹400 to Site electrician for wiring."
+    }
+  ],
+  "sheets": [
+    "andheri-15-oct.xlsx",
+    "bandra-variant.csv",
+    "powai-15-oct.xlsx",
+    "broken.xlsx"
+  ]
+}

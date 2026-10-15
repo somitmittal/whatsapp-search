@@ -48,7 +48,7 @@ describe('titles-first group hydration', () => {
 });
 
 describe('merging a titles-only preview into existing sidebar rows', () => {
-  // Mirrors mergeSyncChatsPreview in public/index.html, which cannot be imported
+  // Mirrors mergeSyncChatsPreview in public/js/dashboard.js, which cannot be imported
   // because it touches the DOM.
   const mergeRow = (existing, p) => {
     const merged = { ...existing, ...p };

@@ -6,20 +6,26 @@ import {
 } from '../src/whatsapp/history-sync-policy.js';
 
 describe('shouldSyncHistoryMessage', () => {
-  test('always ingests RECENT so reconnects catch up while the app was down', () => {
-    expect(shouldSyncHistoryMessage({ syncType: 3 }, { syncFullHistory: false })).toBe(true);
-    expect(shouldSyncHistoryMessage({ syncType: 'RECENT' }, { syncFullHistory: false })).toBe(true);
+  test('accepts the first link so the initial archive can be stored', () => {
+    expect(shouldSyncHistoryMessage({ syncType: 3 })).toBe(true);
+    expect(shouldSyncHistoryMessage({ syncType: HISTORY_SYNC_TYPE_FULL })).toBe(true);
+    expect(shouldSyncHistoryMessage({})).toBe(true);
   });
 
-  test('accepts FULL so a reconnect blob is stored once instead of retried', () => {
-    expect(shouldSyncHistoryMessage({ syncType: HISTORY_SYNC_TYPE_FULL }, { syncFullHistory: false })).toBe(true);
-    expect(shouldSyncHistoryMessage({ syncType: 'FULL' }, { syncFullHistory: false })).toBe(true);
+  test('declines every later reconnect so the phone is not notified again', () => {
+    const opts = { initialHistorySyncDone: true };
+    expect(shouldSyncHistoryMessage({ syncType: 3 }, opts)).toBe(false);
+    expect(shouldSyncHistoryMessage({ syncType: 'RECENT' }, opts)).toBe(false);
+    expect(shouldSyncHistoryMessage({ syncType: HISTORY_SYNC_TYPE_FULL }, opts)).toBe(false);
+    expect(shouldSyncHistoryMessage({ syncType: 6 }, opts)).toBe(false);
+    expect(shouldSyncHistoryMessage({}, opts)).toBe(false);
   });
 
-  test('ingests on-demand / bootstrap / nameless notifications', () => {
-    expect(shouldSyncHistoryMessage({ syncType: 0 }, { syncFullHistory: false })).toBe(true);
-    expect(shouldSyncHistoryMessage({ syncType: 6 }, { syncFullHistory: false })).toBe(true);
-    expect(shouldSyncHistoryMessage({}, { syncFullHistory: false })).toBe(true);
+  test('an explicit full-history override still accepts sync', () => {
+    expect(shouldSyncHistoryMessage(
+      { syncType: 'RECENT' },
+      { syncFullHistory: true, initialHistorySyncDone: true },
+    )).toBe(true);
   });
 });
 

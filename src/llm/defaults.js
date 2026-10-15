@@ -40,18 +40,36 @@ export function migrateAwayFromLocalOllama(db) {
   }
 }
 
-/** DB `llm_api_key` wins; else `GROQ_API_KEY` or `LLM_API_KEY`. */
+/** DB `llm_api_key` wins; else provider-specific env or `LLM_API_KEY`. */
 export function effectiveSearchApiKey(db) {
   const user = (db.getSetting('llm_api_key') || '').trim();
   if (user) return user;
-  return (process.env.GROQ_API_KEY || process.env.LLM_API_KEY || '').trim();
+  const provider = (db.getSetting('llm_provider') || '').trim();
+  if (provider === 'munito') {
+    return (process.env.MUNITO_API_KEY || process.env.LLM_API_KEY || '').trim();
+  }
+  return (
+    process.env.GROQ_API_KEY
+    || process.env.MUNITO_API_KEY
+    || process.env.LLM_API_KEY
+    || ''
+  ).trim();
 }
 
-/** DB `summary_api_key` wins; else `OLLAMA_CLOUD_API_KEY` or `SUMMARY_API_KEY`. */
+/** DB `summary_api_key` wins; else provider-specific env or `SUMMARY_API_KEY`. */
 export function effectiveSummaryApiKey(db) {
   const user = (db.getSetting('summary_api_key') || '').trim();
   if (user) return user;
-  return (process.env.OLLAMA_CLOUD_API_KEY || process.env.SUMMARY_API_KEY || '').trim();
+  const provider = (db.getSetting('summary_provider') || db.getSetting('llm_provider') || '').trim();
+  if (provider === 'munito') {
+    return (process.env.MUNITO_API_KEY || process.env.SUMMARY_API_KEY || '').trim();
+  }
+  return (
+    process.env.OLLAMA_CLOUD_API_KEY
+    || process.env.MUNITO_API_KEY
+    || process.env.SUMMARY_API_KEY
+    || ''
+  ).trim();
 }
 
 /**
@@ -96,8 +114,18 @@ export function keyHints(db) {
   const hasStoredSearch = !!(db.getSetting('llm_api_key') || '').trim();
   const hasStoredSummary = !!(db.getSetting('summary_api_key') || '').trim();
   const hasStoredMediaIndex = !!(db.getSetting('media_index_api_key') || '').trim();
-  const hasEnvSearch = !!(process.env.GROQ_API_KEY || process.env.LLM_API_KEY || '').trim();
-  const hasEnvSummary = !!(process.env.OLLAMA_CLOUD_API_KEY || process.env.SUMMARY_API_KEY || '').trim();
+  const hasEnvSearch = !!(
+    process.env.GROQ_API_KEY
+    || process.env.MUNITO_API_KEY
+    || process.env.LLM_API_KEY
+    || ''
+  ).trim();
+  const hasEnvSummary = !!(
+    process.env.OLLAMA_CLOUD_API_KEY
+    || process.env.MUNITO_API_KEY
+    || process.env.SUMMARY_API_KEY
+    || ''
+  ).trim();
   const hasEnvMediaIndex = !!geminiKeysFromEnv().trim();
   return {
     search: hasStoredSearch ? 'user' : (hasEnvSearch ? 'env' : 'none'),

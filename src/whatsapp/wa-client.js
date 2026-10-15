@@ -6,7 +6,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
-import { join } from 'path';
+import { extname, join } from 'path';
 import config from '../config.js';
 import {
     fallbackTitleForOneOnOneJid,
@@ -37,6 +37,18 @@ import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 import { shouldSyncHistoryMessage, RECENT_DAYS_CATCHUP_DAYS } from './history-sync-policy.js';
 import { normalizeGroupCreateInput } from './group-create.js';
+import {
+  avatarActionForContact,
+  avatarFileName,
+  imageExtFromBytes,
+  isAvatarEligibleJid,
+  profilePictureFailure,
+} from './chat-avatars.js';
+import {
+  normalizeReceiptStatus,
+  receiptAfterSuccessfulRelay,
+  receiptFromGroupReceipt,
+} from './message-receipt.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -57,6 +69,8 @@ const QRCode   = require('qrcode');
 const P        = require('pino');
 
 const BATCH_MS = 2000;
+/** Pause between WhatsApp network calls while draining media and profile pictures. */
+const WA_DRAIN_GAP_MS = 120;
 
 const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
 const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
@@ -74,6 +88,8 @@ function extFromMime(mime) {
   if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
   if (m.includes('mp4')) return 'mp4';
   if (m.includes('pdf')) return 'pdf';
+  if (m.includes('spreadsheetml') || m.includes('excel')) return 'xlsx';
+  if (m.includes('csv')) return 'csv';
   return 'bin';
 }
 
@@ -172,6 +188,7 @@ export default class WaClient {
     authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete,
     onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction,
     onResolvedDisplayName, onUnreadCounts, onMessageRevoked, onMessageEdited,
+    onChatAvatar, onMessageReceipt,
   }) {
     this._authDir = authDir || join(config.dataDir, '.baileys_auth');
     this._configFile = configFile || join(config.dataDir, 'wa-config.json');
@@ -190,6 +207,8 @@ export default class WaClient {
     this._onUnreadCounts = onUnreadCounts;
     this._onMessageRevoked = onMessageRevoked;
     this._onMessageEdited = onMessageEdited;
+    this._onChatAvatar = onChatAvatar;
+    this._onMessageReceipt = onMessageReceipt;
 
     this._sock          = null;
     this._state         = 'DISCONNECTED';
@@ -224,6 +243,11 @@ export default class WaClient {
     this._mediaQueue    = [];
     this._queuedMediaIds = new Set();
     this._mediaDraining = false;
+    /** Sidebar profile / group pictures. Filled newest-first and drained after history sync. */
+    this._avatarQueue = [];
+    this._avatarQueued = new Set();
+    this._avatarDraining = false;
+    this._avatarEpoch = 0;
     this._mediaLogger   = P({ level: 'silent' });
     /** Serialize connects — parallel _connect() calls used to create overlapping Baileys sockets → disconnect loop. */
     this._connectSeq = Promise.resolve();
@@ -247,6 +271,13 @@ export default class WaClient {
   /** True while saved credentials exist, i.e. we are reconnecting rather than pairing. */
   get hasSavedCreds() {
     return existsSync(join(this._authDir, 'creds.json'));
+  }
+
+  _clearInitialHistorySyncFlag() {
+    this._acceptPhoneHistorySync = true;
+    const cfg = loadCfg(this._configFile);
+    if (!cfg.initialHistorySyncDone) return;
+    saveCfg(this._configFile, { ...cfg, initialHistorySyncDone: false });
   }
 
   _clearQr() {
@@ -277,6 +308,7 @@ export default class WaClient {
     this._reconnectTimer = null;
     try { await this._sock?.logout(); } catch {}
     this._sock = null;
+    this._clearInitialHistorySyncFlag();
     this._setState('DISCONNECTED', 'Logged out');
     this._onDisconnected?.();
   }
@@ -290,6 +322,7 @@ export default class WaClient {
     this._staleSessionCloseCount = 0;
     try { rmSync(this._authDir, { recursive: true, force: true }); } catch {}
     mkdirSync(this._authDir, { recursive: true });
+    this._clearInitialHistorySyncFlag();
     this._setState('DISCONNECTED', reason);
     this._onDisconnected?.();
     if (!this._destroyed) {
@@ -306,9 +339,47 @@ export default class WaClient {
     const { quotedRow } = options;
     if (quotedRow) {
       const quoted = this._buildQuotedProto(quotedRow, chatJid);
-      return await this._sock.sendMessage(chatJid, { text: t }, { quoted });
+      return this._noteSuccessfulSend(await this._sock.sendMessage(chatJid, { text: t }, { quoted }));
     }
-    return await this._sock.sendMessage(chatJid, { text: t });
+    return this._noteSuccessfulSend(await this._sock.sendMessage(chatJid, { text: t }));
+  }
+
+  /**
+   * Relay already succeeded. Baileys still labels the echo PENDING and, in groups,
+   * reports later ticks on `message-receipt.update` rather than `messages.update`.
+   */
+  _noteSuccessfulSend(sent) {
+    if (!sent?.key?.id || sent.key.fromMe === false) return sent;
+    const next = receiptAfterSuccessfulRelay(sent.status);
+    sent.status = next;
+    const chatJid = sent.key.remoteJid ? String(sent.key.remoteJid) : '';
+    const messageId = String(sent.key.id);
+    if (chatJid) {
+      process.nextTick(() => {
+        try {
+          this._onMessageReceipt?.({ chatJid, messageId, receiptStatus: next });
+        } catch (e) {
+          console.warn('[WA] relay ack:', e?.message || e);
+        }
+      });
+    }
+    return sent;
+  }
+
+  async sendDocument(chatJid, filePath, {
+    fileName = 'document.xlsx',
+    mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    caption = '',
+  } = {}) {
+    if (!this._sock) throw new Error('WhatsApp not connected');
+    if (!chatJid) throw new Error('chatJid required');
+    if (!filePath || !existsSync(filePath)) throw new Error('Document file not found');
+    return this._noteSuccessfulSend(await this._sock.sendMessage(chatJid, {
+      document: readFileSync(filePath),
+      fileName: String(fileName || 'document.xlsx').slice(0, 120),
+      mimetype,
+      caption: String(caption || '').trim() || undefined,
+    }));
   }
 
   /**
@@ -340,10 +411,6 @@ export default class WaClient {
     return out;
   }
 
-  /**
-   * Resolve a typed phone number to a WhatsApp JID (only if that number is on WhatsApp).
-   * @param {string} rawPhone e.g. "+91 98765 43210" or "919876543210"
-   */
   /**
    * Create a WhatsApp group. Prefers phone-number JIDs when a LID↔PN mapping exists —
    * Baileys' create call is more reliable with `@s.whatsapp.net` participants.
@@ -536,42 +603,42 @@ export default class WaClient {
     const contextInfo = { isForwarded: true, forwardingScore: force ? 1 : 0 };
 
     if (mediaPath && row.mediaType === 'image') {
-      return await this._sock.sendMessage(targetJid, {
+      return this._noteSuccessfulSend(await this._sock.sendMessage(targetJid, {
         image: readFileSync(mediaPath),
         caption: caption || undefined,
         contextInfo,
-      });
+      }));
     }
     if (mediaPath && row.mediaType === 'video') {
-      return await this._sock.sendMessage(targetJid, {
+      return this._noteSuccessfulSend(await this._sock.sendMessage(targetJid, {
         video: readFileSync(mediaPath),
         caption: caption || undefined,
         contextInfo,
-      });
+      }));
     }
     if (mediaPath && row.mediaType === 'audio') {
-      return await this._sock.sendMessage(targetJid, {
+      return this._noteSuccessfulSend(await this._sock.sendMessage(targetJid, {
         audio: readFileSync(mediaPath),
         mimetype: 'audio/ogg; codecs=opus',
         ptt: false,
         contextInfo,
-      });
+      }));
     }
     if (mediaPath && row.mediaType === 'sticker') {
-      return await this._sock.sendMessage(targetJid, {
+      return this._noteSuccessfulSend(await this._sock.sendMessage(targetJid, {
         sticker: readFileSync(mediaPath),
         contextInfo,
-      });
+      }));
     }
     if (mediaPath && row.mediaType === 'document') {
       const name = String(row.mediaCaption || row.text || 'document').trim() || 'document';
-      return await this._sock.sendMessage(targetJid, {
+      return this._noteSuccessfulSend(await this._sock.sendMessage(targetJid, {
         document: readFileSync(mediaPath),
         mimetype: 'application/octet-stream',
         fileName: name.slice(0, 120),
         caption: caption || undefined,
         contextInfo,
-      });
+      }));
     }
 
     // Text / missing media: forward via a minimal reconstructed WAMessage.
@@ -596,13 +663,13 @@ export default class WaClient {
       message: { conversation: snippet.slice(0, 65536) },
     };
     try {
-      return await this._sock.sendMessage(targetJid, { forward: msg, force: !!force });
+      return this._noteSuccessfulSend(await this._sock.sendMessage(targetJid, { forward: msg, force: !!force }));
     } catch (e) {
       // Fallback: plain send marked as forwarded.
-      return await this._sock.sendMessage(targetJid, {
+      return this._noteSuccessfulSend(await this._sock.sendMessage(targetJid, {
         text: snippet,
         contextInfo,
-      });
+      }));
     }
   }
 
@@ -722,6 +789,14 @@ export default class WaClient {
     if (this._destroyed) return;
     if (this._sock) return;
 
+    const priorCfg = loadCfg(this._configFile);
+    // An already-linked phone has had its initial archive. Do not ask WhatsApp to
+    // sync again just because this process restarted.
+    if (this.hasSavedCreds && !priorCfg.initialHistorySyncDone) {
+      priorCfg.initialHistorySyncDone = true;
+      saveCfg(this._configFile, priorCfg);
+    }
+    this._acceptPhoneHistorySync = !priorCfg.initialHistorySyncDone;
     let version = [2, 3000, 1015901307];
     try {
       const v = await fetchLatestBaileysVersion();
@@ -738,10 +813,11 @@ export default class WaClient {
       generateHighQualityLinkPreview: false,
       markOnlineOnConnect: false,
       syncFullHistory: false,
-      // Ingest RECENT if WhatsApp sends it on reconnect. Never request FULL / on-demand
-      // dumps — those need the phone screen on and retry-spam when it locks.
+      // One history acceptance per linked account. Reconnects decline so the phone
+      // does not raise “syncing with WhatsApp Search” on every socket drop.
       shouldSyncHistoryMessage: (msg) => shouldSyncHistoryMessage(msg, {
-        syncFullHistory: false,
+        syncFullHistory: config.waSyncFullHistory,
+        initialHistorySyncDone: !this._acceptPhoneHistorySync,
       }),
       /**
        * Linked-device label on your phone (Settings → Linked devices).
@@ -837,8 +913,11 @@ export default class WaClient {
         this._setState('SYNCING', 'Loading chat history…');
         // Titles first: publish a named chat list before messages stream in. Deliberately
         // not awaited — history ingestion must not wait on it.
-        void this.hydrateGroupTitlesForUi();
+        if (this._acceptPhoneHistorySync) void this.hydrateGroupTitlesForUi();
         this._historyDone = false;
+        this._avatarEpoch += 1;
+        this._avatarQueue = [];
+        this._avatarQueued = new Set();
         this._historySyncStarted = true;
         this._pendingHistoryRows = 0;
         this._finishSyncRequested = false;
@@ -899,6 +978,18 @@ export default class WaClient {
      * Revokes ("delete for everyone") and in-place edits arrive as messages.update
      * after Baileys unwraps protocolMessage frames.
      */
+    this._sock.ev.on('message-receipt.update', (updates) => {
+      for (const update of updates || []) {
+        const receipt = receiptFromGroupReceipt(update);
+        if (!receipt) continue;
+        try {
+          this._onMessageReceipt?.(receipt);
+        } catch (e) {
+          console.warn('[WA] onMessageReceipt:', e?.message || e);
+        }
+      }
+    });
+
     this._sock.ev.on('messages.update', (updates) => {
       for (const u of updates || []) {
         const key = u?.key;
@@ -906,6 +997,17 @@ export default class WaClient {
         if (!key?.remoteJid || !key?.id) continue;
         const chatJid = String(key.remoteJid);
         const messageId = String(key.id);
+
+        if (update.status != null && key.fromMe) {
+          const receiptStatus = normalizeReceiptStatus(update.status);
+          if (receiptStatus != null) {
+            try {
+              this._onMessageReceipt?.({ chatJid, messageId, receiptStatus });
+            } catch (e) {
+              console.warn('[WA] onMessageReceipt:', e?.message || e);
+            }
+          }
+        }
 
         const stub = update.messageStubType;
         const isRevoke = update.message === null
@@ -1229,9 +1331,133 @@ export default class WaClient {
   }
 
   async _ingestContact(c) {
-    const label = c.name || c.notify || c.verifiedName;
+    await this._noteContactPicture(c);
+    const label = c?.name || c?.notify || c?.verifiedName;
     if (!label) return;
     await this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
+  }
+
+  /**
+   * Picture notifications are the only contact events that carry `imgUrl`.
+   * A normal name update must not clear or refetch photos.
+   */
+  async _noteContactPicture(c) {
+    const action = avatarActionForContact(c);
+    if (action === 'ignore' || !c?.id) return;
+    let jids = [c.id];
+    try {
+      const linked = await this.getLinked1on1Jids(c.id);
+      if (linked?.length) jids = linked;
+    } catch (_) { /* mapping optional */ }
+    if (action === 'clear') {
+      const fetchedAt = Math.floor(Date.now() / 1000);
+      for (const jid of jids) {
+        this._onChatAvatar?.({ chatJid: jid, missing: true, relPath: null, fetchedAt });
+      }
+      return;
+    }
+    this.enqueueAvatarFetches(jids, { force: true });
+  }
+
+  /**
+   * Queue profile-picture lookups. They wait until history sync finishes so they
+   * don't compete with message ingestion. `force` is for a picture-changed event.
+   */
+  enqueueAvatarFetches(jids, { force = false } = {}) {
+    for (const jid of jids || []) {
+      if (!isAvatarEligibleJid(jid)) continue;
+      if (force) {
+        this._avatarQueued.delete(jid);
+        this._avatarQueue = this._avatarQueue.filter((x) => x !== jid);
+      }
+      if (this._avatarQueued.has(jid)) continue;
+      this._avatarQueued.add(jid);
+      if (force) this._avatarQueue.unshift(jid);
+      else this._avatarQueue.push(jid);
+    }
+    if (this._historyDone) void this._drainAvatarQueue();
+  }
+
+  async _profilePicturePreviewUrl(jid) {
+    const sock = this._sock;
+    if (!sock?.profilePictureUrl) return null;
+    try {
+      return await sock.profilePictureUrl(jid, 'preview');
+    } catch (err) {
+      if (profilePictureFailure(err) !== 'missing' || !isLidUser(jid)) throw err;
+      const pn = await sock.signalRepository?.lidMapping?.getPNForLID?.(jid);
+      const pnJid = pn ? jidNormalizedUser(pn) : '';
+      if (!pnJid || pnJid === jid) throw err;
+      return await sock.profilePictureUrl(pnJid, 'preview');
+    }
+  }
+
+  async _fetchAndStoreAvatar(jid) {
+    if (!this._sock?.profilePictureUrl) return;
+    let url;
+    try {
+      url = await this._profilePicturePreviewUrl(jid);
+    } catch (err) {
+      if (profilePictureFailure(err) === 'missing') {
+        await this._publishAvatarResult(jid, { missing: true, relPath: null });
+        return;
+      }
+      throw err;
+    }
+    if (!url || !/^https:\/\//i.test(String(url))) {
+      await this._publishAvatarResult(jid, { missing: true, relPath: null });
+      return;
+    }
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`avatar http ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    const ext = imageExtFromBytes(buf);
+    if (!ext) throw new Error('avatar was not an image');
+    const dir = join(config.dataDir, 'avatars');
+    mkdirSync(dir, { recursive: true });
+    const relPath = avatarFileName(jid, ext);
+    writeFileSync(join(dir, relPath), buf);
+    await this._publishAvatarResult(jid, { missing: false, relPath });
+  }
+
+  /** Store the same file on the LID and phone-number jids that share one chat row. */
+  async _publishAvatarResult(jid, { missing, relPath }) {
+    const fetchedAt = Math.floor(Date.now() / 1000);
+    let jids = [jid];
+    try {
+      const linked = await this.getLinked1on1Jids(jid);
+      if (linked?.length) jids = linked;
+    } catch (_) { /* mapping optional */ }
+    for (const id of jids) {
+      if (id !== jid) {
+        this._avatarQueue = this._avatarQueue.filter((x) => x !== id);
+        this._avatarQueued.add(id);
+      }
+      this._onChatAvatar?.({ chatJid: id, missing, relPath, fetchedAt });
+    }
+  }
+
+  async _drainAvatarQueue() {
+    if (this._avatarDraining || !this._historyDone || !this._sock) return;
+    this._avatarDraining = true;
+    const epoch = this._avatarEpoch;
+    try {
+      while (this._avatarQueue.length && !this._destroyed && epoch === this._avatarEpoch && this._sock) {
+        const jid = this._avatarQueue.shift();
+        try {
+          await this._fetchAndStoreAvatar(jid);
+        } catch (err) {
+          this._avatarQueued.delete(jid);
+          const msg = String(err?.message || err || '');
+          console.warn('[WA] avatar', jid, msg.replace(/https?:\/\/\S+/g, '<url>'));
+          if (!this._sock || epoch !== this._avatarEpoch || /connection closed|timed out/i.test(msg)) break;
+        }
+        if (epoch !== this._avatarEpoch) break;
+        await new Promise((r) => setTimeout(r, WA_DRAIN_GAP_MS));
+      }
+    } finally {
+      this._avatarDraining = false;
+    }
   }
 
   /** Resolve display name from cache (raw JID or Baileys-normalized user id). */
@@ -1456,6 +1682,12 @@ export default class WaClient {
       return;
     }
     this._historyDone = true;
+    this._acceptPhoneHistorySync = false;
+    const cfg = loadCfg(this._configFile);
+    if (!cfg.initialHistorySyncDone) {
+      saveCfg(this._configFile, { ...cfg, initialHistorySyncDone: true });
+      console.log('[WA] Initial history sync recorded — later reconnects will not notify the phone');
+    }
     this._syncByChat.clear();
     console.log(`[WA] Sync complete — ${this._totalMsgs} messages`);
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
@@ -1751,7 +1983,8 @@ export default class WaClient {
         m.stickerMessage?.mimetype ||
         m.documentMessage?.mimetype ||
         'application/octet-stream';
-      const ext = extFromMime(mime);
+      const documentExt = extname(String(m.documentMessage?.fileName || '')).slice(1).toLowerCase();
+      const ext = ['xlsx', 'csv'].includes(documentExt) ? documentExt : extFromMime(mime);
       const dir = join(config.mediaDir, safeJidDir(row.chatJid));
       mkdirSync(dir, { recursive: true });
       const filename = `${row.messageId}.${ext}`;
@@ -1803,7 +2036,7 @@ export default class WaClient {
         } finally {
           if (row.messageId) this._queuedMediaIds.delete(row.messageId);
         }
-        await new Promise((r) => setTimeout(r, 120));
+        await new Promise((r) => setTimeout(r, WA_DRAIN_GAP_MS));
       }
     } finally {
       this._mediaDraining = false;
@@ -1894,6 +2127,7 @@ export default class WaClient {
           (inner.documentMessage?.fileName ? String(inner.documentMessage.fileName).trim() : null) ||
           null,
         timestamp:    Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
+        receiptStatus: msg.key.fromMe ? normalizeReceiptStatus(msg.status) : null,
         contactPayload,
         ...(rxPayload || {}),
       };

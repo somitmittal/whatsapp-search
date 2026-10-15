@@ -1,38 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from '@jest/globals';
-
-/**
- * The sidebar title helpers live in the single inline <script> in public/index.html,
- * which has no module system, so they are extracted by name and evaluated here.
- */
-function loadInlineFunctions(names) {
-  const html = readFileSync(fileURLToPath(new URL('../public/index.html', import.meta.url)), 'utf8');
-  const sources = names.map((name) => {
-    const start = html.indexOf(`function ${name}(`);
-    if (start === -1) throw new Error(`function ${name} not found in public/index.html`);
-    let depth = 0;
-    let seenBody = false;
-    for (let i = start; i < html.length; i += 1) {
-      if (html[i] === '{') { depth += 1; seenBody = true; }
-      else if (html[i] === '}') {
-        depth -= 1;
-        if (seenBody && depth === 0) return html.slice(start, i + 1);
-      }
-    }
-    throw new Error(`unbalanced braces reading ${name}`);
-  });
-  // eslint-disable-next-line no-new-func
-  return new Function(`${sources.join('\n')}\nreturn { ${names.join(', ')} };`)();
-}
-
-const { displayChatTitle, isResolvedChatName } = loadInlineFunctions([
-  'formatPhoneLikeName',
-  'looksLikeLidFallbackContactLabel',
-  'prettyImportedChatTitle',
-  'displayChatTitle',
-  'isResolvedChatName',
-]);
+import { displayChatTitle, isResolvedChatName } from '../public/js/format.js';
 
 describe('isResolvedChatName', () => {
   const pn = '919876543210@s.whatsapp.net';

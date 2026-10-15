@@ -64,6 +64,7 @@ describe('DailySummaryService fact backlog with no summaries left', () => {
       db: {
         // No chats means no unsummarized threads, so the summary queue is empty.
         getChatStats: () => [],
+        listIndexOptInJids: () => ['a@g.us'],
         getPendingFactThreads: () => pending.slice(0, 1),
         getMessagesByTimeRange: () => [{ timestamp: 10, sender: 'A', text: 'invoice due friday' }],
         replaceThreadFacts: () => 1,

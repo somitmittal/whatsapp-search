@@ -1,6 +1,9 @@
 import os from 'os';
 import { readFileSync } from 'fs';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Max share of *available* RAM given to Ollama. The rest stays for macOS, Electron, and apps
@@ -54,18 +57,35 @@ function roundGb(n) {
   return Math.round(n * 10) / 10;
 }
 
+function macAvailableRamFromVmStat(pageSizeOut, vm) {
+  const pageSize = parseInt(String(pageSizeOut).trim(), 10) || 4096;
+  const pages = (label) => {
+    const m = vm.match(new RegExp(`${label}:\\s*(\\d+)`, 'i'));
+    return m ? parseInt(m[1], 10) : 0;
+  };
+  // Free + speculative + purgeable only. Counting all inactive pages treats
+  // reclaimable-but-in-use app memory as headroom and auto-picks 9B models.
+  const availablePages = pages('Pages free') + pages('Pages speculative') + pages('Pages purgeable');
+  return roundGb((availablePages * pageSize) / (1024 ** 3));
+}
+
 export function getMacAvailableRamGb() {
   try {
-    const pageSize = parseInt(execFileSync('sysctl', ['-n', 'hw.pagesize'], { encoding: 'utf8', timeout: 3000 }).trim(), 10) || 4096;
+    const pageSize = execFileSync('sysctl', ['-n', 'hw.pagesize'], { encoding: 'utf8', timeout: 3000 });
     const vm = execFileSync('vm_stat', { encoding: 'utf8', timeout: 3000 });
-    const pages = (label) => {
-      const m = vm.match(new RegExp(`${label}:\\s*(\\d+)`, 'i'));
-      return m ? parseInt(m[1], 10) : 0;
-    };
-    // Free + speculative + purgeable only. Counting all inactive pages treats
-    // reclaimable-but-in-use app memory as headroom and auto-picks 9B models.
-    const availablePages = pages('Pages free') + pages('Pages speculative') + pages('Pages purgeable');
-    return roundGb((availablePages * pageSize) / (1024 ** 3));
+    return macAvailableRamFromVmStat(pageSize, vm);
+  } catch {
+    return null;
+  }
+}
+
+async function getMacAvailableRamGbAsync() {
+  try {
+    const [{ stdout: pageSize }, { stdout: vm }] = await Promise.all([
+      execFileAsync('sysctl', ['-n', 'hw.pagesize'], { encoding: 'utf8', timeout: 3000 }),
+      execFileAsync('vm_stat', { encoding: 'utf8', timeout: 3000 }),
+    ]);
+    return macAvailableRamFromVmStat(pageSize, vm);
   } catch {
     return null;
   }
@@ -82,19 +102,32 @@ export function getLinuxAvailableRamGb() {
   return null;
 }
 
+function memoryPressureFromOutput(out) {
+  if (/critical|policy:\s*1[0-9]\./i.test(out)) return 'critical';
+  if (/warn|policy:\s*[2-4][0-9]\./i.test(out)) return 'warn';
+  const pct = out.match(/memory free percentage:\s*(\d+)%/i)?.[1];
+  if (pct != null) {
+    const n = parseInt(pct, 10);
+    if (n < 15) return 'critical';
+    if (n < 30) return 'warn';
+  }
+  return 'normal';
+}
+
 /** @returns {'normal' | 'warn' | 'critical'} */
 export function getMemoryPressureLevel() {
   if (process.platform !== 'darwin') return 'normal';
   try {
-    const out = execFileSync('memory_pressure', { encoding: 'utf8', timeout: 2500 });
-    if (/critical|policy:\s*1[0-9]\./i.test(out)) return 'critical';
-    if (/warn|policy:\s*[2-4][0-9]\./i.test(out)) return 'warn';
-    const pct = out.match(/memory free percentage:\s*(\d+)%/i)?.[1];
-    if (pct != null) {
-      const n = parseInt(pct, 10);
-      if (n < 15) return 'critical';
-      if (n < 30) return 'warn';
-    }
+    return memoryPressureFromOutput(execFileSync('memory_pressure', { encoding: 'utf8', timeout: 2500 }));
+  } catch { /* ignore */ }
+  return 'normal';
+}
+
+async function getMemoryPressureLevelAsync() {
+  if (process.platform !== 'darwin') return 'normal';
+  try {
+    const { stdout } = await execFileAsync('memory_pressure', { encoding: 'utf8', timeout: 2500 });
+    return memoryPressureFromOutput(stdout);
   } catch { /* ignore */ }
   return 'normal';
 }
@@ -103,10 +136,17 @@ export function getMemoryPressureLevel() {
  * @returns {number} GB
  */
 export function getAvailableRamGb() {
+  return availableRamWithMac(process.platform === 'darwin' ? getMacAvailableRamGb() : null);
+}
+
+async function getAvailableRamGbAsync() {
+  return availableRamWithMac(process.platform === 'darwin' ? await getMacAvailableRamGbAsync() : null);
+}
+
+function availableRamWithMac(mac) {
   const totalGb = os.totalmem() / (1024 ** 3);
 
   if (process.platform === 'darwin') {
-    const mac = getMacAvailableRamGb();
     if (mac != null && mac > 0.5) return mac;
   }
   if (process.platform === 'linux') {
@@ -258,17 +298,24 @@ export function resolveSafeOllamaModel(requestedModel) {
   };
 }
 
+let _gpuPromise;
+/** GPU never changes while the process runs, so probe it once. */
 function detectGpu() {
+  if (!_gpuPromise) _gpuPromise = detectGpuUncached();
+  return _gpuPromise;
+}
+
+async function detectGpuUncached() {
   try {
     if (process.platform === 'darwin') {
-      const out = execFileSync('system_profiler', ['SPDisplaysDataType'], { encoding: 'utf8', timeout: 5000 });
+      const { stdout: out } = await execFileAsync('system_profiler', ['SPDisplaysDataType'], { encoding: 'utf8', timeout: 5000 });
       const chip = out.match(/Chip(?:set)? Model:\s*(.+)/i)?.[1]?.trim();
       const vram = out.match(/VRAM.*?:\s*(\d+)/i)?.[1];
       if (chip) return { name: chip, vramGb: vram ? parseInt(vram, 10) / 1024 : null, type: 'apple' };
     }
     if (process.platform === 'linux') {
       try {
-        const nv = execFileSync('nvidia-smi', [
+        const { stdout: nv } = await execFileAsync('nvidia-smi', [
           '--query-gpu=name,memory.total',
           '--format=csv,noheader,nounits',
         ], { encoding: 'utf8', timeout: 5000 });
@@ -294,12 +341,14 @@ function buildReason(tier, availableRamGb, budgetGb, pressure) {
 export async function getHardwareRecommendation(ollamaProvider) {
   const totalRamGb = roundGb(os.totalmem() / (1024 ** 3));
   const freeRamGb = roundGb(os.freemem() / (1024 ** 3));
-  const availableRamGb = getAvailableRamGb();
-  const pressure = getMemoryPressureLevel();
+  const [availableRamGb, pressure, gpu] = await Promise.all([
+    getAvailableRamGbAsync(),
+    getMemoryPressureLevelAsync(),
+    detectGpu(),
+  ]);
   const budgetGb = computeModelBudgetGb(availableRamGb, pressure);
   const cpuCores = os.cpus().length;
   const cpuModel = os.cpus()[0]?.model || 'Unknown';
-  const gpu = detectGpu();
 
   let localModels = [];
   try {
@@ -354,10 +403,24 @@ export async function getHardwareRecommendation(ollamaProvider) {
   };
 }
 
+let _lastMemoryVerdict = null;
+
 /** Apply memory-safe Ollama settings to env + DB. */
 export function applyOllamaMemorySettings(db, safe) {
   process.env.OLLAMA_NUM_CTX = String(safe.numCtx);
+  _lastMemoryVerdict = safe;
   if (db?.setSetting) {
     db.setSetting('ollama_num_ctx', String(safe.numCtx));
   }
+}
+
+/**
+ * True when the last startup / settings check found this model over the RAM budget or the
+ * Mac under memory pressure. Parallel requests multiply Ollama's KV cache, so callers
+ * should not fan out in that state.
+ */
+export function isOllamaModelMemoryConstrained(modelName) {
+  const v = _lastMemoryVerdict;
+  if (!v || !modelName || v.model !== modelName) return false;
+  return !!v.exceedsBudget || (v.pressure && v.pressure !== 'normal');
 }

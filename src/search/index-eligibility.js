@@ -13,9 +13,13 @@ export function indexRecentCutoffTs(nowTs = Math.floor(Date.now() / 1000)) {
   return Number(nowTs) - (indexRecentWindowDays() * 24 * 60 * 60);
 }
 
+export function indexAutoEnabled() {
+  return Boolean(config.indexAutoEnabled);
+}
+
 /**
- * Auto-index only sizable, recently-active conversations. Status/feeds stay out unless
- * the user opts that chat in — they are noisy and were already deprioritized.
+ * Legacy size/recency auto-index rule. Only applied when `WA_AUTO_INDEX=1`.
+ * Status/feeds stay out unless the user opts that chat in.
  */
 export function isChatEligibleForAutoIndex({
   chatJid,
@@ -28,6 +32,11 @@ export function isChatEligibleForAutoIndex({
   return Number(lastMessageTs) >= indexRecentCutoffTs(nowTs);
 }
 
+/**
+ * A chat is indexed only when the user toggles it on, unless auto-index is enabled.
+ */
 export function isChatEligibleForIndex(chat, { optedIn = false } = {}) {
-  return Boolean(optedIn) || isChatEligibleForAutoIndex(chat);
+  if (optedIn) return true;
+  if (!indexAutoEnabled()) return false;
+  return isChatEligibleForAutoIndex(chat);
 }

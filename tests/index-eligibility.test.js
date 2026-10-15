@@ -16,7 +16,7 @@ describe('index eligibility', () => {
     expect(indexRecentWindowDays()).toBe(10);
   });
 
-  test('requires more than 50 messages and activity inside 10 days', () => {
+  test('requires more than 50 messages and activity inside 10 days for legacy auto-index', () => {
     const chat = {
       chatJid: 'busy@g.us',
       messageCount: 51,
@@ -40,6 +40,16 @@ describe('index eligibility', () => {
     })).toBe(false);
   });
 
+  test('without opt-in, default product mode does not index (even busy recent chats)', () => {
+    const busy = {
+      chatJid: 'busy@g.us',
+      messageCount: 51,
+      lastMessageTs: NOW,
+    };
+    // WA_AUTO_INDEX is off in tests unless the env is set before config load.
+    expect(isChatEligibleForIndex(busy, { optedIn: false })).toBe(false);
+  });
+
   test('an explicit opt-in indexes a small or old chat, including a feed', () => {
     const small = { chatJid: 'quiet@s.whatsapp.net', messageCount: 4, lastMessageTs: NOW };
     expect(isChatEligibleForIndex(small, { optedIn: false })).toBe(false);
@@ -52,7 +62,7 @@ describe('index eligibility', () => {
   });
 });
 
-describe('DailySummaryService respects the auto-index bar', () => {
+describe('DailySummaryService respects opt-in indexing', () => {
   const now = Math.floor(Date.now() / 1000);
   const base = now - 60;
   const messages = [
@@ -94,19 +104,13 @@ describe('DailySummaryService respects the auto-index bar', () => {
     return { service, chatCalls: () => chatCalls };
   }
 
-  test('does not summarize a recent chat that is still at or below 50 messages', async () => {
-    const { service, chatCalls } = makeService({ messageCount: 50, lastMessageTs: now });
+  test('does not summarize when nothing is toggled on', async () => {
+    const { service, chatCalls } = makeService({ messageCount: 51, lastMessageTs: now });
     await service.indexPendingDays();
     expect(chatCalls()).toBe(0);
   });
 
-  test('summarizes once the same chat grows past 50 messages', async () => {
-    const { service, chatCalls } = makeService({ messageCount: 51, lastMessageTs: now });
-    await service.indexPendingDays();
-    expect(chatCalls()).toBeGreaterThan(0);
-  });
-
-  test('summarizes a small chat after an explicit opt-in', async () => {
+  test('summarizes a chat after an explicit opt-in', async () => {
     const { service, chatCalls } = makeService({
       messageCount: 4,
       lastMessageTs: now,

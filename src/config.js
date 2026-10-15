@@ -102,9 +102,9 @@ const config = {
     (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || (onRender ? 'gemini-2.5-flash' : 'llama3.2:3b')).trim(),
 
   /**
-   * Baileys FULL history dump: default `false` for fewer phone “syncing” alerts on connect.
-   * RECENT history on reconnect is always ingested (otherwise chats freeze on the last online day).
-   * Set `WA_SYNC_FULL_HISTORY=true` if you explicitly want the deeper automatic dump.
+   * Baileys history dump. Default `false`: already-linked phones are not asked to sync again,
+   * which is what raises repeated “syncing with WhatsApp Search” notifications.
+   * Set `WA_SYNC_FULL_HISTORY=true` only if you explicitly want a sync on every reconnect.
    */
   waSyncFullHistory: (() => {
     const v = String(process.env.WA_SYNC_FULL_HISTORY ?? '').trim().toLowerCase();
@@ -118,11 +118,18 @@ const config = {
   /** Live chats active within this user-selected window form the first post-sync indexing queue. */
   liveRecentWindowDays: 5,
   /**
-   * Auto-index only chats above this size whose latest message is inside `indexRecentWindowDays`.
-   * Smaller or older chats stay unindexed until they grow, or the user opts them in.
+   * Legacy auto-index bar (only used when `indexAutoEnabled` is on).
+   * Default product behavior is opt-in only — see `indexAutoEnabled`.
    */
   indexMinMessageCount: 50,
   indexRecentWindowDays: 10,
+  /**
+   * When false (default), AI indexing runs only for chats the user toggles on.
+   * Set `WA_AUTO_INDEX=1` to restore size/recency auto-index for busy recent chats.
+   */
+  indexAutoEnabled: ['1', 'true', 'yes'].includes(
+    String(process.env.WA_AUTO_INDEX ?? '').trim().toLowerCase(),
+  ),
   /**
    * If true, after each READY we auto-run `resyncAppState` + phone-book refresh (heavy; extra sync traffic/notifications).
    * Default false — use Settings → “Refresh contact names” or `POST /api/wa/sync-contacts` when you want names updated.

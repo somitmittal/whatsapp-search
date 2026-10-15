@@ -183,12 +183,14 @@ export default class OllamaProvider {
       this._pullController.abort();
       this._pullController = null;
     }
+    // Allow an immediate retry after the user stops a download.
+    this._lastPullAttempt = 0;
     if (this.pullStatus?.status === 'downloading') {
       this.pullStatus = {
         model: this.pullStatus.model,
         status: 'cancelled',
         percent: this.pullStatus.percent || 0,
-        detail: 'Download cancelled',
+        detail: 'Download cancelled — you can download again anytime',
       };
     }
   }

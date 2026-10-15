@@ -2,14 +2,11 @@
  * Baileys `makeWASocket` replaces `shouldSyncHistoryMessage` with
  * `() => !!syncFullHistory` when the caller leaves it undefined.
  *
- * `syncFullHistory: false` is meant to skip the heavy FULL dump (phone “syncing”
- * alerts). WhatsApp still sends RECENT history on reconnect — that is how a
- * linked device catches up on messages that arrived while it was offline.
- * If we skip RECENT too, the archive freezes on the last day the socket was up.
- *
- * A gap after the app was down is repaired with **one** FULL_HISTORY_SYNC_ON_DEMAND
- * for the last few days (groups included). Never fan out per-chat PDO requests —
- * that is what floods “syncing with WhatsApp Search stopped” on the phone.
+ * Accepting history also makes Baileys run a full app-state resync. WhatsApp
+ * shows that on the phone as “syncing with WhatsApp Search”. Do it once per
+ * linked account. Later reconnects must decline, or every dropped socket
+ * raises another notification. Messages that arrive while the app is offline
+ * still come through `messages.upsert`.
  */
 
 /** proto.HistorySync.HistorySyncType.FULL */
@@ -20,14 +17,12 @@ export const RECENT_DAYS_CATCHUP_COOLDOWN_SEC = 6 * 3600;
 export const STALE_CHAT_MAX_AGE_SEC = 36 * 3600;
 export const MIN_STALE_CHATS_FOR_CATCHUP = 5;
 
-export function shouldSyncHistoryMessage(historyMsg, { syncFullHistory = false } = {}) {
-  const t = historyMsg?.syncType;
-  // Accept FULL as well as RECENT. Dropping FULL left the phone retrying the same
-  // blob on every reconnect (repeated “syncing” alerts) and the Mac never stored it.
-  // Callers keep only a recent window of that blob; we never issue extra on-demand pulls.
-  if (t === HISTORY_SYNC_TYPE_FULL || t === 'FULL') return true;
+export function shouldSyncHistoryMessage(_historyMsg, {
+  syncFullHistory = false,
+  initialHistorySyncDone = false,
+} = {}) {
   if (syncFullHistory) return true;
-  return true;
+  return !initialHistorySyncDone;
 }
 
 /**

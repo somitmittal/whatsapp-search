@@ -290,10 +290,10 @@ function rebuildMessagesTable(db) {
       VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
     END;
     CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
-      INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
+      INSERT INTO messages_fts(messages_fts, rowid, text, sender, chat_name, media_caption, media_ai_index) VALUES('delete', old.id, old.text, old.sender, old.chat_name, old.media_caption, old.media_ai_index);
     END;
-    CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
-      INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
+    CREATE TRIGGER messages_au AFTER UPDATE OF text, sender, chat_name, media_caption, media_ai_index ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, text, sender, chat_name, media_caption, media_ai_index) VALUES('delete', old.id, old.text, old.sender, old.chat_name, old.media_caption, old.media_ai_index);
       INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption, media_ai_index)
       VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
     END;

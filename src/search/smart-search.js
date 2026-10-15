@@ -120,6 +120,7 @@ export default class SmartSearch {
   }
 
   setProvider(provider) { this._provider = provider; }
+  getProvider() { return this._provider; }
 
   _archiveBounds(chatJid = null) {
     try {

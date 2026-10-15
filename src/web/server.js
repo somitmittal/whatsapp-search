@@ -1,6 +1,6 @@
 import { parse } from 'cookie';
 import cookieParser from 'cookie-parser';
-import { existsSync, mkdirSync, renameSync, realpathSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, realpathSync, unlinkSync } from 'fs';
 import { createServer } from 'http';
 import { createRequire } from 'module';
 import { randomBytes } from 'node:crypto';
@@ -29,13 +29,16 @@ import {
   resolveCatchupUnseen,
   shouldShowGroupCatchup,
 } from '../whatsapp/unread-tracker.js';
+import { isSafeAvatarFileName, jidsNeedingAvatars } from '../whatsapp/chat-avatars.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
 import {
+  CONSTRUCTION_EXPENSE_AGENT_SETTING,
   detectSmbLibraryMismatch,
   getSearchPrompts,
   getSmbProfileFromDb,
+  isConstructionExpenseAgentEnabled,
   listSmbProfileOptions,
   resolveSmbProfile,
   SMB_BUSINESS_NAME_SETTING,
@@ -164,6 +167,7 @@ export default class WebServer {
     mediaIndexService,
     embeddingIndexService,
     actionItemService,
+    expenseReconciliationService,
     reloadMediaIndexProvider,
   }) {
     this.db = db;
@@ -172,6 +176,7 @@ export default class WebServer {
     this._mediaIndexService = mediaIndexService || null;
     this._embeddingIndexService = embeddingIndexService || null;
     this._actionItemService = actionItemService || null;
+    this._expenseReconciliationService = expenseReconciliationService || null;
     this._smbInbox = new SmbInboxService(db);
     this._appointmentBoard = new AppointmentBoardService(db);
     this._wabaIngest = new WabaIngestService({
@@ -400,6 +405,21 @@ export default class WebServer {
     return st.waQrDataUrl;
   }
 
+  /**
+   * Ask WhatsApp for profile and group pictures we have not stored yet.
+   * Pass `jids` for a few new chats; omit it to walk the sidebar newest-first.
+   */
+  _enqueueChatAvatars(tid, waClient, jids) {
+    if (!waClient?.enqueueAvatarFetches) return;
+    runWithTenant(tid, () => {
+      const ordered = Array.isArray(jids) && jids.length
+        ? jids
+        : this.db.listChatJidsByRecency();
+      const need = jidsNeedingAvatars(ordered, this.db.listChatAvatarJids());
+      if (need.length) waClient.enqueueAvatarFetches(need);
+    });
+  }
+
   _runWaHistoryCompleteHooks(tid, waClient) {
     const st = this._getTenantState(tid);
     if (st.waHistoryHooksDone) return;
@@ -407,17 +427,10 @@ export default class WebServer {
     this._getCachedTotalStats(tid, { force: true });
     // Never auto-request phone history here. Linked-device dumps need the phone awake;
     // locking the screen aborts them and WhatsApp retries with “syncing stopped” alerts.
-    // The ingestion gate is now open. Start text/thread indexing first; media indexing
-    // remains self-gated until summaries report that both source queues have caught up.
-    void runWithTenant(tid, async () => {
-      try {
-        await this.summaryService?.indexPendingDays?.();
-      } catch (e) {
-        console.warn('[WA] post-history summary indexing:', e.message);
-      }
-    });
-    this._mediaIndexService?.scheduleProcess?.();
-    this._embeddingIndexService?.scheduleProcess?.();
+    // AI indexing is opt-in only (per-chat toggle). Do not kick off summaries/media/embeddings
+    // here — that used to hammer the LLM after every history sync.
+    // Newest chats first. The client holds the queue until history sync has finished.
+    this._enqueueChatAvatars(tid, waClient);
     if (waClient?.syncResolvedNamesToDb) {
       setTimeout(() => {
         void runWithTenant(tid, async () => {
@@ -460,6 +473,10 @@ export default class WebServer {
   isTenantWaLive(tenantId) {
     const st = this._getTenantState(tenantId);
     return st.waState === 'READY' || st.waState === 'SYNCING';
+  }
+
+  getTenantWaClient(tenantId) {
+    return this._getTenantState(tenantId).waClient || null;
   }
 
   /** True only while WhatsApp is actually delivering history — see `isWaIngestionActive`. */
@@ -679,6 +696,7 @@ export default class WebServer {
 
         if (state === 'QR_READY' || state === 'DISCONNECTED' || state === 'LOADING') {
           st.waHistoryHooksDone = false;
+          st.contactSyncAutoDone = false;
         }
         if (state !== 'QR_READY') {
           // The cached QR belongs to the socket that just left the pairing screen.
@@ -686,6 +704,7 @@ export default class WebServer {
         }
         if (state === 'READY') {
           st.extensionConnected = true;
+          runWithTenant(tid, () => this._expenseReconciliationService?.recoverPending?.(tid));
         }
         const stats = this._getCachedTotalStats(tid);
         this._broadcast({ type: 'wa-status', data: { state, message, stats } }, tid);
@@ -705,6 +724,11 @@ export default class WebServer {
               console.warn('[WA] chat roster upsert:', e.message);
             }
           });
+          // During the initial history sync, picture queries wait. After that, a new
+          // chat still needs its photo.
+          if (!waClient.isInitialHistorySync) {
+            this._enqueueChatAvatars(tid, waClient, preview.map((p) => p.chatJid));
+          }
           this._broadcast({ type: 'sync-chats-preview', data: { chats: preview } }, tid);
         }
       },
@@ -764,6 +788,9 @@ export default class WebServer {
             this._mediaIndexService?.scheduleProcess?.();
             this._embeddingIndexService?.scheduleProcess?.();
             this._actionItemService?.enqueueByMessageIds(insertedMessageIds);
+            for (const messageId of insertedMessageIds) {
+              this._expenseReconciliationService?.enqueueMessage?.(messageId, tid);
+            }
           }
         });
       },
@@ -785,6 +812,7 @@ export default class WebServer {
           );
           this._mediaIndexService?.scheduleProcess?.();
           this._embeddingIndexService?.scheduleProcess?.();
+          this._expenseReconciliationService?.enqueueMessage?.(messageId, tid);
         });
       },
       onReaction: (payload) => {
@@ -812,6 +840,29 @@ export default class WebServer {
               tid,
             );
           }
+        });
+      },
+      onChatAvatar: (payload) => {
+        if (!payload?.chatJid) return;
+        runWithTenant(tid, () => {
+          const saved = this.db.setChatAvatar(payload.chatJid, payload);
+          if (!saved) return;
+          if (payload.missing && saved.previousRelPath
+            && isSafeAvatarFileName(saved.previousRelPath)
+            && !this.db.avatarRelPathInUse(saved.previousRelPath)) {
+            try { unlinkSync(join(config.dataDir, 'avatars', saved.previousRelPath)); } catch (_) { /* already gone */ }
+          }
+          this._broadcast({
+            type: 'chat-avatar',
+            data: { chatJid: saved.chatJid, hasAvatar: saved.hasAvatar, avatarRev: saved.avatarRev },
+          }, tid);
+        });
+      },
+      onMessageReceipt: ({ chatJid, messageId, receiptStatus }) => {
+        runWithTenant(tid, () => {
+          const saved = this.db.updateMessageReceipt(chatJid, messageId, receiptStatus);
+          if (!saved || saved.unchanged) return;
+          this._broadcast({ type: 'message-receipt', data: saved }, tid);
         });
       },
       onMessageRevoked: ({ chatJid, messageId }) => {
@@ -1295,6 +1346,26 @@ export default class WebServer {
       }
     });
 
+    this._app.get('/api/chats/:chatJid/avatar', (req, res) => {
+      try {
+        const chatJid = decodeURIComponent(req.params.chatJid || '');
+        const info = this.db.getChatAvatarInfo(chatJid);
+        if (!info) return res.status(404).end();
+        const file = join(config.dataDir, 'avatars', info.relPath);
+        if (!existsSync(file)) return res.status(404).end();
+        // URLs carry ?v=<fetched_at>; a matching version never changes content, so the
+        // browser can skip revalidation. Stale or missing versions must revalidate.
+        const versioned = String(req.query.v ?? '') === String(info.avatarRev);
+        res.setHeader('Cache-Control', versioned ? 'private, max-age=31536000, immutable' : 'private, no-cache');
+        res.type(contentTypeForMediaFile(file));
+        return res.sendFile(file, (err) => {
+          if (err && !res.headersSent) res.status(404).end();
+        });
+      } catch {
+        return res.status(404).end();
+      }
+    });
+
     this._app.get('/api/chats/:chatJid/action-items', (req, res) => {
       try {
         const chatJid = decodeURIComponent(req.params.chatJid);
@@ -1746,7 +1817,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     });
 
     /** Re-fetch WhatsApp app state (contact / phone book names) and update indexed chat titles. */
-    this._app.post('/api/wa/sync-contacts', async (_req, res) => {
+    this._app.post('/api/wa/sync-contacts', async (req, res) => {
       const tid = getCurrentTenantId();
       const st = this._getTenantState(tid);
       if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
@@ -1754,9 +1825,22 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       if (typeof st.waClient.refreshPhoneBookNamesInDb !== 'function') {
         return res.status(503).json({ error: 'Contact sync not available' });
       }
+      // Page-load refreshes (every tab / reload) run once per WhatsApp connection;
+      // the Settings button always runs. Concurrent callers share one in-flight sync.
+      const auto = req.body?.auto === true;
+      if (auto && st.contactSyncAutoDone && !st.contactSyncPromise) {
+        return res.json({ ok: true, rowsUpdated: 0, skipped: true });
+      }
+      if (auto) st.contactSyncAutoDone = true;
       try {
-        const rowsUpdated = await st.waClient.refreshPhoneBookNamesInDb(this.db);
-        this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats(), rowsUpdated } }, tid);
+        if (!st.contactSyncPromise) {
+          st.contactSyncPromise = runWithTenant(tid, async () => {
+            const rowsUpdated = await st.waClient.refreshPhoneBookNamesInDb(this.db);
+            this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats(), rowsUpdated } }, tid);
+            return rowsUpdated;
+          }).finally(() => { st.contactSyncPromise = null; });
+        }
+        const rowsUpdated = await st.contactSyncPromise;
         res.json({ ok: true, rowsUpdated });
       } catch (err) {
         res.status(500).json({ error: err.message });
@@ -2203,6 +2287,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         profile: profile.id,
         businessName: (this.db.getSetting(SMB_BUSINESS_NAME_SETTING) || '').trim(),
         prompts: getSearchPrompts(profile),
+        expenseAgentEnabled: isConstructionExpenseAgentEnabled(this.db),
         dataMismatch: mismatch.mismatch,
         mismatchReason: mismatch.reason || '',
       });
@@ -2218,6 +2303,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         if (Object.prototype.hasOwnProperty.call(req.body || {}, 'businessName')) {
           this.db.setSetting(SMB_BUSINESS_NAME_SETTING, String(businessName || '').trim());
         }
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'expenseAgentEnabled')) {
+          this.db.setSetting(CONSTRUCTION_EXPENSE_AGENT_SETTING, req.body.expenseAgentEnabled ? '1' : '0');
+        }
         const current = getSmbProfileFromDb(this.db);
         const mismatch = detectSmbLibraryMismatch(this.db);
         return res.json({
@@ -2225,6 +2313,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           profile: current.id,
           businessName: (this.db.getSetting(SMB_BUSINESS_NAME_SETTING) || '').trim(),
           prompts: getSearchPrompts(current),
+          expenseAgentEnabled: isConstructionExpenseAgentEnabled(this.db),
           dataMismatch: mismatch.mismatch,
           mismatchReason: mismatch.reason || '',
         });
@@ -2251,6 +2340,73 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         res.json(this._appointmentBoard.getBoard());
       } catch (err) {
         res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/expenses/runs', (req, res) => {
+      try {
+        res.json({
+          runs: this.db.listExpenseReconciliationRuns({
+            chatJid: req.query?.chatJid ? String(req.query.chatJid) : null,
+            status: req.query?.status ? String(req.query.status) : null,
+          }),
+        });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/expenses/runs/:id', (req, res) => {
+      try {
+        const run = this.db.getExpenseReconciliationRun(req.params.id);
+        if (!run) return res.status(404).json({ error: 'Expense reconciliation run not found' });
+        return res.json(run);
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/expenses/runs/:id/report', (req, res) => {
+      try {
+        const run = this.db.getExpenseReconciliationRun(req.params.id);
+        if (!run) return res.status(404).json({ error: 'Expense reconciliation run not found' });
+        if (!run.reportPath || !existsSync(run.reportPath)) {
+          return res.status(404).json({ error: 'Expense report is not available' });
+        }
+        const reportsRoot = resolve(config.dataDir, 'expense-reports');
+        const reportPath = resolve(run.reportPath);
+        if (relative(reportsRoot, reportPath).startsWith('..')) {
+          return res.status(403).json({ error: 'Invalid report path' });
+        }
+        return res.download(reportPath, basename(reportPath));
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/expenses/runs/:id/retry', (req, res) => {
+      if (!this._expenseReconciliationService) {
+        return res.status(503).json({ error: 'Expense reconciliation is unavailable' });
+      }
+      try {
+        const tenantId = getCurrentTenantId();
+        const queued = this._expenseReconciliationService.retryRun(req.params.id, tenantId);
+        void Promise.resolve(queued).catch((err) => console.warn('[Expenses] retry:', err.message));
+        return res.status(202).json({ ok: true, status: 'queued' });
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/expenses/discrepancies/:id/resolve', (req, res) => {
+      try {
+        const resolution = String(req.body?.resolution || '').trim();
+        if (!resolution) return res.status(400).json({ error: 'resolution required' });
+        const updated = this.db.resolveExpenseDiscrepancy(req.params.id, resolution);
+        if (!updated) return res.status(404).json({ error: 'Discrepancy not found' });
+        return res.json({ ok: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
       }
     });
 
@@ -2317,7 +2473,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
     this._app.post('/api/settings', async (req, res) => {
       try {
-        const { provider, apiKey, model } = req.body;
+        const { provider, apiKey, model, confirmPull } = req.body;
 
         if (provider) this.db.setSetting('llm_provider', provider);
         if (Object.prototype.hasOwnProperty.call(req.body, 'apiKey')) {
@@ -2344,7 +2500,10 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
         const instance = await createProvider(p, k, m || undefined);
         if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
-        const healthy = await instance.checkHealth(p === 'ollama' ? { forcePull: true } : undefined);
+        // Never pull on save unless the UI sent an explicit confirmPull (user confirmed download).
+        const healthy = await instance.checkHealth(
+          p === 'ollama' && confirmPull === true ? { forcePull: true } : undefined,
+        );
         const pulling = !healthy && instance.pullStatus?.status === 'downloading';
 
         this.searchEngine.setProvider(instance);
@@ -2376,7 +2535,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
     this._app.post('/api/settings/summary-provider', async (req, res) => {
       try {
-        const { provider, apiKey, model } = req.body;
+        const { provider, apiKey, model, confirmPull } = req.body;
 
         if (provider === 'same') {
           this.db.setSetting('summary_provider', 'same');
@@ -2411,7 +2570,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
         const instance = await createIndexingSummaryProvider(createProvider, sp, sk, sm || undefined);
         if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
-        const healthy = await instance.checkHealth(sp === 'ollama' ? { forcePull: true } : undefined);
+        const healthy = await instance.checkHealth(
+          sp === 'ollama' && confirmPull === true ? { forcePull: true } : undefined,
+        );
         const pulling = !healthy && instance.pullStatus?.status === 'downloading';
 
         this.summaryService.setProvider(instance);
@@ -2523,7 +2684,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         if (!canSpawnLocalOllama()) {
           return res.status(400).json({ error: localOllamaUnsupportedReason() });
         }
-        const { model } = req.body;
+        const { model, confirmPull } = req.body;
         const rec = await getHardwareRecommendation(this.searchEngine?._provider);
         const chosen = model || rec.recommended?.model;
         const safe = resolveSafeOllamaModel(chosen);
@@ -2539,8 +2700,10 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const instance = await createProvider('ollama', '', safe.model);
         if (typeof instance.resetHealthCache === 'function') instance.resetHealthCache();
 
-        // Fire health check — this starts Ollama + triggers background pull if needed.
-        const healthPromise = instance.checkHealth({ forcePull: true });
+        // Download only after explicit user confirmation (confirmPull).
+        const healthPromise = instance.checkHealth(
+          confirmPull === true ? { forcePull: true } : undefined,
+        );
 
         this.searchEngine.setProvider(instance);
         await this._reloadMediaIndexProvider?.();
@@ -2757,29 +2920,14 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       }
     });
 
-    /** Persist an explicit request to index a chat that fails the auto-index size/recency gate. */
+    /** Persist an explicit request to index a chat (legacy alias for enable). */
     this._app.post('/api/summaries/opt-in-chat', (req, res) => {
-      try {
-        const chatJid = String(req.body?.chatJid ?? '').trim();
-        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
-        const tid = getCurrentTenantId();
-        this.db.optInChatForIndex(chatJid);
-        this.summaryService.setPriorityChatForTenant(tid, chatJid);
-        this._mediaIndexService?.notePriorityChange?.();
-        this._embeddingIndexService?.notePriorityChange?.();
-        void runWithTenant(tid, async () => {
-          try {
-            await this.summaryService.indexPendingDays();
-            await this._embeddingIndexService?.processPending?.(12);
-          } catch (err) {
-            console.error('[summaries/opt-in-chat]', err.message);
-          }
-        });
-        return res.json({ ok: true, chatJid, optedIn: true });
-      } catch (err) {
-        return res.status(500).json({ error: err.message });
-      }
+      req.body = { ...(req.body || {}), enabled: true };
+      return this._handleIndexToggle(req, res);
     });
+
+    /** Toggle AI/search indexing for one chat. Body: { chatJid, enabled }. */
+    this._app.post('/api/summaries/index-toggle', (req, res) => this._handleIndexToggle(req, res));
 
     this._app.post('/api/summaries/regenerate', async (_req, res) => {
       try {
@@ -2905,6 +3053,46 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
   _sendTo(ws, msg) {
     if (ws.readyState === 1) ws.send(JSON.stringify(msg));
+  }
+
+  /**
+   * Enable/disable AI indexing for one chat. When enabled, starts indexing immediately.
+   * Body: { chatJid, enabled }.
+   */
+  _handleIndexToggle(req, res) {
+    try {
+      const chatJid = String(req.body?.chatJid ?? '').trim();
+      if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+      const enabled = req.body?.enabled !== false && req.body?.enabled !== 'false' && req.body?.enabled !== 0;
+      const tid = getCurrentTenantId();
+      this.db.setChatIndexEnabled(chatJid, enabled);
+      if (enabled) {
+        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this._mediaIndexService?.notePriorityChange?.();
+        this._embeddingIndexService?.notePriorityChange?.();
+        void runWithTenant(tid, async () => {
+          try {
+            await this.summaryService.indexPendingDays();
+            this._mediaIndexService?.scheduleProcess?.();
+            await this._embeddingIndexService?.processPending?.(12);
+          } catch (err) {
+            console.error('[summaries/index-toggle]', err.message);
+          }
+        });
+      }
+      runWithTenant(tid, () => {
+        this._broadcast(
+          {
+            type: 'index-toggle',
+            data: { chatJid, enabled, stats: this._getCachedTotalStats(tid, { force: true }) },
+          },
+          tid,
+        );
+      });
+      return res.json({ ok: true, chatJid, enabled, optedIn: enabled });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
   }
 
   /**

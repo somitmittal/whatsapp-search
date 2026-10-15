@@ -15,6 +15,8 @@ import {
 import { LEGACY_TENANT_ID } from './tenant-constants.js';
 import { decryptName, deriveTenantContactKey, encryptName, hashPhone, normalizePhone } from '../privacy/contact-directory.js';
 import { groupStatusBroadcastRows } from '../status/status-feed.js';
+import { isSafeAvatarFileName } from '../whatsapp/chat-avatars.js';
+import { chatListPreview, higherReceipt, normalizeReceiptStatus } from '../whatsapp/message-receipt.js';
 import { STATUS_BROADCAST_JID, isImportedChatJid, sidebarTabForJid } from '../whatsapp/jid-filters.js';
 import { legacyControlFramePlaceholders } from '../whatsapp/message-content.js';
 import {
@@ -66,6 +68,44 @@ export default class Database {
     this._migrateOllamaCloudModelSettings();
     this._ensureMessageEmbeddingsTable();
     this._ensureThreadFactsStatusColumn();
+    this._ensureExpenseReconciliationTables();
+    this._ensureMessagesFtsUpdateTriggerScoped();
+  }
+
+  /**
+   * Reindex a message in FTS only when an indexed column changes. Receipt, media-path and
+   * index-status updates otherwise delete + reinsert the FTS row on every write.
+   *
+   * External-content FTS5 needs the *old column values* on 'delete' to remove their tokens;
+   * the earlier triggers passed only the rowid, leaving stale tokens behind. Rebuild once so
+   * the index matches `messages` before the corrected triggers take over.
+   * Runs last because earlier migrations (re)create the unscoped trigger.
+   */
+  _ensureMessagesFtsUpdateTriggerScoped() {
+    const row = this._db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='messages_au'",
+    ).get();
+    if (!row?.sql || /AFTER\s+UPDATE\s+OF/i.test(row.sql)) return;
+    const migrate = this._db.transaction(() => {
+      this._db.exec(`
+        DROP TRIGGER IF EXISTS messages_au;
+        DROP TRIGGER IF EXISTS messages_ad;
+        CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, text, sender, chat_name, media_caption, media_ai_index)
+          VALUES ('delete', old.id, old.text, old.sender, old.chat_name, old.media_caption, old.media_ai_index);
+        END;
+        CREATE TRIGGER messages_au
+        AFTER UPDATE OF text, sender, chat_name, media_caption, media_ai_index ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, text, sender, chat_name, media_caption, media_ai_index)
+          VALUES ('delete', old.id, old.text, old.sender, old.chat_name, old.media_caption, old.media_ai_index);
+          INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption, media_ai_index)
+          VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
+        END;
+      `);
+      this._db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
+    });
+    migrate();
+    console.log('[DB] messages_fts triggers scoped to indexed columns; index rebuilt');
   }
 
   _ensureMessageEmbeddingsTable() {
@@ -89,6 +129,72 @@ export default class Database {
     if (!cols.some((c) => c.name === 'facts_status')) {
       this._db.exec(`ALTER TABLE thread_summaries ADD COLUMN facts_status TEXT`);
     }
+  }
+
+  _ensureExpenseReconciliationTables() {
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS expense_reconciliation_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        chat_jid TEXT NOT NULL,
+        chat_name TEXT,
+        source_message_id TEXT NOT NULL,
+        source_file_name TEXT,
+        source_media_path TEXT,
+        business_date TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        report_path TEXT,
+        report_message_id TEXT,
+        totals_json TEXT,
+        error TEXT,
+        created_at INTEGER DEFAULT (unixepoch()),
+        updated_at INTEGER DEFAULT (unixepoch()),
+        UNIQUE(tenant_id, source_message_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_expense_runs_tenant_created
+        ON expense_reconciliation_runs(tenant_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_expense_runs_tenant_chat
+        ON expense_reconciliation_runs(tenant_id, chat_jid, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS expense_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        run_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        source_message_id TEXT,
+        sheet_row INTEGER,
+        date TEXT,
+        amount_minor INTEGER NOT NULL,
+        currency TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        payee TEXT,
+        category TEXT,
+        description TEXT,
+        reference TEXT,
+        raw_json TEXT,
+        FOREIGN KEY(run_id) REFERENCES expense_reconciliation_runs(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_expense_entries_tenant_run
+        ON expense_entries(tenant_id, run_id);
+
+      CREATE TABLE IF NOT EXISTS expense_discrepancies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        run_id INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        chat_entry_id INTEGER,
+        sheet_entry_id INTEGER,
+        detail TEXT,
+        resolution TEXT,
+        resolved_at INTEGER,
+        created_at INTEGER DEFAULT (unixepoch()),
+        FOREIGN KEY(run_id) REFERENCES expense_reconciliation_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(chat_entry_id) REFERENCES expense_entries(id) ON DELETE SET NULL,
+        FOREIGN KEY(sheet_entry_id) REFERENCES expense_entries(id) ON DELETE SET NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_expense_discrepancies_tenant_run
+        ON expense_discrepancies(tenant_id, run_id);
+    `);
   }
 
   /**
@@ -201,10 +307,10 @@ export default class Database {
         VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
       END;
       CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-        INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
+        INSERT INTO messages_fts(messages_fts, rowid, text, sender, chat_name, media_caption, media_ai_index) VALUES('delete', old.id, old.text, old.sender, old.chat_name, old.media_caption, old.media_ai_index);
       END;
-      CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
-        INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
+      CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text, sender, chat_name, media_caption, media_ai_index ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid, text, sender, chat_name, media_caption, media_ai_index) VALUES('delete', old.id, old.text, old.sender, old.chat_name, old.media_caption, old.media_ai_index);
         INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption, media_ai_index)
         VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
       END;
@@ -273,11 +379,13 @@ export default class Database {
     this._migrateActionSuggestionsColumn();
     this._migrateReactionsJsonAndDedupe();
     this._migrateContactPayloadColumn();
+    this._migrateReceiptStatusColumn();
     this._migrateChatImportTouches();
     this._migrateChatRoster();
     this._migrateIndexOptIn();
     this._migrateChatUnread();
     this._migrateChatCatchup();
+    this._migrateChatAvatars();
     this._rebuildFtsIfEmpty();
   }
 
@@ -385,6 +493,27 @@ export default class Database {
    * moves when the user closes the "while you were away" card — so reopening a busy
    * chat still shows the summary until they dismiss it.
    */
+  /**
+   * Local profile / group pictures. `missing` remembers a chat with no photo so a
+   * reconnect does not query WhatsApp again. `rel_path` is a file name, never a directory.
+   */
+  _migrateChatAvatars() {
+    try {
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS chat_avatars (
+          tenant_id TEXT NOT NULL,
+          chat_jid TEXT NOT NULL,
+          rel_path TEXT,
+          missing INTEGER NOT NULL DEFAULT 0,
+          fetched_at INTEGER DEFAULT (unixepoch()),
+          PRIMARY KEY (tenant_id, chat_jid)
+        );
+      `);
+    } catch (e) {
+      console.warn('[DB] chat_avatars:', e.message);
+    }
+  }
+
   _migrateChatCatchup() {
     try {
       this._db.exec(`
@@ -412,6 +541,21 @@ export default class Database {
     return true;
   }
 
+  optOutChatForIndex(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return false;
+    const t = getCurrentTenantId();
+    this._db.prepare(
+      'DELETE FROM index_opt_in WHERE tenant_id = ? AND chat_jid = ?',
+    ).run(t, jid);
+    return true;
+  }
+
+  /** @returns {boolean} whether the chat is now opted in */
+  setChatIndexEnabled(chatJid, enabled) {
+    return enabled ? this.optInChatForIndex(chatJid) : this.optOutChatForIndex(chatJid);
+  }
+
   listIndexOptInJids() {
     const t = getCurrentTenantId();
     return this._db.prepare(
@@ -420,15 +564,22 @@ export default class Database {
   }
 
   /**
-   * Restrict pending AI jobs to auto-eligible chats, plus any the user opted in.
-   * `activityAlias` must expose `msg_count` and `chat_last_ts`.
+   * Restrict pending AI jobs to chats the user toggled on (plus legacy auto-index when enabled).
+   * `activityAlias` must expose `msg_count` and `chat_last_ts` when auto-index is on.
    * @returns {{ sql: string, args: Array<number|string> }}
    */
   _indexEligibilitySql(chatJidExpr, activityAlias = 'a') {
+    const t = getCurrentTenantId();
+    const optedIn = `EXISTS (
+      SELECT 1 FROM index_opt_in o
+      WHERE o.tenant_id = ? AND o.chat_jid = ${chatJidExpr}
+    )`;
+    if (!config.indexAutoEnabled) {
+      return { sql: `(${optedIn})`, args: [t] };
+    }
     const min = Number(config.indexMinMessageCount) || 0;
     const cutoff = Math.floor(Date.now() / 1000)
       - ((Number(config.indexRecentWindowDays) || 0) * 24 * 60 * 60);
-    const t = getCurrentTenantId();
     const sql = `(
       (
         ${activityAlias}.msg_count > ?
@@ -437,10 +588,7 @@ export default class Database {
         AND ${chatJidExpr} NOT LIKE '%@newsletter'
         AND ${chatJidExpr} NOT LIKE '%@bot'
       )
-      OR EXISTS (
-        SELECT 1 FROM index_opt_in o
-        WHERE o.tenant_id = ? AND o.chat_jid = ${chatJidExpr}
-      )
+      OR ${optedIn}
     )`;
     return { sql, args: [min, cutoff, t] };
   }
@@ -507,6 +655,17 @@ export default class Database {
       `);
     } catch (e) {
       console.warn('[DB] idx_messages_tenant_chat_ts:', e.message);
+    }
+  }
+
+  _migrateReceiptStatusColumn() {
+    try {
+      const cols = this._db.prepare('PRAGMA table_info(messages)').all();
+      if (!cols.some((c) => c.name === 'receipt_status')) {
+        this._db.exec('ALTER TABLE messages ADD COLUMN receipt_status INTEGER');
+      }
+    } catch (e) {
+      console.warn('[DB] receipt_status:', e.message);
     }
   }
 
@@ -815,10 +974,10 @@ export default class Database {
         VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
       END;
       CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
-        INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
+        INSERT INTO messages_fts(messages_fts, rowid, text, sender, chat_name, media_caption, media_ai_index) VALUES('delete', old.id, old.text, old.sender, old.chat_name, old.media_caption, old.media_ai_index);
       END;
-      CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
-        INSERT INTO messages_fts(messages_fts, rowid) VALUES('delete', old.id);
+      CREATE TRIGGER messages_au AFTER UPDATE OF text, sender, chat_name, media_caption, media_ai_index ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid, text, sender, chat_name, media_caption, media_ai_index) VALUES('delete', old.id, old.text, old.sender, old.chat_name, old.media_caption, old.media_ai_index);
         INSERT INTO messages_fts(rowid, text, sender, chat_name, media_caption, media_ai_index)
         VALUES (new.id, new.text, new.sender, new.chat_name, new.media_caption, new.media_ai_index);
       END;
@@ -880,10 +1039,12 @@ export default class Database {
     this._stmtInsertMessage = this._db.prepare(`
       INSERT OR IGNORE INTO messages (
         tenant_id, message_id, chat_jid, chat_name, sender, sender_jid,
-        text, media_type, media_path, media_caption, media_ai_index, timestamp, reactions_json, contact_payload
+        text, media_type, media_path, media_caption, media_ai_index, timestamp, reactions_json, contact_payload,
+        receipt_status
       ) VALUES (
         @tenantId, @messageId, @chatJid, @chatName, @sender, @senderJid,
-        @text, @mediaType, @mediaPath, @mediaCaption, @mediaAiIndex, @timestamp, @reactionsJson, @contactPayload
+        @text, @mediaType, @mediaPath, @mediaCaption, @mediaAiIndex, @timestamp, @reactionsJson, @contactPayload,
+        @receiptStatus
       )
     `);
     this._stmtSelectIdByMessageId = this._db.prepare(
@@ -1211,7 +1372,7 @@ export default class Database {
   insertMessage({
     messageId, chatJid, chatName = null, sender = null, senderJid = null,
     text = null, mediaType = null, mediaPath = null, mediaCaption = null, mediaAiIndex = null, timestamp,
-    reactionsJson = null, contactPayload = null,
+    reactionsJson = null, contactPayload = null, receiptStatus = null,
   }) {
     const tenantId = getCurrentTenantId();
     const info = this._stmtInsertMessage.run({
@@ -1221,6 +1382,7 @@ export default class Database {
       timestamp: normalizeUnixSeconds(timestamp, Math.floor(Date.now() / 1000)),
       reactionsJson,
       contactPayload,
+      receiptStatus: normalizeReceiptStatus(receiptStatus),
     });
     if (info.changes > 0) return Number(info.lastInsertRowid);
     const row = this._stmtSelectIdByMessageId.get(tenantId, messageId);
@@ -1250,6 +1412,7 @@ export default class Database {
           timestamp: normalizeUnixSeconds(row.timestamp, Math.floor(Date.now() / 1000)),
           reactionsJson: row.reactionsJson ?? null,
           contactPayload: row.contactPayload ?? null,
+          receiptStatus: normalizeReceiptStatus(row.receiptStatus),
         });
         const hasRx = row.reactionsJson != null || row.reactionSlots !== undefined;
         if (info.changes > 0 && row.messageId) {
@@ -1261,6 +1424,9 @@ export default class Database {
           }
         } else if (info.changes === 0 && row.messageId && hasRx) {
           this.applySyncedMessageReactions(row.messageId, row);
+        }
+        if (info.changes === 0 && row.messageId && row.receiptStatus != null) {
+          this.updateMessageReceipt(row.chatJid, row.messageId, row.receiptStatus);
         }
       }
     });
@@ -1278,13 +1444,62 @@ export default class Database {
   }
 
   /**
+   * Raise the delivery tick on a message you sent. Incoming rows are ignored.
+   * @returns {{ chatJid: string, messageId: string, receiptStatus: number, isLatest: boolean } | { unchanged: true } | null}
+   */
+  updateMessageReceipt(chatJid, messageId, receiptStatus) {
+    const incoming = normalizeReceiptStatus(receiptStatus);
+    let jid = String(chatJid || '').trim();
+    const mid = String(messageId || '').trim();
+    if (!jid || !mid || incoming == null) return null;
+    const t = getCurrentTenantId();
+    let row = this._db.prepare(`
+      SELECT sender, receipt_status AS receiptStatus, chat_jid AS chatJid
+      FROM messages WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?
+    `).get(t, jid, mid);
+    if (!row) {
+      // Group/LID receipts sometimes name a paired JID. Only follow a unique row.
+      const alts = this._db.prepare(`
+        SELECT sender, receipt_status AS receiptStatus, chat_jid AS chatJid
+        FROM messages WHERE tenant_id = ? AND message_id = ? AND sender = 'You'
+      `).all(t, mid);
+      if (alts.length !== 1) return null;
+      row = alts[0];
+      jid = row.chatJid;
+    }
+    if (row.sender !== 'You') return null;
+    const merged = higherReceipt(row.receiptStatus, incoming);
+    if (merged === normalizeReceiptStatus(row.receiptStatus)) {
+      return { unchanged: true };
+    }
+    this._db.prepare(`
+      UPDATE messages SET receipt_status = ?
+      WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?
+    `).run(merged, t, jid, mid);
+    const latest = this._db.prepare(`
+      SELECT message_id AS messageId FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+      ORDER BY timestamp DESC, id DESC LIMIT 1
+    `).get(t, jid);
+    return {
+      chatJid: jid,
+      messageId: mid,
+      receiptStatus: merged,
+      isLatest: latest?.messageId === mid,
+    };
+  }
+
+  /**
    * When we learn a human-readable chat title (from WA), backfill all rows for that chat so the sidebar
    * and search stop showing bare phone / LID after older messages were stored with a numeric label.
    */
   propagateChatDisplayName(chatJid, chatName) {
     if (!chatJid || !chatName || !looksLikeContactDisplayName(chatName, chatJid)) return 0;
     const t = getCurrentTenantId();
-    const r = this._db.prepare('UPDATE messages SET chat_name = ? WHERE tenant_id = ? AND chat_jid = ?').run(chatName, t, chatJid);
+    // Skip rows that already carry the name: each rewrite also reindexes the row in FTS.
+    const r = this._db.prepare(
+      'UPDATE messages SET chat_name = ? WHERE tenant_id = ? AND chat_jid = ? AND chat_name IS NOT ?',
+    ).run(chatName, t, chatJid, chatName);
     return r.changes ?? 0;
   }
 
@@ -1952,6 +2167,98 @@ export default class Database {
     return rows.map((r) => r.chatJid).filter(Boolean);
   }
 
+  /**
+   * Chats ordered like the sidebar (newest activity first) so picture fetches fill the top of the list first.
+   */
+  listChatJidsByRecency() {
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT chat_jid AS chatJid FROM (
+        SELECT chat_jid, MAX(ts) AS ts FROM (
+          SELECT chat_jid, MAX(timestamp) AS ts FROM messages WHERE tenant_id = ? GROUP BY chat_jid
+          UNION ALL
+          SELECT chat_jid, COALESCE(last_message_ts, 0) AS ts FROM chat_roster WHERE tenant_id = ?
+        ) AS activity
+        GROUP BY chat_jid
+      ) AS ranked
+      ORDER BY ts DESC
+    `).all(t, t).map((r) => r.chatJid).filter(Boolean);
+  }
+
+  /** Jids we already resolved — photo saved, or WhatsApp said there isn't one. */
+  listChatAvatarJids() {
+    const t = getCurrentTenantId();
+    return new Set(
+      this._db.prepare('SELECT chat_jid AS chatJid FROM chat_avatars WHERE tenant_id = ?')
+        .all(t)
+        .map((r) => r.chatJid),
+    );
+  }
+
+  /**
+   * @param {string} chatJid
+   * @param {{ relPath?: string|null, missing?: boolean, fetchedAt?: number|null }} fields
+   */
+  setChatAvatar(chatJid, { relPath = null, missing = false, fetchedAt = null } = {}) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return null;
+    const missingFlag = missing || !relPath ? 1 : 0;
+    const path = missingFlag ? null : String(relPath);
+    if (path && !isSafeAvatarFileName(path)) return null;
+    const t = getCurrentTenantId();
+    const prev = this._db.prepare(
+      'SELECT rel_path AS relPath FROM chat_avatars WHERE tenant_id = ? AND chat_jid = ?',
+    ).get(t, jid);
+    const ts = Number(fetchedAt) || Math.floor(Date.now() / 1000);
+    this._db.prepare(`
+      INSERT INTO chat_avatars (tenant_id, chat_jid, rel_path, missing, fetched_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(tenant_id, chat_jid) DO UPDATE SET
+        rel_path = excluded.rel_path,
+        missing = excluded.missing,
+        fetched_at = excluded.fetched_at
+    `).run(t, jid, path, missingFlag, ts);
+    return {
+      chatJid: jid,
+      hasAvatar: missingFlag === 0,
+      avatarRev: ts,
+      relPath: path,
+      previousRelPath: prev?.relPath || null,
+    };
+  }
+
+  getChatAvatarRelPath(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return null;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(
+      'SELECT rel_path AS relPath, missing FROM chat_avatars WHERE tenant_id = ? AND chat_jid = ?',
+    ).get(t, jid);
+    if (!row || row.missing || !row.relPath || !isSafeAvatarFileName(row.relPath)) return null;
+    return row.relPath;
+  }
+
+  /** Avatar file + the `avatarRev` that `getChatStats()` hands to the UI for cache-busting. */
+  getChatAvatarInfo(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return null;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(
+      'SELECT rel_path AS relPath, missing, fetched_at AS fetchedAt FROM chat_avatars WHERE tenant_id = ? AND chat_jid = ?',
+    ).get(t, jid);
+    if (!row || row.missing || !row.relPath || !isSafeAvatarFileName(row.relPath)) return null;
+    return { relPath: row.relPath, avatarRev: row.fetchedAt || 0 };
+  }
+
+  /** True when some chat still displays this file. */
+  avatarRelPathInUse(relPath) {
+    if (!relPath) return false;
+    const row = this._db.prepare(
+      'SELECT COUNT(*) AS c FROM chat_avatars WHERE rel_path = ? AND missing = 0',
+    ).get(relPath);
+    return (row?.c || 0) > 0;
+  }
+
   getChatStats() {
     const t = getCurrentTenantId();
 
@@ -1981,6 +2288,53 @@ export default class Database {
       if (r.chatJid) rosterTsByChat.set(r.chatJid, r.lastMessageTs || 0);
     }
     const optedInJids = new Set(this.listIndexOptInJids());
+    const avatarByChat = new Map();
+    for (const r of this._db.prepare(
+      `SELECT chat_jid AS chatJid, rel_path AS relPath, missing AS missing, fetched_at AS fetchedAt
+       FROM chat_avatars WHERE tenant_id = ?`,
+    ).all(t)) {
+      avatarByChat.set(r.chatJid, r);
+    }
+    const avatarFields = (chatJid) => {
+      const a = avatarByChat.get(chatJid);
+      if (!a || a.missing || !a.relPath) return { hasAvatar: false, avatarRev: 0 };
+      return { hasAvatar: true, avatarRev: a.fetchedAt || 0 };
+    };
+    const previewByChat = new Map();
+    for (const r of this._db.prepare(`
+      SELECT chat_jid AS chatJid, text, sender, media_type AS mediaType,
+             receipt_status AS receiptStatus, message_id AS messageId
+      FROM (
+        SELECT chat_jid, text, sender, media_type, receipt_status, message_id,
+               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC, id DESC) AS rn
+        FROM messages WHERE tenant_id = ?
+      ) WHERE rn = 1
+    `).all(t)) {
+      if (r.chatJid) previewByChat.set(r.chatJid, r);
+    }
+    const previewFields = (chatJid) => {
+      const p = previewByChat.get(chatJid);
+      if (!p) {
+        return {
+          lastMessageId: null,
+          lastMessagePreview: '',
+          lastMessageFromMe: false,
+          lastMessageReceipt: null,
+        };
+      }
+      const isGroup = String(chatJid).endsWith('@g.us');
+      return {
+        lastMessageId: p.messageId || null,
+        lastMessagePreview: chatListPreview({
+          text: p.text,
+          mediaType: p.mediaType,
+          sender: p.sender,
+          isGroup,
+        }),
+        lastMessageFromMe: p.sender === 'You',
+        lastMessageReceipt: p.sender === 'You' ? normalizeReceiptStatus(p.receiptStatus) : null,
+      };
+    };
 
     const goodNameRows = this._db.prepare(`
       SELECT chat_jid AS chatJid, chat_name AS chatName, sender
@@ -2121,6 +2475,8 @@ export default class Database {
           messageCount: agg.messageCount,
           lastMessageTs: msgTs,
         }, { optedIn: optedInJids.has(chatJid) }),
+        ...avatarFields(chatJid),
+        ...previewFields(chatJid),
       });
     }
 
@@ -2151,6 +2507,8 @@ export default class Database {
           messageCount: 0,
           lastMessageTs: r.lastMessageTs || 0,
         }, { optedIn: optedInJids.has(r.chatJid) }),
+        ...avatarFields(r.chatJid),
+        ...previewFields(r.chatJid),
       });
     }
 
@@ -2274,6 +2632,7 @@ export default class Database {
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
              media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError,
              reactions_json AS reactionsJson, contact_payload AS contactPayload,
+             receipt_status AS receiptStatus,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE tenant_id = ? AND chat_jid = ?
       ORDER BY timestamp DESC, id DESC
@@ -2299,6 +2658,7 @@ export default class Database {
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
              media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError,
              reactions_json AS reactionsJson, contact_payload AS contactPayload,
+             receipt_status AS receiptStatus,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE tenant_id = ? AND chat_jid IN (${ph})
       ORDER BY timestamp DESC, id DESC
@@ -2752,6 +3112,182 @@ export default class Database {
       console.error('[DB] thread_facts FTS rebuild failed:', err.message);
     }
     return c;
+  }
+
+  createExpenseReconciliationRun({
+    chatJid,
+    chatName = null,
+    sourceMessageId,
+    sourceFileName = null,
+    sourceMediaPath = null,
+    businessDate = null,
+  }) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      INSERT OR IGNORE INTO expense_reconciliation_runs (
+        tenant_id, chat_jid, chat_name, source_message_id, source_file_name,
+        source_media_path, business_date, status, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', unixepoch())
+    `).run(t, chatJid, chatName, sourceMessageId, sourceFileName, sourceMediaPath, businessDate);
+    return this._db.prepare(`
+      SELECT id, tenant_id AS tenantId, chat_jid AS chatJid, chat_name AS chatName,
+             source_message_id AS sourceMessageId, source_file_name AS sourceFileName,
+             source_media_path AS sourceMediaPath, business_date AS businessDate,
+             status, report_path AS reportPath, report_message_id AS reportMessageId,
+             totals_json AS totalsJson, error, created_at AS createdAt, updated_at AS updatedAt
+      FROM expense_reconciliation_runs
+      WHERE tenant_id = ? AND source_message_id = ?
+    `).get(t, sourceMessageId);
+  }
+
+  updateExpenseReconciliationRun(id, {
+    status,
+    businessDate = null,
+    reportPath = null,
+    reportMessageId = null,
+    totals = null,
+    error = null,
+  }) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      UPDATE expense_reconciliation_runs SET
+        status = COALESCE(?, status),
+        business_date = COALESCE(?, business_date),
+        report_path = COALESCE(?, report_path),
+        report_message_id = COALESCE(?, report_message_id),
+        totals_json = COALESCE(?, totals_json),
+        error = ?,
+        updated_at = unixepoch()
+      WHERE tenant_id = ? AND id = ?
+    `).run(
+      status || null,
+      businessDate,
+      reportPath,
+      reportMessageId,
+      totals == null ? null : JSON.stringify(totals),
+      error,
+      t,
+      id,
+    );
+  }
+
+  replaceExpenseReconciliationData(runId, entries, discrepancies) {
+    const t = getCurrentTenantId();
+    const replace = this._db.transaction(() => {
+      this._db.prepare('DELETE FROM expense_discrepancies WHERE tenant_id = ? AND run_id = ?').run(t, runId);
+      this._db.prepare('DELETE FROM expense_entries WHERE tenant_id = ? AND run_id = ?').run(t, runId);
+      const insertEntry = this._db.prepare(`
+        INSERT INTO expense_entries (
+          tenant_id, run_id, source, source_message_id, sheet_row, date, amount_minor,
+          currency, direction, payee, category, description, reference, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const ids = new Map();
+      for (const entry of entries) {
+        const info = insertEntry.run(
+          t, runId, entry.source, entry.sourceMessageId || null, entry.sheetRow || null,
+          entry.date || null, Number(entry.amountMinor), entry.currency || 'INR',
+          entry.direction || 'debit', entry.payee || null, entry.category || null,
+          entry.description || null, entry.reference || null, entry.rawJson || null,
+        );
+        ids.set(entry, Number(info.lastInsertRowid));
+      }
+      const insertDiff = this._db.prepare(`
+        INSERT INTO expense_discrepancies (
+          tenant_id, run_id, type, chat_entry_id, sheet_entry_id, detail
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const item of discrepancies) {
+        insertDiff.run(
+          t,
+          runId,
+          item.type,
+          item.chatEntry ? ids.get(item.chatEntry) || null : null,
+          item.sheetEntry ? ids.get(item.sheetEntry) || null : null,
+          item.detail || null,
+        );
+      }
+    });
+    replace();
+  }
+
+  listExpenseReconciliationRuns({ chatJid = null, status = null } = {}) {
+    const t = getCurrentTenantId();
+    const clauses = ['tenant_id = ?'];
+    const params = [t];
+    if (chatJid) { clauses.push('chat_jid = ?'); params.push(chatJid); }
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    return this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+             source_message_id AS sourceMessageId, source_file_name AS sourceFileName,
+             business_date AS businessDate, status, report_message_id AS reportMessageId,
+             totals_json AS totalsJson, error, created_at AS createdAt, updated_at AS updatedAt
+      FROM expense_reconciliation_runs
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+    `).all(...params).map((row) => ({
+      ...row,
+      totals: row.totalsJson ? JSON.parse(row.totalsJson) : null,
+    }));
+  }
+
+  getExpenseReconciliationRun(id) {
+    const t = getCurrentTenantId();
+    const run = this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName,
+             source_message_id AS sourceMessageId, source_file_name AS sourceFileName,
+             source_media_path AS sourceMediaPath, business_date AS businessDate,
+             status, report_path AS reportPath, report_message_id AS reportMessageId,
+             totals_json AS totalsJson, error, created_at AS createdAt, updated_at AS updatedAt
+      FROM expense_reconciliation_runs WHERE tenant_id = ? AND id = ?
+    `).get(t, Number(id));
+    if (!run) return null;
+    run.totals = run.totalsJson ? JSON.parse(run.totalsJson) : null;
+    run.entries = this._db.prepare(`
+      SELECT id, source, source_message_id AS sourceMessageId, sheet_row AS sheetRow,
+             date, amount_minor AS amountMinor, currency, direction, payee, category,
+             description, reference, raw_json AS rawJson
+      FROM expense_entries WHERE tenant_id = ? AND run_id = ? ORDER BY id
+    `).all(t, run.id);
+    const byId = new Map(run.entries.map((entry) => [entry.id, entry]));
+    run.discrepancies = this._db.prepare(`
+      SELECT id, type, chat_entry_id AS chatEntryId, sheet_entry_id AS sheetEntryId,
+             detail, resolution, resolved_at AS resolvedAt, created_at AS createdAt
+      FROM expense_discrepancies WHERE tenant_id = ? AND run_id = ? ORDER BY id
+    `).all(t, run.id).map((item) => ({
+      ...item,
+      chatEntry: byId.get(item.chatEntryId) || null,
+      sheetEntry: byId.get(item.sheetEntryId) || null,
+    }));
+    return run;
+  }
+
+  listRecoverableExpenseRuns() {
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT id, source_message_id AS sourceMessageId, status
+      FROM expense_reconciliation_runs
+      WHERE tenant_id = ? AND status IN ('queued', 'processing')
+      ORDER BY created_at ASC
+    `).all(t);
+  }
+
+  resetExpenseReconciliationRun(id) {
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      UPDATE expense_reconciliation_runs
+      SET status = 'queued', error = NULL, report_path = NULL, report_message_id = NULL, updated_at = unixepoch()
+      WHERE tenant_id = ? AND id = ?
+    `).run(t, Number(id)).changes > 0;
+  }
+
+  resolveExpenseDiscrepancy(id, resolution) {
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      UPDATE expense_discrepancies
+      SET resolution = ?, resolved_at = unixepoch()
+      WHERE tenant_id = ? AND id = ?
+    `).run(String(resolution || '').trim(), t, Number(id)).changes > 0;
   }
 
   searchThreadSummaries(query, chatJid = null, limit = 10) {

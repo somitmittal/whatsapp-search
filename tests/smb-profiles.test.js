@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import {
   detectSmbLibraryMismatch,
   getSearchPrompts,
+  isConstructionExpenseAgentEnabled,
   listSmbProfileOptions,
   resolveSmbProfile,
   synthesisSystemAddon,
@@ -16,8 +17,9 @@ describe('smb profiles', () => {
 
   it('lists all profile options', () => {
     const opts = listSmbProfileOptions();
-    expect(opts.length).toBe(4);
+    expect(opts.length).toBe(5);
     expect(opts.map((o) => o.id)).toContain('d2c');
+    expect(opts.map((o) => o.id)).toContain('construction');
   });
 
   it('returns vertical search prompts only for business profiles', () => {
@@ -31,6 +33,20 @@ describe('smb profiles', () => {
   it('adds synthesis context for business profiles', () => {
     expect(synthesisSystemAddon(resolveSmbProfile('personal'))).toBe('');
     expect(synthesisSystemAddon(resolveSmbProfile('d2c'))).toMatch(/D2C/i);
+  });
+
+  it('provides construction expense grounding and prompts', () => {
+    const construction = resolveSmbProfile('construction');
+    expect(construction.factAddon).toMatch(/source_message_id/);
+    expect(construction.searchPrompts.map((p) => p.label)).toContain('Today’s expenses');
+    expect(synthesisSystemAddon(construction)).toMatch(/construction sites/i);
+  });
+
+  it('runs the expense agent only on Construction with the agent toggled on', () => {
+    const db = (settings) => ({ getSetting: (key) => settings[key] || '' });
+    expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'construction', construction_expense_agent: '1' }))).toBe(true);
+    expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'construction' }))).toBe(false);
+    expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'clinic', construction_expense_agent: '1' }))).toBe(false);
   });
 
   it('flags business profile mismatch for imported group libraries', () => {

@@ -5,8 +5,20 @@
 
 export const SMB_PROFILE_SETTING = 'smb_profile';
 export const SMB_BUSINESS_NAME_SETTING = 'smb_business_name';
+/** Opt-in for the construction expense-sheet reconciliation agent. Off unless the user enables it. */
+export const CONSTRUCTION_EXPENSE_AGENT_SETTING = 'construction_expense_agent';
 
-/** @typedef {'personal' | 'clinic' | 'real_estate' | 'd2c'} SmbProfileId */
+/**
+ * @param {import('../storage/database.js').default} db
+ * @returns {boolean}
+ */
+export function isConstructionExpenseAgentEnabled(db) {
+  if (!db || typeof db.getSetting !== 'function') return false;
+  if (db.getSetting(SMB_PROFILE_SETTING) !== 'construction') return false;
+  return db.getSetting(CONSTRUCTION_EXPENSE_AGENT_SETTING) === '1';
+}
+
+/** @typedef {'personal' | 'clinic' | 'real_estate' | 'd2c' | 'construction'} SmbProfileId */
 
 /** @type {Record<SmbProfileId, object>} */
 export const SMB_PROFILES = {
@@ -79,6 +91,27 @@ Use "payment" for COD, UPI, refunds.`,
     synthesisAddon: 'The user runs a D2C or online store on WhatsApp. Prioritize order IDs, products, quantities, delivery addresses, payment status, and complaints. Be actionable for support staff.',
     actionAddon: 'E-commerce context: flag new orders, address confirmations, payment screenshots, delivery complaints, and refund requests.',
     inboxFactQuery: 'order delivery payment refund complaint address',
+  },
+  construction: {
+    id: 'construction',
+    label: 'Construction',
+    tagline: 'Site expenses, labour, fuel, and reconciliation',
+    isBusiness: true,
+    factTypes: ['payment', 'delivery', 'meeting', 'question'],
+    factAddon: `Construction expense context:
+- For every expense or payment, extract "payment" with amount, currency, date, direction ("debit"|"credit"), payee, category ("labour"|"fuel"|"material"|"transport"|"equipment"|"food"|"other"), description, reference, and source_message_id when present.
+- Treat cash paid to labourers, fuel purchases, material bills, advances, reimbursements, and credits/refunds as separate facts.
+- Never infer an amount or recipient that is not explicitly present.`,
+    searchPrompts: [
+      { label: 'Today’s expenses', query: 'List today’s construction expenses by site, amount, payee, category, and source message.' },
+      { label: 'Labour payments', query: 'List labour payments and advances, including recipient and amount.' },
+      { label: 'Fuel & transport', query: 'List fuel and transport expenses with amounts and vehicles or vendors mentioned.' },
+      { label: 'Missing proofs', query: 'Which stated expenses do not have a receipt, bill, or payment confirmation?' },
+      { label: 'Daily total', query: 'Calculate the total debits and credits discussed today, grouped by category.' },
+    ],
+    synthesisAddon: 'The user manages construction sites on WhatsApp. Prioritize site name, date, exact amount, currency, debit or credit, payee, category, description, and message evidence. Never merge separate expenses.',
+    actionAddon: 'Construction context: flag unpaid labour, missing bills, fuel advances, material deliveries, and expense-sheet discrepancies.',
+    inboxFactQuery: 'expense payment labour fuel material transport advance reimbursement bill receipt',
   },
 };
 
