@@ -85,6 +85,20 @@ describe('roster rows yielding to real ingested chats', () => {
     db.upsertChatRoster([{ chatJid: jid, chatName: 'Papa', lastMessageTs: 1_759_000_000 }]);
     expect(rosterRowFor(jid).lastMessageTs).toBe(1_759_000_000);
   });
+
+  test('sidebar order is newest activity first, not message volume', () => {
+    const busy = 'busy-old@g.us';
+    const fresh = 'fresh@s.whatsapp.net';
+    db.insertMessageBatch([
+      { messageId: 'b1', chatJid: busy, chatName: 'Busy', sender: 'A', text: 'old', timestamp: 1_700_000_000 },
+      { messageId: 'b2', chatJid: busy, chatName: 'Busy', sender: 'A', text: 'old2', timestamp: 1_700_000_100 },
+    ]);
+    db.insertMessageBatch([
+      { messageId: 'f1', chatJid: fresh, chatName: 'Fresh', sender: 'B', text: 'now', timestamp: 1_800_000_000 },
+    ]);
+    const order = db.getChatStats().map((c) => c.chatJid);
+    expect(order.indexOf(fresh)).toBeLessThan(order.indexOf(busy));
+  });
 });
 
 describe('countChatsWithNewestBefore', () => {

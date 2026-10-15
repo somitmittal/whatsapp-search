@@ -1265,6 +1265,15 @@ export default class Database {
       }
     });
     run(rows || []);
+    const newest = new Map();
+    for (const row of rows || []) {
+      if (!row?.chatJid) continue;
+      const ts = normalizeUnixSeconds(row.timestamp, 0);
+      if (ts > (newest.get(row.chatJid) || 0)) newest.set(row.chatJid, ts);
+    }
+    if (newest.size) {
+      this.upsertChatRoster([...newest].map(([chatJid, lastMessageTs]) => ({ chatJid, lastMessageTs })));
+    }
     return { count: insertedMessageIds.length, insertedMessageIds };
   }
 
@@ -2145,32 +2154,11 @@ export default class Database {
       });
     }
 
-    let pinImportJid = null;
-    let pinImportTs = 0;
-    for (const [jid, ts] of importTouchedAt) {
-      if (ts > pinImportTs) {
-        pinImportTs = ts;
-        pinImportJid = jid;
-      }
-    }
-
-    const chatListRank = (c) => {
-      const lm = c.lastMessageTs || 0;
-      const n = Math.max(1, c.messageCount || 0);
-      return lm * Math.log1p(n);
-    };
     out.sort((a, b) => {
-      if (pinImportJid) {
-        if (a.chatJid === pinImportJid) return -1;
-        if (b.chatJid === pinImportJid) return 1;
-      }
-      const ia = a.lastImportedAt || 0;
-      const ib = b.lastImportedAt || 0;
-      if (ib !== ia) return ib - ia;
-      const ra = chatListRank(a);
-      const rb = chatListRank(b);
-      if (rb !== ra) return rb - ra;
-      return (b.lastMessageTs || 0) - (a.lastMessageTs || 0);
+      const ta = a.lastMessageTs || 0;
+      const tb = b.lastMessageTs || 0;
+      if (tb !== ta) return tb - ta;
+      return (b.messageCount || 0) - (a.messageCount || 0);
     });
     return out;
   }

@@ -11,10 +11,9 @@ describe('shouldSyncHistoryMessage', () => {
     expect(shouldSyncHistoryMessage({ syncType: 'RECENT' }, { syncFullHistory: false })).toBe(true);
   });
 
-  test('skips FULL unless WA_SYNC_FULL_HISTORY is on', () => {
-    expect(shouldSyncHistoryMessage({ syncType: HISTORY_SYNC_TYPE_FULL }, { syncFullHistory: false })).toBe(false);
-    expect(shouldSyncHistoryMessage({ syncType: 'FULL' }, { syncFullHistory: false })).toBe(false);
-    expect(shouldSyncHistoryMessage({ syncType: HISTORY_SYNC_TYPE_FULL }, { syncFullHistory: true })).toBe(true);
+  test('accepts FULL so a reconnect blob is stored once instead of retried', () => {
+    expect(shouldSyncHistoryMessage({ syncType: HISTORY_SYNC_TYPE_FULL }, { syncFullHistory: false })).toBe(true);
+    expect(shouldSyncHistoryMessage({ syncType: 'FULL' }, { syncFullHistory: false })).toBe(true);
   });
 
   test('ingests on-demand / bootstrap / nameless notifications', () => {

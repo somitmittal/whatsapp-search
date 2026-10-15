@@ -35,7 +35,7 @@ import { groupSubjectUpdates } from './group-subjects.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
-import { shouldSyncHistoryMessage } from './history-sync-policy.js';
+import { shouldSyncHistoryMessage, RECENT_DAYS_CATCHUP_DAYS } from './history-sync-policy.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -941,8 +941,14 @@ export default class WaClient {
       }
 
       if (rows.length) {
-        this._ingestHistoryRowsChunked(rows);
-        console.log(`[WA] History batch queued: ${rows.length} msgs (total ${this._totalMsgs + rows.length})`);
+        const cutoff = Math.floor(Date.now() / 1000) - RECENT_DAYS_CATCHUP_DAYS * 24 * 60 * 60;
+        const recent = rows.filter((r) => (Number(r.timestamp) || 0) >= cutoff);
+        if (recent.length) {
+          this._ingestHistoryRowsChunked(recent);
+          console.log(`[WA] History batch queued: ${recent.length} recent msgs (skipped ${rows.length - recent.length} older than ${RECENT_DAYS_CATCHUP_DAYS}d)`);
+        } else {
+          console.log(`[WA] History batch had ${rows.length} msgs, none in the last ${RECENT_DAYS_CATCHUP_DAYS} days`);
+        }
       }
 
       // Reset the "done" timer — no more batches for waSyncDoneDelayMs → mark ready

@@ -22,7 +22,11 @@ export const MIN_STALE_CHATS_FOR_CATCHUP = 5;
 
 export function shouldSyncHistoryMessage(historyMsg, { syncFullHistory = false } = {}) {
   const t = historyMsg?.syncType;
-  if (t === HISTORY_SYNC_TYPE_FULL || t === 'FULL') return !!syncFullHistory;
+  // Accept FULL as well as RECENT. Dropping FULL left the phone retrying the same
+  // blob on every reconnect (repeated “syncing” alerts) and the Mac never stored it.
+  // Callers keep only a recent window of that blob; we never issue extra on-demand pulls.
+  if (t === HISTORY_SYNC_TYPE_FULL || t === 'FULL') return true;
+  if (syncFullHistory) return true;
   return true;
 }
 
