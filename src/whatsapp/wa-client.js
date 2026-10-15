@@ -36,6 +36,7 @@ import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 import { shouldSyncHistoryMessage, RECENT_DAYS_CATCHUP_DAYS } from './history-sync-policy.js';
+import { normalizeGroupCreateInput } from './group-create.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -343,6 +344,52 @@ export default class WaClient {
    * Resolve a typed phone number to a WhatsApp JID (only if that number is on WhatsApp).
    * @param {string} rawPhone e.g. "+91 98765 43210" or "919876543210"
    */
+  /**
+   * Create a WhatsApp group. Prefers phone-number JIDs when a LID↔PN mapping exists —
+   * Baileys' create call is more reliable with `@s.whatsapp.net` participants.
+   * @param {{ subject: string, participantJids: string[] }} input
+   */
+  async createGroup(input) {
+    if (!this._sock?.groupCreate) throw new Error('WhatsApp not connected');
+    const normalized = normalizeGroupCreateInput(input);
+    if (!normalized.ok) throw new Error(normalized.error);
+
+    const participants = [];
+    const seen = new Set();
+    for (const jid of normalized.participantJids) {
+      let inviteJid = jid;
+      try {
+        const linked = await this.getLinked1on1Jids(jid);
+        const pn = (linked || []).find((x) => x.endsWith('@s.whatsapp.net') || x.endsWith('@hosted'));
+        if (pn) inviteJid = pn;
+      } catch (_) { /* mapping optional */ }
+      if (seen.has(inviteJid)) continue;
+      seen.add(inviteJid);
+      participants.push(inviteJid);
+    }
+    if (!participants.length) throw new Error('Add at least one contact to the group');
+
+    const meta = await this._sock.groupCreate(normalized.subject, participants);
+    const chatJid = meta?.id || meta?.jid || null;
+    if (!chatJid) throw new Error('WhatsApp did not return a group id');
+    const subject = meta?.subject || normalized.subject;
+    await this._applyDisplayName(chatJid, subject);
+    this._onChatsPreview?.([{
+      chatJid,
+      chatName: subject,
+      sidebarTab: 'chat',
+      messageCount: 0,
+      lastMessageTs: Math.floor(Date.now() / 1000),
+      summarizedCount: 0,
+      participantCount: participants.length + 1,
+    }]);
+    return {
+      chatJid,
+      chatName: subject,
+      participantCount: Array.isArray(meta?.participants) ? meta.participants.length : participants.length + 1,
+    };
+  }
+
   async resolvePhoneToWhatsAppJid(rawPhone) {
     if (!this._sock) throw new Error('WhatsApp not connected');
     const digits = String(rawPhone || '').replace(/[^\d]/g, '');

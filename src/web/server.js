@@ -1863,6 +1863,53 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     });
 
     /**
+     * Create a WhatsApp group.
+     * Body: { subject: string, participantJids: string[] }
+     */
+    this._app.post('/api/wa/create-group', async (req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+      if (st.waState !== 'READY' && st.waState !== 'SYNCING') {
+        return res.status(409).json({ error: 'WhatsApp not ready — finish linking first' });
+      }
+      if (typeof st.waClient.createGroup !== 'function') {
+        return res.status(503).json({ error: 'Group create is not available' });
+      }
+      try {
+        const created = await st.waClient.createGroup({
+          subject: req.body?.subject,
+          participantJids: req.body?.participantJids,
+        });
+        runWithTenant(tid, () => {
+          try {
+            this.db.upsertChatRoster([{
+              chatJid: created.chatJid,
+              chatName: created.chatName,
+              lastMessageTs: Math.floor(Date.now() / 1000),
+            }]);
+          } catch (_) { /* roster is best-effort */ }
+        });
+        this._broadcast({
+          type: 'sync-chats-preview',
+          data: {
+            chats: [{
+              chatJid: created.chatJid,
+              chatName: created.chatName,
+              sidebarTab: 'chat',
+              messageCount: 0,
+              lastMessageTs: Math.floor(Date.now() / 1000),
+              participantCount: created.participantCount || 0,
+            }],
+          },
+        }, tid);
+        return res.json({ ok: true, ...created });
+      } catch (err) {
+        return res.status(400).json({ error: err.message || String(err) });
+      }
+    });
+
+    /**
      * Start (or open) a 1:1 chat by phone number. Only works if that number is on WhatsApp.
      * Body: { phone: "+91…" } or { chatJid: "…@s.whatsapp.net" }
      */

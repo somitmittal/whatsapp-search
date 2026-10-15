@@ -1019,6 +1019,40 @@
       border-top: 1px solid var(--border); margin-top: 12px; position: sticky; bottom: 0;
       background: var(--bg, #fff);
     }
+    .compose-action {
+      display: flex; align-items: center; gap: 14px; width: 100%;
+      padding: 12px 14px; border: none; border-bottom: 1px solid var(--border);
+      background: transparent; cursor: pointer; text-align: left; font-family: inherit;
+    }
+    .compose-action:hover { background: var(--hover); }
+    .compose-action-icon {
+      width: 48px; height: 48px; border-radius: 50%; flex-shrink: 0;
+      background: #00a884; color: #fff; display: flex; align-items: center; justify-content: center;
+    }
+    .compose-action-title { font-size: 16px; font-weight: 500; color: var(--text); }
+    .compose-action-sub { font-size: 13px; color: var(--text2); margin-top: 2px; }
+    .new-group-subject-row {
+      display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap;
+    }
+    .new-group-subject-row input[type="text"] {
+      flex: 1; min-width: 180px; padding: 10px 14px; border: 1px solid var(--border);
+      border-radius: 12px; font-size: 14px; outline: none; font-family: inherit;
+    }
+    .new-group-selected {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; min-height: 0;
+    }
+    .new-group-chip {
+      display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px 4px 4px;
+      border-radius: 999px; background: #e7f8f2; color: #056b45; font-size: 13px;
+    }
+    .new-group-chip button {
+      border: none; background: transparent; color: #056b45; cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 0 2px;
+    }
+    .new-group-chip-av {
+      width: 24px; height: 24px; border-radius: 50%; background: #00a884; color: #fff;
+      display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700;
+    }
     .edit-to-bar {
       flex-shrink: 0;
       padding: 8px 12px;
@@ -1527,7 +1561,7 @@
         </div>
       </div>
       <div class="sidebar-actions">
-        <button class="icon-btn live-sync-ui" id="btn-new-message" title="New message" aria-label="New message" style="display:none;">
+        <button class="icon-btn live-sync-ui" id="btn-new-message" title="New chat" aria-label="New chat" style="display:none;">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg>
         </button>
         <button class="icon-btn" id="btn-import" title="Add chats — upload export files or sync from Gmail" aria-label="Add chats">
@@ -1825,34 +1859,68 @@
       </div>
     </div>
 
-    <!-- New message overlay — WhatsApp contacts + phone number -->
+    <!-- New chat — contacts, phone number, or jump to New group -->
     <div class="overlay-panel" id="overlay-new-message">
       <div class="overlay-header">
         <button class="overlay-close" id="close-new-message" type="button" aria-label="Close">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <div class="overlay-header-text">
-          <h2>New message</h2>
-          <p class="overlay-header-sub">Message anyone on WhatsApp from your linked account</p>
+          <h2>New chat</h2>
+          <p class="overlay-header-sub">Message a contact or create a group</p>
         </div>
       </div>
       <div class="overlay-body">
-        <p style="font-size:13px;color:var(--text2);margin:0 0 14px;line-height:1.45;">
-          Pick a WhatsApp contact, or enter a phone number with country code.
-          Desktop browsers cannot silently read your phone address book — use a number, or sync contacts from the mobile companion app for names.
-        </p>
-        <label for="new-msg-phone" style="display:block;font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;">Phone number</label>
+        <button type="button" class="compose-action" id="btn-open-new-group">
+          <span class="compose-action-icon" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+          </span>
+          <span>
+            <span class="compose-action-title">New group</span>
+            <span class="compose-action-sub">Create a group with your contacts</span>
+          </span>
+        </button>
+        <label for="new-msg-phone" style="display:block;font-size:12px;font-weight:600;color:var(--text2);margin:14px 0 6px;">Phone number</label>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
           <input type="tel" id="new-msg-phone" placeholder="+91 98765 43210" autocomplete="tel"
             style="flex:1;min-width:180px;padding:10px 14px;border:1px solid var(--border);border-radius:12px;font-size:14px;outline:none;" />
-          <button type="button" class="btn btn-primary" id="new-msg-phone-go">Message</button>
+          <button type="button" class="btn btn-primary" id="new-msg-phone-go">Chat</button>
         </div>
         <p id="new-msg-status" style="font-size:12px;color:var(--text2);min-height:18px;margin:0 0 14px;"></p>
         <div class="search-wrap" style="margin-bottom:10px;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="new-msg-filter" placeholder="Search WhatsApp contacts…" />
+          <input type="text" id="new-msg-filter" placeholder="Search name or number" />
         </div>
         <div id="new-msg-contacts" class="new-msg-contacts" role="list" aria-label="WhatsApp contacts"></div>
+      </div>
+    </div>
+
+    <!-- New group — pick contacts, name the group -->
+    <div class="overlay-panel" id="overlay-new-group">
+      <div class="overlay-header">
+        <button class="overlay-close" id="close-new-group" type="button" aria-label="Close">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <div class="overlay-header-text">
+          <h2>New group</h2>
+          <p class="overlay-header-sub" id="new-group-sub">Add participants</p>
+        </div>
+      </div>
+      <div class="overlay-body">
+        <div class="new-group-subject-row">
+          <input type="text" id="new-group-subject" maxlength="100" placeholder="Group name" autocomplete="off" />
+        </div>
+        <div id="new-group-selected" class="new-group-selected" aria-live="polite"></div>
+        <div class="search-wrap" style="margin-bottom:10px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="new-group-filter" placeholder="Search contacts" />
+        </div>
+        <p id="new-group-status" style="font-size:12px;color:var(--text2);min-height:18px;margin:0 0 10px;"></p>
+        <div id="new-group-contacts" class="new-msg-contacts" role="list" aria-label="Contacts to add"></div>
+        <div class="fwd-footer">
+          <button type="button" class="btn btn-secondary" id="new-group-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="new-group-create" disabled>Create</button>
+        </div>
       </div>
     </div>
 
@@ -2340,6 +2408,9 @@
   $('#btn-import').addEventListener('click', () => openOverlay('import'));
   $('#btn-new-message')?.addEventListener('click', () => openNewMessageOverlay());
   $('#close-new-message')?.addEventListener('click', () => closeOverlay('new-message'));
+  $('#close-new-group')?.addEventListener('click', () => closeOverlay('new-group'));
+  $('#new-group-cancel')?.addEventListener('click', () => closeOverlay('new-group'));
+  $('#btn-open-new-group')?.addEventListener('click', () => void openNewGroupOverlay());
   $('#close-forward')?.addEventListener('click', () => { closeOverlay('forward'); forwardTarget = null; forwardSelected.clear(); });
   $('#forward-cancel')?.addEventListener('click', () => { closeOverlay('forward'); forwardTarget = null; forwardSelected.clear(); });
   $('#menu-settings').addEventListener('click', () => { closeMenu(); openOverlay('settings'); loadSettings(); });
@@ -4063,6 +4134,31 @@
   }
 
   let _waContactsCache = [];
+  /** @type {Map<string, { chatJid: string, chatName: string, phone?: string|null }>} */
+  let _newGroupSelected = new Map();
+
+  async function ensureWaContactsCache() {
+    if (_waContactsCache.length) return _waContactsCache;
+    const data = await fetch('/api/wa/contacts').then((r) => r.json());
+    _waContactsCache = Array.isArray(data?.contacts) ? data.contacts : [];
+    const fromChats = (chatData || [])
+      .filter((c) => c?.chatJid && !c.chatJid.includes('@g.us') && !c.chatJid.endsWith('@imported')
+        && !c.chatJid.endsWith('@broadcast') && !c.chatJid.endsWith('@newsletter'))
+      .map((c) => ({
+        chatJid: c.chatJid,
+        chatName: displayChatTitle(c.chatJid, c.chatName || c.chatJid),
+        phone: null,
+      }));
+    const byJid = new Map();
+    for (const row of [..._waContactsCache, ...fromChats]) {
+      if (!row?.chatJid || byJid.has(row.chatJid)) continue;
+      byJid.set(row.chatJid, row);
+    }
+    _waContactsCache = [...byJid.values()].sort((a, b) =>
+      String(a.chatName || '').localeCompare(String(b.chatName || ''), undefined, { sensitivity: 'base' }),
+    );
+    return _waContactsCache;
+  }
 
   async function openNewMessageOverlay() {
     if (_waState !== 'READY' && _waState !== 'SYNCING') {
@@ -4077,35 +4173,126 @@
     if (list) list.innerHTML = '<div class="new-msg-empty">Loading…</div>';
     if (filter) filter.value = '';
     try {
-      const data = await fetch('/api/wa/contacts').then((r) => r.json());
-      _waContactsCache = Array.isArray(data?.contacts) ? data.contacts : [];
-      // Also offer existing 1:1 chats from the sidebar that may not be in the name cache yet.
-      const fromChats = (chatData || [])
-        .filter((c) => c?.chatJid && !c.chatJid.includes('@g.us') && !c.chatJid.endsWith('@imported')
-          && !c.chatJid.endsWith('@broadcast') && !c.chatJid.endsWith('@newsletter'))
-        .map((c) => ({
-          chatJid: c.chatJid,
-          chatName: displayChatTitle(c.chatJid, c.chatName || c.chatJid),
-          phone: null,
-        }));
-      const byJid = new Map();
-      for (const row of [..._waContactsCache, ...fromChats]) {
-        if (!row?.chatJid || byJid.has(row.chatJid)) continue;
-        byJid.set(row.chatJid, row);
-      }
-      _waContactsCache = [...byJid.values()].sort((a, b) =>
-        String(a.chatName || '').localeCompare(String(b.chatName || ''), undefined, { sensitivity: 'base' }),
-      );
+      await ensureWaContactsCache();
       if (status) {
         status.textContent = _waContactsCache.length
           ? `${_waContactsCache.length} contact${_waContactsCache.length === 1 ? '' : 's'} from WhatsApp`
-          : 'No named contacts yet — enter a phone number with country code below.';
+          : 'No named contacts yet — enter a phone number with country code.';
       }
       renderNewMessageContacts('');
     } catch (e) {
       if (status) status.textContent = e.message || 'Could not load contacts';
       if (list) list.innerHTML = '<div class="new-msg-empty">Could not load contacts.</div>';
     }
+  }
+
+  async function openNewGroupOverlay() {
+    if (_waState !== 'READY' && _waState !== 'SYNCING') {
+      alert('Link WhatsApp first to create a group.');
+      return;
+    }
+    _newGroupSelected = new Map();
+    closeOverlay('new-message');
+    openOverlay('new-group');
+    const subject = $('#new-group-subject');
+    const filter = $('#new-group-filter');
+    const status = $('#new-group-status');
+    const list = $('#new-group-contacts');
+    if (subject) subject.value = '';
+    if (filter) filter.value = '';
+    if (status) status.textContent = 'Loading contacts…';
+    if (list) list.innerHTML = '<div class="new-msg-empty">Loading…</div>';
+    renderNewGroupSelected();
+    updateNewGroupCreateEnabled();
+    try {
+      await ensureWaContactsCache();
+      if (status) {
+        status.textContent = _waContactsCache.length
+          ? 'Tap contacts to add them, then name the group.'
+          : 'No contacts loaded yet. Open New chat and message someone first, or enter their number.';
+      }
+      renderNewGroupContacts('');
+    } catch (e) {
+      if (status) status.textContent = e.message || 'Could not load contacts';
+      if (list) list.innerHTML = '<div class="new-msg-empty">Could not load contacts.</div>';
+    }
+  }
+
+  function renderNewGroupSelected() {
+    const box = $('#new-group-selected');
+    const sub = $('#new-group-sub');
+    if (!box) return;
+    const rows = [..._newGroupSelected.values()];
+    if (sub) {
+      sub.textContent = rows.length
+        ? `${rows.length} participant${rows.length === 1 ? '' : 's'} selected`
+        : 'Add participants';
+    }
+    box.innerHTML = rows.map((c) => {
+      const name = c.chatName || c.chatJid;
+      const letter = sidebarAvatarLetter(name);
+      return `<span class="new-group-chip" data-jid="${escAttr(c.chatJid)}">
+        <span class="new-group-chip-av">${esc(letter)}</span>
+        ${esc(name)}
+        <button type="button" data-remove-jid="${escAttr(c.chatJid)}" aria-label="Remove ${escAttr(name)}">×</button>
+      </span>`;
+    }).join('');
+    box.querySelectorAll('[data-remove-jid]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        _newGroupSelected.delete(btn.getAttribute('data-remove-jid'));
+        renderNewGroupSelected();
+        renderNewGroupContacts($('#new-group-filter')?.value || '');
+        updateNewGroupCreateEnabled();
+      });
+    });
+  }
+
+  function updateNewGroupCreateEnabled() {
+    const btn = $('#new-group-create');
+    const subject = String($('#new-group-subject')?.value || '').trim();
+    if (btn) btn.disabled = !(subject && _newGroupSelected.size);
+  }
+
+  function renderNewGroupContacts(query) {
+    const list = $('#new-group-contacts');
+    if (!list) return;
+    const q = String(query || '').trim().toLowerCase();
+    const rows = (_waContactsCache || []).filter((c) => {
+      if (!q) return true;
+      return `${c.chatName || ''} ${c.phone || ''} ${c.chatJid || ''}`.toLowerCase().includes(q);
+    });
+    if (!rows.length) {
+      list.innerHTML = `<div class="new-msg-empty">${q ? 'No matches.' : 'No WhatsApp contacts loaded yet.'}</div>`;
+      return;
+    }
+    list.innerHTML = rows.slice(0, 300).map((c) => {
+      const name = c.chatName || c.chatJid;
+      const letter = sidebarAvatarLetter(name);
+      const sub = c.phone || (c.chatJid?.endsWith('@s.whatsapp.net') ? formatPhoneLikeName(c.chatJid) : '');
+      const sel = _newGroupSelected.has(c.chatJid) ? ' selected' : '';
+      return `<button type="button" class="fwd-chat${sel}" data-jid="${escAttr(c.chatJid)}" data-name="${escAttr(name)}" role="listitem">
+        <span class="fwd-chat-avatar">${esc(letter)}</span>
+        <span class="fwd-chat-name">${esc(name)}${sub ? `<br><span style="font-weight:400;color:var(--text2);font-size:12px">${esc(sub)}</span>` : ''}</span>
+        <span class="fwd-check" aria-hidden="true"></span>
+      </button>`;
+    }).join('');
+    list.querySelectorAll('.fwd-chat').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const jid = btn.dataset.jid;
+        if (!jid) return;
+        if (_newGroupSelected.has(jid)) _newGroupSelected.delete(jid);
+        else {
+          _newGroupSelected.set(jid, {
+            chatJid: jid,
+            chatName: btn.dataset.name || jid,
+            phone: null,
+          });
+        }
+        renderNewGroupSelected();
+        renderNewGroupContacts($('#new-group-filter')?.value || '');
+        updateNewGroupCreateEnabled();
+      });
+    });
   }
 
   function renderNewMessageContacts(query) {
@@ -4372,6 +4559,53 @@
     if (e.key === 'Enter') {
       e.preventDefault();
       void startChatWithPhone();
+    }
+  });
+  $('#new-group-filter')?.addEventListener('input', (e) => renderNewGroupContacts(e.target.value));
+  $('#new-group-subject')?.addEventListener('input', () => updateNewGroupCreateEnabled());
+  $('#new-group-create')?.addEventListener('click', async () => {
+    const btn = $('#new-group-create');
+    const status = $('#new-group-status');
+    const subject = String($('#new-group-subject')?.value || '').trim();
+    const participantJids = [..._newGroupSelected.keys()];
+    if (!subject || !participantJids.length) return;
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = 'Creating group…';
+    try {
+      const r = await fetch('/api/wa/create-group', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject, participantJids }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Could not create group');
+      const jid = data.chatJid;
+      const name = data.chatName || subject;
+      if (!chatData.find((c) => c.chatJid === jid)) {
+        chatData.unshift({
+          chatJid: jid,
+          chatName: name,
+          messageCount: 0,
+          participantCount: data.participantCount || participantJids.length + 1,
+          lastMessageTs: Math.floor(Date.now() / 1000),
+          sidebarTab: 'chat',
+          unreadCount: 0,
+        });
+      } else {
+        const row = chatData.find((c) => c.chatJid === jid);
+        if (row) row.chatName = name;
+      }
+      setSidebarListTab('chat', { pin: false });
+      closeOverlay('new-group');
+      _newGroupSelected = new Map();
+      await openChat(jid);
+      updateComposerVisibility();
+      const input = document.getElementById('msg-text');
+      if (input) input.focus();
+    } catch (e) {
+      if (status) status.textContent = e.message || 'Failed';
+      else alert(e.message || 'Failed');
+      updateNewGroupCreateEnabled();
     }
   });
 
