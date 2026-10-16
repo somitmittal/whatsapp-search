@@ -89,6 +89,21 @@ export default class OllamaCloudProvider {
     return data?.message?.content?.trim() || '';
   }
 
+  async *chatStream(messages, options = {}) {
+    const { readTextChunks } = await import('./stream-chat.js');
+    const body = {
+      model: this._model,
+      messages,
+      stream: true,
+      options: {
+        num_ctx: options.numCtx ?? 16384,
+        temperature: options.temperature ?? 0.3,
+      },
+    };
+    const res = await this._fetchWithRotation('/api/chat', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    yield* readTextChunks(res.body);
+  }
+
   async caption() {
     return '[Use a vision model on Ollama Cloud for images]';
   }

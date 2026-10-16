@@ -1,11 +1,8 @@
+import { GEMINI_FALLBACK_CHAIN } from './provider-models.js';
+
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const TIMEOUT_MS = 60_000;
-
-const FALLBACK_CHAIN = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
-];
+const FALLBACK_CHAIN = GEMINI_FALLBACK_CHAIN;
 
 /** Parse one or more API keys from a comma/newline-separated string. */
 function parseKeys(raw) {
@@ -14,7 +11,7 @@ function parseKeys(raw) {
 }
 
 export default class GeminiProvider {
-  constructor(apiKey, model = 'gemini-2.5-flash') {
+  constructor(apiKey, model = 'gemini-3.8-flash') {
     this._keys = parseKeys(apiKey);
     this._keyIdx = 0;
     this._model = model;
@@ -71,6 +68,31 @@ export default class GeminiProvider {
       console.log(`[Gemini] Chat finishReason: ${candidate.finishReason}`);
     }
     return candidate?.content?.parts?.[0]?.text?.trim() || '';
+  }
+
+  async *chatStream(messages, options = {}) {
+    const { readTextChunks } = await import('./stream-chat.js');
+    const contents = messages.map(m => ({
+      role: m.role === 'system' ? 'user' : m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }],
+    }));
+    if (messages[0]?.role === 'system' && contents.length > 1) {
+      contents[0].parts[0].text = `[System instruction]\n${messages[0].content}`;
+    }
+    const body = {
+      contents,
+      generationConfig: {
+        temperature: options.temperature ?? 0.3,
+        maxOutputTokens: options.maxTokens ?? 2048,
+      },
+    };
+    const res = await this._fetchWithFallback(
+      `/models/${this._model}:streamGenerateContent?alt=sse`,
+      'POST',
+      body,
+      options.timeoutMs ?? TIMEOUT_MS,
+    );
+    yield* readTextChunks(res.body);
   }
 
   async caption(imageBase64, mimeType = 'image/jpeg') {
@@ -174,7 +196,8 @@ export default class GeminiProvider {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout);
       try {
-        const url = `${BASE_URL}${path}?key=${key}`;
+        const sep = path.includes('?') ? '&' : '?';
+        const url = `${BASE_URL}${path}${sep}key=${key}`;
         const init = { method, signal: controller.signal, headers: {} };
         if (body) {
           init.headers['Content-Type'] = 'application/json';

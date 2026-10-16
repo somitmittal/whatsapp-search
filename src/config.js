@@ -99,7 +99,7 @@ const config = {
    */
   defaultMediaIndexProvider: (process.env.MEDIA_INDEX_PROVIDER || (onRender ? 'gemini' : 'ollama')).trim(),
   defaultMediaIndexModel:
-    (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || (onRender ? 'gemini-2.5-flash' : 'llama3.2:3b')).trim(),
+    (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || (onRender ? 'gemini-3.8-flash' : 'llama3.2:3b')).trim(),
 
   /**
    * Baileys history dump. Default `false`: already-linked phones are not asked to sync again,

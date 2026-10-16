@@ -2,7 +2,7 @@ const BASE_URL = 'https://api.openai.com/v1';
 const TIMEOUT_MS = 60_000;
 
 export default class OpenAIProvider {
-  constructor(apiKey, model = 'gpt-4o-mini') {
+  constructor(apiKey, model = 'gpt-6-luna') {
     this._apiKey = apiKey || '';
     this._model = model;
   }
@@ -32,6 +32,19 @@ export default class OpenAIProvider {
     const res = await this._fetch('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content?.trim() || '';
+  }
+
+  async *chatStream(messages, options = {}) {
+    const { readTextChunks } = await import('./stream-chat.js');
+    const body = {
+      model: this._model,
+      messages,
+      temperature: options.temperature ?? 0.3,
+      max_tokens: options.maxTokens ?? 2048,
+      stream: true,
+    };
+    const res = await this._fetch('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    yield* readTextChunks(res.body);
   }
 
   async caption(imageBase64, mimeType = 'image/jpeg') {

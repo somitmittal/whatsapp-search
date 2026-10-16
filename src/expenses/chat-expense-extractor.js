@@ -61,7 +61,11 @@ ${JSON.stringify(headers)}`;
 
 function normalizeExtractedExpense(item, fallbackDate) {
   const amountMinor = parseAmountMinor(item?.amount);
-  const sourceMessageId = String(item?.source_message_id || item?.sourceMessageId || '').trim();
+  // Small models often return "[message-id]" even though the prompt asks for the bare id.
+  const sourceMessageId = String(item?.source_message_id || item?.sourceMessageId || '')
+    .trim()
+    .replace(/^\[(.+)\]$/, '$1')
+    .trim();
   if (amountMinor == null || !sourceMessageId) return null;
   return {
     source: 'chat',
@@ -109,8 +113,22 @@ ${transcript}`;
   const parsed = parseJson(raw, []);
   if (!Array.isArray(parsed)) throw new Error('Expense extraction returned invalid JSON');
   const validMessageIds = new Set(eligible.map((row) => String(row.messageId)));
+  const byId = new Map(eligible.map((row) => [String(row.messageId), row]));
   return parsed
     .map((item) => normalizeExtractedExpense(item, date))
-    .filter((entry) => entry && validMessageIds.has(entry.sourceMessageId));
+    .filter((entry) => entry && validMessageIds.has(entry.sourceMessageId))
+    .map((entry) => backfillReferenceFromMessage(entry, byId.get(entry.sourceMessageId)));
+}
+
+/** Prefer an explicit Ref … token in the message over a flaky model reference. */
+function backfillReferenceFromMessage(entry, messageRow) {
+  if (!entry) return entry;
+  const text = String(messageRow?.text || messageRow?.mediaCaption || '');
+  const match = text.match(/\bRef(?:erence)?\s*[:#-]?\s*(VOU-[A-Z0-9-]+)/i);
+  if (!match) return entry;
+  const fromText = match[1].trim();
+  const current = String(entry.reference || '').trim();
+  if (current && current.toUpperCase() === fromText.toUpperCase()) return entry;
+  return { ...entry, reference: fromText };
 }
 

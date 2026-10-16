@@ -11,7 +11,10 @@ import {
 import { parseExpenseWorkbook } from './sheet-parser.js';
 import { reconcileExpenses } from './reconciler.js';
 import { writeExpenseReport } from './report-workbook.js';
-import { isConstructionExpenseAgentEnabled } from '../smb/profiles.js';
+import {
+  isConstructionExpenseAgentEnabled,
+  isConstructionExpenseSiteAllowed,
+} from '../smb/profiles.js';
 
 const REPORT_PREFIX = 'searchable-expense-report-';
 
@@ -62,13 +65,58 @@ export default class ExpenseReconciliationService {
     mkdirSync(this._reportDir, { recursive: true });
   }
 
+  /**
+   * Auto path: only processes sheets posted in allowlisted site groups.
+   * @param {string} messageId
+   * @param {string} [tenantId]
+   */
   enqueueMessage(messageId, tenantId = getCurrentTenantId()) {
+    return this._enqueue(messageId, tenantId, { requireSiteAllowlist: true });
+  }
+
+  /**
+   * Manual path: user picked a chat (and optional sheet). Bypasses the site allowlist.
+   * @param {{ chatJid: string, messageId?: string }} input
+   * @param {string} [tenantId]
+   */
+  runForChat({ chatJid, messageId, notifyWhatsApp = true, forceRerun = false } = {}, tenantId = getCurrentTenantId()) {
+    return runWithTenant(tenantId, async () => {
+      if (!isConstructionExpenseAgentEnabled(this.db)) {
+        throw new Error('Enable the Construction expense agent first');
+      }
+      const jid = String(chatJid || '').trim();
+      if (!jid.endsWith('@g.us')) throw new Error('Pick a WhatsApp group (site chat)');
+      let mid = String(messageId || '').trim();
+      if (!mid) {
+        const latest = this.db.listExpenseSheetMessages?.(jid)?.[0];
+        if (!latest?.messageId) {
+          throw new Error('No CSV/XLSX expense sheet found in that chat yet');
+        }
+        mid = latest.messageId;
+      }
+      return this._enqueue(mid, tenantId, {
+        requireSiteAllowlist: false,
+        notifyWhatsApp: notifyWhatsApp !== false,
+        forceRerun: !!forceRerun,
+      });
+    });
+  }
+
+  _enqueue(messageId, tenantId, {
+    requireSiteAllowlist,
+    notifyWhatsApp = true,
+    forceRerun = false,
+  }) {
     if (!messageId) return null;
     const key = `${tenantId}:${messageId}`;
     if (this._pending.has(key)) return this._pending.get(key);
     const promise = runWithTenant(tenantId, async () => {
       try {
-        return await this._processMessage(messageId);
+        return await this._processMessage(messageId, {
+          requireSiteAllowlist,
+          notifyWhatsApp,
+          forceRerun,
+        });
       } finally {
         this._pending.delete(key);
       }
@@ -94,7 +142,7 @@ export default class ExpenseReconciliationService {
       const run = this.db.getExpenseReconciliationRun(runId);
       if (!run) throw new Error('Expense reconciliation run not found');
       this.db.resetExpenseReconciliationRun(runId);
-      return this.enqueueMessage(run.sourceMessageId, tenantId);
+      return this._enqueue(run.sourceMessageId, tenantId, { requireSiteAllowlist: false });
     });
   }
 
@@ -102,16 +150,21 @@ export default class ExpenseReconciliationService {
     this.onProgress?.({ runId, status, ...extra }, getCurrentTenantId());
   }
 
-  async _processMessage(messageId) {
+  async _processMessage(messageId, {
+    requireSiteAllowlist = true,
+    notifyWhatsApp = true,
+    forceRerun = false,
+  } = {}) {
     if (!isConstructionExpenseAgentEnabled(this.db)) return null;
     const row = this.db.getMessageRowByMessageId(messageId);
     const media = this.db.getMessageMediaRecord(messageId);
     const mediaPath = media?.mediaPath;
     if (!mediaPath || !existsSync(mediaPath) || !isExpenseSheetMessage(row, mediaPath)) return null;
+    if (requireSiteAllowlist && !isConstructionExpenseSiteAllowed(this.db, row.chatJid)) return null;
 
     const bounds = dayBoundsFromTimestamp(row.timestamp);
     const sourceFileName = originalExpenseFileName(row, mediaPath);
-    const run = this.db.createExpenseReconciliationRun({
+    let run = this.db.createExpenseReconciliationRun({
       chatJid: row.chatJid,
       chatName: row.chatName,
       sourceMessageId: messageId,
@@ -119,7 +172,17 @@ export default class ExpenseReconciliationService {
       sourceMediaPath: mediaPath,
       businessDate: bounds.date,
     });
-    if (!run || ['completed', 'processing'].includes(run.status)) return run;
+    if (!run) return null;
+    if (run.status === 'processing') {
+      return this.db.getExpenseReconciliationRun(run.id);
+    }
+    if (run.status === 'completed' && !forceRerun) {
+      return this.db.getExpenseReconciliationRun(run.id);
+    }
+    if (forceRerun || ['failed', 'sending', 'queued'].includes(run.status)) {
+      this.db.resetExpenseReconciliationRun(run.id);
+      run = this.db.getExpenseReconciliationRun(run.id) || run;
+    }
 
     this.db.updateExpenseReconciliationRun(run.id, { status: 'processing', error: null });
     this._emit(run.id, 'processing');
@@ -165,7 +228,22 @@ export default class ExpenseReconciliationService {
         chatEntries,
         sheetEntries: parsedSheet.entries,
         reconciliation,
+        sheetHeaders: parsedSheet.headers,
+        sheetMapping: parsedSheet.mapping,
       });
+
+      if (!notifyWhatsApp) {
+        this.db.updateExpenseReconciliationRun(run.id, {
+          status: 'completed',
+          businessDate,
+          reportPath,
+          totals: reconciliation.totals,
+          error: null,
+        });
+        this._emit(run.id, 'completed');
+        return this.db.getExpenseReconciliationRun(run.id);
+      }
+
       this.db.updateExpenseReconciliationRun(run.id, {
         status: 'sending',
         businessDate,

@@ -4,6 +4,7 @@
  */
 
 import { ollamaLocalModelList, ollamaCloudModelList } from './ollama-model-lists.js';
+import { PROVIDER_MODELS } from './provider-models.js';
 
 const PROVIDERS = {
   gemini: () => import('./gemini.js'),
@@ -22,26 +23,14 @@ export const PROVIDER_META = {
     name: 'OpenRouter (free tiers + paid)',
     free: true,
     keyRequired: true,
-    models: [
-      'google/gemma-2-9b-it:free',
-      'meta-llama/llama-3.2-3b-instruct:free',
-      'mistralai/mistral-7b-instruct:free',
-      'qwen/qwen-2.5-7b-instruct:free',
-      'meta-llama/llama-3.2-1b-instruct:free',
-    ],
+    models: [...PROVIDER_MODELS.openrouter],
   },
   munito: {
     name: 'Munito (EU · zero retention)',
     free: true,
     keyRequired: true,
     privacyNote: 'European inference (EU by default). Zero data retention for normal requests — prompts are not stored or used for training.',
-    models: [
-      'qwen/qwen3.8-27b',
-      'qwen/qwen3-32b',
-      'mistralai/mistral-small-3.2-24b-instruct',
-      'google/gemma-3-27b-it',
-      'meta-llama/llama-3.3-70b-instruct',
-    ],
+    models: [...PROVIDER_MODELS.munito],
   },
   ollama_cloud: {
     name: 'Ollama Cloud',
@@ -53,12 +42,12 @@ export const PROVIDER_META = {
     name: 'Groq (Fast Llama)',
     free: true,
     keyRequired: true,
-    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'meta-llama/llama-4-scout-17b-16e-instruct', 'qwen/qwen3-32b'],
+    models: [...PROVIDER_MODELS.groq],
   },
-  gemini: { name: 'Google Gemini', free: true, keyRequired: true, models: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'] },
-  openai: { name: 'OpenAI', free: false, keyRequired: true, models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1-nano'] },
-  claude: { name: 'Anthropic Claude', free: false, keyRequired: true, models: ['claude-sonnet-4-20250514', 'claude-haiku-4-20250414'] },
-  grok: { name: 'Grok (xAI)', free: true, keyRequired: true, models: ['grok-2-latest', 'grok-2-mini'] },
+  gemini: { name: 'Google Gemini', free: true, keyRequired: true, models: [...PROVIDER_MODELS.gemini] },
+  openai: { name: 'OpenAI', free: false, keyRequired: true, models: [...PROVIDER_MODELS.openai] },
+  claude: { name: 'Anthropic Claude', free: false, keyRequired: true, models: [...PROVIDER_MODELS.claude] },
+  grok: { name: 'Grok (xAI)', free: true, keyRequired: true, models: [...PROVIDER_MODELS.grok] },
   ollama: { name: 'Ollama (local)', free: true, keyRequired: false, models: ollamaLocalModelList() },
 };
 

@@ -3,6 +3,8 @@
  * - BASE: same names work for local `ollama run` and ollama.com API.
  * - LOCAL_PROXY: only for the desktop Ollama app (cloud-routed huge models).
  * - CLOUD_EXTRA: larger models typically used on Ollama Cloud / hosted catalog.
+ *
+ * The first five BASE tags should stay aligned between local and cloud pickers.
  */
 
 export const OLLAMA_MODELS_BASE = [
@@ -12,6 +14,16 @@ export const OLLAMA_MODELS_BASE = [
   'mistral',
   'gemma2:9b',
   'phi3:mini',
+  'llama3.1:8b',
+  'llama3.3:70b',
+  'qwen3:8b',
+  'qwen2.5:7b',
+  'gemma3:4b',
+  'gemma3:12b',
+  'phi4',
+  'deepseek-r1:7b',
+  'deepseek-r1:latest',
+  'mistral-small3.2:24b',
 ];
 
 /** Desktop app only — not the same as the ollama_cloud API provider. */
@@ -33,8 +45,11 @@ export const OLLAMA_MODELS_CLOUD_EXTRA = [
   'deepseek-r1:7b',
   'deepseek-r1:latest',
   'gemma3:4b',
+  'gemma3:12b',
+  'llama3.3:70b',
   'gpt-oss:20b',
   'gpt-oss:120b',
+  'kimi-k2:1t-cloud',
 ];
 
 export function ollamaLocalModelList() {
@@ -42,5 +57,5 @@ export function ollamaLocalModelList() {
 }
 
 export function ollamaCloudModelList() {
-  return [...OLLAMA_MODELS_BASE, ...OLLAMA_MODELS_CLOUD_EXTRA];
+  return [...new Set([...OLLAMA_MODELS_BASE, ...OLLAMA_MODELS_CLOUD_EXTRA])];
 }

@@ -2,6 +2,7 @@ import { basename } from 'path';
 import Fuse from 'fuse.js';
 import { getSmbProfileFromDb, SMB_PROFILES, synthesisSystemAddon } from '../smb/profiles.js';
 import { GROUNDING_PROMPT_RULES, groundAnswer } from './grounding.js';
+import { streamChat } from '../llm/stream-chat.js';
 
 const MAX_THREADS = 8;
 const MAX_DAYS = 8;
@@ -196,6 +197,8 @@ export default class SmartSearch {
     }
 
     const t0 = Date.now();
+    const status = typeof options.onStatus === 'function' ? options.onStatus : () => {};
+    status('Searching messages…');
 
     // Explicit calendar years far outside the archive should fail politely up front
     // instead of synthesizing an answer from unrelated recent hits.
@@ -230,6 +233,7 @@ export default class SmartSearch {
     const timeouts = searchTimeouts(this._provider);
 
     if (useThreads || dailyCount > 0) {
+      status(useThreads ? 'Choosing the relevant threads…' : 'Choosing the relevant days…');
       try {
         hierarchicalHits = await race(
           useThreads
@@ -260,6 +264,7 @@ export default class SmartSearch {
     }
 
     // ── Synthesis (single LLM call) ─────────────────────────────────
+    status('Writing the answer…');
     try {
       const result = await race(this._synthesize(q, allMessages, options), timeouts.synth);
       if (result) {
@@ -559,7 +564,7 @@ export default class SmartSearch {
     const smbLine = synthesisSystemAddon(smbProfile);
     const businessLine = businessName ? `\nBusiness name: ${businessName}.` : '';
 
-    const raw = await this._provider.chat([
+    const raw = await streamChat(this._provider, [
       {
         role: 'system',
         content:
@@ -586,7 +591,7 @@ export default class SmartSearch {
           '- Ignore messages unrelated to the question. If every message is unrelated, say you found no matching discussion.',
       },
       { role: 'user', content: `${transcript}\n\n---\nQuestion: ${query}` },
-    ], { maxTokens: 1500, temperature: 0 });
+    ], { maxTokens: 1500, temperature: 0 }, options.onDelta);
 
     if (!raw?.trim()) return null;
 

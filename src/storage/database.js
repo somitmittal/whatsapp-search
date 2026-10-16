@@ -69,6 +69,7 @@ export default class Database {
     this._ensureMessageEmbeddingsTable();
     this._ensureThreadFactsStatusColumn();
     this._ensureExpenseReconciliationTables();
+    this._ensureSearchConversationTables();
     this._ensureMessagesFtsUpdateTriggerScoped();
   }
 
@@ -194,6 +195,34 @@ export default class Database {
       );
       CREATE INDEX IF NOT EXISTS idx_expense_discrepancies_tenant_run
         ON expense_discrepancies(tenant_id, run_id);
+    `);
+  }
+
+  _ensureSearchConversationTables() {
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS search_conversations (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        title TEXT,
+        chat_jid TEXT,
+        created_at INTEGER DEFAULT (unixepoch()),
+        updated_at INTEGER DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_search_conversations_tenant_updated
+        ON search_conversations(tenant_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS search_messages (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        payload_json TEXT,
+        created_at INTEGER DEFAULT (unixepoch()),
+        FOREIGN KEY(conversation_id) REFERENCES search_conversations(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_search_messages_conversation
+        ON search_messages(tenant_id, conversation_id, created_at ASC);
     `);
   }
 
@@ -3211,6 +3240,49 @@ export default class Database {
     replace();
   }
 
+  /** Live WhatsApp groups that can be selected as construction sites. */
+  listExpenseSiteChats() {
+    return (this.getChatStats() || [])
+      .filter((row) => String(row?.chatJid || '').endsWith('@g.us'))
+      .map((row) => ({
+        chatJid: row.chatJid,
+        chatName: row.chatName || row.chatJid,
+        messageCount: row.messageCount || 0,
+        lastMessageTs: row.lastMessageTs || 0,
+      }))
+      .sort((a, b) => String(a.chatName).localeCompare(String(b.chatName), undefined, { sensitivity: 'base' }));
+  }
+
+  /**
+   * Candidate CSV/XLSX document messages in a site group (newest first).
+   * Callers still apply isExpenseSheetMessage for report-prefix / import filters.
+   */
+  listExpenseSheetMessages(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid.endsWith('@g.us')) return [];
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
+             sender, text, media_caption AS mediaCaption, media_path AS mediaPath,
+             media_type AS mediaType, timestamp
+      FROM messages
+      WHERE tenant_id = ?
+        AND chat_jid = ?
+        AND sender != 'You'
+        AND media_type = 'document'
+        AND media_path IS NOT NULL
+        AND (
+          lower(coalesce(text, '')) LIKE '%.xlsx%'
+          OR lower(coalesce(text, '')) LIKE '%.csv%'
+          OR lower(coalesce(media_caption, '')) LIKE '%.xlsx%'
+          OR lower(coalesce(media_caption, '')) LIKE '%.csv%'
+          OR lower(media_path) LIKE '%.xlsx'
+          OR lower(media_path) LIKE '%.csv'
+        )
+      ORDER BY timestamp DESC, id DESC
+    `).all(t, jid);
+  }
+
   listExpenseReconciliationRuns({ chatJid = null, status = null } = {}) {
     const t = getCurrentTenantId();
     const clauses = ['tenant_id = ?'];
@@ -3341,6 +3413,109 @@ export default class Database {
       console.error('[DB] FTS rebuild after delete failed:', err.message);
     }
     return msgCount;
+  }
+
+  createSearchConversation({ id, title = null, chatJid = null }) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      INSERT INTO search_conversations (id, tenant_id, title, chat_jid, created_at, updated_at)
+      VALUES (?, ?, ?, ?, unixepoch(), unixepoch())
+    `).run(id, t, title, chatJid);
+    return this.getSearchConversation(id);
+  }
+
+  touchSearchConversation(id, { title = undefined, chatJid = undefined } = {}) {
+    const t = getCurrentTenantId();
+    const row = this.getSearchConversation(id);
+    if (!row) return null;
+    const nextTitle = title !== undefined ? title : row.title;
+    const nextChat = chatJid !== undefined ? chatJid : row.chatJid;
+    this._db.prepare(`
+      UPDATE search_conversations
+      SET title = ?, chat_jid = ?, updated_at = unixepoch()
+      WHERE tenant_id = ? AND id = ?
+    `).run(nextTitle, nextChat, t, id);
+    return this.getSearchConversation(id);
+  }
+
+  getSearchConversation(id) {
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT id, title, chat_jid AS chatJid,
+             created_at AS createdAt, updated_at AS updatedAt
+      FROM search_conversations
+      WHERE tenant_id = ? AND id = ?
+    `).get(t, id) || null;
+  }
+
+  listSearchConversations(limit = 30) {
+    const t = getCurrentTenantId();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
+    return this._db.prepare(`
+      SELECT id, title, chat_jid AS chatJid,
+             created_at AS createdAt, updated_at AS updatedAt
+      FROM search_conversations
+      WHERE tenant_id = ?
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `).all(t, safeLimit);
+  }
+
+  addSearchMessage({ id, conversationId, role, content, payload = null }) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      INSERT INTO search_messages (id, tenant_id, conversation_id, role, content, payload_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, unixepoch())
+    `).run(
+      id,
+      t,
+      conversationId,
+      role,
+      String(content || ''),
+      payload == null ? null : JSON.stringify(payload),
+    );
+    this._db.prepare(`
+      UPDATE search_conversations SET updated_at = unixepoch()
+      WHERE tenant_id = ? AND id = ?
+    `).run(t, conversationId);
+    return this.getSearchMessage(id);
+  }
+
+  getSearchMessage(id) {
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT id, conversation_id AS conversationId, role, content,
+             payload_json AS payloadJson, created_at AS createdAt
+      FROM search_messages
+      WHERE tenant_id = ? AND id = ?
+    `).get(t, id);
+    if (!row) return null;
+    return {
+      ...row,
+      payload: row.payloadJson ? JSON.parse(row.payloadJson) : null,
+    };
+  }
+
+  listSearchMessages(conversationId, limit = 100) {
+    const t = getCurrentTenantId();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 200));
+    return this._db.prepare(`
+      SELECT id, conversation_id AS conversationId, role, content,
+             payload_json AS payloadJson, created_at AS createdAt
+      FROM search_messages
+      WHERE tenant_id = ? AND conversation_id = ?
+      ORDER BY created_at ASC, rowid ASC
+      LIMIT ?
+    `).all(t, conversationId, safeLimit).map((row) => ({
+      ...row,
+      payload: row.payloadJson ? JSON.parse(row.payloadJson) : null,
+    }));
+  }
+
+  deleteSearchConversation(id) {
+    const t = getCurrentTenantId();
+    this._db.prepare('DELETE FROM search_messages WHERE tenant_id = ? AND conversation_id = ?').run(t, id);
+    return this._db.prepare('DELETE FROM search_conversations WHERE tenant_id = ? AND id = ?').run(t, id).changes > 0;
   }
 
   /** Raw better-sqlite3 handle (e.g. auth routes for `tenants` table). */

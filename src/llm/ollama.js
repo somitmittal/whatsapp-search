@@ -81,6 +81,22 @@ export default class OllamaProvider {
     return data?.message?.content?.trim() || data?.response?.trim() || '';
   }
 
+  async *chatStream(messages, options = {}) {
+    const { readTextChunks } = await import('./stream-chat.js');
+    const body = {
+      model: this._model,
+      messages,
+      stream: true,
+      keep_alive: options.keepAlive ?? this._keepAlive,
+      options: {
+        num_ctx: options.numCtx ?? (Number(process.env.OLLAMA_NUM_CTX) || OLLAMA_DEFAULT_NUM_CTX),
+        temperature: options.temperature ?? 0.3,
+      },
+    };
+    const res = await this._fetch('/api/chat', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    yield* readTextChunks(res.body);
+  }
+
   async caption(imageBase64, _mimeType) {
     const body = {
       model: this._model,

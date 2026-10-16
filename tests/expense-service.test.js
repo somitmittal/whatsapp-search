@@ -29,7 +29,12 @@ function fakeDb(mediaPath) {
   };
   return {
     state,
-    getSetting: (key) => ({ smb_profile: 'construction', construction_expense_agent: '1' })[key] || '',
+    getSetting: (key) => ({
+      smb_profile: 'construction',
+      construction_expense_agent: '1',
+      construction_expense_site_jids: JSON.stringify(['site-a@g.us']),
+    })[key] || '',
+    listExpenseSheetMessages: () => [],
     getMessageRowByMessageId: () => ({
       messageId: 'sheet-1',
       chatJid: 'site-a@g.us',
@@ -152,6 +157,106 @@ describe('expense reconciliation automation', () => {
     });
     await expect(service.enqueueMessage('sheet-1', 'tenant-d')).resolves.toBeNull();
     expect(db.state.run).toBeNull();
+  });
+
+  test('auto-run skips groups that are not selected as sites', async () => {
+    const path = await expenseSheet('other-group.xlsx');
+    const db = fakeDb(path);
+    db.getSetting = (key) => ({
+      smb_profile: 'construction',
+      construction_expense_agent: '1',
+      construction_expense_site_jids: JSON.stringify(['other-site@g.us']),
+    })[key] || '';
+    const service = new ExpenseReconciliationService({
+      db,
+      getProvider: () => ({ chat: async () => '[]' }),
+      getWaClient: () => ({ sendDocument: async () => { throw new Error('should not send'); } }),
+    });
+    await expect(service.enqueueMessage('sheet-1', 'tenant-e')).resolves.toBeNull();
+    expect(db.state.run).toBeNull();
+  });
+
+  test('manual runForChat bypasses the site allowlist', async () => {
+    const path = await expenseSheet('manual.xlsx');
+    const db = fakeDb(path);
+    db.getSetting = (key) => ({
+      smb_profile: 'construction',
+      construction_expense_agent: '1',
+      construction_expense_site_jids: JSON.stringify([]),
+    })[key] || '';
+    db.listExpenseSheetMessages = () => [{
+      messageId: 'sheet-1',
+      chatJid: 'site-a@g.us',
+      sender: 'Accountant',
+      text: 'manual.xlsx',
+      mediaPath: path,
+    }];
+    const sends = [];
+    const service = new ExpenseReconciliationService({
+      db,
+      getProvider: () => ({
+        chat: async () => JSON.stringify([{
+          source_message_id: 'm-expense',
+          amount: '500',
+          currency: 'INR',
+          direction: 'debit',
+          date: '2026-10-15',
+          payee: 'Fuel pump',
+          category: 'fuel',
+          description: 'Diesel',
+        }]),
+      }),
+      getWaClient: () => ({
+        sendDocument: async (chatJid, reportPath, options) => {
+          sends.push({ chatJid, reportPath, options });
+          return { key: { id: 'report-message' } };
+        },
+      }),
+    });
+    await service.runForChat({ chatJid: 'site-a@g.us' }, 'tenant-f');
+    expect(sends).toHaveLength(1);
+    expect(sends[0].chatJid).toBe('site-a@g.us');
+  });
+
+  test('interactive run completes without sending WhatsApp when notifyWhatsApp is false', async () => {
+    const path = await expenseSheet('interactive.xlsx');
+    const db = fakeDb(path);
+    db.listExpenseSheetMessages = () => [{
+      messageId: 'sheet-1',
+      chatJid: 'site-a@g.us',
+      sender: 'Accountant',
+      text: 'interactive.xlsx',
+      mediaPath: path,
+    }];
+    let sendCount = 0;
+    const service = new ExpenseReconciliationService({
+      db,
+      getProvider: () => ({
+        chat: async () => JSON.stringify([{
+          source_message_id: 'm-expense',
+          amount: '500',
+          currency: 'INR',
+          direction: 'debit',
+          date: '2026-10-15',
+          payee: 'Fuel pump',
+          category: 'fuel',
+          description: 'Diesel',
+        }]),
+      }),
+      getWaClient: () => ({
+        sendDocument: async () => {
+          sendCount += 1;
+          return { key: { id: 'should-not-send' } };
+        },
+      }),
+    });
+    const run = await service.runForChat(
+      { chatJid: 'site-a@g.us', notifyWhatsApp: false },
+      'tenant-g',
+    );
+    expect(sendCount).toBe(0);
+    expect(run.status).toBe('completed');
+    expect(run.reportPath).toBeTruthy();
   });
 });
 

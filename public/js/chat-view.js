@@ -9,7 +9,7 @@ import { activeChatHasLocalMessages } from './menus.js';
 import { openForwardOverlay, promptDeleteMessage } from './message-actions.js';
 import { buildChatMessagesHtml, mediaIndexStateHtml, postWaReaction, renderMessages } from './messages-render.js';
 import { closeAllOverlays, setMobileChatOpen, switchPanel } from './overlays.js';
-import { clearSearch, doSearch } from './search.js';
+import { clearSearch, openSearchAssistant } from './search.js';
 import { renderChatsFromState, setSidebarListTab, sidebarTabOf } from './sidebar.js';
 import { $, $$, esc, escAttr } from './util.js';
 
@@ -168,7 +168,11 @@ export async function openChat(jid, focusMessageId = null) {
   switchPanel();
   updateComposerVisibility();
   const aiChatBtn = document.getElementById('btn-chat-ai-search');
-  if (aiChatBtn) aiChatBtn.style.display = shouldHideComposerForJid(jid) ? 'none' : 'flex';
+  if (aiChatBtn) {
+    const hideAi = !jid || jid === 'status@broadcast' || jid.endsWith('@broadcast')
+      || jid.endsWith('@newsletter') || jid.endsWith('@bot');
+    aiChatBtn.style.display = hideAi ? 'none' : 'flex';
+  }
   try {
     const msgUrl = focusMessageId
       ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(focusMessageId)}`
@@ -441,11 +445,10 @@ export function initChatView() {
       if (!block?.dataset?.messageId) return;
       e.stopPropagation();
       const pr = (aiBtn.getAttribute('data-ai-preview') || '').trim();
-      $('#q').value = pr
+      const seed = pr
         ? `About this message: ${pr.slice(0, 550)}${pr.length > 550 ? '…' : ''}`
         : 'Summarize the conversation around this message.';
-      $('#q-clear').classList.add('visible');
-      await doSearch();
+      await openSearchAssistant({ showThreads: true, seedQuery: seed, runSeed: true });
       return;
     }
     const rep = e.target.closest('[data-wa-reply]');

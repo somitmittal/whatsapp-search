@@ -2,7 +2,7 @@ const BASE_URL = 'https://api.anthropic.com/v1';
 const TIMEOUT_MS = 60_000;
 
 export default class ClaudeProvider {
-  constructor(apiKey, model = 'claude-sonnet-4-20250514') {
+  constructor(apiKey, model = 'claude-sonnet-5-5') {
     this._apiKey = apiKey || '';
     this._model = model;
   }
@@ -39,6 +39,21 @@ export default class ClaudeProvider {
     const res = await this._fetch('/messages', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
     const data = await res.json();
     return data?.content?.[0]?.text?.trim() || '';
+  }
+
+  async *chatStream(messages, options = {}) {
+    const { readTextChunks } = await import('./stream-chat.js');
+    const systemMsg = messages.find(m => m.role === 'system');
+    const nonSystem = messages.filter(m => m.role !== 'system');
+    const streamBody = {
+      model: this._model,
+      max_tokens: options.maxTokens ?? 2048,
+      messages: nonSystem,
+      stream: true,
+    };
+    if (systemMsg) streamBody.system = systemMsg.content;
+    const streamed = await this._fetch('/messages', 'POST', streamBody, options.timeoutMs ?? TIMEOUT_MS);
+    yield* readTextChunks(streamed.body);
   }
 
   async caption(imageBase64, mimeType = 'image/jpeg') {

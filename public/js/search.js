@@ -1,111 +1,428 @@
 import { store } from './store.js';
-import { isSmbBusinessMode, smbSearchPlaceholder } from './business.js';
+import { isSmbBusinessMode } from './business.js';
 import { openChat } from './chat-view.js';
 import { messageTimestampToDate } from './format.js';
 import { switchPanel } from './overlays.js';
 import { $, esc, escAttr } from './util.js';
 
-export function clearSearch() {
-  store.searchActive = false;
-  const qEl = $('#q');
-  qEl.value = '';
-  qEl.placeholder = smbSearchPlaceholder();
-  $('#q-media').value = '';
-  $('#q-clear').classList.remove('visible');
-  $('#search-results').innerHTML = '';
-  $('#search-loading').classList.remove('visible');
+function authHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  if (window.SearchableAccount) Object.assign(headers, window.SearchableAccount.authHeaders());
+  return headers;
 }
 
-export async function doSearch() {
-  const query = $('#q').value.trim();
-  if (!query) return;
-  const chatJid = store.activeChat || null;
-  const mediaType = $('#q-media').value || null;
-  store.searchActive = true;
-  $('#q-btn').disabled = true;
-  $('#q-clear').classList.add('visible');
+function installId() {
+  return window.SearchableAccount ? window.SearchableAccount.getInstallId() : undefined;
+}
+
+function followUpInput() {
+  return $('#search-followup-input');
+}
+
+export function clearSearch() {
+  store.searchActive = false;
+  store.searchConversationId = null;
   $('#search-results').innerHTML = '';
-  $('#search-panel-title').textContent = `"${query.slice(0, 40)}${query.length > 40 ? '…' : ''}"`;
+  $('#search-loading').classList.remove('visible');
+  const follow = $('#search-followup');
+  if (follow) follow.hidden = true;
+  const fu = followUpInput();
+  if (fu) fu.value = '';
+  setThreadsOpen(false);
+}
+
+/**
+ * Open the ChatGPT-style search assistant (used by the Gemini/sparkle button).
+ * @param {{ showThreads?: boolean, startNew?: boolean, seedQuery?: string, runSeed?: boolean }} [opts]
+ */
+export async function openSearchAssistant(opts = {}) {
+  const {
+    showThreads = true,
+    startNew = false,
+    seedQuery = '',
+    runSeed = false,
+  } = opts;
+  if (startNew) store.searchConversationId = null;
+  store.searchActive = true;
+  switchPanel();
+  const follow = $('#search-followup');
+  if (follow) follow.hidden = false;
+  if (showThreads) setThreadsOpen(true);
+
+  const chatName = store.activeChat
+    ? (store.chatData.find((c) => c.chatJid === store.activeChat)?.chatName || 'this chat')
+    : 'your chats';
+
+  if (store.searchConversationId && !startNew && !seedQuery) {
+    await openConversation(store.searchConversationId);
+    followUpInput()?.focus();
+    return;
+  }
+
+  if (!store.searchConversationId || startNew) {
+    $('#search-panel-title').textContent = 'AI search';
+    $('#search-results').innerHTML = `<div class="search-chat-empty">Ask anything about <strong>${esc(chatName)}</strong>, open a past thread on the left, or compare today’s expenses with the end-of-day Excel sheet.</div>`;
+  }
+
+  if (seedQuery && runSeed) {
+    await doSearch(seedQuery);
+    return;
+  }
+
+  const fu = followUpInput();
+  if (fu) {
+    fu.placeholder = store.activeChat ? `Ask about ${chatName}…` : 'Ask AI…';
+    if (seedQuery) fu.value = seedQuery;
+    fu.focus();
+  }
+}
+
+function formatThreadWhen(updatedAt) {
+  if (!updatedAt) return '';
+  return new Date(Number(updatedAt) * 1000).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}
+
+async function fetchConversations(limit = 40) {
+  const res = await fetch(`/api/search/conversations?limit=${limit}`, { headers: authHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to load threads');
+  return data.conversations || [];
+}
+
+function renderThreadButtons(list, { itemClass, activeId }) {
+  return list.map((c) => {
+    const title = esc(c.title || 'Untitled search');
+    const when = formatThreadWhen(c.updatedAt);
+    const active = activeId && c.id === activeId ? ' active' : '';
+    return `<button type="button" class="${itemClass}${active}" data-conversation-id="${escAttr(c.id)}">
+      <span class="search-history-title search-thread-title">${title}</span>
+      <span class="search-history-meta search-thread-meta">${esc(when)}</span>
+    </button>`;
+  }).join('');
+}
+
+function setThreadsOpen(open) {
+  const aside = $('#search-threads');
+  const toggle = $('#btn-search-threads');
+  if (!aside) return;
+  aside.hidden = !open;
+  if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) void refreshThreadsList();
+}
+
+async function refreshThreadsList() {
+  const listEl = $('#search-threads-list');
+  if (!listEl) return;
+  try {
+    const list = await fetchConversations(40);
+    if (!list.length) {
+      listEl.innerHTML = '<div class="search-threads-empty">No past threads yet.<br>Ask something in the search bar to start one.</div>';
+      return;
+    }
+    listEl.innerHTML = renderThreadButtons(list, {
+      itemClass: 'search-thread-item',
+      activeId: store.searchConversationId,
+    });
+  } catch {
+    listEl.innerHTML = '<div class="search-threads-empty">Could not load threads</div>';
+  }
+}
+
+async function openConversation(id) {
+  store.searchConversationId = id;
+  store.searchActive = true;
   switchPanel();
   $('#search-loading').classList.add('visible');
+  $('#search-loading-label').textContent = 'Loading…';
   try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (window.SearchableAccount) Object.assign(headers, window.SearchableAccount.authHeaders());
-    const installId = window.SearchableAccount ? window.SearchableAccount.getInstallId() : undefined;
-    const res = await fetch('/api/search', {
-      method: 'POST', headers,
-      body: JSON.stringify({
-        query,
-        chatJid,
-        mediaType,
-        businessContext: store.sidebarListTab === 'business' && isSmbBusinessMode(),
-        installId,
-      }),
-    });
+    const res = await fetch(`/api/search/conversations/${encodeURIComponent(id)}`, { headers: authHeaders() });
     const data = await res.json();
-    if (res.status === 402 || data.code === 'trial_expired' || data.code === 'account_required') {
-      const reason = data.code || data.entitlement?.reason || 'account_required';
-      let actions = '';
-      if (reason === 'trial_expired' && window.__searchableAppConfig?.stripeEnabled && window.SearchableAccount) {
-        actions = `<button type="button" class="btn" id="sr-checkout" style="margin-top:12px;background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;">Subscribe to Pro</button>`;
-      } else if (window.SearchableAccount) {
-        actions = `<button type="button" class="btn" id="sr-signin" style="margin-top:12px;background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;">Sign in for AI search</button>`;
-      }
-      $('#search-results').innerHTML = `<div style="text-align:center;padding:48px 24px;color:var(--text)">
-          <p style="font-weight:600;margin-bottom:8px">${esc(data.error || 'AI search requires an account')}</p>
-          <p style="font-size:13px;color:var(--text2)">Browse and import stay free. Pro unlocks AI search.</p>
-          ${actions}
-        </div>`;
-      const checkout = $('#sr-checkout');
-      if (checkout) checkout.onclick = () => {
-        window.SearchableAccount.startCheckout(window.__searchableAppConfig || {}).catch((e) => alert(e.message));
-      };
-      const signin = $('#sr-signin');
-      if (signin) signin.onclick = () => {
-        window.SearchableAccount.openGate(window.__searchableAppConfig || {});
-      };
-    } else if (data.error) {
-      $('#search-results').innerHTML = `<div style="text-align:center;padding:60px;color:var(--danger)">${esc(data.error)}</div>`;
-    } else {
-      if (window.SearchableAccount) {
-        window.SearchableAccount.track(window.__searchableAppConfig || {}, 'ai_search_run', {});
-      }
-      renderSearch(data, query, chatJid);
-    }
+    if (!res.ok) throw new Error(data.error || 'Failed to load conversation');
+    $('#search-panel-title').textContent = data.conversation?.title || 'AI search';
+    renderConversation(data.messages || []);
+    const follow = $('#search-followup');
+    if (follow) follow.hidden = false;
+    void refreshThreadsList();
+    followUpInput()?.focus();
   } catch (err) {
-    $('#search-results').innerHTML = `<div style="text-align:center;padding:60px;color:var(--danger)">${esc(err.message)}</div>`;
+    $('#search-results').innerHTML = `<div class="search-chat-error">${esc(err.message)}</div>`;
   } finally {
-    $('#q-btn').disabled = false;
     $('#search-loading').classList.remove('visible');
   }
 }
 
-function renderSearch(data, query, chatJid) {
-  let html = '';
-  const scope = chatJid ? (store.chatData.find(c => c.chatJid === chatJid)?.chatName || 'this chat') : 'all chats';
-  const srcCount = data.sources?.length || 0;
-  $('#search-panel-title').textContent = `"${query.slice(0, 35)}${query.length > 35 ? '…' : ''}"`;
-  html += `<div class="sr-header"><span style="font-size:11px;color:var(--text2)">${srcCount} source${srcCount !== 1 ? 's' : ''} · ${esc(scope)}</span></div>`;
-  if (data.answer) html += `<div class="answer-card">${formatAnswer(data.answer)}</div>`;
-  if (data.sources?.length) {
-    html += '<div class="sources"><h4>Sources</h4>';
-    const seen = new Set();
-    for (const s of data.sources) {
-      const k = `${s.chatName}|${s.sender}|${s.timestamp}`;
-      if (seen.has(k)) continue; seen.add(k);
-      const sourceDate = messageTimestampToDate(s.timestamp);
-      const ts = sourceDate ? sourceDate.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) : 'Unknown date';
-      const canJump = s.chatJid && s.messageId;
-      const dis = canJump ? '' : ' src-disabled';
-      const title = canJump ? 'View in chat' : 'Open the chat from the sidebar to jump (missing id)';
-      const dChat = s.chatJid ? ` data-chat-jid="${escAttr(s.chatJid)}"` : '';
-      const dMid = s.messageId ? ` data-message-id="${escAttr(s.messageId)}"` : '';
-      html += `<div class="src-item${dis}"${dChat}${dMid} title="${escAttr(title)}"><div class="meta">${esc(s.chatName || '')} &bull; ${esc(s.sender || '')} &bull; ${esc(ts)}</div><div>${esc((s.text || '').slice(0, 250))}</div></div>`;
-    }
-    html += '</div>';
+export async function doSearch(overrideMessage = null) {
+  const fu = followUpInput();
+  const query = String(overrideMessage != null ? overrideMessage : (fu?.value || '')).trim();
+  if (!query) return;
+  const chatJid = store.activeChat || null;
+  store.searchActive = true;
+  const sendBtn = $('#search-followup-send');
+  if (sendBtn) sendBtn.disabled = true;
+  switchPanel();
+  $('#search-loading').classList.add('visible');
+  $('#search-loading-label').textContent = 'Thinking…';
+
+  const follow = $('#search-followup');
+  if (follow) follow.hidden = false;
+
+  if (store.searchConversationId) {
+    appendOptimisticUser(query);
+  } else {
+    $('#search-results').innerHTML = '';
   }
-  if (!data.answer && !srcCount) html += '<div style="text-align:center;padding:60px;color:var(--text2)">No results found.</div>';
-  $('#search-results').innerHTML = html;
+
+  try {
+    const res = await fetch('/api/search/chat', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        message: query,
+        stream: true,
+        conversationId: store.searchConversationId || undefined,
+        chatJid,
+        mediaType: null,
+        businessContext: store.sidebarListTab === 'business' && isSmbBusinessMode(),
+        installId: installId(),
+      }),
+    });
+    const ctype = res.headers.get('content-type') || '';
+    if (ctype.includes('application/json')) {
+      const data = await res.json();
+      if (res.status === 402 || data.code === 'trial_expired' || data.code === 'account_required') {
+        renderPaywall(data);
+      } else if (data.error) {
+        $('#search-results').innerHTML = `<div class="search-chat-error">${esc(data.error)}</div>`;
+      } else {
+        applySearchResult(data, fu);
+      }
+      return;
+    }
+    if (!res.ok || !res.body) {
+      throw new Error(`Search failed (${res.status})`);
+    }
+    const data = await readSearchStream(res);
+    if (!data) throw new Error('Search ended before a reply');
+    applySearchResult(data, fu);
+  } catch (err) {
+    $('#search-results').innerHTML = `<div class="search-chat-error">${esc(err.message)}</div>`;
+  } finally {
+    $('#search-loading').classList.remove('visible');
+    if (sendBtn) sendBtn.disabled = false;
+  }
+}
+
+function applySearchResult(data, fu) {
+  if (window.SearchableAccount) {
+    window.SearchableAccount.track(window.__searchableAppConfig || {}, 'ai_search_run', {});
+  }
+  store.searchConversationId = data.conversationId || store.searchConversationId;
+  if (data.conversation?.title) {
+    $('#search-panel-title').textContent = data.conversation.title;
+  }
+  renderConversation(data.messages || []);
+  if (fu) fu.value = '';
+  if (!$('#search-threads')?.hidden) void refreshThreadsList();
+  fu?.focus();
+}
+
+function beginLiveAnswer() {
+  const thread = $('#search-results');
+  if (!thread || $('#sc-live')) return;
+  thread.insertAdjacentHTML('beforeend', `
+    <div class="sc-msg sc-assistant" id="sc-live">
+      <div class="sc-status" id="sc-live-status">Thinking…</div>
+      <div class="sc-bubble" id="sc-live-bubble"><span class="sc-caret"></span></div>
+    </div>`);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function paintLive(status, text) {
+  const statusEl = $('#sc-live-status');
+  const bubble = $('#sc-live-bubble');
+  if (statusEl && status) statusEl.textContent = status;
+  if (bubble) {
+    bubble.innerHTML = text
+      ? `${formatAnswer(text)}<span class="sc-caret"></span>`
+      : '<span class="sc-caret"></span>';
+  }
+  const thread = $('#search-results');
+  if (thread) thread.scrollTop = thread.scrollHeight;
+}
+
+async function readSearchStream(res) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let answer = '';
+  let donePayload = null;
+  beginLiveAnswer();
+  $('#search-loading').classList.remove('visible');
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const blocks = buf.split('\n\n');
+    buf = blocks.pop() || '';
+    for (const block of blocks) {
+      const line = block.split('\n').find((row) => row.startsWith('data:'));
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+      if (ev.type === 'status') paintLive(ev.text, answer);
+      else if (ev.type === 'delta') {
+        answer += ev.text || '';
+        paintLive(null, answer);
+      } else if (ev.type === 'done') donePayload = ev;
+      else if (ev.type === 'error') throw new Error(ev.error || 'Search failed');
+    }
+  }
+  return donePayload;
+}
+
+function renderPaywall(data) {
+  const reason = data.code || data.entitlement?.reason || 'account_required';
+  let actions = '';
+  if (reason === 'trial_expired' && window.__searchableAppConfig?.stripeEnabled && window.SearchableAccount) {
+    actions = `<button type="button" class="btn" id="sr-checkout" style="margin-top:12px;background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;">Subscribe to Pro</button>`;
+  } else if (window.SearchableAccount) {
+    actions = `<button type="button" class="btn" id="sr-signin" style="margin-top:12px;background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;">Sign in for AI search</button>`;
+  }
+  $('#search-results').innerHTML = `<div style="text-align:center;padding:48px 24px;color:var(--text)">
+      <p style="font-weight:600;margin-bottom:8px">${esc(data.error || 'AI search requires an account')}</p>
+      <p style="font-size:13px;color:var(--text2)">Browse and import stay free. Pro unlocks AI search.</p>
+      ${actions}
+    </div>`;
+  const checkout = $('#sr-checkout');
+  if (checkout) checkout.onclick = () => {
+    window.SearchableAccount.startCheckout(window.__searchableAppConfig || {}).catch((e) => alert(e.message));
+  };
+  const signin = $('#sr-signin');
+  if (signin) signin.onclick = () => {
+    window.SearchableAccount.openGate(window.__searchableAppConfig || {});
+  };
+}
+
+function appendOptimisticUser(text) {
+  const thread = $('#search-results');
+  if (!thread) return;
+  thread.insertAdjacentHTML('beforeend', `
+    <div class="sc-msg sc-user">
+      <div class="sc-bubble">${esc(text)}</div>
+    </div>
+  `);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function renderConversation(messages) {
+  const thread = $('#search-results');
+  if (!thread) return;
+  if (!messages.length) {
+    thread.innerHTML = '<div class="search-chat-empty">Ask anything — try comparing today’s expenses with the end-of-day Excel sheet.</div>';
+    return;
+  }
+  let html = '';
+  for (const m of messages) {
+    if (m.role === 'user') {
+      html += `<div class="sc-msg sc-user"><div class="sc-bubble">${esc(m.content || '')}</div></div>`;
+      continue;
+    }
+    html += `<div class="sc-msg sc-assistant">`;
+    html += `<div class="sc-bubble">${formatAnswer(m.content || '')}</div>`;
+    if (m.payload?.expenseDiff) {
+      html += renderExpenseDiff(m.payload.expenseDiff);
+    }
+    if (m.payload?.sources?.length) {
+      html += renderSources(m.payload.sources);
+    }
+    html += `</div>`;
+  }
+  thread.innerHTML = html;
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function renderExpenseDiff(diff) {
+  const rows = diff.sheetRows || diff.discrepancies || [];
+  const totals = diff.totals || {};
+  const matched = totals.matchedCount ?? rows.filter((r) => r.rowTone === 'match').length;
+  const red = totals.onlySheetCount ?? rows.filter((r) => r.rowTone === 'extra-sheet').length;
+  const yellow = totals.missingSheetCount ?? rows.filter((r) => r.rowTone === 'missing-sheet' || r.rowTone === 'extra-chat').length;
+  const amber = totals.mismatchCount ?? rows.filter((r) => r.rowTone === 'mismatch').length;
+  let html = `<div class="expense-diff expense-sheet">
+    <div class="expense-diff-head">
+      <div class="expense-diff-title">${esc(diff.chatName || 'Site')} · ${esc(diff.businessDate || '')}</div>
+      <div class="expense-diff-meta">${esc(diff.sourceFileName || 'Expense sheet')} · Matched ${matched} · Extra ${red} · Missing ${yellow} · Differs ${amber}</div>
+    </div>`;
+  if (diff.reportAvailable && diff.runId) {
+    html += `<a class="expense-diff-report" href="/api/expenses/runs/${encodeURIComponent(diff.runId)}/report">Download colored Excel sheet</a>`;
+  }
+  if (!rows.length) {
+    html += `<div class="expense-diff-ok">No expense rows to show.</div></div>`;
+    return html;
+  }
+  html += `<div class="expense-sheet-scroll"><table class="expense-sheet-table">
+    <thead><tr>
+      <th>Date</th><th>Category</th><th>Payee</th><th>Description</th>
+      <th>Chat amount</th><th>Sheet amount</th><th>Status</th>
+    </tr></thead><tbody>`;
+  for (const d of rows) {
+    let tone = d.rowTone || 'warn';
+    if (tone === 'extra-chat') tone = 'missing-sheet';
+    if (d.type === 'missing_from_sheet') tone = 'missing-sheet';
+    if (d.type === 'only_in_sheet') tone = 'extra-sheet';
+    if (d.type === 'amount_mismatch') tone = 'mismatch';
+    if (d.type === 'match') tone = 'match';
+    const status = d.status
+      || (tone === 'missing-sheet' ? 'Missing in sheet'
+        : tone === 'extra-sheet' ? 'Extra on sheet (not in chat)'
+          : tone === 'mismatch' ? 'Amount differs'
+            : tone === 'match' ? 'Matched'
+              : (d.detail || 'Review'));
+    const chatAmt = d.chatAmount || d.chat?.amount || '—';
+    const sheetAmt = d.sheetAmount || d.sheet?.amount || '—';
+    html += `<tr class="expense-row expense-row-${escAttr(tone)}">
+      <td>${esc(d.date || d.chat?.date || d.sheet?.date || '—')}</td>
+      <td>${esc(d.category || d.chat?.category || d.sheet?.category || '—')}</td>
+      <td>${esc(d.payee || d.chat?.payee || d.sheet?.payee || '—')}</td>
+      <td>${esc(d.description || d.chat?.description || d.sheet?.description || '—')}</td>
+      <td class="expense-amt">${esc(chatAmt)}</td>
+      <td class="expense-amt">${esc(sheetAmt)}</td>
+      <td class="expense-status">${esc(status)}</td>
+    </tr>`;
+  }
+  html += `</tbody></table></div>
+    <div class="expense-sheet-legend">
+      <span class="leg leg-match">Green — matched</span>
+      <span class="leg leg-sheet">Red — extra on sheet</span>
+      <span class="leg leg-missing">Yellow — missing in sheet</span>
+      <span class="leg leg-mismatch">Amber — amount differs</span>
+    </div>
+  </div>`;
+  return html;
+}
+
+function renderSources(sources) {
+  let html = '<div class="sources"><h4>Sources</h4>';
+  const seen = new Set();
+  for (const s of sources) {
+    const k = `${s.chatName}|${s.sender}|${s.timestamp}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const sourceDate = messageTimestampToDate(s.timestamp);
+    const ts = sourceDate
+      ? sourceDate.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+      : 'Unknown date';
+    const canJump = s.chatJid && s.messageId;
+    const dis = canJump ? '' : ' src-disabled';
+    const title = canJump ? 'View in chat' : 'Open the chat from the sidebar to jump (missing id)';
+    const dChat = s.chatJid ? ` data-chat-jid="${escAttr(s.chatJid)}"` : '';
+    const dMid = s.messageId ? ` data-message-id="${escAttr(s.messageId)}"` : '';
+    html += `<div class="src-item${dis}"${dChat}${dMid} title="${escAttr(title)}"><div class="meta">${esc(s.chatName || '')} &bull; ${esc(s.sender || '')} &bull; ${esc(ts)}</div><div>${esc((s.text || '').slice(0, 250))}</div></div>`;
+  }
+  html += '</div>';
+  return html;
 }
 
 function formatAnswer(t) {
@@ -113,24 +430,147 @@ function formatAnswer(t) {
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/\*([^*]+)\*/g, '<strong>$1</strong>');
   s = s.replace(/_([^_]+)_/g, '<em>$1</em>');
+  s = s.replace(/\n/g, '<br>');
   return s;
 }
 
+function sendFollowUp() {
+  const input = $('#search-followup-input');
+  const text = input?.value?.trim();
+  if (!text) return;
+  const sendBtn = $('#search-followup-send');
+  if (sendBtn) sendBtn.disabled = true;
+  void doSearch(text);
+}
+
+const SEARCH_PANEL_WIDTH_KEY = 'searchable.searchPanelWidth';
+/** Matches #panel-search min-width / default width in app.css (and sidebar min-width). */
+const SEARCH_PANEL_MIN = 340;
+const SEARCH_PANEL_DEFAULT = 480;
+
+function clampSearchPanelWidth(px, parentWidth) {
+  const max = Math.max(
+    SEARCH_PANEL_MIN,
+    Math.min(900, Math.floor(parentWidth - 280)),
+  );
+  return Math.max(SEARCH_PANEL_MIN, Math.min(max, Math.round(px)));
+}
+
+function applySearchPanelWidth(px) {
+  const panel = $('#panel-search');
+  if (!panel) return;
+  const parent = panel.parentElement;
+  const parentWidth = parent?.clientWidth || window.innerWidth;
+  const width = clampSearchPanelWidth(px, parentWidth);
+  panel.style.width = `${width}px`;
+  panel.style.maxWidth = 'none';
+  return width;
+}
+
+function restoreSearchPanelWidth() {
+  try {
+    const saved = Number(localStorage.getItem(SEARCH_PANEL_WIDTH_KEY));
+    if (Number.isFinite(saved) && saved >= SEARCH_PANEL_MIN) {
+      applySearchPanelWidth(saved);
+    }
+  } catch { /* ignore */ }
+}
+
+function initSearchPanelResize() {
+  const handle = $('#search-panel-resizer');
+  const panel = $('#panel-search');
+  if (!handle || !panel) return;
+  restoreSearchPanelWidth();
+
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  const onMove = (e) => {
+    if (!dragging) return;
+    const clientX = e.touches?.[0]?.clientX ?? e.clientX;
+    const next = startWidth + (startX - clientX);
+    applySearchPanelWidth(next);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    panel.classList.remove('resizing');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    try {
+      localStorage.setItem(SEARCH_PANEL_WIDTH_KEY, String(panel.offsetWidth));
+    } catch { /* ignore */ }
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('touchmove', onMove);
+    window.removeEventListener('touchend', onUp);
+  };
+  const onDown = (e) => {
+    if (window.matchMedia('(max-width: 700px)').matches) return;
+    e.preventDefault();
+    dragging = true;
+    startX = e.touches?.[0]?.clientX ?? e.clientX;
+    startWidth = panel.offsetWidth;
+    panel.classList.add('resizing');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+  };
+
+  handle.addEventListener('pointerdown', onDown);
+  handle.addEventListener('touchstart', onDown, { passive: false });
+  window.addEventListener('resize', () => {
+    if (panel.style.width) applySearchPanelWidth(panel.offsetWidth);
+  });
+}
+
 export function initSearch() {
-  $('#q-btn').addEventListener('click', doSearch);
-  $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
-  $('#q-clear').addEventListener('click', () => { clearSearch(); switchPanel(); });
-  $('#btn-close-search').addEventListener('click', () => { clearSearch(); switchPanel(); });
+  initSearchPanelResize();
+
+  $('#btn-search-threads')?.addEventListener('click', () => {
+    const aside = $('#search-threads');
+    setThreadsOpen(!!aside?.hidden);
+  });
+  $('#btn-close-search-threads')?.addEventListener('click', () => setThreadsOpen(false));
+  $('#search-threads-list')?.addEventListener('click', (e) => {
+    const item = e.target.closest('.search-thread-item');
+    if (!item) return;
+    const id = item.getAttribute('data-conversation-id');
+    if (id) void openConversation(id);
+  });
+
+  $('#btn-close-search')?.addEventListener('click', () => {
+    setThreadsOpen(false);
+    clearSearch();
+    switchPanel();
+  });
+  $('#btn-new-search-chat')?.addEventListener('click', () => {
+    store.searchConversationId = null;
+    $('#search-results').innerHTML = '<div class="search-chat-empty">New chat — type below, or open a past thread from the menu.</div>';
+    $('#search-panel-title').textContent = 'AI search';
+    const fu = followUpInput();
+    if (fu) {
+      fu.value = '';
+      fu.focus();
+    }
+    void refreshThreadsList();
+  });
+
+  $('#search-followup-send')?.addEventListener('click', sendFollowUp);
+  $('#search-followup-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendFollowUp();
+  });
 
   document.getElementById('btn-chat-ai-search')?.addEventListener('click', () => {
     if (!store.activeChat) return;
-    const qEl = $('#q');
-    qEl.placeholder = 'Ask AI about this chat…';
-    qEl.focus();
-    try { qEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* */ }
+    void openSearchAssistant({ showThreads: true, startNew: !store.searchConversationId });
   });
 
-  $('#search-results').addEventListener('click', (e) => {
+  $('#search-results')?.addEventListener('click', (e) => {
     const item = e.target.closest('.src-item');
     if (!item || item.classList.contains('src-disabled')) return;
     const jid = item.getAttribute('data-chat-jid');

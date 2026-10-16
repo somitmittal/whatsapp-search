@@ -2,7 +2,7 @@ const BASE_URL = 'https://api.x.ai/v1';
 const TIMEOUT_MS = 60_000;
 
 export default class GrokProvider {
-  constructor(apiKey, model = 'grok-2-latest') {
+  constructor(apiKey, model = 'grok-4.7') {
     this._apiKey = apiKey || '';
     this._model = model;
     this._availableModels = null;
@@ -52,10 +52,23 @@ export default class GrokProvider {
     return data?.choices?.[0]?.message?.content?.trim() || '';
   }
 
+  async *chatStream(messages, options = {}) {
+    const { readTextChunks } = await import('./stream-chat.js');
+    const body = {
+      model: this._model,
+      messages,
+      temperature: options.temperature ?? 0.3,
+      max_tokens: options.maxTokens ?? 2048,
+      stream: true,
+    };
+    const res = await this._fetch('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    yield* readTextChunks(res.body);
+  }
+
   async caption(imageBase64, mimeType = 'image/jpeg') {
-    const visionModel = this._availableModels?.includes('grok-2-vision-latest')
-      ? 'grok-2-vision-latest'
-      : this._model;
+    const visionModel = this._availableModels?.includes('grok-4.7')
+      ? 'grok-4.7'
+      : (this._availableModels?.includes('grok-4.6') ? 'grok-4.6' : this._model);
 
     const body = {
       model: visionModel,

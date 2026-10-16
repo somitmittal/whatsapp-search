@@ -1,3 +1,4 @@
+import { PROVIDER_MODELS } from './provider-models.js';
 const BASE_URL = 'https://openrouter.ai/api/v1';
 const TIMEOUT_MS = 120_000;
 
@@ -11,7 +12,7 @@ function parseKeys(raw) {
  * @see https://openrouter.ai/docs
  */
 export default class OpenRouterProvider {
-  constructor(apiKey, model = 'google/gemma-2-9b-it:free') {
+  constructor(apiKey, model = PROVIDER_MODELS.openrouter[0]) {
     this._keys = parseKeys(apiKey);
     this._keyIdx = 0;
     this._model = model;
@@ -59,6 +60,19 @@ export default class OpenRouterProvider {
     const res = await this._fetchWithRotation('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content?.trim() || '';
+  }
+
+  async *chatStream(messages, options = {}) {
+    const { readTextChunks } = await import('./stream-chat.js');
+    const body = {
+      model: this._model,
+      messages,
+      temperature: options.temperature ?? 0.2,
+      max_tokens: options.maxTokens ?? 2048,
+      stream: true,
+    };
+    const res = await this._fetchWithRotation('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    yield* readTextChunks(res.body);
   }
 
   async caption() {

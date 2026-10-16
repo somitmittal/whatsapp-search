@@ -7,6 +7,8 @@ export const SMB_PROFILE_SETTING = 'smb_profile';
 export const SMB_BUSINESS_NAME_SETTING = 'smb_business_name';
 /** Opt-in for the construction expense-sheet reconciliation agent. Off unless the user enables it. */
 export const CONSTRUCTION_EXPENSE_AGENT_SETTING = 'construction_expense_agent';
+/** JSON array of group chat JIDs allowed to auto-run when a sheet is posted. Empty = no auto-run. */
+export const CONSTRUCTION_EXPENSE_SITE_JIDS_SETTING = 'construction_expense_site_jids';
 
 /**
  * @param {import('../storage/database.js').default} db
@@ -16,6 +18,34 @@ export function isConstructionExpenseAgentEnabled(db) {
   if (!db || typeof db.getSetting !== 'function') return false;
   if (db.getSetting(SMB_PROFILE_SETTING) !== 'construction') return false;
   return db.getSetting(CONSTRUCTION_EXPENSE_AGENT_SETTING) === '1';
+}
+
+/**
+ * @param {import('../storage/database.js').default} db
+ * @returns {string[]}
+ */
+export function getConstructionExpenseSiteJids(db) {
+  if (!db || typeof db.getSetting !== 'function') return [];
+  const raw = db.getSetting(CONSTRUCTION_EXPENSE_SITE_JIDS_SETTING);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.map((j) => String(j || '').trim()).filter((j) => j.endsWith('@g.us')))];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Auto-run only on sites the user selected. Manual "Run for chat" bypasses this.
+ * @param {import('../storage/database.js').default} db
+ * @param {string} chatJid
+ */
+export function isConstructionExpenseSiteAllowed(db, chatJid) {
+  const jid = String(chatJid || '').trim();
+  if (!jid.endsWith('@g.us')) return false;
+  return getConstructionExpenseSiteJids(db).includes(jid);
 }
 
 /** @typedef {'personal' | 'clinic' | 'real_estate' | 'd2c' | 'construction'} SmbProfileId */
@@ -103,6 +133,7 @@ Use "payment" for COD, UPI, refunds.`,
 - Treat cash paid to labourers, fuel purchases, material bills, advances, reimbursements, and credits/refunds as separate facts.
 - Never infer an amount or recipient that is not explicitly present.`,
     searchPrompts: [
+      { label: 'Compare vs Excel', query: "Check today’s expense summary in this chat and compare it with the excel sheet sent at the end of the day." },
       { label: 'Today’s expenses', query: 'List today’s construction expenses by site, amount, payee, category, and source message.' },
       { label: 'Labour payments', query: 'List labour payments and advances, including recipient and amount.' },
       { label: 'Fuel & transport', query: 'List fuel and transport expenses with amounts and vehicles or vendors mentioned.' },

@@ -3,6 +3,7 @@ import {
   detectSmbLibraryMismatch,
   getSearchPrompts,
   isConstructionExpenseAgentEnabled,
+  isConstructionExpenseSiteAllowed,
   listSmbProfileOptions,
   resolveSmbProfile,
   synthesisSystemAddon,
@@ -47,6 +48,17 @@ describe('smb profiles', () => {
     expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'construction', construction_expense_agent: '1' }))).toBe(true);
     expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'construction' }))).toBe(false);
     expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'clinic', construction_expense_agent: '1' }))).toBe(false);
+  });
+
+  it('auto-runs only for selected site groups', () => {
+    const db = {
+      getSetting: (key) => ({
+        construction_expense_site_jids: JSON.stringify(['site-a@g.us', 'not-a-group']),
+      })[key] || '',
+    };
+    expect(isConstructionExpenseSiteAllowed(db, 'site-a@g.us')).toBe(true);
+    expect(isConstructionExpenseSiteAllowed(db, 'site-b@g.us')).toBe(false);
+    expect(isConstructionExpenseSiteAllowed(db, 'person@s.whatsapp.net')).toBe(false);
   });
 
   it('flags business profile mismatch for imported group libraries', () => {

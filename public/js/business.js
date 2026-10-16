@@ -2,7 +2,7 @@ import { store } from './store.js';
 import { openChat } from './chat-view.js';
 import { SEARCH_INPUT_PLACEHOLDER_DEFAULT, SMB_PLACEHOLDERS } from './constants.js';
 import { messageTimestampToDate } from './format.js';
-import { doSearch } from './search.js';
+import { openSearchAssistant } from './search.js';
 import { $, esc, escAttr } from './util.js';
 
 export function smbSearchPlaceholder() {
@@ -22,19 +22,13 @@ export function applySmbUi() {
   if (tab) tab.hidden = !on;
   if (prompts) prompts.classList.toggle('visible', showBusinessChrome);
   if (nameRow) nameRow.style.display = on ? '' : 'none';
-  const qEl = $('#q');
-  if (qEl && !store.searchActive) {
-    qEl.placeholder = showBusinessChrome
-      ? smbSearchPlaceholder()
-      : SEARCH_INPUT_PLACEHOLDER_DEFAULT;
-  }
   renderSmbPrompts();
   if (showBusinessChrome) void loadBusinessInbox();
   const welcomeLead = $('#welcome-default-lead');
   if (welcomeLead) {
     welcomeLead.innerHTML = on
-      ? 'Import customer chats with <strong>+</strong>, then use <strong>Business</strong> in the sidebar or the quick-search chips above.<br>AI is tuned for your vertical — appointments, leads, orders, and follow-ups.'
-      : 'Select a chat from the left, or search your chats with AI.<br>Click <strong>+</strong> to import more chat exports.';
+      ? 'Import customer chats with <strong>+</strong>, then use <strong>Business</strong> in the sidebar or the quick chips above.<br>Open a chat and tap the purple sparkle to ask AI.'
+      : 'Select a chat from the left, then tap the purple sparkle to ask AI.<br>Click <strong>+</strong> to import more chat exports.';
   }
 }
 
@@ -72,6 +66,7 @@ export async function loadSmbProfile() {
       businessName: data.businessName || '',
       prompts: Array.isArray(data.prompts) ? data.prompts : [],
       expenseAgentEnabled: !!data.expenseAgentEnabled,
+      expenseSiteJids: Array.isArray(data.expenseSiteJids) ? data.expenseSiteJids : [],
     };
     const sel = $('#smb-profile');
     if (sel) sel.value = store.smbState.profile;
@@ -80,9 +75,64 @@ export async function loadSmbProfile() {
     const agentEl = $('#smb-expense-agent');
     if (agentEl) agentEl.checked = store.smbState.expenseAgentEnabled;
     syncSmbAgentCards(store.smbState.profile);
+    if (store.smbState.profile === 'construction') void loadExpenseSitePicker();
     renderSmbMismatchBanner(data);
     applySmbUi();
   } catch { /* ignore */ }
+}
+
+function selectedExpenseSiteJids() {
+  return [...document.querySelectorAll('#smb-expense-sites input[type="checkbox"]:checked')]
+    .map((el) => el.value)
+    .filter(Boolean);
+}
+
+async function loadExpenseSitePicker() {
+  const list = $('#smb-expense-sites');
+  const runChat = $('#smb-expense-run-chat');
+  if (!list || !runChat) return;
+  try {
+    const data = await fetch('/api/expenses/sites').then((r) => r.json());
+    const sites = Array.isArray(data.sites) ? data.sites : [];
+    const selected = new Set(
+      Array.isArray(data.selectedJids) ? data.selectedJids : (store.smbState.expenseSiteJids || []),
+    );
+    if (!sites.length) {
+      list.innerHTML = '<div class="smb-agent-hint" style="margin:0;">No WhatsApp groups indexed yet. Link WhatsApp or wait for groups to sync.</div>';
+    } else {
+      list.innerHTML = sites.map((s) => `
+        <label class="smb-agent-site">
+          <input type="checkbox" value="${escAttr(s.chatJid)}"${selected.has(s.chatJid) ? ' checked' : ''} />
+          <span>${esc(s.chatName || s.chatJid)}</span>
+        </label>
+      `).join('');
+    }
+    const prev = runChat.value;
+    runChat.innerHTML = '<option value="">Select a site group…</option>'
+      + sites.map((s) => `<option value="${escAttr(s.chatJid)}">${esc(s.chatName || s.chatJid)}</option>`).join('');
+    if (prev && sites.some((s) => s.chatJid === prev)) runChat.value = prev;
+  } catch (err) {
+    list.innerHTML = `<div class="smb-agent-hint" style="margin:0;">${esc(err.message || 'Could not load sites')}</div>`;
+  }
+}
+
+async function loadExpenseSheetsForRunChat() {
+  const chatJid = $('#smb-expense-run-chat')?.value || '';
+  const sheetSel = $('#smb-expense-run-sheet');
+  if (!sheetSel) return;
+  sheetSel.innerHTML = '<option value="">Latest sheet in chat</option>';
+  if (!chatJid) return;
+  try {
+    const data = await fetch(`/api/expenses/sheets?chatJid=${encodeURIComponent(chatJid)}`).then((r) => r.json());
+    for (const sheet of data.sheets || []) {
+      const when = formatBizTs(sheet.timestamp);
+      const label = `${sheet.fileName || 'sheet'}${when ? ` · ${when}` : ''}`;
+      const opt = document.createElement('option');
+      opt.value = sheet.messageId;
+      opt.textContent = label;
+      sheetSel.appendChild(opt);
+    }
+  } catch { /* keep latest default */ }
 }
 
 function formatBizTs(ts) {
@@ -180,6 +230,7 @@ export async function loadBusinessInbox() {
 function syncSmbAgentCards(profile) {
   const card = $('#smb-agents-construction');
   if (card) card.hidden = profile !== 'construction';
+  if (profile === 'construction') void loadExpenseSitePicker();
 }
 
 export async function loadWabaConfig() {
@@ -208,8 +259,7 @@ export function initBusiness() {
     if (!btn) return;
     const q = btn.getAttribute('data-smb-query');
     if (!q) return;
-    $('#q').value = q;
-    void doSearch();
+    void openSearchAssistant({ showThreads: true, seedQuery: q, runSeed: true, startNew: true });
   });
 
   $('#business-inbox-panel')?.addEventListener('click', (e) => {
@@ -225,6 +275,37 @@ export function initBusiness() {
     const nameRow = $('#smb-business-name-row');
     if (nameRow) nameRow.style.display = value !== 'personal' ? '' : 'none';
     syncSmbAgentCards(value);
+  });
+
+  $('#smb-expense-run-chat')?.addEventListener('change', () => {
+    void loadExpenseSheetsForRunChat();
+  });
+
+  $('#smb-expense-run')?.addEventListener('click', async () => {
+    const status = $('#smb-expense-run-status');
+    const chatJid = $('#smb-expense-run-chat')?.value || '';
+    const messageId = $('#smb-expense-run-sheet')?.value || '';
+    if (!chatJid) {
+      if (status) status.textContent = 'Select a site group first';
+      return;
+    }
+    if (!$('#smb-expense-agent')?.checked) {
+      if (status) status.textContent = 'Enable the agent and save the profile first';
+      return;
+    }
+    if (status) status.textContent = 'Queuing…';
+    try {
+      const r = await fetch('/api/expenses/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatJid, messageId: messageId || undefined }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Run failed');
+      if (status) status.textContent = 'Queued — check reconciliation history for progress';
+    } catch (err) {
+      if (status) status.textContent = err.message || 'Run failed';
+    }
   });
 
   $('#waba-save')?.addEventListener('click', async () => {
@@ -268,13 +349,14 @@ export function initBusiness() {
     const profile = $('#smb-profile')?.value || 'personal';
     const businessName = $('#smb-business-name')?.value || '';
     const expenseAgentEnabled = profile === 'construction' && !!$('#smb-expense-agent')?.checked;
+    const expenseSiteJids = profile === 'construction' ? selectedExpenseSiteJids() : [];
     const status = $('#smb-status');
     if (status) status.textContent = 'Saving…';
     try {
       const data = await fetch('/api/smb/profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile, businessName, expenseAgentEnabled }),
+        body: JSON.stringify({ profile, businessName, expenseAgentEnabled, expenseSiteJids }),
       }).then((r) => r.json());
       if (data.error) throw new Error(data.error);
       store.smbState = {
@@ -282,6 +364,7 @@ export function initBusiness() {
         businessName: data.businessName || '',
         prompts: data.prompts || [],
         expenseAgentEnabled: !!data.expenseAgentEnabled,
+        expenseSiteJids: Array.isArray(data.expenseSiteJids) ? data.expenseSiteJids : [],
       };
       const agentEl = $('#smb-expense-agent');
       if (agentEl) agentEl.checked = store.smbState.expenseAgentEnabled;

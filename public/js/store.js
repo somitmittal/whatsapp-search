@@ -5,6 +5,8 @@ export const store = {
   activeChat: null,
   connected: false,
   searchActive: false,
+  /** Active AI search conversation id for follow-ups. */
+  searchConversationId: null,
   chatMessagesOffset: 0,
   chatHasMoreLocal: true,
   chatLoadingOlder: false,

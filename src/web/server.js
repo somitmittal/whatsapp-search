@@ -35,7 +35,9 @@ import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
 import {
   CONSTRUCTION_EXPENSE_AGENT_SETTING,
+  CONSTRUCTION_EXPENSE_SITE_JIDS_SETTING,
   detectSmbLibraryMismatch,
+  getConstructionExpenseSiteJids,
   getSearchPrompts,
   getSmbProfileFromDb,
   isConstructionExpenseAgentEnabled,
@@ -44,6 +46,8 @@ import {
   SMB_BUSINESS_NAME_SETTING,
   SMB_PROFILE_SETTING,
 } from '../smb/profiles.js';
+import { isExpenseSheetMessage } from '../expenses/expense-reconciliation-service.js';
+import SearchConversationService from '../search/search-conversation-service.js';
 import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
 import { getCurrentTenantId, runWithTenant } from '../storage/tenant-context.js';
 import WaClient from '../whatsapp/wa-client.js';
@@ -177,6 +181,12 @@ export default class WebServer {
     this._embeddingIndexService = embeddingIndexService || null;
     this._actionItemService = actionItemService || null;
     this._expenseReconciliationService = expenseReconciliationService || null;
+    this._searchConversations = new SearchConversationService({
+      db,
+      searchEngine,
+      expenseService: expenseReconciliationService || null,
+      getProvider: () => searchEngine?._provider || null,
+    });
     this._smbInbox = new SmbInboxService(db);
     this._appointmentBoard = new AppointmentBoardService(db);
     this._wabaIngest = new WabaIngestService({
@@ -1645,6 +1655,81 @@ export default class WebServer {
       }
     });
 
+    this._app.get('/api/search/conversations', (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit, 10) || 30;
+        return res.json({ conversations: this._searchConversations.listRecent(limit) });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/search/conversations/:id', (req, res) => {
+      try {
+        const data = this._searchConversations.getConversation(req.params.id);
+        if (!data) return res.status(404).json({ error: 'Conversation not found' });
+        return res.json(data);
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/search/chat', async (req, res) => {
+      try {
+        const message = String(req.body?.message || req.body?.query || '').trim();
+        if (!message) return res.status(400).json({ error: 'message is required' });
+
+        const entitlement = await resolveSearchEntitlement(req, this._controlPlane);
+        if (!entitlement.allowed) {
+          const installId = String(req.get('x-install-id') || req.body?.installId || '').trim();
+          return paywallResponse(res, entitlement, this._controlPlane, installId);
+        }
+
+        const wantsStream = req.body?.stream === true;
+        const emit = wantsStream
+          ? (event) => { res.write(`data: ${JSON.stringify(event)}\n\n`); }
+          : null;
+        if (wantsStream) {
+          res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache, no-transform');
+          res.setHeader('Connection', 'keep-alive');
+          res.flushHeaders?.();
+        }
+
+        const result = await this._searchConversations.handleTurn({
+          conversationId: req.body?.conversationId ? String(req.body.conversationId) : null,
+          message,
+          chatJid: req.body?.chatJid || null,
+          mediaType: req.body?.mediaType || null,
+          businessContext: !!req.body?.businessContext,
+          emit,
+        });
+        this._controlPlane.logProductEvent({
+          event: 'ai_search_chat',
+          installId: String(req.get('x-install-id') || '').trim() || null,
+          props: {
+            plan: entitlement.plan,
+            kind: result.expenseDiff ? 'expense' : 'search',
+          },
+        });
+        if (wantsStream) {
+          emit({ type: 'done', ...result });
+          return res.end();
+        }
+        return res.json(result);
+      } catch (err) {
+        console.error('Search chat API error:', err.message);
+        if (res.headersSent) {
+          try {
+            res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
+          } catch { /* already closed */ }
+          return res.end();
+        }
+        const status = /not found/i.test(err.message) ? 404 : 500;
+        return res.status(status).json({ error: err.message });
+      }
+    });
+
     /** BM25 prototype UI: LLM rerank for in-browser uploaded chats (uses configured search provider). */
     this._app.post('/api/wa-search/rerank', async (req, res) => {
       try {
@@ -2288,6 +2373,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         businessName: (this.db.getSetting(SMB_BUSINESS_NAME_SETTING) || '').trim(),
         prompts: getSearchPrompts(profile),
         expenseAgentEnabled: isConstructionExpenseAgentEnabled(this.db),
+        expenseSiteJids: getConstructionExpenseSiteJids(this.db),
         dataMismatch: mismatch.mismatch,
         mismatchReason: mismatch.reason || '',
       });
@@ -2306,6 +2392,12 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         if (Object.prototype.hasOwnProperty.call(req.body || {}, 'expenseAgentEnabled')) {
           this.db.setSetting(CONSTRUCTION_EXPENSE_AGENT_SETTING, req.body.expenseAgentEnabled ? '1' : '0');
         }
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'expenseSiteJids')) {
+          const jids = Array.isArray(req.body.expenseSiteJids)
+            ? [...new Set(req.body.expenseSiteJids.map((j) => String(j || '').trim()).filter((j) => j.endsWith('@g.us')))]
+            : [];
+          this.db.setSetting(CONSTRUCTION_EXPENSE_SITE_JIDS_SETTING, JSON.stringify(jids));
+        }
         const current = getSmbProfileFromDb(this.db);
         const mismatch = detectSmbLibraryMismatch(this.db);
         return res.json({
@@ -2314,6 +2406,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           businessName: (this.db.getSetting(SMB_BUSINESS_NAME_SETTING) || '').trim(),
           prompts: getSearchPrompts(current),
           expenseAgentEnabled: isConstructionExpenseAgentEnabled(this.db),
+          expenseSiteJids: getConstructionExpenseSiteJids(this.db),
           dataMismatch: mismatch.mismatch,
           mismatchReason: mismatch.reason || '',
         });
@@ -2340,6 +2433,55 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         res.json(this._appointmentBoard.getBoard());
       } catch (err) {
         res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/expenses/sites', (_req, res) => {
+      try {
+        res.json({
+          sites: this.db.listExpenseSiteChats(),
+          selectedJids: getConstructionExpenseSiteJids(this.db),
+        });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/expenses/sheets', (req, res) => {
+      try {
+        const chatJid = String(req.query?.chatJid || '').trim();
+        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const sheets = (this.db.listExpenseSheetMessages(chatJid) || [])
+          .filter((row) => isExpenseSheetMessage(row, row.mediaPath))
+          .map((row) => ({
+            messageId: row.messageId,
+            chatJid: row.chatJid,
+            sender: row.sender,
+            fileName: basename(String(row.mediaCaption || row.text || row.mediaPath || 'sheet.xlsx')),
+            timestamp: row.timestamp,
+          }));
+        return res.json({ sheets });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/expenses/run', (req, res) => {
+      if (!this._expenseReconciliationService) {
+        return res.status(503).json({ error: 'Expense reconciliation is unavailable' });
+      }
+      try {
+        const tenantId = getCurrentTenantId();
+        const chatJid = String(req.body?.chatJid || '').trim();
+        const messageId = req.body?.messageId ? String(req.body.messageId).trim() : '';
+        const queued = this._expenseReconciliationService.runForChat(
+          { chatJid, messageId: messageId || undefined },
+          tenantId,
+        );
+        void Promise.resolve(queued).catch((err) => console.warn('[Expenses] run:', err.message));
+        return res.status(202).json({ ok: true, status: 'queued', chatJid });
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
       }
     });
 

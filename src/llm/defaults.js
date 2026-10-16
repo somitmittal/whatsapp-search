@@ -36,7 +36,7 @@ export function migrateAwayFromLocalOllama(db) {
   }
   if (db.getSetting('media_index_provider') === 'ollama') {
     db.setSetting('media_index_provider', (process.env.MEDIA_INDEX_PROVIDER || 'gemini').trim());
-    db.setSetting('media_index_model', (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim());
+    db.setSetting('media_index_model', (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim());
   }
 }
 

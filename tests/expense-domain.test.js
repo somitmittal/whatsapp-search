@@ -124,28 +124,50 @@ describe('expense reconciliation', () => {
 });
 
 describe('expense report workbook', () => {
-  test('contains summary, diff, and source sheets', async () => {
-    const chatEntry = {
-      source: 'chat', sourceMessageId: 'm1', date: '2026-10-15', amountMinor: 10000,
-      currency: 'INR', direction: 'debit', payee: 'Worker', category: 'labour', description: 'Wages',
+  test('outputs a small summary plus a colored copy of the sheet', async () => {
+    const chatMatch = {
+      source: 'chat', sourceMessageId: 'm1', date: '2026-10-15', amountMinor: 50000,
+      currency: 'INR', direction: 'debit', payee: 'HP Pump', category: 'fuel', description: 'Diesel',
+    };
+    const sheetMatch = {
+      source: 'sheet', sheetRow: 2, date: '2026-10-15', amountMinor: 50000,
+      currency: 'INR', direction: 'debit', payee: 'Fuel pump', category: 'fuel', description: 'Diesel for site',
+    };
+    const sheetOnly = {
+      source: 'sheet', sheetRow: 3, date: '2026-10-15', amountMinor: 20000,
+      currency: 'INR', direction: 'debit', payee: 'Extra', category: 'material', description: 'Cement',
+    };
+    const chatOnly = {
+      source: 'chat', sourceMessageId: 'm2', date: '2026-10-15', amountMinor: 15000,
+      currency: 'INR', direction: 'debit', payee: 'Ravi', category: 'labour', description: 'Wages',
     };
     const reconciliation = {
-      matches: [],
-      discrepancies: [{ type: 'missing_from_sheet', chatEntry, sheetEntry: null, detail: 'Missing' }],
-      totals: { chatDebitMinor: 10000, sheetDebitMinor: 0, chatCreditMinor: 0, sheetCreditMinor: 0 },
+      matches: [{ chatEntry: chatMatch, sheetEntry: sheetMatch }],
+      discrepancies: [
+        { type: 'only_in_sheet', chatEntry: null, sheetEntry: sheetOnly, detail: 'Sheet only' },
+        { type: 'missing_from_sheet', chatEntry: chatOnly, sheetEntry: null, detail: 'Missing' },
+      ],
+      totals: { chatDebitMinor: 65000, sheetDebitMinor: 70000, chatCreditMinor: 0, sheetCreditMinor: 0 },
     };
     const workbook = await buildExpenseReportWorkbook({
       siteName: 'Site A',
       date: '2026-10-15',
       sourceFileName: 'expenses.xlsx',
-      chatEntries: [chatEntry],
-      sheetEntries: [],
+      chatEntries: [chatMatch, chatOnly],
+      sheetEntries: [sheetMatch, sheetOnly],
       reconciliation,
+      sheetHeaders: ['Date', 'Paid To', 'Amount', 'Description'],
+      sheetMapping: { date: 0, payee: 1, amount: 2, description: 3 },
     });
     expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual([
-      'Summary', 'Discrepancies', 'Chat Expenses', 'Submitted Sheet',
+      'Summary', 'Reconciled Sheet',
     ]);
-    expect(workbook.getWorksheet('Discrepancies').rowCount).toBe(2);
+    const sheet = workbook.getWorksheet('Reconciled Sheet');
+    // header + match + red + yellow
+    expect(sheet.rowCount).toBe(4);
+    expect(sheet.getRow(2).getCell(1).fill?.fgColor?.argb).toBe('FFC6EFCE');
+    expect(sheet.getRow(3).getCell(1).fill?.fgColor?.argb).toBe('FFFFC7CE');
+    expect(sheet.getRow(4).getCell(1).fill?.fgColor?.argb).toBe('FFFFFF99');
   });
 });
 

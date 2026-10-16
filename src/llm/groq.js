@@ -77,6 +77,19 @@ export default class GroqProvider {
     return data?.choices?.[0]?.message?.content?.trim() || '';
   }
 
+  async *chatStream(messages, options = {}) {
+    const { readTextChunks } = await import('./stream-chat.js');
+    const body = {
+      model: this._model,
+      messages,
+      temperature: options.temperature ?? 0.3,
+      max_tokens: options.maxTokens ?? 2048,
+      stream: true,
+    };
+    const res = await this._fetchWithRotation('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    yield* readTextChunks(res.body);
+  }
+
   async caption(_imageBase64, _mimeType) {
     return '[Image captioning not supported via Groq — use Gemini or OpenAI for media]';
   }
