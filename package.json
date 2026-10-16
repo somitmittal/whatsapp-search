@@ -1,7 +1,7 @@
 {
-  "name": "whatsapp-search-agent",
+  "name": "whatsapp-gpt",
   "version": "1.0.10",
-  "description": "WhatsApp Search Agent - search all your chats using AI, 100% locally",
+  "description": "WhatsApp GPT - a ChatGPT/Cursor-style agent over your WhatsApp chats, 100% local data",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {

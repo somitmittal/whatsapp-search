@@ -2,6 +2,7 @@ import { embeddableText, embeddingSourceHash } from './embedding-text.js';
 import { encodeTexts, MINILM_MODEL_ID } from './minilm-encoder.js';
 import { packF32, unpackF32, topKByCosine } from './vector-math.js';
 import config from '../config.js';
+import { getCurrentTenantId } from '../storage/tenant-context.js';
 
 /** Same default batch as media indexing (`processPending(12)`). */
 const DEFAULT_BATCH = 12;
@@ -25,6 +26,8 @@ export default class EmbeddingIndexService {
     this._running = false;
     this._preemptRequested = false;
     this._unavailable = false;
+    this._vectorCache = new Map();
+    this._writeVersion = 0;
   }
 
   scheduleProcess() {
@@ -124,7 +127,10 @@ export default class EmbeddingIndexService {
       this._preemptRequested = false;
       this._running = false;
     }
-    if (done > 0) console.log(`[Embeddings] Indexed ${done} message(s)`);
+    if (done > 0) {
+      this._writeVersion += 1;
+      console.log(`[Embeddings] Indexed ${done} message(s)`);
+    }
     if (brokeEarly) this.scheduleProcess();
     return done;
   }
@@ -148,13 +154,26 @@ export default class EmbeddingIndexService {
     }
     if (!qvec?.length) return [];
 
-    const packed = this._db.iterateMessageEmbeddings(this._modelId, chatJid);
+    const rows = chatJid ? this._loadVectors(chatJid) : this._cachedAllVectors();
+    return topKByCosine(qvec, rows.filter((r) => r.vector.length === qvec.length), k);
+  }
+
+  _loadVectors(chatJid = null) {
     const rows = [];
-    for (const row of packed) {
+    for (const row of this._db.iterateMessageEmbeddings(this._modelId, chatJid)) {
       const vector = unpackF32(row.vector);
-      if (!vector || vector.length !== qvec.length) continue;
-      rows.push({ id: row.messageRowid, vector });
+      if (vector) rows.push({ id: row.messageRowid, vector });
     }
-    return topKByCosine(qvec, rows, k);
+    return rows;
+  }
+
+  /** Whole-archive vectors stay unpacked in memory until the next embedding write. */
+  _cachedAllVectors() {
+    const tenant = getCurrentTenantId();
+    const hit = this._vectorCache.get(tenant);
+    if (hit && hit.version === this._writeVersion) return hit.rows;
+    const rows = this._loadVectors(null);
+    this._vectorCache.set(tenant, { version: this._writeVersion, rows });
+    return rows;
   }
 }

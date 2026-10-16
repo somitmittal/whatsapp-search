@@ -1,0 +1,56 @@
+/* Colored expense sheet (shared by the WhatsApp view and WhatsApp GPT). */
+/* Sheet-style expense discrepancy table */
+.expense-diff {
+  margin-top: 10px; border: 1px solid #c5cdd6; border-radius: 10px;
+  overflow: hidden; background: #fff;
+}
+.expense-diff-head { padding: 10px 12px; background: #eef3f0; border-bottom: 1px solid #c5cdd6; }
+.expense-diff-title { font-size: 13px; font-weight: 700; color: var(--text, #111b21); }
+.expense-diff-meta { font-size: 11px; color: var(--text2, #667781); margin-top: 2px; }
+.expense-diff-report {
+  display: block; padding: 8px 12px; font-size: 12px;
+  color: var(--teal, #008069); text-decoration: none; border-bottom: 1px solid #c5cdd6;
+}
+.expense-diff-report:hover { background: #f0f7f5; }
+.expense-diff-ok {
+  padding: 14px 12px; font-size: 12.5px; color: #1a7f37;
+}
+.expense-sheet-scroll { overflow-x: auto; }
+.expense-sheet-table {
+  width: 100%; border-collapse: collapse; font-size: 12px; min-width: 560px;
+}
+.expense-sheet-table th {
+  text-align: left; padding: 8px 10px; background: #dfe8e3;
+  border-bottom: 1px solid #b8c4bc; font-size: 11px; font-weight: 700;
+  color: #344047; white-space: nowrap;
+}
+.expense-sheet-table td {
+  padding: 8px 10px; border-bottom: 1px solid #e4e9ed;
+  vertical-align: top; color: var(--text, #111b21);
+}
+.expense-sheet-table .expense-amt { white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600; }
+.expense-sheet-table .expense-status { font-size: 11px; font-weight: 600; white-space: nowrap; }
+.expense-row-match { background: #e6f6ea; }
+.expense-row-match .expense-status { color: #0f7a32; }
+.expense-row-extra-sheet { background: #fde8e6; }
+.expense-row-extra-sheet .expense-status { color: #b42318; }
+.expense-row-missing-sheet,
+.expense-row-extra-chat { background: #fff7b8; }
+.expense-row-missing-sheet .expense-status,
+.expense-row-extra-chat .expense-status { color: #8a6d00; }
+.expense-row-mismatch { background: #ffe0a3; }
+.expense-row-mismatch .expense-status { color: #9a6700; }
+.expense-row-warn { background: #f4f6f8; }
+.expense-row-warn .expense-status { color: #57606a; }
+.expense-sheet-legend {
+  display: flex; flex-wrap: wrap; gap: 10px 14px; padding: 8px 12px;
+  border-top: 1px solid #c5cdd6; background: #fafbfc; font-size: 11px; color: var(--text2, #667781);
+}
+.expense-sheet-legend .leg::before {
+  content: ''; display: inline-block; width: 10px; height: 10px;
+  border-radius: 2px; margin-right: 6px; vertical-align: -1px;
+}
+.expense-sheet-legend .leg-match::before { background: #7dcea0; }
+.expense-sheet-legend .leg-sheet::before { background: #f1948a; }
+.expense-sheet-legend .leg-missing::before { background: #f7e26b; }
+.expense-sheet-legend .leg-mismatch::before { background: #f5a623; }

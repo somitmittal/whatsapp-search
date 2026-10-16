@@ -128,7 +128,7 @@ function serializeSheetRow(row) {
   };
 }
 
-function summarizeExpenseRun(run) {
+export function summarizeExpenseRun(run) {
   const view = reconciliationViewFromRun(run);
   const totals = view.totals || {};
   const sheetRows = buildReconciledSheetRows(view).map(serializeSheetRow);
@@ -168,7 +168,7 @@ function summarizeExpenseRun(run) {
   };
 }
 
-function resolveSiteChat(db, query, preferredChatJid) {
+export function resolveSiteChat(db, query, preferredChatJid) {
   const preferred = String(preferredChatJid || '').trim();
   if (preferred.endsWith('@g.us')) return preferred;
 

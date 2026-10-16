@@ -14,7 +14,7 @@ import { initContacts } from './contacts.js';
 import { initSidebar } from './sidebar.js';
 import { initStatusFeed } from './status-feed.js';
 import { initAvatars } from './avatars.js';
-import { initChatView } from './chat-view.js';
+import { initChatView, openChat } from './chat-view.js';
 import { initAwaySummary } from './away-summary.js';
 import { initSearch } from './search.js';
 import { initComposer } from './composer.js';
@@ -48,3 +48,9 @@ initImport();
 initSettings();
 initOllamaSetup();
 initOnboarding();
+
+const deepLink = new URLSearchParams(location.search);
+if (deepLink.get('chat')) {
+  void openChat(deepLink.get('chat'), deepLink.get('msg') || null);
+  history.replaceState(null, '', location.pathname);
+}

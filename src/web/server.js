@@ -48,6 +48,7 @@ import {
 } from '../smb/profiles.js';
 import { isExpenseSheetMessage } from '../expenses/expense-reconciliation-service.js';
 import SearchConversationService from '../search/search-conversation-service.js';
+import GptService from '../gpt/gpt-service.js';
 import { LEGACY_TENANT_ID } from '../storage/tenant-constants.js';
 import { getCurrentTenantId, runWithTenant } from '../storage/tenant-context.js';
 import WaClient from '../whatsapp/wa-client.js';
@@ -186,6 +187,12 @@ export default class WebServer {
       searchEngine,
       expenseService: expenseReconciliationService || null,
       getProvider: () => searchEngine?._provider || null,
+    });
+    this._gpt = new GptService({
+      db,
+      getProvider: () => searchEngine?._provider || null,
+      embeddings: embeddingIndexService || null,
+      expenseService: expenseReconciliationService || null,
     });
     this._smbInbox = new SmbInboxService(db);
     this._appointmentBoard = new AppointmentBoardService(db);
@@ -1654,6 +1661,97 @@ export default class WebServer {
         return res.status(500).json({ error: err.message });
       }
     });
+
+    // ── WhatsApp GPT (agent harness) ───────────────────────────────────
+    this._app.get('/api/gpt/conversations', (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit, 10) || 50;
+        return res.json({ conversations: this._gpt.listConversations(limit) });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/gpt/conversations/:id', (req, res) => {
+      try {
+        const data = this._gpt.getConversation(req.params.id);
+        if (!data) return res.status(404).json({ error: 'Conversation not found' });
+        return res.json(data);
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.delete('/api/gpt/conversations/:id', (req, res) => {
+      try {
+        return res.json({ deleted: this._gpt.deleteConversation(req.params.id) });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.put('/api/gpt/conversations/:id/pins', (req, res) => {
+      try {
+        const pins = this._gpt.setPins(req.params.id, req.body?.pins || []);
+        if (!pins) return res.status(404).json({ error: 'Conversation not found' });
+        return res.json({ pins });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.get('/api/gpt/mentions', (req, res) => {
+      try {
+        return res.json({ items: this._gpt.mentionCandidates(String(req.query.q || ''), 12) });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/gpt/chat', async (req, res) => {
+      const message = String(req.body?.message || '').trim();
+      if (!message) return res.status(400).json({ error: 'message is required' });
+      const entitlement = await resolveSearchEntitlement(req, this._controlPlane);
+      if (!entitlement.allowed) {
+        const installId = String(req.get('x-install-id') || req.body?.installId || '').trim();
+        return paywallResponse(res, entitlement, this._controlPlane, installId);
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders?.();
+      const controller = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+      const emit = (event) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`); };
+
+      try {
+        const result = await this._gpt.handleTurn({
+          conversationId: req.body?.conversationId ? String(req.body.conversationId) : null,
+          message,
+          scopeChatJid: req.body?.scopeChatJid || null,
+          mentions: Array.isArray(req.body?.mentions) ? req.body.mentions : [],
+          businessContext: !!req.body?.businessContext,
+          emit,
+          signal: controller.signal,
+        });
+        this._controlPlane.logProductEvent({
+          event: 'gpt_chat',
+          installId: String(req.get('x-install-id') || '').trim() || null,
+          props: { plan: entitlement.plan, kind: result.expenseDiff ? 'expense' : 'chat' },
+        });
+        emit({ type: 'done', ...result });
+      } catch (err) {
+        if (err?.name !== 'AbortedError') {
+          console.error('GPT chat error:', err.message);
+          emit({ type: 'error', error: err.message });
+        }
+      }
+      return res.end();
+    });
+
+    this._app.get('/gpt', (_req, res) => res.sendFile(resolve(config.publicDir, 'gpt.html')));
 
     this._app.get('/api/search/conversations', (req, res) => {
       try {

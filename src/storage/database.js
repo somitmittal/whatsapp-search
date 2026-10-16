@@ -224,6 +224,102 @@ export default class Database {
       CREATE INDEX IF NOT EXISTS idx_search_messages_conversation
         ON search_messages(tenant_id, conversation_id, created_at ASC);
     `);
+    const cols = this._db.prepare('PRAGMA table_info(search_conversations)').all();
+    const add = (name, type) => {
+      if (!cols.some((c) => c.name === name)) {
+        this._db.exec(`ALTER TABLE search_conversations ADD COLUMN ${name} ${type}`);
+      }
+    };
+    add('memory', 'TEXT');
+    add('memory_upto', 'INTEGER DEFAULT 0');
+    add('pins_json', 'TEXT');
+  }
+
+  getConversationMemory(id) {
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT memory, memory_upto AS memoryUpto, pins_json AS pinsJson
+      FROM search_conversations WHERE tenant_id = ? AND id = ?
+    `).get(t, id);
+    if (!row) return null;
+    let pins = [];
+    try { pins = row.pinsJson ? JSON.parse(row.pinsJson) : []; } catch { pins = []; }
+    return { memory: row.memory || '', memoryUpto: row.memoryUpto || 0, pins };
+  }
+
+  setConversationMemory(id, { memory, memoryUpto }) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      UPDATE search_conversations SET memory = ?, memory_upto = ?
+      WHERE tenant_id = ? AND id = ?
+    `).run(String(memory || ''), Number(memoryUpto) || 0, t, id);
+  }
+
+  setConversationPins(id, pins) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      UPDATE search_conversations SET pins_json = ?
+      WHERE tenant_id = ? AND id = ?
+    `).run(JSON.stringify(Array.isArray(pins) ? pins : []), t, id);
+  }
+
+  /** Cross-chat window for "what happened between X and Y" without loading whole chats. */
+  getMessagesInRange({ chatJid = null, startTs, endTs, limit = 200, newestFirst = false }) {
+    const t = getCurrentTenantId();
+    const safe = Math.max(1, Math.min(Number(limit) || 200, MAX_MESSAGES_PAGE));
+    return this._db.prepare(`
+      SELECT id, message_id AS messageId, chat_jid AS chatJid,
+             chat_name AS chatName, sender, text, media_type AS mediaType,
+             media_path AS mediaPath, media_caption AS mediaCaption,
+             media_ai_index AS mediaAiIndex, timestamp
+      FROM messages
+      WHERE tenant_id = ? AND (? IS NULL OR chat_jid = ?)
+        AND timestamp >= ? AND timestamp <= ?
+      ORDER BY timestamp ${newestFirst ? 'DESC' : 'ASC'}, id ${newestFirst ? 'DESC' : 'ASC'}
+      LIMIT ?
+    `).all(t, chatJid, chatJid, Number(startTs) || 0, Number(endTs) || 4102444800, safe);
+  }
+
+  /** A few messages on either side of `messageRowid` in the same chat (uses the chat+timestamp index). */
+  getChatNeighbors(chatJid, timestamp, messageRowid, radius = 2) {
+    const t = getCurrentTenantId();
+    const n = Math.max(0, Math.min(Number(radius) || 0, 20));
+    if (!n) return [];
+    const cols = `id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
+      media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
+      media_ai_index AS mediaAiIndex, timestamp`;
+    const before = this._db.prepare(`
+      SELECT ${cols} FROM messages
+      WHERE tenant_id = ? AND chat_jid = ? AND (timestamp < ? OR (timestamp = ? AND id < ?))
+      ORDER BY timestamp DESC, id DESC LIMIT ?
+    `).all(t, chatJid, timestamp, timestamp, messageRowid, n);
+    const after = this._db.prepare(`
+      SELECT ${cols} FROM messages
+      WHERE tenant_id = ? AND chat_jid = ? AND (timestamp > ? OR (timestamp = ? AND id > ?))
+      ORDER BY timestamp ASC, id ASC LIMIT ?
+    `).all(t, chatJid, timestamp, timestamp, messageRowid, n);
+    return [...before.reverse(), ...after];
+  }
+
+  /** FTS hits limited to a time window (date filter applied inside SQLite, not after). */
+  searchMessagesInRange(query, { chatJid = null, startTs = 0, endTs = 4102444800, limit = 20 } = {}) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 500));
+    const cleaned = this._toFtsQuery(query);
+    if (!cleaned) return [];
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
+             m.chat_name AS chatName, m.sender, m.text,
+             m.media_type AS mediaType, m.media_path AS mediaPath, m.media_caption AS mediaCaption,
+             m.media_ai_index AS mediaAiIndex, m.timestamp, bm25(messages_fts) AS rank
+      FROM messages_fts
+      INNER JOIN messages m ON m.id = messages_fts.rowid
+      WHERE m.tenant_id = ?
+        AND messages_fts MATCH ?
+        AND (? IS NULL OR m.chat_jid = ?)
+        AND m.timestamp >= ? AND m.timestamp <= ?
+      ORDER BY rank LIMIT ?
+    `).all(t, cleaned, chatJid, chatJid, Number(startTs) || 0, Number(endTs) || 4102444800, safeLimit);
   }
 
   /**

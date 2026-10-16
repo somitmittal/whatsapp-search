@@ -61,6 +61,13 @@ describe('enforceGroundedAnswer', () => {
     expect(removed).toContain('Bollywood Stock Exchange');
   });
 
+  it('keeps a code the model rewrote with non-breaking hyphens', () => {
+    const answer = 'Cement supplier was paid (voucher VOU\u2011S1\u201103).';
+    const { text, removed } = enforceGroundedAnswer(answer, 'Ramesh: Paid cement supplier, voucher VOU-S1-03');
+    expect(removed).toEqual([]);
+    expect(text).toContain('VOU\u2011S1\u201103');
+  });
+
   it('drops list items naming a stock that is not in the chat', () => {
     const answer = [
       '1. Cpplus',

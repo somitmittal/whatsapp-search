@@ -27,8 +27,8 @@ export const UNGROUNDED_NOTICE =
 export const NO_GROUNDED_ANSWER =
   'I could not answer this from your chats without guessing, so no answer is shown.';
 
-const WORD_RE = /[\p{L}][\p{L}\p{N}&+'’.-]*/gu;
-const TOKEN_RE = /[\p{L}\p{N}][\p{L}\p{N}&+'’.-]*/gu;
+const WORD_RE = /[\p{L}][\p{L}\p{N}&+'’.\u2010\u2011-]*/gu;
+const TOKEN_RE = /[\p{L}\p{N}][\p{L}\p{N}&+'’.\u2010\u2011-]*/gu;
 const LIST_ITEM_RE = /^(\s*(?:[-*•]|\d+[.)])\s+)(.*)$/;
 
 /**
