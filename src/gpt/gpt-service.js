@@ -5,6 +5,7 @@ import { ContextEngine, buildHistory, buildSystemPrompt, expenseDiffBlock } from
 import { runAgent } from './agent.js';
 import { createToolbox } from './tools.js';
 import { GPT_LIMITS, estimateTokens } from './limits.js';
+import { listModelCatalog, providerForSelection, setProviderKey } from './model-registry.js';
 
 function titleFrom(text) {
   const t = String(text || '').trim().replace(/\s+/g, ' ');
@@ -26,9 +27,10 @@ function mergePins(existing, incoming) {
  * persistence, and background memory compaction of older turns.
  */
 export default class GptService {
-  constructor({ db, getProvider, embeddings = null, expenseService = null }) {
+  constructor({ db, getProvider, embeddings = null, expenseService = null, resolveProvider = providerForSelection }) {
     this.db = db;
     this.getProvider = getProvider;
+    this._resolveProvider = resolveProvider;
     this.directory = new ChatDirectory(db);
     this.context = new ContextEngine({ db, embeddings, directory: this.directory });
     this.toolbox = createToolbox({ db, embeddings, directory: this.directory, expenseService });
@@ -43,7 +45,18 @@ export default class GptService {
     const conversation = this.db.getSearchConversation(id);
     if (!conversation) return null;
     const memory = this.db.getConversationMemory(id);
-    return { conversation: { ...conversation, pins: memory?.pins || [] }, messages: this.db.listSearchMessages(id) };
+    return {
+      conversation: { ...conversation, pins: memory?.pins || [], model: this.db.getConversationModel(id) },
+      messages: this.db.listSearchMessages(id),
+    };
+  }
+
+  listModels() {
+    return listModelCatalog(this.db);
+  }
+
+  setProviderKey(provider, apiKey) {
+    setProviderKey(this.db, provider, apiKey);
   }
 
   deleteConversation(id) {
@@ -63,12 +76,17 @@ export default class GptService {
   }
 
   async handleTurn({
-    conversationId = null, message, scopeChatJid = null, mentions = [], businessContext = false, emit = null, signal = null,
+    conversationId = null, message, scopeChatJid = null, mentions = [], businessContext = false, model = undefined,
+    emit = null, signal = null,
   }) {
     const text = String(message || '').trim();
     if (!text) throw new Error('message is required');
-    const provider = this.getProvider();
-    if (!provider) throw new Error('No AI provider configured — pick one in Settings.');
+    // `model` undefined → keep the thread's choice; null → back to Auto; object → explicit pick.
+    const existingModel = conversationId ? this.db.getConversationModel(conversationId) : null;
+    const selection = model === undefined ? existingModel : model;
+    const resolved = await this._resolveProvider(this.db, selection, this.getProvider());
+    const provider = resolved.provider;
+    if (!provider) throw new Error('No AI provider configured — pick a model from the picker or Settings.');
     const steps = [];
     const sink = emit;
     emit = (event) => {
@@ -82,6 +100,9 @@ export default class GptService {
     if (conversationId && !conversation) throw new Error('Conversation not found');
     if (!conversation) {
       conversation = this.db.createSearchConversation({ id: randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
+    }
+    if (model !== undefined && JSON.stringify(existingModel) !== JSON.stringify(resolved.selection)) {
+      this.db.setConversationModel(conversation.id, resolved.selection);
     }
     const memory = this.db.getConversationMemory(conversation.id);
     const resolvedMentions = (mentions || []).map((p) => (p?.chatJid
@@ -134,6 +155,7 @@ export default class GptService {
         sources: result.sources,
         refs: result.refs,
         steps,
+        model: { provider: provider.name, model: provider.model },
         ...(expenseDiff ? { expenseDiff } : {}),
       },
     });
@@ -148,6 +170,7 @@ export default class GptService {
       answer: result.answer,
       sources: result.sources,
       expenseDiff,
+      model: { provider: provider.name, model: provider.model },
     };
   }
 

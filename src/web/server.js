@@ -1700,6 +1700,24 @@ export default class WebServer {
       }
     });
 
+    this._app.get('/api/gpt/models', async (_req, res) => {
+      try {
+        return res.json(await this._gpt.listModels());
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.put('/api/gpt/models/key', (req, res) => {
+      try {
+        const provider = String(req.body?.provider || '').trim();
+        this._gpt.setProviderKey(provider, req.body?.apiKey ?? '');
+        return res.json({ ok: true });
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    });
+
     this._app.get('/api/gpt/mentions', (req, res) => {
       try {
         return res.json({ items: this._gpt.mentionCandidates(String(req.query.q || ''), 12) });
@@ -1733,6 +1751,7 @@ export default class WebServer {
           scopeChatJid: req.body?.scopeChatJid || null,
           mentions: Array.isArray(req.body?.mentions) ? req.body.mentions : [],
           businessContext: !!req.body?.businessContext,
+          model: Object.prototype.hasOwnProperty.call(req.body || {}, 'model') ? req.body.model : undefined,
           emit,
           signal: controller.signal,
         });

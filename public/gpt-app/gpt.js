@@ -19,7 +19,15 @@ const els = {
   mention: $('#gpt-mention'),
   title: $('#gpt-title'),
   model: $('#gpt-model'),
+  modelBtn: $('#gpt-model-btn'),
+  modelLabel: $('#gpt-model-label'),
+  modelMenu: $('#gpt-model-menu'),
+  modelFilter: $('#gpt-model-filter'),
+  modelList: $('#gpt-model-list'),
+  modelManage: $('#gpt-model-manage'),
 };
+
+const HIDDEN_MODELS_KEY = 'wgpt.hiddenModels';
 
 const state = {
   conversationId: null,
@@ -27,6 +35,13 @@ const state = {
   conversations: [],
   streaming: null,
   mention: { open: false, items: [], index: 0, ctrl: null },
+  /** null = Auto (app default); { provider, model } = explicit pick for this thread. */
+  model: null,
+  /** True once the user changed the picker since the thread loaded, so the next send carries it. */
+  modelDirty: false,
+  catalog: null,
+  manageModels: false,
+  hiddenModels: new Set(JSON.parse(localStorage.getItem(HIDDEN_MODELS_KEY) || '[]')),
 };
 
 const SUGGESTIONS = [
@@ -148,6 +163,9 @@ async function openConversation(id, { pushUrl = true } = {}) {
   const data = await res.json();
   state.conversationId = id;
   state.pins = (data.conversation?.pins || []).map((p) => ({ ...p, saved: true }));
+  state.model = data.conversation?.model || null;
+  state.modelDirty = false;
+  renderModelLabel();
   els.title.textContent = data.conversation?.title || 'WhatsApp GPT';
   renderMessages(data.messages || []);
   renderPills();
@@ -164,6 +182,9 @@ function newChat() {
   els.title.textContent = 'WhatsApp GPT';
   els.empty.hidden = false;
   history.replaceState(null, '', '/gpt');
+  // Keep the current pick for the new thread (Cursor does the same); it is sent with the first message.
+  state.modelDirty = !!state.model;
+  renderModelLabel();
   renderPills();
   renderThreads();
   els.input.focus();
@@ -192,11 +213,12 @@ function stepsHtml(steps = [], open = false) {
 
 function assistantHtml(m) {
   const p = m.payload || {};
+  const model = p.model?.model ? `<span class="gpt-msg-model" title="${escAttr(`${p.model.provider} · ${p.model.model}`)}">${esc(shortModel(p.model.model))}</span>` : '';
   return `<div class="gpt-msg gpt-assistant">
     ${stepsHtml(p.steps || [])}
     <div class="gpt-md">${renderMarkdown(m.content, p.refs || {})}</div>
     ${p.expenseDiff ? renderExpenseDiff(p.expenseDiff) : ''}
-    ${sourceCards(p.sources || [])}
+    <div class="gpt-msg-foot">${sourceCards(p.sources || [])}${model}</div>
   </div>`;
 }
 
@@ -221,6 +243,131 @@ function nearBottom() {
 
 function scrollToBottom(force = false) {
   if (force || nearBottom()) els.scroll.scrollTop = els.scroll.scrollHeight;
+}
+
+/* ── Model picker ─────────────────────────────────────────────────── */
+
+function shortModel(id) {
+  return String(id || '').replace(/^[^/]+\//, '').replace(/:free$/, '').replace(/-latest$/, '');
+}
+
+function modelKey(provider, model) { return `${provider}/${model}`; }
+
+function providerName(id) {
+  return state.catalog?.providers.find((p) => p.id === id)?.name || id;
+}
+
+async function loadModels() {
+  try {
+    const res = await fetch('/api/gpt/models', { headers: authHeaders() });
+    state.catalog = await res.json();
+  } catch { state.catalog = null; }
+  renderModelLabel();
+  if (!els.modelMenu.hidden) renderModelMenu();
+}
+
+function renderModelLabel() {
+  const def = state.catalog?.default;
+  if (state.model) {
+    els.modelLabel.textContent = shortModel(state.model.model);
+    els.modelBtn.title = `${providerName(state.model.provider)} · ${state.model.model} (this thread)`;
+    els.model.textContent = `${providerName(state.model.provider)} · ${shortModel(state.model.model)}`;
+  } else {
+    els.modelLabel.textContent = 'Auto';
+    els.modelBtn.title = def ? `Auto — uses your default: ${providerName(def.provider)} · ${def.model}` : 'Auto';
+    els.model.textContent = def ? `Auto · ${shortModel(def.model)}` : '';
+  }
+}
+
+function setModel(selection) {
+  state.model = selection;
+  state.modelDirty = true;
+  renderModelLabel();
+}
+
+function toggleHidden(key) {
+  if (state.hiddenModels.has(key)) state.hiddenModels.delete(key);
+  else state.hiddenModels.add(key);
+  localStorage.setItem(HIDDEN_MODELS_KEY, JSON.stringify([...state.hiddenModels]));
+  renderModelMenu();
+}
+
+function renderModelMenu() {
+  const cat = state.catalog;
+  if (!cat) { els.modelList.innerHTML = '<div class="gpt-model-empty">Could not load models.</div>'; return; }
+  const q = els.modelFilter.value.trim().toLowerCase();
+  const manage = state.manageModels;
+  els.modelManage.classList.toggle('on', manage);
+  els.modelManage.textContent = manage ? 'Done' : 'Manage';
+
+  const selectedKey = state.model ? modelKey(state.model.provider, state.model.model) : null;
+  let html = '';
+  if (!q) {
+    html += `<button type="button" class="gpt-model-opt${state.model ? '' : ' on'}" data-auto="1" role="option">
+      <span class="chk">${state.model ? '' : '✓'}</span>
+      <span class="nm">Auto</span>
+      <span class="sub">${esc(providerName(cat.default.provider))} · ${esc(shortModel(cat.default.model))}</span>
+    </button>`;
+  }
+  const providers = [...cat.providers].sort((a, b) => Number(b.configured) - Number(a.configured));
+  for (const p of providers) {
+    const rows = p.models.filter((m) => {
+      const hidden = state.hiddenModels.has(modelKey(p.id, m));
+      if (hidden && !manage) return false;
+      return !q || m.toLowerCase().includes(q) || p.name.toLowerCase().includes(q);
+    });
+    if (!rows.length && !(manage && !q)) continue;
+    const tag = p.id === 'ollama' ? 'local' : p.free ? 'free tier' : 'paid';
+    html += `<div class="gpt-model-group">
+      <div class="gpt-model-group-head">
+        <span class="gname">${esc(p.name)}</span>
+        <span class="gtag">${tag}</span>
+        ${p.configured ? '' : `<button type="button" class="gkey" data-addkey="${escAttr(p.id)}">Add API key</button>`}
+      </div>
+      <div class="gpt-model-keyrow" data-keyrow="${escAttr(p.id)}" hidden>
+        <input type="password" placeholder="${esc(p.name)} API key" autocomplete="off" data-keyinput="${escAttr(p.id)}">
+        <button type="button" data-savekey="${escAttr(p.id)}">Save</button>
+      </div>`;
+    for (const m of rows) {
+      const key = modelKey(p.id, m);
+      const hidden = state.hiddenModels.has(key);
+      const on = key === selectedKey;
+      html += `<button type="button" class="gpt-model-opt${on ? ' on' : ''}${p.configured ? '' : ' off'}${hidden ? ' hidden-model' : ''}"
+          role="option" data-provider="${escAttr(p.id)}" data-model="${escAttr(m)}" ${p.configured || manage ? '' : 'disabled'}>
+        <span class="chk">${on ? '✓' : ''}</span>
+        <span class="nm">${esc(shortModel(m))}</span>
+        <span class="sub">${esc(m !== shortModel(m) ? m : '')}</span>
+        ${manage ? `<span class="eye" data-eye="${escAttr(key)}" title="${hidden ? 'Show in list' : 'Hide from list'}">${hidden ? 'Hidden' : 'Shown'}</span>` : ''}
+      </button>`;
+    }
+    html += '</div>';
+  }
+  els.modelList.innerHTML = html || '<div class="gpt-model-empty">No models match.</div>';
+}
+
+function openModelMenu(open) {
+  els.modelMenu.hidden = !open;
+  els.modelBtn.classList.toggle('open', open);
+  if (open) {
+    if (!state.catalog) void loadModels();
+    renderModelMenu();
+    els.modelFilter.value = '';
+    els.modelFilter.focus();
+  } else {
+    state.manageModels = false;
+  }
+}
+
+async function saveProviderKey(provider, apiKey) {
+  const res = await fetch('/api/gpt/models/key', {
+    method: 'PUT', headers: authHeaders(), body: JSON.stringify({ provider, apiKey }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not save key');
+  }
+  await loadModels();
+  renderModelMenu();
 }
 
 /* ── Pills + @mentions ────────────────────────────────────────────── */
@@ -372,6 +519,7 @@ async function send(textOverride = null) {
         message: text,
         conversationId: state.conversationId || undefined,
         mentions: state.pins.map((p) => ({ type: 'chat', chatJid: p.chatJid, chatName: p.chatName })),
+        ...(state.modelDirty ? { model: state.model } : {}),
         installId: window.SearchableAccount?.getInstallId?.(),
       }),
     });
@@ -421,6 +569,9 @@ async function send(textOverride = null) {
     const isNew = !state.conversationId;
     state.conversationId = done.conversationId;
     state.pins = (done.conversation?.pins || []).map((p) => ({ ...p, saved: true }));
+    state.model = done.conversation?.model || null;
+    state.modelDirty = false;
+    renderModelLabel();
     renderPills();
     els.title.textContent = done.conversation?.title || els.title.textContent;
     if (isNew) history.replaceState(null, '', `/gpt?c=${encodeURIComponent(done.conversationId)}`);
@@ -492,6 +643,46 @@ function wire() {
     void updateMention();
   });
   els.send.addEventListener('click', () => void send());
+
+  els.modelBtn.addEventListener('click', () => openModelMenu(els.modelMenu.hidden));
+  els.modelFilter.addEventListener('input', renderModelMenu);
+  els.modelManage.addEventListener('click', () => { state.manageModels = !state.manageModels; renderModelMenu(); });
+  els.modelMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { openModelMenu(false); els.input.focus(); } });
+  els.modelList.addEventListener('click', async (e) => {
+    const eye = e.target.closest('[data-eye]');
+    if (eye) { e.stopPropagation(); toggleHidden(eye.dataset.eye); return; }
+    const add = e.target.closest('[data-addkey]');
+    if (add) {
+      const row = els.modelList.querySelector(`[data-keyrow="${CSS.escape(add.dataset.addkey)}"]`);
+      if (row) { row.hidden = !row.hidden; row.querySelector('input')?.focus(); }
+      return;
+    }
+    const save = e.target.closest('[data-savekey]');
+    if (save) {
+      const input = els.modelList.querySelector(`[data-keyinput="${CSS.escape(save.dataset.savekey)}"]`);
+      save.disabled = true;
+      try { await saveProviderKey(save.dataset.savekey, input?.value || ''); } catch (err) { alert(err.message); save.disabled = false; }
+      return;
+    }
+    const opt = e.target.closest('.gpt-model-opt');
+    if (!opt || opt.disabled) return;
+    if (state.manageModels && !opt.dataset.auto) return;
+    setModel(opt.dataset.auto ? null : { provider: opt.dataset.provider, model: opt.dataset.model });
+    openModelMenu(false);
+    els.input.focus();
+  });
+  els.modelList.addEventListener('keydown', (e) => {
+    const input = e.target.closest('[data-keyinput]');
+    if (input && e.key === 'Enter') {
+      e.preventDefault();
+      els.modelList.querySelector(`[data-savekey="${CSS.escape(input.dataset.keyinput)}"]`)?.click();
+    }
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (els.modelMenu.hidden) return;
+    if (e.target.closest('#gpt-model-menu') || e.target.closest('#gpt-model-btn')) return;
+    openModelMenu(false);
+  });
   $('#gpt-new').addEventListener('click', newChat);
   $('#gpt-side-close').addEventListener('click', () => els.app.classList.add('side-hidden'));
   $('#gpt-side-open').addEventListener('click', () => els.app.classList.remove('side-hidden'));
@@ -529,17 +720,6 @@ function wire() {
   });
 }
 
-async function loadModelBadge() {
-  try {
-    const res = await fetch('/api/settings', { headers: authHeaders() });
-    const data = await res.json();
-    const s = data.settings || {};
-    const provider = s.llm_provider || '';
-    const model = s.llm_model || '';
-    els.model.textContent = [provider, model].filter(Boolean).join(' · ');
-  } catch { /* badge is cosmetic */ }
-}
-
 async function boot() {
   if (matchMedia('(max-width: 820px)').matches) els.app.classList.add('side-hidden');
   wire();
@@ -547,12 +727,12 @@ async function boot() {
   const params = new URLSearchParams(location.search);
   const scope = params.get('chat');
   if (scope) addPin({ chatJid: scope, chatName: params.get('name') || scope });
-  await loadThreads();
+  await Promise.all([loadThreads(), loadModels()]);
   if (params.get('c')) await openConversation(params.get('c'), { pushUrl: false });
-  void loadModelBadge();
   const q = params.get('q');
   if (q) void send(q);
   else els.input.focus();
+  if (location.hash === '#models') openModelMenu(true);
 }
 
 void boot();

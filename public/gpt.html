@@ -51,8 +51,19 @@
         <div class="gpt-pills" id="gpt-pills"></div>
         <div class="gpt-mention" id="gpt-mention" role="listbox" hidden></div>
         <textarea id="gpt-input" rows="1" placeholder="Ask anything about your WhatsApp…  (@ to add a chat)" autocomplete="off"></textarea>
+        <div class="gpt-model-menu" id="gpt-model-menu" hidden>
+          <div class="gpt-model-menu-head">
+            <input type="search" id="gpt-model-filter" placeholder="Search models" autocomplete="off">
+            <button type="button" class="gpt-model-manage" id="gpt-model-manage" title="Show or hide models in this list">Manage</button>
+          </div>
+          <div class="gpt-model-list" id="gpt-model-list" role="listbox"></div>
+        </div>
         <div class="gpt-composer-row">
           <button type="button" class="gpt-at" id="gpt-at" title="Add chat context">@ Add context</button>
+          <button type="button" class="gpt-model-btn" id="gpt-model-btn" title="Choose the AI model for this thread" aria-haspopup="listbox">
+            <span id="gpt-model-label">Auto</span>
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
           <span class="gpt-hint">Enter to send · Shift+Enter for a new line</span>
           <button type="button" class="gpt-send" id="gpt-send" aria-label="Send" title="Send">
             <svg class="i-send" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3.4 20.4l17.45-7.48a1 1 0 000-1.84L3.4 3.6a.993.993 0 00-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"/></svg>

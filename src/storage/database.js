@@ -233,6 +233,21 @@ export default class Database {
     add('memory', 'TEXT');
     add('memory_upto', 'INTEGER DEFAULT 0');
     add('pins_json', 'TEXT');
+    add('model_json', 'TEXT');
+  }
+
+  getConversationModel(id) {
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(
+      'SELECT model_json AS modelJson FROM search_conversations WHERE tenant_id = ? AND id = ?',
+    ).get(t, id);
+    try { return row?.modelJson ? JSON.parse(row.modelJson) : null; } catch { return null; }
+  }
+
+  setConversationModel(id, selection) {
+    const t = getCurrentTenantId();
+    this._db.prepare('UPDATE search_conversations SET model_json = ? WHERE tenant_id = ? AND id = ?')
+      .run(selection ? JSON.stringify(selection) : null, t, id);
   }
 
   getConversationMemory(id) {
