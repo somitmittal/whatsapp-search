@@ -109,4 +109,6 @@ export const store = {
   obOllamaPullTimer: null,
   obStep: 0,
   pullPollTimer: null,
+  /** Optional hook (e.g. GPT shell) to refresh the open WhatsApp transcript after send/edit. */
+  onActiveChatRefresh: null,
 };

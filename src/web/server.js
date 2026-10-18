@@ -151,15 +151,25 @@ function contentTypeForMediaFile(filePath) {
     m4a: 'audio/mp4',
     wav: 'audio/wav',
     pdf: 'application/pdf',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls: 'application/vnd.ms-excel',
+    csv: 'text/csv',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    doc: 'application/msword',
   };
   return map[ext] || 'application/octet-stream';
 }
 
-/** Safe single-line filename for Content-Disposition (ASCII; avoids CRLF / quotes). */
-function attachmentFilenameFromPath(absPath, fallbackMessageId) {
-  let base = basename(String(absPath || ''));
+/** Prefer a human filename from caption/text when the on-disk name is a Baileys `.bin`. */
+function attachmentFilenameFromMessage(absPath, messageId, hintText = '') {
+  const fromHint = String(hintText || '').match(/([^/\\\s][^/\\]*\.(?:xlsx|xls|csv|pdf|docx?|png|jpe?g|webp|mp4|bin))\b/i)?.[1];
+  let base = basename(String(fromHint || absPath || ''));
+  if (!base || base === '.' || base === '..' || /\.bin$/i.test(base)) {
+    const labeled = String(hintText || '').trim().split(/[\n\r]/)[0].slice(0, 120);
+    if (labeled && !/^\[/.test(labeled)) base = labeled.replace(/[^\x20-\x7E]/g, '_').replace(/["\\/]/g, '_') || base;
+  }
   if (!base || base === '.' || base === '..') {
-    base = `whatsapp-media-${String(fallbackMessageId || 'file').slice(0, 40)}`;
+    base = `whatsapp-media-${String(messageId || 'file').slice(0, 40)}`;
   }
   return base.replace(/[^\x20-\x7E]/g, '_').replace(/["\\\r\n]/g, '_').slice(0, 180) || 'download.bin';
 }
@@ -218,7 +228,7 @@ export default class WebServer {
      *   waMessage: string,
      *   waQrDataUrl: string | null,
      *   waClient: any | null,
-     *   syncStats: { syncing: boolean, total: number, current: number, totalMessages: number }
+     *   syncStats: { syncing: boolean, total: number, current: number, totalMessages: number, progress: number | null }
      * }>}
      */
     this._tenantState = new Map();
@@ -402,7 +412,7 @@ export default class WebServer {
         waQrDataUrl: null,
         waClient: null,
         sessionId: null,
-        syncStats: { syncing: false, total: 0, current: 0, totalMessages: 0 },
+        syncStats: { syncing: false, total: 0, current: 0, totalMessages: 0, progress: null },
       };
       this._tenantState.set(tid, st);
     }
@@ -706,6 +716,11 @@ export default class WebServer {
       onStatus: ({ state, message }) => {
         st.waState = state;
         st.waMessage = message;
+        if (state === 'SYNCING') {
+          st.syncStats = { ...st.syncStats, syncing: true };
+        } else if (state !== 'READY') {
+          st.syncStats = { ...st.syncStats, syncing: false, progress: null };
+        }
 
         if (state !== 'READY' && state !== 'SYNCING') {
           st.extensionConnected = false;
@@ -726,8 +741,14 @@ export default class WebServer {
         const stats = this._getCachedTotalStats(tid);
         this._broadcast({ type: 'wa-status', data: { state, message, stats } }, tid);
       },
-      onProgress: ({ completed, total, messages }) => {
-        this._broadcast({ type: 'sync-progress', data: { completed, total, messages } }, tid);
+      onProgress: ({ completed, total, messages, progress = null, done = false }) => {
+        st.syncStats = {
+          ...st.syncStats,
+          syncing: !done,
+          totalMessages: messages,
+          progress,
+        };
+        this._broadcast({ type: 'sync-progress', data: { completed, total, messages, progress, done } }, tid);
       },
       onChatsPreview: (preview) => {
         if (Array.isArray(preview) && preview.length) {
@@ -1226,7 +1247,9 @@ export default class WebServer {
       });
     });
 
-    this._app.use(express.static(config.publicDir));
+    // GPT is the primary UI — redirect before static so public/index.html is not served at /.
+    this._app.get('/', (_req, res) => res.redirect(302, '/gpt'));
+    this._app.use(express.static(config.publicDir, { index: false }));
 
     // ── Status ────────────────────────────────────────────────────────
     this._app.get('/api/app-config', (_req, res) => {
@@ -1447,11 +1470,17 @@ export default class WebServer {
           q.download === '1' ||
           q.download === 'true' ||
           String(q.disposition || '').toLowerCase() === 'attachment';
-        res.setHeader('Content-Type', contentTypeForMediaFile(safe));
+        const nameHint = [row.mediaCaption, row.text].filter(Boolean).join(' ');
+        const fname = attachmentFilenameFromMessage(safe, messageId, nameHint);
+        const ext = (fname.split('.').pop() || '').toLowerCase();
+        const typeFromName = contentTypeForMediaFile(`.${ext}`);
+        res.setHeader(
+          'Content-Type',
+          typeFromName !== 'application/octet-stream' ? typeFromName : contentTypeForMediaFile(safe),
+        );
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Cache-Control', 'private, max-age=3600');
         if (wantDownload) {
-          const fname = attachmentFilenameFromPath(safe, messageId);
           res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
         }
         return res.sendFile(safe);
@@ -1726,6 +1755,24 @@ export default class WebServer {
       }
     });
 
+    this._app.get('/api/skills', (req, res) => {
+      try {
+        return res.json({ items: this._gpt.skillCandidates(String(req.query.q || ''), 12) });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/skills/runs/:id/send', async (req, res) => {
+      try {
+        const result = await this._gpt.sendSkillReport(req.params.id);
+        return res.json(result);
+      } catch (err) {
+        const missing = /not found/i.test(err.message);
+        return res.status(missing ? 404 : 400).json({ error: err.message });
+      }
+    });
+
     this._app.post('/api/gpt/chat', async (req, res) => {
       const message = String(req.body?.message || '').trim();
       if (!message) return res.status(400).json({ error: 'message is required' });
@@ -1747,6 +1794,7 @@ export default class WebServer {
       try {
         const result = await this._gpt.handleTurn({
           conversationId: req.body?.conversationId ? String(req.body.conversationId) : null,
+          createConversationIfMissing: req.body?.createConversationIfMissing === true,
           message,
           scopeChatJid: req.body?.scopeChatJid || null,
           mentions: Array.isArray(req.body?.mentions) ? req.body.mentions : [],
@@ -1917,6 +1965,11 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         state: st.waState,
         message: st.waMessage,
         hasQr: !!this._currentQr(st),
+        sync: {
+          syncing: !!st.syncStats.syncing,
+          progress: st.syncStats.progress ?? null,
+          messages: st.syncStats.totalMessages || 0,
+        },
       });
     });
 
@@ -2019,6 +2072,22 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     });
 
     /** Re-fetch WhatsApp app state (contact / phone book names) and update indexed chat titles. */
+    /** Soft-reconnect and ask the phone for chat history again (keeps linked-device auth). */
+    this._app.post('/api/wa/resync-history', async (_req, res) => {
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      const wa = st?.waClient;
+      if (!wa || typeof wa.requestHistoryResync !== 'function') {
+        return res.status(409).json({ error: 'WhatsApp not connected' });
+      }
+      try {
+        wa.requestHistoryResync().catch((err) => console.error('[WA] resync-history:', err?.message || err));
+        res.json({ ok: true, state: st.waState });
+      } catch (err) {
+        res.status(500).json({ error: err.message || String(err) });
+      }
+    });
+
     this._app.post('/api/wa/sync-contacts', async (req, res) => {
       const tid = getCurrentTenantId();
       const st = this._getTenantState(tid);
@@ -3291,7 +3360,8 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       }
     });
 
-    this._app.get('/', (_req, res) => res.sendFile(resolve(config.publicDir, 'index.html')));
+    // Legacy WhatsApp mirror UI (optional). Primary entry is /gpt.
+    this._app.get('/chats', (_req, res) => res.sendFile(resolve(config.publicDir, 'index.html')));
   }
 
   _triggerSummaryGen() {

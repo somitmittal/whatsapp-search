@@ -7,6 +7,7 @@ import { afterAll, describe, expect, test } from '@jest/globals';
 import ExpenseReconciliationService, {
   isExpenseSheetMessage,
 } from '../src/expenses/expense-reconciliation-service.js';
+import { dayBoundsFromDate } from '../src/expenses/chat-expense-extractor.js';
 
 const scratch = mkdtempSync(join(tmpdir(), 'expense-service-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -229,20 +230,19 @@ describe('expense reconciliation automation', () => {
       mediaPath: path,
     }];
     let sendCount = 0;
+    let selectedProviderCalls = 0;
+    const selectedProvider = {
+      chat: async () => {
+        selectedProviderCalls += 1;
+        return JSON.stringify([{
+          source_message_id: 'm-expense', amount: '500', currency: 'INR', direction: 'debit',
+          date: '2026-10-15', payee: 'Fuel pump', category: 'fuel', description: 'Diesel',
+        }]);
+      },
+    };
     const service = new ExpenseReconciliationService({
       db,
-      getProvider: () => ({
-        chat: async () => JSON.stringify([{
-          source_message_id: 'm-expense',
-          amount: '500',
-          currency: 'INR',
-          direction: 'debit',
-          date: '2026-10-15',
-          payee: 'Fuel pump',
-          category: 'fuel',
-          description: 'Diesel',
-        }]),
-      }),
+      getProvider: () => { throw new Error('must use the selected conversation model'); },
       getWaClient: () => ({
         sendDocument: async () => {
           sendCount += 1;
@@ -251,12 +251,50 @@ describe('expense reconciliation automation', () => {
       }),
     });
     const run = await service.runForChat(
-      { chatJid: 'site-a@g.us', notifyWhatsApp: false },
+      { chatJid: 'site-a@g.us', notifyWhatsApp: false, provider: selectedProvider },
       'tenant-g',
     );
     expect(sendCount).toBe(0);
+    expect(selectedProviderCalls).toBeGreaterThan(0);
     expect(run.status).toBe('completed');
     expect(run.reportPath).toBeTruthy();
+  });
+
+  test('loads chat evidence for every date represented across the workbook', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Transactions');
+    sheet.addRow(['Date', 'Paid To', 'Amount', 'Description']);
+    sheet.addRow(['2026-10-15', 'Travel', 120, 'Taxi']);
+    sheet.addRow(['2026-10-17', 'Cloud', 30, 'Software subscription']);
+    const path = join(scratch, 'multi-day.xlsx');
+    await workbook.xlsx.writeFile(path);
+
+    const db = fakeDb(path);
+    db.listExpenseSheetMessages = () => [{ messageId: 'sheet-1', chatJid: 'site-a@g.us', mediaPath: path }];
+    const messages = [
+      { messageId: 'm-taxi', sender: 'Staff', text: 'Paid 120 for taxi', timestamp: dayBoundsFromDate('2026-10-15').startTs + 12 * 3600 },
+      { messageId: 'm-cloud', sender: 'Staff', text: 'Cloud software subscription 30', timestamp: dayBoundsFromDate('2026-10-17').startTs + 12 * 3600 },
+    ];
+    let range;
+    db.getMessagesByTimeRange = (_jid, start, end) => {
+      range = { start, end };
+      return messages;
+    };
+    const provider = {
+      chat: async () => JSON.stringify([
+        { source_message_id: 'm-taxi', amount: 120, date: '2026-10-15', payee: 'Taxi', description: 'Travel', category: 'transport' },
+        { source_message_id: 'm-cloud', amount: 30, date: '2026-10-17', payee: 'Cloud', description: 'Software subscription', category: 'software' },
+      ]),
+    };
+    const service = new ExpenseReconciliationService({ db, getProvider: () => provider });
+    await service.runForChat({ chatJid: 'site-a@g.us', notifyWhatsApp: false }, 'tenant-range');
+
+    expect(range).toEqual({
+      start: dayBoundsFromDate('2026-10-15').startTs,
+      end: dayBoundsFromDate('2026-10-17').endTs,
+    });
+    expect(db.state.saved.discrepancies).toHaveLength(0);
+    expect(db.state.run.businessDate).toBe('2026-10-15 – 2026-10-17');
   });
 });
 

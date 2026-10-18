@@ -1,12 +1,13 @@
 import { store } from './store.js';
-import { avatarLetterFor, chatAvatarHtml, openAvatarViewer } from './avatars.js';
+import { openAvatarViewer } from './avatars.js';
 import { applySmbUi, loadBusinessInbox } from './business.js';
 import { openChat } from './chat-view.js';
+import { chatRowHtml } from './chat-row.js';
 import { applyChatSummaryBars, applySearchIndexBars, refreshDash, setChatIndexEnabled } from './dashboard.js';
-import { displayChatTitle, formatCount, formatDate, formatPhoneLikeName, receiptTicksHtml } from './format.js';
+import { formatPhoneLikeName } from './format.js';
 import { showSidebarContextMenu } from './menus.js';
 import { renderStatusStrip } from './status-feed.js';
-import { $, esc, escAttr } from './util.js';
+import { $ } from './util.js';
 import { applyWaSyncBars, canShowChatUI, isWaUiReady } from './wa-connection.js';
 
 export function sidebarTabOf(row) {
@@ -21,20 +22,6 @@ export function sidebarTabOf(row) {
 
 function chatsForCurrentSidebarTab() {
   return store.chatData.filter((row) => sidebarTabOf(row) === store.sidebarListTab);
-}
-
-/** Counts on the tab labels, so live chats landing behind the current tab are still visible. */
-function renderSidebarTabCounts() {
-  const counts = { imported: 0, chat: 0, feed: 0 };
-  for (const c of store.chatData) {
-    const tab = sidebarTabOf(c);
-    if (counts[tab] === undefined) continue;
-    counts[tab] += 1;
-  }
-  document.querySelectorAll('[data-tab-count]').forEach((el) => {
-    const n = counts[el.getAttribute('data-tab-count')] || 0;
-    el.textContent = n ? String(n) : '';
-  });
 }
 
 /**
@@ -102,8 +89,10 @@ function applyChatTouches(touches) {
 }
 
 export function scheduleRefreshDash(chatTouches) {
+  // GPT shell has no classic `#chat-list`; still apply in-memory touches when present.
   if (Array.isArray(chatTouches) && chatTouches.length) {
     const needFull = applyChatTouches(chatTouches);
+    if (!$('#chat-list')) return;
     if (canShowChatUI()) renderChatsFromState();
     if (needFull) {
       clearTimeout(store._refreshDashTimer);
@@ -111,6 +100,7 @@ export function scheduleRefreshDash(chatTouches) {
       return;
     }
   }
+  if (!$('#chat-list')) return;
   clearTimeout(store._refreshDashTimer);
   store._refreshDashTimer = setTimeout(() => { void refreshDash(); }, 400);
 }
@@ -154,17 +144,35 @@ export function setSidebarListTab(tab, { pin = true } = {}) {
   const isBusiness = store.sidebarListTab === 'business';
   if (bizPanel) bizPanel.classList.toggle('visible', isBusiness);
   if (chatList) chatList.style.display = isBusiness ? 'none' : '';
-  if (filterWrap) filterWrap.style.display = isBusiness ? 'none' : '';
+  if (filterWrap && chatList) filterWrap.style.display = isBusiness ? 'none' : '';
+  const placeholder = store.sidebarListTab === 'imported'
+    ? 'Search imported chats'
+    : (store.sidebarListTab === 'feed' ? 'Search status and feeds' : 'Search or start a new chat');
   const filterInput = $('#filter');
-  if (filterInput) {
-    filterInput.placeholder = store.sidebarListTab === 'imported'
-      ? 'Search imported chats'
-      : (store.sidebarListTab === 'feed' ? 'Search status and feeds' : 'Search or start a new chat');
+  if (filterInput) filterInput.placeholder = placeholder;
+  const gptFilter = $('#gpt-chat-filter');
+  if (gptFilter) gptFilter.placeholder = placeholder;
+  if (typeof store.onSidebarListTabChange === 'function') {
+    store.onSidebarListTabChange(store.sidebarListTab);
   }
   if (isBusiness) void loadBusinessInbox();
   else renderChatsFromState();
   renderStatusStrip();
   applySmbUi();
+}
+
+/** Tab badge counts — shared by classic sidebar and GPT left pane. */
+export function renderSidebarTabCounts() {
+  const counts = { imported: 0, chat: 0, feed: 0 };
+  for (const c of store.chatData) {
+    const tab = sidebarTabOf(c);
+    if (counts[tab] === undefined) continue;
+    counts[tab] += 1;
+  }
+  document.querySelectorAll('[data-tab-count]').forEach((el) => {
+    const n = counts[el.getAttribute('data-tab-count')] || 0;
+    el.textContent = n ? String(n) : '';
+  });
 }
 
 function sidebarEmptyMessage() {
@@ -183,6 +191,7 @@ function sidebarEmptyMessage() {
 
 function renderChats(chats) {
   const c = $('#chat-list');
+  if (!c) return;
   if (!store._chatRowCache) store._chatRowCache = new Map();
   if (!chats.length) {
     store._chatRowCache.clear();
@@ -218,67 +227,6 @@ function renderChats(chats) {
   applyWaSyncBars();
   applySearchIndexBars();
   applyChatSummaryBars();
-}
-
-function chatRowHtml(ch) {
-    const n = displayChatTitle(ch.chatJid, ch.chatName || ch.chatJid);
-    const avatarHtml = chatAvatarHtml(
-      ch.chatJid,
-      avatarLetterFor(ch.chatJid, n, ch.participantCount),
-      ch.hasAvatar,
-      ch.avatarRev,
-    );
-    const pct = ch.searchIndexPct ?? 0;
-    const sumT = ch.summarizedThreads ?? 0;
-    const totT = ch.totalThreads ?? 0;
-    const aiDone = !!ch.aiSearchComplete;
-    const aiReady = !!ch.aiSearchReady;
-    let badgeClass = '';
-    let badgeText = 'AI —';
-    if (aiDone) { badgeClass = 'complete'; badgeText = 'AI ✓'; }
-    else if (aiReady) { badgeClass = 'partial'; badgeText = pct + '%'; }
-    const optedIn = !!ch.indexOptedIn;
-    const canToggleAi = ch.messageCount > 0;
-    const aiToggleTitle = !canToggleAi
-      ? 'Needs messages before AI indexing'
-      : (optedIn
-        ? 'AI indexing on — click to turn off'
-        : 'Index this chat for AI search (off by default)');
-    const aiToggle = canToggleAi
-      ? `<button type="button" class="chat-ai-toggle${optedIn ? ' on' : ''}" title="${esc(aiToggleTitle)}" aria-pressed="${optedIn ? 'true' : 'false'}" aria-label="${optedIn ? 'Disable AI indexing' : 'Enable AI indexing'}">${optedIn ? 'AI on' : 'AI'}</button>`
-      : '';
-    const unread = Math.max(0, Number(ch.unreadCount) || 0);
-    const unreadBadge = unread > 0
-      ? `<span class="chat-count-badge" title="${unread} unread">${esc(formatCount(unread))}</span>`
-      : '';
-    const previewTicks = ch.lastMessageFromMe
-      ? `<span class="chat-preview-ticks">${receiptTicksHtml(ch.lastMessageReceipt)}</span>`
-      : '';
-    const preview = ch.lastMessagePreview
-      ? `<span class="chat-preview-text">${esc(ch.lastMessagePreview)}</span>`
-      : '';
-    return `<div class="chat-item${unread ? ' unread' : ''}" data-jid="${esc(ch.chatJid)}">
-        <div class="chat-avatar${ch.hasAvatar ? ' has-photo' : ''}" data-avatar-jid="${escAttr(ch.chatJid)}" data-avatar-title="${escAttr(n)}" data-avatar-rev="${escAttr(String(ch.avatarRev || 0))}"${ch.hasAvatar ? ' role="button" tabindex="0" title="View photo"' : ''}>${avatarHtml}</div>
-        <div class="chat-meta">
-          <div class="chat-meta-top">
-            <span class="chat-name">${esc(n)}</span>
-            <span class="chat-date">${esc(formatDate(ch.lastMessageTs))}</span>
-          </div>
-          <div class="chat-meta-bottom">
-            <span class="chat-preview">${previewTicks}${preview}</span>
-            <span class="chat-meta-badges">
-              ${aiToggle}
-              <span class="search-badge ${badgeClass}" title="Thread summaries for AI search">${esc(badgeText)}</span>
-              ${unreadBadge}
-            </span>
-          </div>
-        </div>
-        <div class="search-index-track${aiDone ? ' done' : ''}" data-jid="${esc(ch.chatJid)}"
-          data-search-pct="${pct}" data-search-complete="${aiDone ? '1' : '0'}"
-          data-summarized="${sumT}" data-total-threads="${totT}"
-          style="${optedIn && ch.messageCount > 0 ? '' : 'display:none'}"><div class="search-index-bar"></div></div>
-        <div class="chat-index-track" data-jid="${esc(ch.chatJid)}" style="display:none"><div class="chat-index-bar"></div></div>
-      </div>`;
 }
 
 export function initSidebar() {

@@ -1,5 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import {
+  extractRenderableTextFromInner,
+  isContentPlaceholder,
   isControlOnlyContentType,
   placeholderForContentType,
   legacyControlFramePlaceholders,
@@ -60,5 +62,52 @@ describe('legacyControlFramePlaceholders', () => {
   test('one entry per dropped content type', () => {
     const placeholders = legacyControlFramePlaceholders();
     expect(new Set(placeholders).size).toBe(placeholders.length);
+  });
+});
+
+describe('isContentPlaceholder', () => {
+  test('matches synthetic labels only', () => {
+    expect(isContentPlaceholder('[Template]')).toBe(true);
+    expect(isContentPlaceholder('[Call]')).toBe(true);
+    expect(isContentPlaceholder('Hello [Template]')).toBe(false);
+    expect(isContentPlaceholder('Real message')).toBe(false);
+  });
+});
+
+describe('extractRenderableTextFromInner', () => {
+  test('reads interactiveMessageTemplate body used by business broadcasts', () => {
+    const text = extractRenderableTextFromInner({
+      templateMessage: {
+        interactiveMessageTemplate: {
+          header: { title: 'mStock' },
+          body: { text: 'Markets open — Nifty futures green.' },
+          footer: { text: 'Reply STOP to opt out' },
+        },
+      },
+    });
+    expect(text).toContain('Markets open');
+    expect(text).toContain('mStock');
+  });
+
+  test('reads hydratedFourRowTemplate content', () => {
+    expect(extractRenderableTextFromInner({
+      templateMessage: {
+        hydratedFourRowTemplate: { hydratedContentText: 'Your OTP is 1234' },
+      },
+    })).toBe('Your OTP is 1234');
+  });
+
+  test('reads top-level interactiveMessage', () => {
+    expect(extractRenderableTextFromInner({
+      interactiveMessage: { body: { text: 'Tap below to continue' } },
+    })).toBe('Tap below to continue');
+  });
+
+  test('reads hydrated HSM', () => {
+    expect(extractRenderableTextFromInner({
+      highlyStructuredMessage: {
+        hydratedHsm: { hydratedTemplate: { hydratedContentText: 'Payment received' } },
+      },
+    })).toBe('Payment received');
   });
 });

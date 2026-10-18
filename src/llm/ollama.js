@@ -72,6 +72,7 @@ export default class OllamaProvider {
       keep_alive: options.keepAlive ?? this._keepAlive,
       options: {
         num_ctx: options.numCtx ?? (Number(process.env.OLLAMA_NUM_CTX) || OLLAMA_DEFAULT_NUM_CTX),
+        num_predict: options.maxTokens ?? 2048,
         temperature: options.temperature ?? 0.3,
       },
     };

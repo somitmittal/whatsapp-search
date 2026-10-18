@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { getCurrentTenantId, runWithTenant } from '../storage/tenant-context.js';
 import ChatDirectory from './chat-directory.js';
-import { ContextEngine, buildHistory, buildSystemPrompt, expenseDiffBlock } from './context.js';
+import { ContextEngine, buildChatOverview, buildHistory, buildSystemPrompt, expenseDiffBlock } from './context.js';
+import { isBroadQuery } from './retrieval.js';
 import { runAgent } from './agent.js';
 import { createToolbox } from './tools.js';
 import { GPT_LIMITS, estimateTokens } from './limits.js';
 import { listModelCatalog, providerForSelection, setProviderKey } from './model-registry.js';
+import { createSkillRunner } from '../skills/skill-runner.js';
+import { parseSkillInvocation } from '../skills/parse-invocation.js';
 
 function titleFrom(text) {
   const t = String(text || '').trim().replace(/\s+/g, ' ');
@@ -34,6 +37,8 @@ export default class GptService {
     this.directory = new ChatDirectory(db);
     this.context = new ContextEngine({ db, embeddings, directory: this.directory });
     this.toolbox = createToolbox({ db, embeddings, directory: this.directory, expenseService });
+    this.expenseService = expenseService;
+    this.skills = createSkillRunner({ db, directory: this.directory, expenseService });
     this._compacting = new Set();
   }
 
@@ -69,6 +74,10 @@ export default class GptService {
     return this.db.getConversationMemory(id).pins;
   }
 
+  skillCandidates(query, limit = 12) {
+    return this.skills.list(query, limit);
+  }
+
   mentionCandidates(query, limit = 12) {
     return this.directory.search(query, limit).map((c) => ({
       type: 'chat', chatJid: c.chatJid, chatName: c.chatName, messageCount: c.messageCount, lastMessageTs: c.lastMessageTs,
@@ -76,11 +85,16 @@ export default class GptService {
   }
 
   async handleTurn({
-    conversationId = null, message, scopeChatJid = null, mentions = [], businessContext = false, model = undefined,
+    conversationId = null, createConversationIfMissing = false, message, scopeChatJid = null, mentions = [], businessContext = false, model = undefined,
     emit = null, signal = null,
   }) {
     const text = String(message || '').trim();
     if (!text) throw new Error('message is required');
+    if (parseSkillInvocation(text)) {
+      return this._handleSkillTurn({
+        conversationId, createConversationIfMissing, message: text, scopeChatJid, mentions, model, emit,
+      });
+    }
     // `model` undefined → keep the thread's choice; null → back to Auto; object → explicit pick.
     const existingModel = conversationId ? this.db.getConversationModel(conversationId) : null;
     const selection = model === undefined ? existingModel : model;
@@ -97,10 +111,13 @@ export default class GptService {
     status('Gathering context…');
 
     let conversation = conversationId ? this.db.getSearchConversation(conversationId) : null;
-    if (conversationId && !conversation) throw new Error('Conversation not found');
+    if (conversationId && !conversation && !createConversationIfMissing) throw new Error('Conversation not found');
     if (!conversation) {
-      conversation = this.db.createSearchConversation({ id: randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
+      conversation = this.db.createSearchConversation({ id: conversationId || randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
     }
+    // Let the tab persist the conversation before context gathering or a skill run
+    // starts. The user may switch tabs while that work is still in progress.
+    emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: !conversationId || createConversationIfMissing });
     if (model !== undefined && JSON.stringify(existingModel) !== JSON.stringify(resolved.selection)) {
       this.db.setConversationModel(conversation.id, resolved.selection);
     }
@@ -132,7 +149,12 @@ export default class GptService {
     status('Thinking…');
 
     const { messages: history } = buildHistory(prior, memory);
-    const result = await runAgent({
+    const overview = provider.name === 'ollama'
+      && /\b1b\b/i.test(String(provider.model || ''))
+      && isBroadQuery(text) && scopeJids.length === 1 && !pre.range
+      ? buildChatOverview(pins.find((p) => p.chatJid === scopeJids[0])?.chatName || this.directory.name(scopeJids[0]), pre.messages)
+      : null;
+    const result = overview || await runAgent({
       provider,
       system: buildSystemPrompt({ db: this.db, businessContext }),
       history,
@@ -143,6 +165,7 @@ export default class GptService {
       emit,
       signal,
     });
+    if (overview) emit?.({ type: 'delta', text: overview.answer });
 
     const expenseDiff = result.payload.expenseDiff || null;
     const assistant = this.db.addSearchMessage({
@@ -172,6 +195,97 @@ export default class GptService {
       expenseDiff,
       model: { provider: provider.name, model: provider.model },
     };
+  }
+
+  /**
+   * Slash command. Resolved from the skill catalog before any model call, then executed
+   * as a dry run. Sending the report is a separate confirm.
+   */
+  async _handleSkillTurn({ conversationId = null, createConversationIfMissing = false, message, scopeChatJid = null, mentions = [], model = undefined, emit = null }) {
+    const text = String(message || '').trim();
+    const status = (line) => emit?.({ type: 'status', text: line });
+    let conversation = conversationId ? this.db.getSearchConversation(conversationId) : null;
+    if (conversationId && !conversation && !createConversationIfMissing) throw new Error('Conversation not found');
+    if (!conversation) {
+      conversation = this.db.createSearchConversation({ id: conversationId || randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
+    }
+    // Slash commands can take long enough for the user to navigate away. Publish
+    // the durable ID first so the draft tab is recoverable even if its stream closes.
+    emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: !conversationId || createConversationIfMissing });
+    const existingModel = this.db.getConversationModel(conversation.id);
+    const selection = model === undefined ? existingModel : model;
+    const resolveExpenseProvider = async () => {
+      const resolved = await this._resolveProvider(this.db, selection, this.getProvider());
+      if (model !== undefined && JSON.stringify(existingModel) !== JSON.stringify(resolved.selection)) {
+        this.db.setConversationModel(conversation.id, resolved.selection);
+      }
+      return resolved.provider;
+    };
+    const memory = this.db.getConversationMemory(conversation.id);
+    const resolvedMentions = (mentions || []).map((p) => (p?.chatJid
+      ? { type: 'chat', chatJid: p.chatJid, chatName: p.chatName || this.directory.name(p.chatJid) }
+      : null)).filter(Boolean);
+    const pins = mergePins(memory.pins, resolvedMentions);
+    if (pins.length !== memory.pins.length) this.db.setConversationPins(conversation.id, pins);
+
+    this.db.addSearchMessage({
+      id: randomUUID(), conversationId: conversation.id, role: 'user', content: text,
+      payload: { scopeChatJid, mentions: resolvedMentions, skill: true },
+    });
+
+    const outcome = await this.skills.run({
+      text,
+      mentions: pins,
+      scopeChatJid: scopeChatJid || pins.find((p) => String(p.chatJid).endsWith('@g.us'))?.chatJid || null,
+      conversationId: conversation.id,
+      status,
+      resolveProvider: resolveExpenseProvider,
+    });
+    const assistant = this.db.addSearchMessage({
+      id: randomUUID(),
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: outcome.answer,
+      payload: {
+        kind: outcome.expenseDiff ? 'expense_diff' : 'skill',
+        steps: outcome.steps || [],
+        choices: outcome.choices || [],
+        ...(outcome.skillRun ? { skillRun: outcome.skillRun } : {}),
+        ...(outcome.expenseDiff ? { expenseDiff: outcome.expenseDiff } : {}),
+      },
+    });
+    if (outcome.skillRun?.id) this.db.updateSkillRun(outcome.skillRun.id, { messageId: assistant.id });
+
+    const fresh = this.getConversation(conversation.id);
+    return {
+      conversationId: conversation.id,
+      conversation: fresh.conversation,
+      messages: fresh.messages,
+      message: assistant,
+      answer: outcome.answer,
+      sources: [],
+      expenseDiff: outcome.expenseDiff || null,
+      model: null,
+    };
+  }
+
+  /** Confirm a dry run: post the report that was already written. */
+  async sendSkillReport(skillRunId) {
+    const run = this.db.getSkillRun(skillRunId);
+    if (!run) throw new Error('Skill run not found');
+    if (run.status === 'sent') return { skillRun: run, alreadySent: true };
+    if (run.status !== 'dry_run' || !run.expenseRunId) throw new Error('This run has no report to send');
+    if (!this.expenseService?.sendCompletedReport) throw new Error('Expense reconciliation is not enabled on this install.');
+    await this.expenseService.sendCompletedReport(run.expenseRunId);
+    const updated = this.db.updateSkillRun(run.id, { status: 'sent' });
+    if (run.messageId) {
+      const msg = this.db.getSearchMessage(run.messageId);
+      if (msg?.payload?.skillRun) {
+        msg.payload.skillRun = { ...msg.payload.skillRun, status: 'sent', canSend: false };
+        this.db.updateSearchMessagePayload(run.messageId, msg.payload);
+      }
+    }
+    return { skillRun: updated };
   }
 
   /** Folds turns that no longer fit the history budget into the rolling memory, off the hot path. */

@@ -71,6 +71,91 @@ export function placeholderForContentType(contentType) {
   return `[${words.charAt(0).toUpperCase()}${words.slice(1)}]`;
 }
 
+/** True for synthetic stand-ins like `[Template]` / `[Call]` (not real message bodies). */
+export function isContentPlaceholder(text) {
+  const t = String(text || '').trim();
+  return /^\[[^[\]]{1,80}\]$/.test(t);
+}
+
+function joinTemplateParts(...parts) {
+  return parts.map((p) => String(p || '').trim()).filter(Boolean).join('\n').trim();
+}
+
+function textFromInteractiveMessage(im) {
+  if (!im || typeof im !== 'object') return '';
+  return joinTemplateParts(
+    im.header?.title,
+    im.header?.hydratedTitleText,
+    im.body?.text,
+    im.footer?.text,
+  );
+}
+
+function textFromHydratedFourRow(h) {
+  if (!h || typeof h !== 'object') return '';
+  return joinTemplateParts(
+    h.hydratedTitleText,
+    h.hydratedContentText,
+    h.contentText,
+    h.hydratedFooterText,
+  );
+}
+
+/**
+ * Pull user-visible copy from template / interactive / HSM shapes Baileys does not flatten.
+ * Call on the inner message (after `extractMessageContent` when available).
+ */
+export function extractRenderableTextFromInner(m) {
+  if (!m || typeof m !== 'object') return '';
+
+  const direct = (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.documentMessage?.caption ||
+    m.buttonsResponseMessage?.selectedDisplayText ||
+    m.listResponseMessage?.singleSelectReply?.selectedRowId ||
+    m.templateButtonReplyMessage?.selectedDisplayText ||
+    m.liveLocationMessage?.caption ||
+    m.locationMessage?.name ||
+    m.contactMessage?.displayName ||
+    m.pollCreationMessage?.name ||
+    m.buttonsMessage?.contentText ||
+    m.listMessage?.description ||
+    ''
+  );
+  if (String(direct || '').trim()) return String(direct).trim();
+
+  const tm = m.templateMessage;
+  if (tm) {
+    const fromInteractive = textFromInteractiveMessage(tm.interactiveMessageTemplate);
+    if (fromInteractive) return fromInteractive;
+    const fromHydrated = textFromHydratedFourRow(tm.hydratedFourRowTemplate)
+      || textFromHydratedFourRow(tm.hydratedTemplate)
+      || textFromHydratedFourRow(tm.fourRowTemplate);
+    if (fromHydrated) return fromHydrated;
+  }
+
+  const fromTopInteractive = textFromInteractiveMessage(m.interactiveMessage);
+  if (fromTopInteractive) return fromTopInteractive;
+
+  const hsm = m.highlyStructuredMessage;
+  if (hsm) {
+    const nested = hsm.hydratedHsm?.hydratedTemplate
+      || hsm.hydratedHsm?.hydratedFourRowTemplate
+      || hsm.hydratedHsm;
+    const fromHsm = textFromHydratedFourRow(nested) || textFromInteractiveMessage(nested);
+    if (fromHsm) return fromHsm;
+    if (Array.isArray(hsm.params) && hsm.params.length) {
+      return hsm.params.map((p) => String(p ?? '').trim()).filter(Boolean).join(' ').trim();
+    }
+  }
+
+  const docFn = m.documentMessage?.fileName ? String(m.documentMessage.fileName).trim() : '';
+  return docFn || '';
+}
+
 /**
  * Placeholder strings that earlier builds wrote for frames we now drop. Used by the one-shot
  * DB cleanup so previously-synced archives lose their `[protocol]` rows too. Reproduces the

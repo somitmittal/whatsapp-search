@@ -129,7 +129,7 @@ Use "payment" for COD, UPI, refunds.`,
     isBusiness: true,
     factTypes: ['payment', 'delivery', 'meeting', 'question'],
     factAddon: `Construction expense context:
-- For every expense or payment, extract "payment" with amount, currency, date, direction ("debit"|"credit"), payee, category ("labour"|"fuel"|"material"|"transport"|"equipment"|"food"|"other"), description, reference, and source_message_id when present.
+- For every expense or payment, extract "payment" with amount, currency, date, direction ("debit"|"credit"), payee, category as stated in the message, description, reference, and source_message_id when present. Preserve unfamiliar categories instead of forcing them into a fixed list.
 - Treat cash paid to labourers, fuel purchases, material bills, advances, reimbursements, and credits/refunds as separate facts.
 - Never infer an amount or recipient that is not explicitly present.`,
     searchPrompts: [

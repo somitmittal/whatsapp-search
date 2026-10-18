@@ -50,6 +50,71 @@ export function expenseDiffBlock(diff) {
 }
 
 /**
+ * A small model can invent a topic when a broad overview mostly contains
+ * uncaptioned media or noisy one-word replies. Return a source-backed inventory
+ * instead of asking it to infer what those messages depict.
+ */
+export function buildChatOverview(chatName, messages = []) {
+  const rows = (messages || []).filter((m) => m?.id != null);
+  if (rows.length < 12) return null;
+
+  const opaqueMedia = rows.filter((m) => m.mediaType
+    && !String(m.text || '').trim()
+    && !String(m.mediaCaption || '').trim()
+    && !String(m.mediaAiIndex || '').trim());
+  const visibleRows = rows.map((m) => ({
+    message: m,
+    text: String(m.text || m.mediaCaption || m.mediaAiIndex || '').replace(/\s+/g, ' ').trim(),
+  })).filter(({ text }) => text
+    && !/^(?:ok(?:ay)?|k|hmm|yes|no|👍|🙏|👌|😂|❤️)+[.! ]*$/i.test(text));
+  const selected = [];
+  const add = (row) => {
+    if (row && !selected.some((item) => item.message.id === row.message.id)) selected.push(row);
+  };
+
+  // Include different kinds of readable evidence when present: a shared link,
+  // a concrete activity/update, and one substantive text message.
+  add(visibleRows.find((row) => /https?:\/\//i.test(row.text)));
+  add(visibleRows.find((row) => /\b(?:left from|reached|arrived|on the way|heading to|coming to)\b/i.test(row.text)));
+  add(visibleRows.filter((row) => row.text.length >= 30)
+    .sort((a, b) => b.text.length - a.text.length)[0]);
+  for (const row of visibleRows) {
+    if (selected.length >= 3) break;
+    add(row);
+  }
+
+  const sources = selected.map(({ message }) => ({
+    ref: `m${message.id}`,
+    text: String(message.text || message.mediaCaption || message.mediaAiIndex || '').trim(),
+    chatName: message.chatName || chatName,
+    chatJid: message.chatJid || null,
+    messageId: message.messageId || null,
+    sender: message.sender || 'Unknown',
+    timestamp: message.timestamp,
+    mediaType: message.mediaType || null,
+  }));
+  const excerpts = selected.map(({ message, text }) => {
+    const clipped = text.length > 150 ? `${text.slice(0, 149)}…` : text;
+    return `“${clipped}” [m${message.id}]`;
+  });
+  const label = chatName ? ` in “${chatName}”` : '';
+  const mediaNote = opaqueMedia.length
+    ? `${opaqueMedia.length} of ${rows.length} recent messages are images/videos with no caption or indexed description. `
+    : `I checked ${rows.length} recent messages. `;
+  const evidenceNote = excerpts.length
+    ? `Readable examples include ${excerpts.join('; ')}. `
+    : 'The recent messages contain no readable text. ';
+  const answer = `The recent messages${label} look mixed rather than centered on one topic. ${mediaNote}${evidenceNote}The text shows links, updates, and forwarded content, but I can’t infer what the undescribed media contains or claim a broader theme from it.`;
+
+  return {
+    answer,
+    sources,
+    refs: Object.fromEntries(sources.map((source) => [source.ref.slice(1), source])),
+    payload: {},
+  };
+}
+
+/**
  * Builds what the model sees before its first token — the Cursor-style "auto context":
  * pinned chats, the chat the user launched from, a hybrid search for the question,
  * and summaries for broad questions. Packed into a fixed token budget, deduped by message.
@@ -65,9 +130,15 @@ export class ContextEngine {
     const budget = GPT_LIMITS.contextTokens;
     const range = detectTimeRange(query);
     const broad = isBroadQuery(query);
+    // Broad questions such as "what is this group about?" have no meaningful
+    // search terms. FTS/vector search turns those generic words into noisy hits;
+    // use the scoped timeline and its indexed summaries instead.
+    const overview = broad && !range;
     const scoped = [...new Set(scopeJids.filter(Boolean))];
 
-    const searches = scoped.length
+    const searches = overview
+      ? []
+      : scoped.length
       ? scoped.map((jid) => hybridSearch({
         db: this.db, embeddings: this.embeddings, query, chatJid: jid,
         startTs: range?.startTs ?? null, endTs: range?.endTs ?? null,

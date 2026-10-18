@@ -76,7 +76,15 @@ export function setEditTarget(messageId, preview) {
   }
 }
 
-async function sendCurrentMessage() {
+function refreshActiveChatAfterSend(jid, delayMs) {
+  setTimeout(() => {
+    if (store.activeChat !== jid) return;
+    if (typeof store.onActiveChatRefresh === 'function') void store.onActiveChatRefresh();
+    else void refreshActiveChatMessages();
+  }, delayMs);
+}
+
+export async function sendCurrentMessage() {
   const jid = store.activeChat;
   const input = document.getElementById('msg-text');
   const btn = document.getElementById('msg-send');
@@ -97,7 +105,7 @@ async function sendCurrentMessage() {
       input.value = '';
       clearEditTarget();
       applyMessageEditedToDom({ chatJid: jid, messageId: mid, text });
-      setTimeout(() => { if (store.activeChat === jid) void refreshActiveChatMessages(); }, 600);
+      refreshActiveChatAfterSend(jid, 600);
       return;
     }
     const payload = { chatJid: jid, text };
@@ -113,7 +121,7 @@ async function sendCurrentMessage() {
     clearReplyTarget();
     scheduleRefreshDash([{ chatJid: jid, lastMessageTs: Math.floor(Date.now() / 1000), count: 1 }]);
     // The sent message will appear via WA echo + indexing; refresh as a fallback.
-    setTimeout(() => { if (store.activeChat === jid) void refreshActiveChatMessages(); }, 1200);
+    refreshActiveChatAfterSend(jid, 1200);
   } catch (e) {
     alert(e.message || 'Send failed');
   } finally {

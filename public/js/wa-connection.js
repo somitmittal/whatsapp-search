@@ -2,6 +2,7 @@ import { store } from './store.js';
 import { hideAwaySummaryBar } from './away-summary.js';
 import { updateComposerVisibility } from './composer.js';
 import { refreshDash } from './dashboard.js';
+import { liveSyncPillStatus } from './live-sync-status.js';
 import { switchPanel } from './overlays.js';
 import { autoSelectSidebarTab, renderChatsFromState } from './sidebar.js';
 import { $ } from './util.js';
@@ -58,16 +59,14 @@ function renderLiveSyncAdvanced() {
   btn.style.display = optedIn ? "none" : "";
   // Leave the opt-in blurb as authored — it carries markup the JS strings don't.
   if (!optedIn) return;
-  const connected = isWaUiReady();
-  pill.classList.toggle("pending", !connected);
-  pillText.textContent = connected
-    ? (store._waState === "SYNCING" ? "QR sync enabled \u00b7 syncing chats\u2026" : "QR sync enabled \u00b7 WhatsApp connected")
-    : "QR sync enabled \u00b7 waiting for QR scan";
-  if (blurb) {
-    blurb.textContent = connected
-      ? "Your phone is linked as a companion device. Live chats appear in the WhatsApp tab."
-      : "Scan the QR code in the WhatsApp Connection section above to finish linking.";
-  }
+  const status = liveSyncPillStatus({
+    waState: store._waState,
+    needsRelogin: store._waNeedsRelogin,
+    loggedOut: store._waLoggedOut,
+  });
+  pill.classList.toggle("pending", !status.connected);
+  pillText.textContent = status.text;
+  if (blurb) blurb.textContent = status.blurb;
 }
 
 export function enableLiveSyncUi() {
@@ -178,9 +177,11 @@ export function updateSidebarForWaState() {
     || store._justImportedJid;
   const showChats = canShowChatUI() && (!waNotConnected || hasImportedChats);
 
+  if (!loggedOutEl && !chatListEl) return;
+
   if (!showChats) {
-    loggedOutEl.style.display = '';
-    chatListEl.style.display = 'none';
+    if (loggedOutEl) loggedOutEl.style.display = '';
+    if (chatListEl) chatListEl.style.display = 'none';
     const impPrompt = document.getElementById('sidebar-import-prompt');
     const waPrompt = document.getElementById('sidebar-wa-prompt');
     const emptyIcon = document.getElementById('sidebar-empty-icon');
@@ -193,7 +194,7 @@ export function updateSidebarForWaState() {
       waPrompt.style.display = '';
       if (emptyIcon) emptyIcon.style.display = '';
     }
-    syncBarEl.style.display = 'none';
+    if (syncBarEl) syncBarEl.style.display = 'none';
     if (filterEl) filterEl.style.display = 'none';
     if (tabsEl) tabsEl.style.display = 'none';
     if (stripEl) stripEl.hidden = true;
@@ -202,15 +203,13 @@ export function updateSidebarForWaState() {
       btn.textContent = store._waLoggedOut ? 'Scan QR Code' : 'Reconnect WhatsApp';
     }
   } else {
-    loggedOutEl.style.display = 'none';
-    chatListEl.style.display = '';
+    if (loggedOutEl) loggedOutEl.style.display = 'none';
+    if (chatListEl) chatListEl.style.display = '';
     if (filterEl) filterEl.style.display = '';
     if (tabsEl) tabsEl.style.display = '';
 
-    if (store._waState === 'SYNCING') {
-      syncBarEl.style.display = '';
-    } else {
-      syncBarEl.style.display = 'none';
+    if (syncBarEl) {
+      syncBarEl.style.display = store._waState === 'SYNCING' ? '' : 'none';
     }
   }
 }
@@ -221,14 +220,13 @@ export function updateSidebarForWaState() {
  */
 export function adjustSyncingMainPanel() {
   if (store._waState !== 'SYNCING') return;
-  const emptyMain = $('#panel-empty').classList.contains('visible');
-  if (!emptyMain) return;
+  if (!$('#panel-empty')?.classList.contains('visible')) return;
   const hasChats = store.chatData && store.chatData.length > 0;
   if (!hasChats) return;
-  $('#welcome-qr').style.display = 'none';
-  $('#welcome-default').style.display = '';
-  $('#sync-progress-panel').style.display = 'none';
-  $('#wqr-loading').style.display = 'none';
+  if ($('#welcome-qr')) $('#welcome-qr').style.display = 'none';
+  if ($('#welcome-default')) $('#welcome-default').style.display = '';
+  if ($('#sync-progress-panel')) $('#sync-progress-panel').style.display = 'none';
+  if ($('#wqr-loading')) $('#wqr-loading').style.display = 'none';
 }
 
 export function updateWaUI({ state, message }) {
@@ -253,10 +251,11 @@ export function updateWaUI({ state, message }) {
   const banner = $('#wa-banner');
   const logoutBtn = $('#wa-logout-btn');
   const hasChats = store.chatData && store.chatData.length > 0;
+  const setDisp = (el, v) => { if (el) el.style.display = v; };
 
-  txt.textContent = message || state;
-  dot.className = 'health-dot ' + (state === 'READY' ? 'ok' : state === 'QR_READY' ? 'warn' : 'unknown');
-  logoutBtn.style.display = state === 'READY' ? '' : 'none';
+  if (txt) txt.textContent = message || state;
+  if (dot) dot.className = 'health-dot ' + (state === 'READY' ? 'ok' : state === 'QR_READY' ? 'warn' : 'unknown');
+  setDisp(logoutBtn, state === 'READY' ? '' : 'none');
 
   // Settings panel sub-sections
   const qrPanel = $('#wa-qr-panel');
@@ -269,18 +268,20 @@ export function updateWaUI({ state, message }) {
   if (state === 'READY' && $('#wa-ready-msg')) $('#wa-ready-msg').textContent = message || 'Connected';
 
   // Sidebar banner (hidden when logged-out overlay is shown or import-first without live sync)
-  if (state === 'READY' || store._waLoggedOut || !wantsLiveSyncUi()) {
-    banner.style.display = 'none';
-  } else if (state === 'QR_READY') {
-    banner.style.display = 'flex';
-    banner.style.background = '#fff3cd'; banner.style.color = '#856404';
-    $('#wa-banner-text').textContent = 'Scan QR code to connect WhatsApp';
-  } else if (wantsLiveSyncUi()) {
-    banner.style.display = 'flex';
-    banner.style.background = '#f0f2f5'; banner.style.color = '#667781';
-    $('#wa-banner-text').textContent = message || 'Connecting…';
-  } else {
-    banner.style.display = 'none';
+  if (banner) {
+    if (state === 'READY' || store._waLoggedOut || !wantsLiveSyncUi()) {
+      banner.style.display = 'none';
+    } else if (state === 'QR_READY') {
+      banner.style.display = 'flex';
+      banner.style.background = '#fff3cd'; banner.style.color = '#856404';
+      if ($('#wa-banner-text')) $('#wa-banner-text').textContent = 'Scan QR code to connect WhatsApp';
+    } else if (wantsLiveSyncUi()) {
+      banner.style.display = 'flex';
+      banner.style.background = '#f0f2f5'; banner.style.color = '#667781';
+      if ($('#wa-banner-text')) $('#wa-banner-text').textContent = message || 'Connecting…';
+    } else {
+      banner.style.display = 'none';
+    }
   }
 
   updateSidebarForWaState();
@@ -295,15 +296,15 @@ export function updateWaUI({ state, message }) {
   autoSelectSidebarTab();
   renderChatsFromState();
 
-  // Main panel: show correct screen based on state
-  const isEmptyPanel = $('#panel-empty').classList.contains('visible');
+  // Main panel: show correct screen based on state (classic UI only)
+  const isEmptyPanel = !!$('#panel-empty')?.classList.contains('visible');
   if (state === 'READY') {
     clearInterval(store._qrPollTimer);
     store._qrPollTimer = null;
-    $('#welcome-qr').style.display = 'none';
-    $('#sync-progress-panel').style.display = 'none';
-    $('#welcome-default').style.display = '';
-    $('#wqr-loading').style.display = 'none';
+    setDisp($('#welcome-qr'), 'none');
+    setDisp($('#sync-progress-panel'), 'none');
+    setDisp($('#welcome-default'), '');
+    setDisp($('#wqr-loading'), 'none');
     store.waSyncByChat = {};
     applyWaSyncBars();
     refreshDash();
@@ -313,32 +314,32 @@ export function updateWaUI({ state, message }) {
       setTimeout(() => { refreshContactNames({ auto: true }); }, 1500);
     }
   } else if (state === 'SYNCING') {
-    $('#welcome-qr').style.display = 'none';
-    $('#wqr-loading').style.display = 'none';
+    setDisp($('#welcome-qr'), 'none');
+    setDisp($('#wqr-loading'), 'none');
     if (isEmptyPanel && hasChats) {
-      $('#welcome-default').style.display = '';
-      $('#sync-progress-panel').style.display = 'none';
+      setDisp($('#welcome-default'), '');
+      setDisp($('#sync-progress-panel'), 'none');
     } else if (isEmptyPanel && !hasChats) {
-      $('#welcome-default').style.display = 'none';
-      $('#sync-progress-panel').style.display = '';
+      setDisp($('#welcome-default'), 'none');
+      setDisp($('#sync-progress-panel'), '');
     } else {
-      $('#welcome-default').style.display = 'none';
-      $('#sync-progress-panel').style.display = 'none';
+      setDisp($('#welcome-default'), 'none');
+      setDisp($('#sync-progress-panel'), 'none');
     }
   } else if (state === 'QR_READY' || store._waNeedsRelogin || store._waLoggedOut) {
     // Never tear away a chat the user is actively viewing just to show the QR.
     if (wantsLiveSyncUi()) {
       pollForQrWhileDisconnected();
-      $('#sync-progress-panel').style.display = 'none';
+      setDisp($('#sync-progress-panel'), 'none');
       if (isEmptyPanel) {
-        $('#welcome-qr').style.display = '';
-        $('#welcome-default').style.display = 'none';
+        setDisp($('#welcome-qr'), '');
+        setDisp($('#welcome-default'), 'none');
       }
       if (store._lastQrDataUrl) {
         applyQrImages(store._lastQrDataUrl);
-        $('#wqr-loading').style.display = 'none';
+        setDisp($('#wqr-loading'), 'none');
       } else {
-        $('#wqr-loading').style.display = 'flex';
+        setDisp($('#wqr-loading'), 'flex');
         if ($('#wqr-loading-text')) $('#wqr-loading-text').textContent = 'Fetching QR code…';
       }
     } else if (store.activeChat) {
@@ -347,20 +348,20 @@ export function updateWaUI({ state, message }) {
   } else {
     // LOADING or DISCONNECTED without an explicit relogin requirement.
     if (wantsLiveSyncUi()) pollForQrWhileDisconnected();
-    $('#sync-progress-panel').style.display = 'none';
+    setDisp($('#sync-progress-panel'), 'none');
     if (state === 'DISCONNECTED' || state === 'LOADING') {
       store.waSyncByChat = {};
       applyWaSyncBars();
     }
     if (wantsLiveSyncUi() && isEmptyPanel && !hasChats && !store._waHasEverConnected) {
-      $('#welcome-qr').style.display = '';
-      $('#welcome-default').style.display = 'none';
+      setDisp($('#welcome-qr'), '');
+      setDisp($('#welcome-default'), 'none');
     }
     if (wantsLiveSyncUi() && isEmptyPanel && !store._waHasEverConnected) {
-      $('#wqr-loading').style.display = 'flex';
-      $('#wqr-loading-text').textContent = message || 'Starting WhatsApp…';
+      setDisp($('#wqr-loading'), 'flex');
+      if ($('#wqr-loading-text')) $('#wqr-loading-text').textContent = message || 'Starting WhatsApp…';
     } else {
-      $('#wqr-loading').style.display = 'none';
+      setDisp($('#wqr-loading'), 'none');
     }
   }
   applyLiveSyncVisibility();
@@ -386,8 +387,8 @@ export function showQr(dataUrl) {
   // Already linked (or mid-history-sync): never force the QR panel back over chats.
   // Late/stale wa-qr events were why a broken QR showed while "Syncing chats…" ran.
   if (store._waState === 'READY' || store._waState === 'SYNCING' || isWaUiReady()) {
-    $('#welcome-qr').style.display = 'none';
-    $('#wqr-loading').style.display = 'none';
+    if ($('#welcome-qr')) $('#welcome-qr').style.display = 'none';
+    if ($('#wqr-loading')) $('#wqr-loading').style.display = 'none';
     return;
   }
   const isRepeat = dataUrl === store._lastQrDataUrl;
@@ -395,36 +396,37 @@ export function showQr(dataUrl) {
   store._lastQrSeenAt = Date.now();
   applyQrImages(dataUrl);
 
-  $('#wqr-loading').style.display = 'none';
-  $('#wqr-refreshing').style.display = 'none';
+  if ($('#wqr-loading')) $('#wqr-loading').style.display = 'none';
+  if ($('#wqr-refreshing')) $('#wqr-refreshing').style.display = 'none';
   pollForQrWhileDisconnected();
   if (isRepeat) return;
   if (store.activeChat && hasIndexedArchive()) {
     switchPanel();
     return;
   }
-  $('#welcome-qr').style.display = '';
-  $('#welcome-default').style.display = 'none';
-  $('#sync-progress-panel').style.display = 'none';
-  $('#wqr-status-line').textContent = 'Scan with your phone — refreshes automatically';
+  if ($('#welcome-qr')) $('#welcome-qr').style.display = '';
+  if ($('#welcome-default')) $('#welcome-default').style.display = 'none';
+  if ($('#sync-progress-panel')) $('#sync-progress-panel').style.display = 'none';
+  if ($('#wqr-status-line')) $('#wqr-status-line').textContent = 'Scan with your phone — refreshes automatically';
 }
 
 export function updateSyncProgress(data) {
   setSyncChipPhase('syncing');
-  const { completed, total, messages, byChat } = data || {};
+  const { completed, total, messages, byChat, progress } = data || {};
   if (byChat && typeof byChat === 'object') {
     store.waSyncByChat = { ...byChat };
     applyWaSyncBars();
   }
-  // Baileys sends total=0 (unknown) — show an animated indeterminate bar
-  const hasTotal = total > 0;
-  const pct = hasTotal ? Math.round((completed / total) * 100) : 0;
+  // Prefer WhatsApp's own transfer progress; otherwise Baileys sends total=0 (unknown) — indeterminate bar.
+  const hasProgress = Number.isFinite(progress);
+  const hasTotal = hasProgress || total > 0;
+  const pct = hasProgress ? Math.round(progress) : hasTotal ? Math.round((completed / total) * 100) : 0;
   $('#sync-bar').style.width = hasTotal ? pct + '%' : '100%';
   $('#sync-bar').style.animation = hasTotal ? '' : 'sync-pulse 1.5s ease-in-out infinite';
   $('#sync-pct').textContent = hasTotal ? pct + '%' : 'syncing…';
   const msgN = messages ?? 0;
   $('#sync-msgs').textContent = msgN.toLocaleString() + ' messages';
-  $('#sync-detail').textContent = hasTotal ? `${completed} of ${total} chats` : 'Receiving history…';
+  $('#sync-detail').textContent = total > 0 ? `${completed} of ${total} chats` : 'Receiving history…';
 
   // Sidebar sync bar
   const sidebarFill = $('#sidebar-sync-fill');

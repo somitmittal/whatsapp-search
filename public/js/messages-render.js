@@ -1,13 +1,18 @@
 import { store } from './store.js';
 import { canSendMessageToJid } from './composer.js';
 import { dateFmt, formatChatBubbleDateTime, formatChatDateSeparator, messageTimestampToDate, receiptTicksHtml } from './format.js';
-import { mediaUrlForMessage, messageMediaDownloadAnchor } from './media.js';
+import { mediaDownloadUrl, mediaUrlForMessage, messageMediaDownloadAnchor } from './media.js';
 import { $, esc, escAttr, hash } from './util.js';
+
+/** Classic chat panel + GPT WhatsApp transcript. */
+function msgBlocks(selector = '.msg-block[data-message-id]') {
+  return document.querySelectorAll(`#cv-messages ${selector}, #gpt-wa-view ${selector}`);
+}
 
 export function applyMessageRevokedToDom(data) {
   const mid = data?.messageId != null ? String(data.messageId) : '';
   if (!mid) return;
-  document.querySelectorAll('#cv-messages .msg-block[data-message-id]').forEach((block) => {
+  msgBlocks().forEach((block) => {
     if (String(block.dataset.messageId) !== mid) return;
     const bubble = block.querySelector('.bubble');
     if (!bubble) return;
@@ -24,7 +29,7 @@ export function applyMessageRevokedToDom(data) {
 export function applyMessageDeletedToDom(data) {
   const mid = data?.messageId != null ? String(data.messageId) : '';
   if (!mid) return;
-  document.querySelectorAll(`#cv-messages .msg-block[data-message-id]`).forEach((block) => {
+  msgBlocks().forEach((block) => {
     if (String(block.dataset.messageId) === mid) block.remove();
   });
 }
@@ -32,7 +37,7 @@ export function applyMessageDeletedToDom(data) {
 export function applyMessageEditedToDom(data) {
   const mid = data?.messageId != null ? String(data.messageId) : '';
   if (!mid || data?.text == null) return;
-  document.querySelectorAll(`#cv-messages .msg-block[data-message-id]`).forEach((block) => {
+  msgBlocks().forEach((block) => {
     if (String(block.dataset.messageId) !== mid) return;
     const textEl = block.querySelector('.bubble .text');
     if (textEl) textEl.innerHTML = formatMessageTextHtml(String(data.text));
@@ -109,7 +114,7 @@ export function applyIncomingReactionToDom(data) {
   const { messageId, counts } = data || {};
   if (!messageId || !counts || typeof counts !== 'object') return;
   const mid = String(messageId);
-  const blocks = document.querySelectorAll('#cv-messages .msg-block[data-message-id]');
+  const blocks = msgBlocks();
   for (const block of blocks) {
     if (block.getAttribute('data-message-id') !== mid) continue;
     const html = reactionCountsHtml(counts);
@@ -213,7 +218,9 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
       if (isPdf) {
         body = `<span class="media-wrap"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : `<span class="media-cap">${label}</span>`}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
       } else {
-        body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(mediaUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
+        // Non-PDF docs (xlsx/csv/docx): force download — inline open often fails or shows garbage.
+        const dlHref = mediaDownloadUrl(mid) || mediaUrl;
+        body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(dlHref)}" download>${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
       }
     } else if (m.mediaPending && m.mediaType) {
       body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-pending">Loading ${esc(m.mediaType)}…${cap ? ' ' + cap : ''}</span></span>`;

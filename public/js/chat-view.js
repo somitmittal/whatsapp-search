@@ -29,6 +29,63 @@ function fileBaseHint(path) {
   return i >= 0 ? s.slice(i + 1) : s;
 }
 
+function chatInfoRow(label, value) {
+  if (value == null || value === '') return '';
+  return `<div class="chat-info-row"><span class="chat-info-label">${esc(label)}</span><div class="chat-info-value">${esc(String(value))}</div></div>`;
+}
+
+async function openChatInfo() {
+  const jid = store.activeChat;
+  if (!jid) return;
+  const overlay = $('#chat-info-overlay');
+  const content = $('#chat-info-content');
+  const title = $('#chat-info-title');
+  const subtitle = $('#chat-info-subtitle');
+  if (!overlay || !content) return;
+  overlay.classList.add('open');
+  content.textContent = 'Loading details…';
+  title.textContent = displayChatTitle(jid, store.chatData.find((c) => c.chatJid === jid)?.chatName || jid);
+  subtitle.textContent = 'Chat information';
+  try {
+    const response = await fetch(`/api/wa/chat-details?chatJid=${encodeURIComponent(jid)}`);
+    const details = response.ok ? await response.json() : null;
+    if (store.activeChat !== jid || !overlay.classList.contains('open')) return;
+    if (!details) throw new Error('Chat details are unavailable.');
+    const chatName = details.subject || details.chatName || details.displayName || title.textContent;
+    title.textContent = displayChatTitle(jid, chatName);
+    subtitle.textContent = details.isGroup ? 'Group chat' : (details.isImported ? 'Imported chat' : 'Direct chat');
+    const rows = [];
+    if (details.isGroup) {
+      if (Number(details.participantCount) > 0) {
+        rows.push(chatInfoRow('Members', `${details.participantCount} members`));
+      } else if (Number(details.participantCountFromDb) > 0) {
+        rows.push(chatInfoRow('Participants seen in messages', details.participantCountFromDb));
+      } else {
+        rows.push(chatInfoRow('Members', details.waConnected ? 'Unavailable' : 'Connect WhatsApp to load the live member count'));
+      }
+      rows.push(chatInfoRow('Description', details.description || 'No group description'));
+    } else if (details.phone) {
+      rows.push(chatInfoRow('Phone', `+${details.phone}`));
+    }
+    rows.push(chatInfoRow('Messages stored', Number(details.messageCount) || 0));
+    if (details.lastMessageTs) {
+      rows.push(chatInfoRow('Last message', new Date(details.lastMessageTs * 1000).toLocaleString()));
+    }
+    if (!details.isImported) {
+      rows.push(chatInfoRow('WhatsApp connection', details.waConnected ? 'Connected' : 'Offline — showing saved information'));
+    }
+    content.innerHTML = rows.filter(Boolean).join('') || '<div class="chat-info-row">No additional details are available.</div>';
+  } catch (error) {
+    if (store.activeChat === jid && overlay.classList.contains('open')) {
+      content.textContent = error.message || 'Could not load chat details.';
+    }
+  }
+}
+
+function closeChatInfo() {
+  $('#chat-info-overlay')?.classList.remove('open');
+}
+
 async function fetchChatAttachments(jid) {
   try {
     const r = await fetch(`/api/chats/${encodeURIComponent(jid)}/attachments`);
@@ -121,6 +178,7 @@ function setCvTab(tab) {
 }
 
 export async function openChat(jid, focusMessageId = null) {
+  closeChatInfo();
   clearReplyTarget();
   clearEditTarget();
   store.activeChat = jid;
@@ -383,6 +441,21 @@ export async function loadActionItemsForChat(jid) {
 }
 
 export function initChatView() {
+    const infoTrigger = $('#cv-info-trigger');
+    infoTrigger?.addEventListener('click', () => { void openChatInfo(); });
+    infoTrigger?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      void openChatInfo();
+    });
+    $('#chat-info-close')?.addEventListener('click', closeChatInfo);
+    $('#chat-info-overlay')?.addEventListener('click', (event) => {
+      if (event.target?.id === 'chat-info-overlay') closeChatInfo();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeChatInfo();
+    });
+
     $('#cv-tabs')?.querySelectorAll('.cv-tab').forEach((btn) => {
       btn.addEventListener('click', () => {
         const tab = btn.getAttribute('data-cv-tab');

@@ -108,9 +108,9 @@ async function refreshDashOnce() {
     await refreshStatusFeed();
     if (status?.stats) {
       const s = status.stats;
-      $('#stat-msgs').textContent = s.totalMessages.toLocaleString();
-      $('#stat-chats').textContent = s.totalChats;
-      $('#stat-sums').textContent = s.totalSummaries;
+      if ($('#stat-msgs')) $('#stat-msgs').textContent = s.totalMessages.toLocaleString();
+      if ($('#stat-chats')) $('#stat-chats').textContent = s.totalChats;
+      if ($('#stat-sums')) $('#stat-sums').textContent = s.totalSummaries;
       if ($('#stat-facts')) $('#stat-facts').textContent = (s.threadFacts ?? 0).toLocaleString();
     }
     store.connected = status?.connected ?? false;

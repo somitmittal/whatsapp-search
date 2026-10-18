@@ -261,7 +261,7 @@
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
           </button>
           <div class="chat-avatar" id="cv-avatar"></div>
-          <div class="chat-header-info">
+          <div class="chat-header-info chat-info-trigger" id="cv-info-trigger" role="button" tabindex="0" aria-haspopup="dialog" aria-label="Show chat details">
             <h3 id="cv-name"></h3>
             <span id="cv-info" hidden></span>
             <div id="cv-contact" class="cv-contact" hidden aria-hidden="true"></div>
@@ -825,6 +825,20 @@
       <button type="button" class="btn-danger" id="confirm-del-msg-me">Delete for me</button>
       <button type="button" class="btn-cancel" id="confirm-del-msg-cancel">Cancel</button>
     </div>
+  </div>
+</div>
+
+<!-- Chat and group details -->
+<div class="confirm-overlay chat-info-overlay" id="chat-info-overlay" role="dialog" aria-modal="true" aria-labelledby="chat-info-title">
+  <div class="chat-info-box">
+    <div class="chat-info-heading">
+      <div>
+        <h4 id="chat-info-title">Chat details</h4>
+        <p id="chat-info-subtitle"></p>
+      </div>
+      <button type="button" class="chat-info-close" id="chat-info-close" aria-label="Close chat details">×</button>
+    </div>
+    <div id="chat-info-content" class="chat-info-content">Loading details…</div>
   </div>
 </div>
 

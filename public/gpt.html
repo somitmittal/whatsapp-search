@@ -1,79 +1,433 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#0b141a">
+  <meta name="theme-color" content="#f3f3f3">
   <link rel="icon" href="/favicon.png" type="image/png">
   <title>WhatsApp GPT</title>
+  <script>
+    (() => {
+      try {
+        const t = localStorage.getItem('wgpt.theme');
+        if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+      } catch (_) {}
+    })();
+  </script>
   <link rel="stylesheet" href="/gpt-app/gpt.css">
+  <link rel="stylesheet" href="/css/settings-overlay.css">
 </head>
 <body>
 <div class="gpt-app" id="gpt-app">
-  <aside class="gpt-side" id="gpt-side">
-    <div class="gpt-side-top">
-      <button type="button" class="gpt-new" id="gpt-new">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        New chat
-      </button>
-      <button type="button" class="gpt-icon" id="gpt-side-close" aria-label="Hide sidebar" title="Hide sidebar">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+  <header class="gpt-topbar" id="gpt-topbar">
+    <div class="gpt-brand" title="WhatsApp GPT">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.2 2 11.4c0 2.9 1.3 5.5 3.4 7.3L4.5 22l3.6-1.1c1.2.4 2.5.6 3.9.6 5.52 0 10-4.2 10-9.4S17.52 2 12 2zm.9 13.5h-1.8v-1.8h1.8v1.8zm0-3.6h-1.8V7.2h1.8v4.7z"/></svg>
+      <span>WhatsApp GPT</span>
+    </div>
+
+    <div class="gpt-tabs-wrap">
+      <nav class="gpt-tabs" id="gpt-tabs" aria-label="Open threads"></nav>
+      <button type="button" class="gpt-tab-new" id="gpt-new" title="New chat" aria-label="New chat">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
     </div>
-    <input type="search" class="gpt-thread-filter" id="gpt-thread-filter" placeholder="Search threads" autocomplete="off">
-    <nav class="gpt-threads" id="gpt-threads" aria-label="Conversations"></nav>
-    <a class="gpt-side-link" href="/">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-      Open WhatsApp view
-    </a>
-  </aside>
 
-  <main class="gpt-main">
-    <header class="gpt-top">
-      <button type="button" class="gpt-icon" id="gpt-side-open" aria-label="Show sidebar" title="Show sidebar">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+    <div class="gpt-top-actions">
+      <button type="button" class="gpt-icon" id="gpt-thread-search-btn" title="Search previous threads" aria-label="Search threads" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </button>
-      <div class="gpt-title" id="gpt-title">WhatsApp GPT</div>
+      <button type="button" class="gpt-icon" id="gpt-settings-btn" title="Settings" aria-label="Settings" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9c.3.7.9 1.2 1.6 1.3H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
+      </button>
       <div class="gpt-model" id="gpt-model"></div>
-    </header>
+    </div>
+  </header>
 
-    <section class="gpt-scroll" id="gpt-scroll">
-      <div class="gpt-thread" id="gpt-thread"></div>
-      <div class="gpt-empty" id="gpt-empty">
-        <h1>What do you want to know from your chats?</h1>
-        <p>Type <kbd>@</kbd> to pin a chat or group as context. Answers cite the exact messages.</p>
-        <div class="gpt-suggest" id="gpt-suggest"></div>
+  <div class="gpt-thread-search" id="gpt-thread-search" hidden>
+    <div class="gpt-popover" role="dialog" aria-label="Search threads">
+      <input type="search" id="gpt-thread-filter" placeholder="Search previous threads…" autocomplete="off">
+      <nav class="gpt-thread-results" id="gpt-threads" aria-label="Previous threads"></nav>
+    </div>
+  </div>
+
+  <div class="gpt-settings" id="gpt-settings" hidden>
+    <div class="gpt-popover gpt-settings-panel" role="dialog" aria-label="Settings">
+      <div class="gpt-settings-head">
+        <h2>Settings</h2>
+        <button type="button" class="gpt-icon" id="gpt-settings-close" aria-label="Close settings">×</button>
       </div>
-    </section>
+      <section class="gpt-settings-section">
+        <h3>Appearance</h3>
+        <div class="gpt-theme-row" role="radiogroup" aria-label="Color theme">
+          <button type="button" class="gpt-theme-opt" data-theme="light" aria-pressed="true">
+            <span class="swatch light"></span>
+            Light
+          </button>
+          <button type="button" class="gpt-theme-opt" data-theme="dark" aria-pressed="false">
+            <span class="swatch dark"></span>
+            Dark
+          </button>
+        </div>
+      </section>
+      <section class="gpt-settings-section">
+        <h3>AI</h3>
+        <p class="muted">Pick a model for this thread, or set provider API keys from the composer model menu.</p>
+        <button type="button" class="gpt-settings-action" id="gpt-open-models">Open model picker</button>
+      </section>
+    </div>
+  </div>
 
-    <footer class="gpt-composer-wrap">
-      <div class="gpt-composer" id="gpt-composer">
-        <div class="gpt-pills" id="gpt-pills"></div>
-        <div class="gpt-mention" id="gpt-mention" role="listbox" hidden></div>
-        <textarea id="gpt-input" rows="1" placeholder="Ask anything about your WhatsApp…  (@ to add a chat)" autocomplete="off"></textarea>
-        <div class="gpt-model-menu" id="gpt-model-menu" hidden>
-          <div class="gpt-model-menu-head">
-            <input type="search" id="gpt-model-filter" placeholder="Search models" autocomplete="off">
-            <button type="button" class="gpt-model-manage" id="gpt-model-manage" title="Show or hide models in this list">Manage</button>
+  <div class="gpt-body">
+    <aside class="gpt-chats" id="gpt-chats-pane">
+      <div class="gpt-chats-head">
+        <h1>Chats</h1>
+        <div class="gpt-chats-head-actions">
+          <button type="button" class="gpt-icon" id="gpt-btn-import" title="Import WhatsApp backup" aria-label="Import chats">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button type="button" class="gpt-icon" id="gpt-sidebar-settings" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9c.3.7.9 1.2 1.6 1.3H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
+          </button>
+          <button type="button" class="gpt-icon gpt-chats-toggle" id="gpt-chats-toggle" title="Hide chats" aria-label="Hide chats">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="sidebar-search">
+        <div class="search-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="search" id="gpt-chat-filter" placeholder="Search imported chats" autocomplete="off">
+        </div>
+      </div>
+      <div class="gpt-sync" id="gpt-sync" role="status" aria-live="polite" hidden>
+        <div class="gpt-sync-row">
+          <span class="gpt-sync-label" id="gpt-sync-label">Loading chats</span>
+          <span class="gpt-sync-pct" id="gpt-sync-pct"></span>
+        </div>
+        <div class="gpt-sync-track"><div class="gpt-sync-fill" id="gpt-sync-fill"></div></div>
+        <div class="gpt-sync-detail" id="gpt-sync-detail"></div>
+      </div>
+      <div class="sidebar-chat-tabs" role="tablist" aria-label="Chat categories">
+        <button type="button" class="sidebar-tab active" data-sidebar-tab="imported" role="tab" aria-selected="true">Imported<span class="sidebar-tab-count" data-tab-count="imported"></span></button>
+        <button type="button" class="sidebar-tab" data-sidebar-tab="chat" role="tab" aria-selected="false">WhatsApp<span class="sidebar-tab-count" data-tab-count="chat"></span></button>
+      </div>
+      <div class="chat-list" id="gpt-chat-list" aria-label="Chats"></div>
+    </aside>
+
+    <main class="gpt-main">
+      <header class="gpt-main-head">
+        <button type="button" class="gpt-icon" id="gpt-chats-open" title="Show chats" aria-label="Show chats">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+        </button>
+        <div class="gpt-title" id="gpt-title">New chat</div>
+        <button type="button" class="gpt-ask-ai" id="gpt-ask-ai" hidden title="Ask AI about this chat">Ask AI</button>
+      </header>
+
+      <section class="gpt-scroll" id="gpt-scroll">
+        <div class="gpt-thread" id="gpt-thread"></div>
+        <div class="gpt-empty" id="gpt-empty">
+          <h1>What do you want to know from your chats?</h1>
+          <p>Open a chat on the left to message on WhatsApp, or start a new AI tab and type <kbd>@</kbd> to pin context. Answers cite the exact messages.</p>
+          <div class="gpt-suggest" id="gpt-suggest"></div>
+        </div>
+        <div class="gpt-wa-view messages-area" id="gpt-wa-view" hidden></div>
+      </section>
+
+      <div class="gpt-wa-composer" id="gpt-wa-composer" hidden>
+        <div id="reply-to-bar" class="reply-to-bar" style="display:none;" aria-live="polite">
+          <div class="reply-to-inner">
+            <span class="reply-to-label">Replying to</span>
+            <span id="reply-to-preview" class="reply-to-preview"></span>
+            <button type="button" class="reply-to-clear" id="reply-to-clear" aria-label="Cancel reply">×</button>
           </div>
-          <div class="gpt-model-list" id="gpt-model-list" role="listbox"></div>
         </div>
-        <div class="gpt-composer-row">
-          <button type="button" class="gpt-at" id="gpt-at" title="Add chat context">@ Add context</button>
-          <button type="button" class="gpt-model-btn" id="gpt-model-btn" title="Choose the AI model for this thread" aria-haspopup="listbox">
-            <span id="gpt-model-label">Auto</span>
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-          </button>
-          <span class="gpt-hint">Enter to send · Shift+Enter for a new line</span>
-          <button type="button" class="gpt-send" id="gpt-send" aria-label="Send" title="Send">
-            <svg class="i-send" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3.4 20.4l17.45-7.48a1 1 0 000-1.84L3.4 3.6a.993.993 0 00-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"/></svg>
-            <svg class="i-stop" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-          </button>
+        <div id="edit-to-bar" class="edit-to-bar" style="display:none;" aria-live="polite">
+          <div class="edit-to-inner">
+            <span class="edit-to-label">Editing</span>
+            <span id="edit-to-preview" class="edit-to-preview"></span>
+            <button type="button" class="reply-to-clear" id="edit-to-clear" aria-label="Cancel edit">×</button>
+          </div>
+        </div>
+        <div class="chat-composer" id="chat-composer" style="display:none;">
+          <input id="msg-text" type="text" placeholder="Type a message…" autocomplete="off" />
+          <button id="msg-send" type="button">Send</button>
+        </div>
+        <p class="gpt-wa-composer-hint" id="gpt-wa-composer-hint" hidden>Link WhatsApp to send messages in this chat.</p>
+      </div>
+
+      <footer class="gpt-composer-wrap" id="gpt-composer-wrap">
+        <div class="gpt-composer" id="gpt-composer">
+          <div class="gpt-pills" id="gpt-pills"></div>
+          <div class="gpt-mention" id="gpt-mention" role="listbox" hidden></div>
+          <textarea id="gpt-input" rows="1" placeholder="Ask anything, @ a chat, or / a skill" autocomplete="off"></textarea>
+          <div class="gpt-model-menu" id="gpt-model-menu" hidden>
+            <div class="gpt-model-menu-head">
+              <input type="search" id="gpt-model-filter" placeholder="Search models" autocomplete="off">
+              <button type="button" class="gpt-model-manage" id="gpt-model-manage" title="Show or hide models in this list">Manage</button>
+            </div>
+            <div class="gpt-model-list" id="gpt-model-list" role="listbox"></div>
+          </div>
+          <div class="gpt-composer-row">
+            <button type="button" class="gpt-at" id="gpt-at" title="Add chat context">@ Add context</button>
+            <button type="button" class="gpt-at" id="gpt-slash" title="Insert a skill">/ Skill</button>
+            <button type="button" class="gpt-model-btn" id="gpt-model-btn" title="Choose the AI model for this thread" aria-haspopup="listbox">
+              <span id="gpt-model-label">Auto</span>
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <span class="gpt-hint">Enter to send · Shift+Enter for a new line</span>
+            <button type="button" class="gpt-send" id="gpt-send" aria-label="Send" title="Send">
+              <svg class="i-send" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3.4 20.4l17.45-7.48a1 1 0 000-1.84L3.4 3.6a.993.993 0 00-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"/></svg>
+              <svg class="i-stop" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            </button>
+          </div>
+        </div>
+      </footer>
+    </main>
+  </div>
+</div>
+
+<!-- Classic settings / expense overlays (shared IDs with /js/settings.js) -->
+<div id="gpt-classic-overlays" class="gpt-classic-overlays">
+    <div class="overlay-panel" id="overlay-expenses">
+      <div class="overlay-header">
+        <div class="overlay-header-text">
+          <h2>Construction expenses</h2>
+          <p class="overlay-header-sub">Automatic WhatsApp sheet reconciliation and discrepancy history</p>
+        </div>
+        <button class="overlay-close" id="close-expenses" type="button" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="overlay-body">
+        <div class="expense-toolbar">
+          <select id="expense-site-filter"><option value="">All sites</option></select>
+          <input id="expense-date-filter" type="date" aria-label="Business date" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);" />
+          <select id="expense-status-filter">
+            <option value="">All statuses</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="processing">Processing</option>
+            <option value="queued">Queued</option>
+          </select>
+          <button type="button" class="btn btn-secondary" id="expense-refresh">Refresh</button>
+        </div>
+        <p style="font-size:12px;color:var(--text2);line-height:1.45;margin:0 0 14px;">
+          When a staff member posts a CSV/XLSX expense sheet in a live site group, Searchable compares it with that day’s expense messages and posts the report back to the same group.
+        </p>
+        <div id="expense-runs"><div class="expense-empty">No reconciliations yet.</div></div>
+      </div>
+    </div>
+    <!-- Settings overlay -->
+    <div class="overlay-panel gpt-settings-overlay" id="overlay-settings">
+      <div class="overlay-header">
+        <div class="overlay-header-text">
+          <h2>Settings</h2>
+        </div>
+        <button class="overlay-close" id="close-settings" aria-label="Close settings">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="overlay-body">
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+          <button type="button" class="settings-tab active" data-settings-tab="business" role="tab" aria-selected="true">Business</button>
+          <button type="button" class="settings-tab" data-settings-tab="linked-devices" role="tab" aria-selected="false">Linked Devices</button>
+          <button type="button" class="settings-tab" data-settings-tab="backup" role="tab" aria-selected="false">Load Backup</button>
+        </div>
+        <div class="settings-tab-panels">
+        
+        <div class="settings-tab-panel active" data-settings-panel="business" role="tabpanel">
+        <div class="setting-group" id="smb-settings-group">
+          <h3>Business profile</h3>
+          <p>Tune AI search for clinics, real estate, D2C stores, or construction expense workflows.</p>
+          <div class="setting-row">
+            <label>Account type</label>
+            <select id="smb-profile">
+              <option value="personal">Personal</option>
+              <option value="clinic">Clinic / Healthcare</option>
+              <option value="real_estate">Real Estate</option>
+              <option value="d2c">D2C / Online Store</option>
+              <option value="construction">Construction</option>
+            </select>
+          </div>
+          <div class="setting-row" id="smb-business-name-row" style="display:none;">
+            <label>Business name</label>
+            <input type="text" id="smb-business-name" placeholder="e.g. City Dental, PropHub, Glow Skincare" />
+          </div>
+          <div id="smb-agents-construction" class="smb-agent-card" hidden>
+            <div class="smb-agent-head">
+              <div>
+                <div class="smb-agent-title">Expense reconciliation agent</div>
+                <div class="smb-agent-sub">Available with the Construction profile</div>
+              </div>
+              <label class="smb-agent-switch">
+                <input type="checkbox" id="smb-expense-agent" />
+                <span>Enabled</span>
+              </label>
+            </div>
+            <p class="smb-agent-desc">When enabled, the agent reconciles a CSV/XLSX expense sheet against that day’s messages in the same site group and posts the report back. Automatic runs only happen for the site groups you select below; you can also run once for any group.</p>
+            <div class="smb-agent-sites">
+              <div class="smb-agent-sites-label">Sites for automatic runs</div>
+              <div id="smb-expense-sites" class="smb-agent-sites-list"></div>
+              <p class="smb-agent-hint">Leave unchecked to never auto-run. Sheets in other groups are ignored until you run them manually.</p>
+            </div>
+            <div class="smb-agent-run">
+              <div class="smb-agent-sites-label">Run for a chat</div>
+              <div class="smb-agent-run-row">
+                <select id="smb-expense-run-chat" aria-label="Site chat">
+                  <option value="">Select a site group…</option>
+                </select>
+                <select id="smb-expense-run-sheet" aria-label="Expense sheet">
+                  <option value="">Latest sheet in chat</option>
+                </select>
+                <button type="button" class="btn btn-secondary" id="smb-expense-run">Run</button>
+              </div>
+              <span id="smb-expense-run-status" class="smb-agent-hint"></span>
+            </div>
+            <button type="button" class="btn btn-secondary" id="smb-expense-history">View reconciliation history</button>
+          </div>
+          <div class="setting-row" style="gap:12px;">
+            <button type="button" class="btn btn-secondary" id="smb-save">Save business profile</button>
+            <span id="smb-status" class="setting-status"></span>
+          </div>
+        </div>
+        <div class="setting-group" id="waba-settings-group">
+          <h3>WhatsApp Business API <span class="setting-h3-muted">(live sync)</span></h3>
+          <p>Connect your official Cloud API number for <strong>new</strong> customer messages (webhook). Past history still comes from import.</p>
+          <div class="setting-row" style="align-items:flex-start;">
+            <label style="padding-top:6px;">Webhook URL</label>
+            <div style="flex:1;min-width:0;">
+              <code id="waba-webhook-url" class="setting-code-block">—</code>
+              <p class="setting-hint">Paste in Meta Developer Console → WhatsApp → Configuration. Desktop users need a tunnel (e.g. ngrok) pointing to this server.</p>
+            </div>
+          </div>
+          <div class="setting-row"><label>Phone Number ID</label><input type="text" id="waba-phone-id" placeholder="From Meta App Dashboard" /></div>
+          <div class="setting-row"><label>Verify token</label><input type="text" id="waba-verify-token" placeholder="You choose this — same in Meta webhook setup" /></div>
+          <div class="setting-row" style="align-items:flex-start;"><label style="padding-top:6px;">Access token</label>
+            <textarea id="waba-access-token" rows="2" placeholder="Permanent token from Meta" class="setting-textarea"></textarea>
+          </div>
+          <div class="setting-row"><label>App secret</label><input type="password" id="waba-app-secret" placeholder="Optional — verifies webhook signatures" autocomplete="off" /></div>
+          <div class="setting-row" style="gap:12px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary" id="waba-save">Save API settings</button>
+            <button type="button" class="btn btn-secondary" id="waba-test">Test connection</button>
+            <span id="waba-status" class="setting-status"></span>
+          </div>
+          <p id="waba-stats" class="setting-hint"></p>
+        </div>
+        </div>
+
+        <div class="settings-tab-panel" data-settings-panel="linked-devices" role="tabpanel">
+        <div id="wa-live-sync-settings" class="setting-group live-sync-ui" style="display:none;">
+          <h3>Linked Devices <span class="setting-h3-muted">(optional — live sync)</span></h3>
+          <p>Link your phone as a WhatsApp Web device. For history, use <strong>Load Backup</strong> — live sync is optional.</p>
+          <div class="setting-row" style="margin-bottom:8px;">
+            <span class="health-dot" id="wa-dot"></span>
+            <span id="wa-status-text">Initialising…</span>
+            <button class="btn btn-secondary" id="wa-logout-btn" style="display:none;margin-left:auto;">Logout</button>
+          </div>
+          <div id="wa-qr-panel" style="display:none;text-align:center;padding:16px 0;">
+            <p class="setting-hint" style="margin-bottom:12px;">Open WhatsApp → Linked Devices → Link a Device</p>
+            <img id="wa-qr-img" src="" alt="QR Code" class="wa-qr-img" />
+            <p class="setting-hint" style="margin-top:8px;">QR refreshes automatically every ~20 seconds</p>
+          </div>
+          <div id="wa-ready-panel" style="display:none;padding:8px 0;">
+            <div class="wa-ready-row">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span id="wa-ready-msg">Connected</span>
+            </div>
+            <p class="setting-hint" style="margin-top:6px;">Messages sync automatically. History is loaded on first connect.</p>
+            <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-secondary" id="wa-refresh-names" type="button">Refresh contact names</button>
+              <span id="wa-refresh-names-status" class="setting-status"></span>
+            </div>
+          </div>
+        </div>
+        <div class="setting-group">
+          <h3>Advanced</h3>
+          <p id="live-sync-blurb">Live WhatsApp QR sync is optional. Use <strong>Load Backup</strong> for the full archive.</p>
+          <div id="live-sync-pill" class="live-sync-pill" hidden>
+            <span class="live-sync-pill-dot"></span>
+            <span id="live-sync-pill-text">QR sync enabled</span>
+          </div>
+          <button type="button" class="btn btn-secondary" id="btn-enable-live-sync" style="margin-top:8px;">Enable live WhatsApp sync (QR)…</button>
+        </div>
+        </div>
+
+        <div class="settings-tab-panel" data-settings-panel="backup" role="tabpanel">
+          <div class="setting-group">
+            <h3>Load WhatsApp backup</h3>
+            <p>Restore from exported chats (<code>.zip</code> / <code>.txt</code>). Encrypted phone backups (crypt14 / Drive backups) are not supported.</p>
+            <div class="import-guide" id="gmail-import-section">
+              <h3>Optional: From Gmail</h3>
+              <p>Tap <strong>Load WhatsApp Backup</strong> to sign in with Google. We only request Gmail read-only access to find <code>WhatsApp Chat …</code> export attachments.</p>
+              <p id="gmail-import-status" class="setting-hint" style="margin-bottom:8px;"></p>
+              <div class="setting-row" style="margin-bottom:8px;">
+                <button class="btn btn-primary" type="button" id="gmail-btn-load">Load WhatsApp Backup</button>
+                <button class="btn btn-secondary" type="button" id="gmail-btn-disconnect" style="display:none;">Disconnect</button>
+              </div>
+              <ol>
+                <li>On your phone: <strong>Export chat</strong> → email the <strong>.zip</strong> or <strong>.txt</strong> to yourself.</li>
+                <li>Here: tap <strong>Load WhatsApp Backup</strong> and pick your Google account.</li>
+              </ol>
+              <p class="warn-text">⚠ Requires server setup for Google OAuth (<code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code>).</p>
+            </div>
+            <h3 class="setting-subhead">Or upload files</h3>
+            <div class="drop-zone" id="drop-zone">
+              <div class="drop-zone-icon">📁</div>
+              <h3>Drop files here or click to browse</h3>
+              <p>Accepts .zip or .txt · Select multiple files</p>
+              <input type="file" id="file-input" accept=".zip,.txt" multiple />
+            </div>
+            <div id="import-loading" class="search-loading"><div class="spinner"></div><span>Importing...</span></div>
+            <div class="import-progress" id="import-progress">
+              <div class="ip-card">
+                <div class="ip-header">
+                  <div class="ip-icon" id="ip-icon">📄</div>
+                  <div class="ip-text"><h4 id="ip-title">Importing chat...</h4><span id="ip-subtitle">Please wait</span></div>
+                </div>
+                <div class="ip-bar"><div class="ip-fill" id="ip-fill"></div></div>
+                <div class="ip-phase" id="ip-phase">Uploading...</div>
+              </div>
+            </div>
+            <div id="import-result" class="import-result"><h4 id="imp-title"></h4><p id="imp-text"></p></div>
+            <div class="import-guide">
+              <h3>Export from WhatsApp</h3>
+              <ol>
+                <li>Open a chat → tap <strong>⋮</strong> → <strong>More</strong> → <strong>Export chat</strong></li>
+                <li>Choose <strong>Without media</strong> or <strong>Include media</strong></li>
+                <li>Save the .zip → drop it above</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
         </div>
       </div>
-    </footer>
-  </main>
+    </div>
+  </div>
 </div>
+</div>
+
+<div class="confirm-overlay" id="confirm-delete-message">
+  <div class="confirm-box">
+    <h4>Delete message?</h4>
+    <p id="confirm-delete-message-msg">Choose how you want to delete this message.</p>
+    <div class="confirm-actions-stack">
+      <button type="button" class="btn-danger" id="confirm-del-msg-everyone" style="display:none;">Delete for everyone</button>
+      <button type="button" class="btn-danger" id="confirm-del-msg-me">Delete for me</button>
+      <button type="button" class="btn-cancel" id="confirm-del-msg-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="gpt-tab-menu" class="gpt-tab-menu" role="menu" hidden>
+  <button type="button" role="menuitem" data-tab-action="close">Close</button>
+  <button type="button" role="menuitem" data-tab-action="close-others">Close Others</button>
+  <button type="button" role="menuitem" data-tab-action="close-left">Close to the Left</button>
+  <button type="button" role="menuitem" data-tab-action="close-right">Close to the Right</button>
+  <hr>
+  <button type="button" role="menuitem" data-tab-action="close-all">Close All</button>
+</div>
+
 <script src="/account-gate.js"></script>
 <script type="module" src="/gpt-app/gpt.js"></script>
 </body>

@@ -8,7 +8,8 @@ import { ensureImportFirstWelcome } from './wa-bootstrap.js';
 import { updateSidebarForWaState } from './wa-connection.js';
 
 // ── Import ─────────────────────────────────────────────────────────
-const dz = $('#drop-zone'), fi = $('#file-input');
+function dropZone() { return $('#drop-zone'); }
+function fileInput() { return $('#file-input'); }
 
 function setImportPhase(phase, pct) {
   const prog = $('#import-progress');
@@ -17,39 +18,53 @@ function setImportPhase(phase, pct) {
   const titleEl = $('#ip-title');
   const subEl = $('#ip-subtitle');
   const iconEl = $('#ip-icon');
+  if (!prog || !fill) return;
 
   prog.classList.add('visible');
-
   fill.classList.remove('indeterminate');
   if (phase === 'upload') {
-    iconEl.innerHTML = '&#128228;'; titleEl.textContent = 'Uploading...';
-    subEl.textContent = 'Sending file to local server';
-    fill.classList.add('indeterminate'); phaseEl.textContent = 'Uploading file...';
+    if (iconEl) iconEl.innerHTML = '&#128228;';
+    if (titleEl) titleEl.textContent = 'Uploading...';
+    if (subEl) subEl.textContent = 'Sending file to local server';
+    fill.classList.add('indeterminate');
+    if (phaseEl) phaseEl.textContent = 'Uploading file...';
   } else if (phase === 'parse') {
-    iconEl.innerHTML = '&#128196;'; titleEl.textContent = 'Parsing messages...';
-    subEl.textContent = 'Reading chat export';
-    fill.style.width = '40%'; phaseEl.textContent = 'Parsing messages...';
+    if (iconEl) iconEl.innerHTML = '&#128196;';
+    if (titleEl) titleEl.textContent = 'Parsing messages...';
+    if (subEl) subEl.textContent = 'Reading chat export';
+    fill.style.width = '40%';
+    if (phaseEl) phaseEl.textContent = 'Parsing messages...';
   } else if (phase === 'index') {
-    iconEl.innerHTML = '&#128269;'; titleEl.textContent = 'Indexing for search...';
-    subEl.textContent = 'Building search index';
-    fill.style.width = '75%'; phaseEl.textContent = 'Indexing for search...';
+    if (iconEl) iconEl.innerHTML = '&#128269;';
+    if (titleEl) titleEl.textContent = 'Indexing for search...';
+    if (subEl) subEl.textContent = 'Building search index';
+    fill.style.width = '75%';
+    if (phaseEl) phaseEl.textContent = 'Indexing for search...';
   } else if (phase === 'done') {
-    iconEl.innerHTML = '&#9989;'; titleEl.textContent = 'Import complete!';
-    subEl.textContent = 'Your chat is ready to search';
-    fill.style.width = '100%'; phaseEl.textContent = pct || 'Done!';
+    if (iconEl) iconEl.innerHTML = '&#9989;';
+    if (titleEl) titleEl.textContent = 'Import complete!';
+    if (subEl) subEl.textContent = 'Your chat is ready to search';
+    fill.style.width = '100%';
+    if (phaseEl) phaseEl.textContent = pct || 'Done!';
   } else if (phase === 'error') {
-    iconEl.innerHTML = '&#10060;'; titleEl.textContent = 'Import failed';
-    subEl.textContent = pct || 'Something went wrong';
-    fill.style.width = '100%'; fill.style.background = 'var(--danger)';
-    phaseEl.textContent = '';
+    if (iconEl) iconEl.innerHTML = '&#10060;';
+    if (titleEl) titleEl.textContent = 'Import failed';
+    if (subEl) subEl.textContent = pct || 'Something went wrong';
+    fill.style.width = '100%';
+    fill.style.background = 'var(--danger, #c23b4a)';
+    if (phaseEl) phaseEl.textContent = '';
   }
 }
 
 function hideImportProgress() {
   const prog = $('#import-progress');
   const fill = $('#ip-fill');
-  fill.style.background = ''; fill.style.width = '0%'; fill.classList.remove('indeterminate');
-  prog.classList.remove('visible');
+  if (fill) {
+    fill.style.background = '';
+    fill.style.width = '0%';
+    fill.classList.remove('indeterminate');
+  }
+  prog?.classList.remove('visible');
 }
 
 /**
@@ -77,6 +92,10 @@ async function finishImportUi(chatJid, resultTitle) {
     store._justImportedJid = targetJid;
     const row = store.chatData.find((c) => c.chatJid === targetJid);
     if (row) row.lastImportedAt = Math.max(Number(row.lastImportedAt) || 0, touchTs);
+  }
+  if (document.getElementById('gpt-app')) {
+    window.dispatchEvent(new CustomEvent('wgpt:chats-imported', { detail: { chatJid: targetJid } }));
+    return;
   }
   ensureImportFirstWelcome();
   updateSidebarForWaState();
@@ -107,7 +126,7 @@ function showImportToast(msg) {
 }
 
 async function uploadBatch(fileList) {
-  $('#import-result').classList.remove('visible');
+  $('#import-result')?.classList.remove('visible');
   hideImportProgress();
   setImportPhase('upload');
 
@@ -161,13 +180,17 @@ async function uploadBatch(fileList) {
     setTimeout(hideImportProgress, 4000);
   } catch (err) {
     setImportPhase('error', err.message);
-    $('#imp-title').textContent = 'Import Failed'; $('#imp-text').textContent = err.message;
-    $('#import-result').classList.add('visible');
+    if ($('#imp-title')) $('#imp-title').textContent = 'Import Failed';
+    if ($('#imp-text')) $('#imp-text').textContent = err.message;
+    $('#import-result')?.classList.add('visible');
     setTimeout(hideImportProgress, 4000);
   }
 }
 
 export function initImport() {
+  const dz = dropZone();
+  const fi = fileInput();
+  if (!dz || !fi) return;
   dz.addEventListener('click', () => fi.click());
   dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
   dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));

@@ -39,11 +39,14 @@ export function entryValuesForHeaders(headers, mapping, entry) {
     date: entry?.date || '',
     direction: entry?.direction || '',
     amount: entry == null ? '' : money(entry.amountMinor),
+    debitAmount: entry?.direction === 'debit' ? money(entry.amountMinor) : '',
+    creditAmount: entry?.direction === 'credit' ? money(entry.amountMinor) : '',
     currency: entry?.currency || '',
     payee: entry?.payee || '',
     category: entry?.category || '',
     description: entry?.description || '',
     reference: entry?.reference || '',
+    worksheetName: entry?.worksheetName || '',
   };
   const fieldByIndex = new Map();
   for (const [field, index] of Object.entries(mapping || {})) {
@@ -122,6 +125,21 @@ export function buildReconciledSheetRows(reconciliation = {}) {
       });
       continue;
     }
+    if (type === 'needs_review' && item.candidateSheetEntries?.length) {
+      for (const sheetEntry of item.candidateSheetEntries) {
+        sheetHandled.add(sheetEntry);
+        rows.push({
+          tone: 'mismatch',
+          status: item.detail || 'Needs review',
+          fill: EXPENSE_ROW_FILLS.mismatch,
+          sheetEntry,
+          chatEntry: item.chatEntry || null,
+          chatAmount: item.chatEntry ? money(item.chatEntry.amountMinor) : '',
+          sheetAmount: money(sheetEntry.amountMinor),
+        });
+      }
+      continue;
+    }
     if (type === 'duplicate' && item.sheetEntry) {
       sheetHandled.add(item.sheetEntry);
       rows.push({
@@ -182,7 +200,7 @@ export async function buildExpenseReportWorkbook({
     ['Matched (green)', matchedCount],
     ['Extra on sheet (red)', onlySheet],
     ['Missing in sheet (yellow)', missingSheet],
-    ['Amount differs (amber)', mismatch],
+    ['Needs review / amount differs (amber)', mismatch],
     ['Chat expenses', chatEntries.length],
     ['Sheet rows', sheetEntries.length],
     ['Legend', 'Green = match · Red = sheet only · Yellow = chat only · Amber = amounts differ'],
@@ -198,7 +216,8 @@ export async function buildExpenseReportWorkbook({
   };
 
   const sheet = workbook.addWorksheet('Reconciled Sheet');
-  const headerValues = [...headers, 'Chat Amount', 'Status'];
+  const auditHeaders = ['Chat Amount', 'Chat Message ID', 'Chat Evidence', 'Worksheet', 'Worksheet Row', 'Status'];
+  const headerValues = [...headers, ...auditHeaders];
   const headerRow = sheet.addRow(headerValues);
   headerRow.font = { bold: true };
   headerRow.eachCell((cell) => {
@@ -208,20 +227,50 @@ export async function buildExpenseReportWorkbook({
     sheet.getColumn(i + 1).width = Math.min(28, Math.max(12, String(headers[i]).length + 4));
   });
   sheet.getColumn(headers.length + 1).width = 14;
-  sheet.getColumn(headers.length + 2).width = 28;
-  const amountCol = mapping.amount != null ? mapping.amount + 1 : null;
-  if (amountCol) sheet.getColumn(amountCol).numFmt = '#,##0.00';
+  sheet.getColumn(headers.length + 2).width = 24;
+  sheet.getColumn(headers.length + 3).width = 52;
+  sheet.getColumn(headers.length + 4).width = 24;
+  sheet.getColumn(headers.length + 5).width = 14;
+  sheet.getColumn(headers.length + 6).width = 30;
+  for (const field of ['amount', 'debitAmount', 'creditAmount']) {
+    const index = mapping[field];
+    if (index != null) sheet.getColumn(index + 1).numFmt = '#,##0.00';
+  }
   sheet.getColumn(headers.length + 1).numFmt = '#,##0.00';
 
   const rows = buildReconciledSheetRows(reconciliation);
   for (const row of rows) {
     const source = row.sheetEntry || row.chatEntry;
-    const values = entryValuesForHeaders(headers, mapping, source);
+    let values = entryValuesForHeaders(headers, mapping, source);
+    if (row.sheetEntry?.rawJson) {
+      try {
+        const original = JSON.parse(row.sheetEntry.rawJson);
+        const sourceHeaders = row.sheetEntry.sourceHeaders;
+        if (Array.isArray(original) && Array.isArray(sourceHeaders)
+          && sourceHeaders.length === headers.length
+          && sourceHeaders.every((header, index) => String(header ?? '') === String(headers[index] ?? ''))) {
+          values = headers.map((_, index) => original[index] ?? '');
+        }
+      } catch { /* retain normalized fallback values */ }
+    }
     // For yellow (chat-only) rows, amounts live under the sheet amount column too for readability
     if (!row.sheetEntry && row.chatEntry && mapping.amount != null) {
       values[mapping.amount] = money(row.chatEntry.amountMinor);
     }
-    const excelRow = sheet.addRow([...values, row.chatAmount === '' ? '' : row.chatAmount, row.status]);
+    const chatEntry = row.chatEntry;
+    let sourceText = chatEntry?.sourceText || '';
+    if (!sourceText && chatEntry?.rawJson) {
+      try { sourceText = JSON.parse(chatEntry.rawJson)?.sourceText || ''; } catch { /* optional audit metadata */ }
+    }
+    const excelRow = sheet.addRow([
+      ...values,
+      row.chatAmount === '' ? '' : row.chatAmount,
+      chatEntry?.sourceMessageId || '',
+      sourceText,
+      row.sheetEntry?.worksheetName || '',
+      row.sheetEntry?.sheetRow ?? '',
+      row.status,
+    ]);
     paintRow(excelRow, row.fill);
   }
 

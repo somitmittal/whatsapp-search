@@ -41,7 +41,7 @@ function reportCaption(run, reconciliation) {
   const counts = new Map();
   reconciliation.discrepancies.forEach((item) => counts.set(item.type, (counts.get(item.type) || 0) + 1));
   const lines = [
-    `Expense reconciliation — ${run.chatName || 'Construction site'} — ${run.businessDate}`,
+    `Expense reconciliation — ${run.chatName || 'Site'} — ${run.businessDate}`,
     `Chat entries: ${reconciliation.totals.chatEntryCount} | Sheet rows: ${reconciliation.totals.sheetEntryCount} | Matched: ${reconciliation.totals.matchedCount}`,
   ];
   if (!reconciliation.discrepancies.length) {
@@ -79,7 +79,7 @@ export default class ExpenseReconciliationService {
    * @param {{ chatJid: string, messageId?: string }} input
    * @param {string} [tenantId]
    */
-  runForChat({ chatJid, messageId, notifyWhatsApp = true, forceRerun = false } = {}, tenantId = getCurrentTenantId()) {
+  runForChat({ chatJid, messageId, notifyWhatsApp = true, forceRerun = false, provider = null } = {}, tenantId = getCurrentTenantId()) {
     return runWithTenant(tenantId, async () => {
       if (!isConstructionExpenseAgentEnabled(this.db)) {
         throw new Error('Enable the Construction expense agent first');
@@ -98,6 +98,7 @@ export default class ExpenseReconciliationService {
         requireSiteAllowlist: false,
         notifyWhatsApp: notifyWhatsApp !== false,
         forceRerun: !!forceRerun,
+        provider,
       });
     });
   }
@@ -106,9 +107,11 @@ export default class ExpenseReconciliationService {
     requireSiteAllowlist,
     notifyWhatsApp = true,
     forceRerun = false,
+    provider = null,
   }) {
     if (!messageId) return null;
-    const key = `${tenantId}:${messageId}`;
+    const providerKey = provider ? `${provider.name || 'provider'}:${provider.model || ''}` : 'default';
+    const key = `${tenantId}:${messageId}:${providerKey}`;
     if (this._pending.has(key)) return this._pending.get(key);
     const promise = runWithTenant(tenantId, async () => {
       try {
@@ -116,6 +119,7 @@ export default class ExpenseReconciliationService {
           requireSiteAllowlist,
           notifyWhatsApp,
           forceRerun,
+          provider,
         });
       } finally {
         this._pending.delete(key);
@@ -137,6 +141,36 @@ export default class ExpenseReconciliationService {
     });
   }
 
+  /**
+   * Post an already-written dry-run report. Does not reconcile again.
+   */
+  sendCompletedReport(runId, tenantId = getCurrentTenantId()) {
+    return runWithTenant(tenantId, async () => {
+      const run = this.db.getExpenseReconciliationRun(runId);
+      if (!run) throw new Error('Expense reconciliation run not found');
+      if (run.reportMessageId) return run;
+      if (run.status !== 'completed' || !run.reportPath || !existsSync(run.reportPath)) {
+        throw new Error('Report is not ready to send');
+      }
+      const waClient = this.getWaClient?.(getCurrentTenantId());
+      if (!waClient?.sendDocument) throw new Error('WhatsApp is not connected; the report is ready to download');
+      const sent = await waClient.sendDocument(run.chatJid, run.reportPath, {
+        fileName: basename(run.reportPath),
+        caption: reportCaption(run, {
+          discrepancies: run.discrepancies || [],
+          totals: run.totals || {},
+        }),
+      });
+      this.db.updateExpenseReconciliationRun(run.id, {
+        status: 'completed',
+        reportMessageId: sent?.key?.id || null,
+        error: null,
+      });
+      this._emit(run.id, 'completed');
+      return this.db.getExpenseReconciliationRun(run.id);
+    });
+  }
+
   retryRun(runId, tenantId = getCurrentTenantId()) {
     return runWithTenant(tenantId, () => {
       const run = this.db.getExpenseReconciliationRun(runId);
@@ -154,6 +188,7 @@ export default class ExpenseReconciliationService {
     requireSiteAllowlist = true,
     notifyWhatsApp = true,
     forceRerun = false,
+    provider: providerOverride = null,
   } = {}) {
     if (!isConstructionExpenseAgentEnabled(this.db)) return null;
     const row = this.db.getMessageRowByMessageId(messageId);
@@ -187,22 +222,26 @@ export default class ExpenseReconciliationService {
     this.db.updateExpenseReconciliationRun(run.id, { status: 'processing', error: null });
     this._emit(run.id, 'processing');
     try {
-      const provider = this.getProvider?.();
+      const provider = providerOverride || this.getProvider?.();
       if (!provider?.chat) throw new Error('Configure an AI provider before reconciling expenses');
       const parsedSheet = await parseExpenseWorkbook(mediaPath, {
         fallbackDate: bounds.date,
         fileName: sourceFileName,
         inferHeaders: (headers, fields) => inferExpenseHeaders(provider, headers, fields),
       });
-      const businessDate = parsedSheet.entries.find((entry) => entry.date)?.date || bounds.date;
-      const businessBounds = dayBoundsFromDate(businessDate);
+      const sheetDates = parsedSheet.entries.map((entry) => entry.date).filter(Boolean).sort();
+      const firstDate = sheetDates[0] || bounds.date;
+      const lastDate = sheetDates[sheetDates.length - 1] || firstDate;
+      const businessDate = firstDate === lastDate ? firstDate : `${firstDate} – ${lastDate}`;
+      const businessStart = dayBoundsFromDate(firstDate);
+      const businessEnd = dayBoundsFromDate(lastDate);
       const messages = this.db.getMessagesByTimeRange(
         row.chatJid,
-        businessBounds.startTs,
-        businessBounds.endTs,
+        businessStart.startTs,
+        businessEnd.endTs,
       );
       const chatEntries = await extractChatExpenses(provider, messages, {
-        date: businessDate,
+        date: firstDate,
         excludedMessageId: messageId,
       });
       const reconciliation = reconcileExpenses(chatEntries, parsedSheet.entries);

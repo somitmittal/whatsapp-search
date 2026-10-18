@@ -80,11 +80,17 @@ export function initGmail() {
         return;
       }
       const n = (data.results && data.results.length) || 0;
-      $('#import-result').classList.add('visible');
-      $('#imp-title').textContent = 'Backup loaded';
+      $('#import-result')?.classList.add('visible');
+      if ($('#imp-title')) $('#imp-title').textContent = 'Backup loaded';
       const errTail = (data.errors && data.errors.length) ? ` Notes: ${data.errors.slice(0, 3).join('; ')}` : '';
-      $('#imp-text').textContent = `Imported ${n} file(s). Skipped ${data.skipped || 0} already imported.${errTail}`;
+      if ($('#imp-text')) {
+        $('#imp-text').textContent = `Imported ${n} file(s). Skipped ${data.skipped || 0} already imported.${errTail}`;
+      }
       await refreshDash();
+      if (document.getElementById('gpt-app')) {
+        const firstJid = data.results?.[0]?.chatJid || null;
+        window.dispatchEvent(new CustomEvent('wgpt:chats-imported', { detail: { chatJid: firstJid } }));
+      }
     } catch (e) {
       $('#import-result').classList.add('visible');
       $('#imp-title').textContent = 'Load WhatsApp Backup';

@@ -6,8 +6,14 @@ import {
   isoDate,
   normalizeCurrency,
   normalizeDirection,
+  normalizeText,
   parseAmountMinor,
 } from './expense-utils.js';
+
+const STANDARD_HEADERS = ['Date', 'Direction', 'Amount', 'Currency', 'Payee', 'Category', 'Description', 'Reference', 'Source worksheet'];
+const STANDARD_MAPPING = { date: 0, direction: 1, amount: 2, currency: 3, payee: 4, category: 5, description: 6, reference: 7, worksheetName: 8 };
+const SUMMARY_SHEET_NAME = /^(?:summary|cover|readme|instructions|dashboard|pivot)(?:\b|\s|[-_])/i;
+const TOTAL_LABELS = new Set(['total', 'subtotal', 'grand total', 'balance brought forward', 'balance carried forward']);
 
 function cellValue(cell) {
   const value = cell?.value;
@@ -21,24 +27,28 @@ function cellValue(cell) {
 
 function rowValues(row) {
   const out = [];
-  for (let column = 1; column <= row.cellCount; column += 1) {
-    out.push(cellValue(row.getCell(column)));
-  }
+  for (let column = 1; column <= row.cellCount; column += 1) out.push(cellValue(row.getCell(column)));
   return out;
 }
 
-function firstHeaderRow(worksheet) {
-  for (let n = 1; n <= Math.min(worksheet.rowCount, 20); n += 1) {
-    const values = rowValues(worksheet.getRow(n));
-    if (values.filter((v) => String(v ?? '').trim()).length >= 2) return { number: n, values };
+function candidateHeaderRows(worksheet) {
+  const candidates = [];
+  for (let number = 1; number <= Math.min(worksheet.rowCount, 30); number += 1) {
+    const values = rowValues(worksheet.getRow(number));
+    const nonEmpty = values.filter((value) => String(value ?? '').trim()).length;
+    if (nonEmpty < 2) continue;
+    const recognized = values.reduce((score, value) => score + (canonicalHeader(value) ? 1 : 0), 0);
+    candidates.push({ number, values, nonEmpty, recognized });
   }
-  return null;
+  candidates.sort((a, b) => b.recognized - a.recognized || b.nonEmpty - a.nonEmpty || a.number - b.number);
+  return candidates;
 }
 
 async function inferHeaderMap(headers, inferHeaders) {
   if (typeof inferHeaders !== 'function') return {};
-  const mapped = await inferHeaders(headers, CANONICAL_EXPENSE_FIELDS);
-  if (!mapped || typeof mapped !== 'object') return {};
+  let mapped;
+  try { mapped = await inferHeaders(headers, CANONICAL_EXPENSE_FIELDS); } catch { return {}; }
+  if (!mapped || typeof mapped !== 'object' || Array.isArray(mapped)) return {};
   const result = {};
   for (const [rawHeader, field] of Object.entries(mapped)) {
     if (CANONICAL_EXPENSE_FIELDS.includes(field)) result[String(rawHeader)] = field;
@@ -54,38 +64,95 @@ export async function mapHeaders(headers, inferHeaders) {
     if (field && mapping[field] == null) mapping[field] = index;
     else if (String(header ?? '').trim()) unknown.push(String(header));
   });
-  if (mapping.amount != null || !unknown.length) return mapping;
 
-  const inferred = await inferHeaderMap(headers.map(String), inferHeaders);
-  headers.forEach((header, index) => {
-    const field = inferred[String(header)];
-    if (field && mapping[field] == null) mapping[field] = index;
-  });
+  const needsAmount = mapping.amount == null && mapping.debitAmount == null && mapping.creditAmount == null;
+  const needsIdentity = mapping.description == null && mapping.payee == null
+    && mapping.reference == null && mapping.category == null;
+  if ((needsAmount || needsIdentity) && unknown.length) {
+    const inferred = await inferHeaderMap(headers.map(String), inferHeaders);
+    headers.forEach((header, index) => {
+      const field = inferred[String(header)];
+      if (field && mapping[field] == null) mapping[field] = index;
+    });
+  }
   return mapping;
 }
 
-function toExpense(values, mapping, rowNumber, fallbackDate, headers) {
+function isEmptyAmount(value) {
+  const amount = parseAmountMinor(value);
+  return amount == null || amount === 0;
+}
+
+function rowIsSummary(values, mapping) {
+  const labels = [mapping.description, mapping.payee, mapping.category]
+    .filter((index) => index != null)
+    .map((index) => normalizeText(values[index]));
+  return labels.some((label) => TOTAL_LABELS.has(label));
+}
+
+function toExpenseRows(values, mapping, rowNumber, fallbackDate, headers, worksheetName) {
+  if (rowIsSummary(values, mapping)) return [];
   const get = (field) => (mapping[field] == null ? '' : values[mapping[field]]);
-  const amountMinor = parseAmountMinor(get('amount'));
-  if (amountMinor == null) return null;
   const description = String(get('description') ?? '').trim();
   const payee = String(get('payee') ?? '').trim();
   const reference = String(get('reference') ?? '').trim();
-  if (!description && !payee && !reference) return null;
-  const amountHeader = mapping.amount == null ? '' : headers[mapping.amount];
-  return {
+  const category = String(get('category') ?? '').trim();
+  if (!description && !payee && !reference && !category && !get('date')) return [];
+  const amountCurrency = get('amount') || get('debitAmount') || get('creditAmount');
+
+  const common = {
     source: 'sheet',
     sheetRow: rowNumber,
+    worksheetName,
+    sourceHeaders: headers,
     date: isoDate(get('date'), fallbackDate),
-    amountMinor: Math.abs(amountMinor),
-    currency: normalizeCurrency(get('currency')),
-    direction: normalizeDirection(get('direction'), amountMinor, amountHeader),
+    currency: normalizeCurrency(get('currency') || amountCurrency),
     description,
     payee,
-    category: String(get('category') ?? '').trim(),
+    category,
     reference,
     rawJson: JSON.stringify(values),
   };
+  const directionValue = get('direction');
+  const amountIndex = mapping.amount;
+  if (amountIndex != null && !isEmptyAmount(values[amountIndex])) {
+    const amountMinor = parseAmountMinor(values[amountIndex]);
+    const directionHeader = headers[amountIndex];
+    return [{
+      ...common,
+      amountMinor: Math.abs(amountMinor),
+      direction: normalizeDirection(directionValue || values[amountIndex], amountMinor, directionHeader),
+    }];
+  }
+
+  const split = [];
+  for (const [field, direction] of [['debitAmount', 'debit'], ['creditAmount', 'credit']]) {
+    const value = get(field);
+    if (isEmptyAmount(value)) continue;
+    const amountMinor = parseAmountMinor(value);
+    split.push({ ...common, amountMinor: Math.abs(amountMinor), direction });
+  }
+  if (split.length) return split;
+  return [];
+}
+
+async function parseWorksheet(worksheet, { fallbackDate, inferHeaders }) {
+  const candidates = candidateHeaderRows(worksheet);
+  for (const headerRow of candidates) {
+    const headers = headerRow.values.map((value) => String(value ?? '').trim());
+    const mapping = await mapHeaders(headers, inferHeaders);
+    if (mapping.amount == null && mapping.debitAmount == null && mapping.creditAmount == null) continue;
+    if (mapping.description == null && mapping.payee == null && mapping.reference == null
+      && mapping.category == null && mapping.date == null) continue;
+    const entries = [];
+    for (let rowNumber = headerRow.number + 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+      entries.push(...toExpenseRows(
+        rowValues(worksheet.getRow(rowNumber)), mapping, rowNumber, fallbackDate, headers, worksheet.name,
+      ));
+    }
+    if (entries.length) return { worksheetName: worksheet.name, headerRow: headerRow.number, headers, mapping, entries };
+  }
+  return null;
 }
 
 export async function parseExpenseWorkbook(filePath, {
@@ -99,30 +166,28 @@ export async function parseExpenseWorkbook(filePath, {
   else if (ext === '.xlsx') await workbook.xlsx.readFile(filePath);
   else throw new Error('Only .xlsx and .csv expense sheets are supported');
 
-  const worksheet = workbook.worksheets[0];
-  if (!worksheet) throw new Error('The expense sheet has no worksheet');
-  const headerRow = firstHeaderRow(worksheet);
-  if (!headerRow) throw new Error('Could not find a header row in the expense sheet');
-  const headers = headerRow.values.map((v) => String(v ?? '').trim());
-  const mapping = await mapHeaders(headers, inferHeaders);
-  if (mapping.amount == null) throw new Error('Could not identify the amount column');
-  if (mapping.description == null && mapping.payee == null && mapping.reference == null) {
-    throw new Error('Could not identify a description, payee, or reference column');
+  const parsedWorksheets = [];
+  for (const worksheet of workbook.worksheets) {
+    const parsed = await parseWorksheet(worksheet, { fallbackDate, inferHeaders });
+    if (parsed) parsedWorksheets.push(parsed);
   }
-
-  const entries = [];
-  for (let rowNumber = headerRow.number + 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
-    const values = rowValues(worksheet.getRow(rowNumber));
-    const entry = toExpense(values, mapping, rowNumber, fallbackDate, headers);
-    if (entry) entries.push(entry);
+  if (!parsedWorksheets.length) {
+    throw new Error('Could not identify expense columns and valid expense rows in the workbook');
   }
+  // Summary/cover tabs often contain totals that would double-count transaction tabs.
+  const transactionSheets = parsedWorksheets.filter((sheet) => !SUMMARY_SHEET_NAME.test(sheet.worksheetName));
+  const selectedSheets = transactionSheets.length ? transactionSheets : parsedWorksheets;
+  const entries = selectedSheets.flatMap((sheet) => sheet.entries);
   if (!entries.length) throw new Error('The expense sheet contains no valid expense rows');
+
+  const multipleSheets = selectedSheets.length > 1;
+  const primary = selectedSheets[0];
   return {
-    worksheetName: worksheet.name,
-    headerRow: headerRow.number,
-    headers,
-    mapping,
+    worksheetName: multipleSheets ? selectedSheets.map((sheet) => sheet.worksheetName).join(', ') : primary.worksheetName,
+    worksheetNames: selectedSheets.map((sheet) => sheet.worksheetName),
+    headerRow: primary.headerRow,
+    headers: multipleSheets ? STANDARD_HEADERS : primary.headers,
+    mapping: multipleSheets ? STANDARD_MAPPING : primary.mapping,
     entries,
   };
 }
-

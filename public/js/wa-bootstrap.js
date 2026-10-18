@@ -67,9 +67,9 @@ export async function bootstrapWhatsAppLinking(opts = {}) {
       store._waStateResolved = true;
       store._waState = 'DISCONNECTED';
       applyLiveSyncVisibility();
-      $('#welcome-qr').style.display = 'none';
-      $('#wqr-loading').style.display = 'none';
-      $('#welcome-default').style.display = '';
+      if ($('#welcome-qr')) $('#welcome-qr').style.display = 'none';
+      if ($('#wqr-loading')) $('#wqr-loading').style.display = 'none';
+      if ($('#welcome-default')) $('#welcome-default').style.display = '';
       ensureImportFirstWelcome();
       updateSidebarForWaState();
       renderChatsFromState();
@@ -81,10 +81,10 @@ export function ensureImportFirstWelcome() {
   if (!hasIndexedArchive()) return;
   if ($('#panel-empty')?.classList.contains('visible')) {
     const showQrWelcome = wantsLiveSyncUi() && !isWaUiReady();
-    $('#welcome-qr').style.display = showQrWelcome ? '' : 'none';
-    $('#sync-progress-panel').style.display = 'none';
-    $('#wqr-loading').style.display = 'none';
-    $('#welcome-default').style.display = showQrWelcome ? 'none' : '';
+    if ($('#welcome-qr')) $('#welcome-qr').style.display = showQrWelcome ? '' : 'none';
+    if ($('#sync-progress-panel')) $('#sync-progress-panel').style.display = 'none';
+    if ($('#wqr-loading')) $('#wqr-loading').style.display = 'none';
+    if ($('#welcome-default')) $('#welcome-default').style.display = showQrWelcome ? 'none' : '';
   }
 }
 
@@ -117,7 +117,7 @@ export function initWaBootstrap() {
   void bootstrapWhatsAppLinking();
 
   // Logout button
-  $('#wa-logout-btn').addEventListener('click', async () => {
+  $('#wa-logout-btn')?.addEventListener('click', async () => {
     if (!confirm('Log out of WhatsApp? You will need to scan a new QR code to reconnect.')) return;
     await fetch('/api/wa/logout', { method: 'POST' });
     updateWaUI({ state: 'DISCONNECTED', message: 'Logged out' });

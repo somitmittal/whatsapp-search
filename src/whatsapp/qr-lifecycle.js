@@ -42,8 +42,8 @@ export function isQrUsable(issuedAtMs, nowMs, ttlMs = QR_NEXT_TTL_MS) {
 export function reconnectDelayMs({
   hasCreds,
   attempt = 0,
-  baseMs = 5000,
-  maxMs = 120_000,
+  baseMs = 2000,
+  maxMs = 30_000,
   pairingDelayMs = QR_PAIRING_RECONNECT_MS,
 } = {}) {
   if (!hasCreds) return pairingDelayMs;
@@ -51,11 +51,23 @@ export function reconnectDelayMs({
 }
 
 /**
- * Should repeated stale closes wipe the auth dir to force a fresh QR?
+ * Whether to wipe saved credentials after repeated disconnects.
  *
- * Only meaningful once credentials exist — during pairing there is nothing to reset, so
- * wiping only adds another reconnect round-trip before the next QR appears.
+ * WhatsApp Web keeps the linked-device session across network blips for days. Transient
+ * closes (`connectionLost` / `timedOut` / `connectionClosed`) must reconnect with the
+ * same auth — wiping forces another QR and is what made this client feel flaky.
+ *
+ * Always returns false. Auth is only cleared on explicit logout / badSession in wa-client.
  */
-export function shouldResetAuthAfterStaleCloses({ hasCreds, staleCloseCount, threshold = 3 }) {
-  return Boolean(hasCreds) && staleCloseCount >= threshold;
+export function shouldResetAuthAfterStaleCloses({ hasCreds, staleCloseCount, threshold = 3 } = {}) {
+  void hasCreds;
+  void staleCloseCount;
+  void threshold;
+  return false;
+}
+
+/** Disconnect codes that mean “keep creds, reopen quickly” (Baileys pairing / server nudge). */
+export function isImmediateReconnectCode(code) {
+  // DisconnectReason.restartRequired === 515
+  return code === 515;
 }

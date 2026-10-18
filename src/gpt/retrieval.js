@@ -90,7 +90,11 @@ export function detectTimeRange(query, now = new Date()) {
 }
 
 export function isBroadQuery(query) {
-  return /\b(summar|recap|overview|what happened|what's new|whats new|catch me up|tl;?dr|highlights|update me)\w*/i.test(String(query || ''));
+  const q = String(query || '');
+  return /\b(summar|recap|overview|what happened|what's new|whats new|catch me up|tl;?dr|highlights|update me)\w*/i.test(q)
+    || /\bwhat(?:'s|\s+is|\s+are|\s+does|\s+do)\b[^\n]{0,100}\b(?:about|for)\b/i.test(q)
+    || /\b(?:describe|summari[sz]e)\b[^\n]{0,80}\b(?:chat|group|conversation)\b/i.test(q)
+    || /\bwhat(?:'s|\s+is|\s+are)\b[^\n]{0,80}\b(?:chat|group|conversation)\b/i.test(q);
 }
 
 /**

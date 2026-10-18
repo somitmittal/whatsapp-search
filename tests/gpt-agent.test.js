@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, test } from '@jest/globals';
+import { afterAll, beforeAll, describe, expect, jest, test } from '@jest/globals';
 
 const scratch = mkdtempSync(join(tmpdir(), 'gpt-agent-'));
 process.env.DATA_DIR = scratch;
@@ -9,8 +9,8 @@ process.env.DATA_DIR = scratch;
 const { default: Database } = await import('../src/storage/database.js');
 const { runWithTenant } = await import('../src/storage/tenant-context.js');
 const { parseToolCalls, runAgent } = await import('../src/gpt/agent.js');
-const { buildHistory } = await import('../src/gpt/context.js');
-const { detectTimeRange, hybridSearch, packMessages } = await import('../src/gpt/retrieval.js');
+const { buildChatOverview, buildHistory, ContextEngine } = await import('../src/gpt/context.js');
+const { detectTimeRange, hybridSearch, isBroadQuery, packMessages } = await import('../src/gpt/retrieval.js');
 const { default: GptService } = await import('../src/gpt/gpt-service.js');
 
 const TENANT = 'tenant-gpt';
@@ -109,6 +109,63 @@ describe('detectTimeRange', () => {
   });
   test('no date words → no range', () => {
     expect(detectTimeRange('who sent the cement bill', now)).toBeNull();
+  });
+});
+
+describe('broad group context', () => {
+  test('recognizes questions asking what a chat or group is about', () => {
+    expect(isBroadQuery('what is this group about?')).toBe(true);
+    expect(isBroadQuery('What are they talking about in this conversation?')).toBe(true);
+  });
+
+  test('uses the pinned group timeline and summaries instead of noisy generic search', async () => {
+    const message = {
+      id: 9001, chatJid: SITE, chatName: 'Site 2', sender: 'Ramesh',
+      text: 'Discussed cement delivery and site progress.', timestamp: BASE_TS,
+    };
+    const dbStub = {
+      getMessagesPaginated: jest.fn(() => [message]),
+      getRecentThreadSummaries: jest.fn(() => [{
+        chatJid: SITE, chatName: 'Site 2', date: '14 Oct', summary: 'Site progress and cement deliveries.',
+      }]),
+      searchMessages: jest.fn(() => { throw new Error('generic overview should not run lexical search'); }),
+    };
+    const engine = new ContextEngine({ db: dbStub, embeddings: null, directory: { name: () => 'Site 2' } });
+    const result = await engine.prefetch({ query: 'what is this group about?', scopeJids: [SITE] });
+    expect(dbStub.getMessagesPaginated).toHaveBeenCalledWith(SITE, expect.any(Number), 0);
+    expect(dbStub.getRecentThreadSummaries).toHaveBeenCalledWith(SITE, expect.any(Number));
+    expect(dbStub.searchMessages).not.toHaveBeenCalled();
+    expect(result.text).toContain('Discussed cement delivery');
+    expect(result.text).toContain('Site progress and cement deliveries');
+    expect(result.messages.map((row) => row.id)).toEqual([message.id]);
+  });
+
+  test('answers a broad overview with cited evidence when the archive is media-heavy', async () => {
+    await runWithTenant(TENANT, async () => {
+      const rows = [
+        { id: 9101, chatJid: FAMILY, chatName: 'Family', sender: 'A', text: 'https://instagram.com/reel/example', timestamp: BASE_TS },
+        { id: 9102, chatJid: FAMILY, chatName: 'Family', sender: 'B', text: 'Left from Gurgaon', timestamp: BASE_TS + 1 },
+        { id: 9103, chatJid: FAMILY, chatName: 'Family', sender: 'C', text: 'Shared a long post about the group plans and upcoming family event.', timestamp: BASE_TS + 2 },
+        ...Array.from({ length: 12 }, (_, i) => ({
+          id: 9200 + i, chatJid: FAMILY, chatName: 'Family', sender: 'A', mediaType: i % 2 ? 'video' : 'image',
+          text: '', timestamp: BASE_TS + 3 + i,
+        })),
+      ];
+      const provider = scriptedProvider(['This is a group about technology and engineering.']);
+      provider.name = 'ollama';
+      provider.model = 'llama3.2:1b';
+      const svc = new GptService({ db, getProvider: () => provider });
+      svc.context.prefetch = async () => ({ text: 'recent group messages', messages: rows, range: null });
+      const out = await svc.handleTurn({
+        message: 'what is this group about?',
+        mentions: [{ type: 'chat', chatJid: FAMILY, chatName: 'Family' }],
+      });
+      expect(provider.calls).toHaveLength(0);
+      expect(out.answer).toContain('12 of 15 recent messages are images/videos');
+      expect(out.answer).toContain('“Left from Gurgaon” [m9102]');
+      expect(out.answer).not.toMatch(/technology|engineering/i);
+      expect(out.sources.map((source) => source.ref)).toEqual(['m9101', 'm9102', 'm9103']);
+    });
   });
 });
 

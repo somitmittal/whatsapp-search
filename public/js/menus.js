@@ -4,9 +4,9 @@ import { refreshDash, setChatIndexEnabled } from './dashboard.js';
 import { switchPanel } from './overlays.js';
 import { $ } from './util.js';
 
-export function closeMenu() { $('#sidebar-menu').classList.remove('open'); }
+export function closeMenu() { $('#sidebar-menu')?.classList.remove('open'); }
 
-function closeChatMenu() { $('#chat-menu').classList.remove('open'); }
+function closeChatMenu() { $('#chat-menu')?.classList.remove('open'); }
 
 export function closeAllMenus() { closeMenu(); closeChatMenu(); }
 

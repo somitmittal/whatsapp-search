@@ -97,6 +97,7 @@ export async function refreshAiSetupBanner() {
 
 export async function checkHardwareRecommendation() {
   const panel = $('#hw-recommend');
+  if (!panel || !$('#s-provider')) return;
   if ($('#s-provider').value !== 'ollama') { panel.classList.remove('visible'); return; }
   if (store._hwRecCache) { renderHwRec(store._hwRecCache); return; }
   if (store._hwRecFetching) return;

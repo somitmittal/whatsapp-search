@@ -18,7 +18,7 @@ import { groupStatusBroadcastRows } from '../status/status-feed.js';
 import { isSafeAvatarFileName } from '../whatsapp/chat-avatars.js';
 import { chatListPreview, higherReceipt, normalizeReceiptStatus } from '../whatsapp/message-receipt.js';
 import { STATUS_BROADCAST_JID, isImportedChatJid, sidebarTabForJid } from '../whatsapp/jid-filters.js';
-import { legacyControlFramePlaceholders } from '../whatsapp/message-content.js';
+import { isContentPlaceholder, legacyControlFramePlaceholders } from '../whatsapp/message-content.js';
 import {
   formatPhoneLocalPart,
   isPlausibleHumanChatTitle,
@@ -70,6 +70,7 @@ export default class Database {
     this._ensureThreadFactsStatusColumn();
     this._ensureExpenseReconciliationTables();
     this._ensureSearchConversationTables();
+    this._ensureSkillTables();
     this._ensureMessagesFtsUpdateTriggerScoped();
   }
 
@@ -1568,6 +1569,10 @@ export default class Database {
         if (info.changes === 0 && row.messageId && row.receiptStatus != null) {
           this.updateMessageReceipt(row.chatJid, row.messageId, row.receiptStatus);
         }
+        // History re-sync often re-delivers the same ids; upgrade synthetic bodies like `[Template]`.
+        if (info.changes === 0 && row.messageId && row.text) {
+          this._upgradePlaceholderMessageBody(tenantId, row);
+        }
       }
     });
     run(rows || []);
@@ -2885,7 +2890,8 @@ export default class Database {
     if (!messageId) return null;
     const t = getCurrentTenantId();
     return this._db.prepare(`
-      SELECT message_id AS messageId, media_path AS mediaPath, media_type AS mediaType
+      SELECT message_id AS messageId, media_path AS mediaPath, media_type AS mediaType,
+             text, media_caption AS mediaCaption
       FROM messages WHERE tenant_id = ? AND message_id = ?
     `).get(t, messageId);
   }
@@ -2971,6 +2977,20 @@ export default class Database {
         AND (? IS NULL OR chat_jid = ?)
     `).run(body, t, messageId, chatJid || null, chatJid || null);
     return r.changes > 0;
+  }
+
+  /**
+   * Replace a synthetic body (`[Template]`, …) when history re-delivers a real body for the same id.
+   * @private
+   */
+  _upgradePlaceholderMessageBody(tenantId, row) {
+    const next = String(row?.text || '').trim();
+    if (!next || isContentPlaceholder(next)) return false;
+    const existing = this._db.prepare(
+      'SELECT text FROM messages WHERE tenant_id = ? AND message_id = ?',
+    ).get(tenantId, row.messageId);
+    if (!existing || !isContentPlaceholder(existing.text)) return false;
+    return this.updateMessageBody(row.chatJid, row.messageId, next);
   }
 
   getAllMessagesLight(chatJid = null, limit = 5000) {
@@ -3627,6 +3647,146 @@ export default class Database {
     const t = getCurrentTenantId();
     this._db.prepare('DELETE FROM search_messages WHERE tenant_id = ? AND conversation_id = ?').run(t, id);
     return this._db.prepare('DELETE FROM search_conversations WHERE tenant_id = ? AND id = ?').run(t, id).changes > 0;
+  }
+
+  _ensureSkillTables() {
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS user_skills (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        frontmatter_json TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        created_at INTEGER DEFAULT (unixepoch()),
+        updated_at INTEGER DEFAULT (unixepoch()),
+        UNIQUE(tenant_id, namespace, slug)
+      );
+
+      CREATE TABLE IF NOT EXISTS skill_runs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        conversation_id TEXT,
+        message_id TEXT,
+        namespace TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        inputs_json TEXT,
+        coverage_json TEXT,
+        tool_calls_json TEXT,
+        expense_run_id INTEGER,
+        error TEXT,
+        created_at INTEGER DEFAULT (unixepoch()),
+        updated_at INTEGER DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_skill_runs_tenant_created
+        ON skill_runs(tenant_id, created_at DESC);
+    `);
+  }
+
+  listUserSkills() {
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT namespace, slug, version, frontmatter_json AS frontmatterJson, body
+      FROM user_skills WHERE tenant_id = ? ORDER BY namespace, slug
+    `).all(t).map((row) => ({
+      ...row,
+      frontmatter: row.frontmatterJson ? JSON.parse(row.frontmatterJson) : {},
+    }));
+  }
+
+  upsertUserSkill({ namespace, slug, version = 1, frontmatter = {}, body = '' }) {
+    const t = getCurrentTenantId();
+    const ns = String(namespace || '').trim().toLowerCase();
+    const sl = String(slug || '').trim().toLowerCase();
+    this._db.prepare(`
+      INSERT INTO user_skills (tenant_id, namespace, slug, version, frontmatter_json, body)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(tenant_id, namespace, slug) DO UPDATE SET
+        version = excluded.version,
+        frontmatter_json = excluded.frontmatter_json,
+        body = excluded.body,
+        updated_at = unixepoch()
+    `).run(t, ns, sl, Number(version) || 1, JSON.stringify(frontmatter), String(body || ''));
+    return this.listUserSkills().find((row) => row.namespace === ns && row.slug === sl) || null;
+  }
+
+  _skillRunFromRow(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      conversationId: row.conversationId,
+      messageId: row.messageId,
+      namespace: row.namespace,
+      slug: row.slug,
+      kind: row.kind,
+      version: row.version,
+      status: row.status,
+      inputs: row.inputsJson ? JSON.parse(row.inputsJson) : null,
+      coverage: row.coverageJson ? JSON.parse(row.coverageJson) : null,
+      toolCalls: row.toolCallsJson ? JSON.parse(row.toolCallsJson) : null,
+      expenseRunId: row.expenseRunId,
+      error: row.error,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  createSkillRun({
+    id, conversationId = null, messageId = null, namespace, slug, kind, version,
+    status, inputs = null, coverage = null, toolCalls = null, expenseRunId = null, error = null,
+  }) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      INSERT INTO skill_runs (
+        id, tenant_id, conversation_id, message_id, namespace, slug, kind, version,
+        status, inputs_json, coverage_json, tool_calls_json, expense_run_id, error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, t, conversationId, messageId, namespace, slug, kind, Number(version) || 1, status,
+      inputs == null ? null : JSON.stringify(inputs),
+      coverage == null ? null : JSON.stringify(coverage),
+      toolCalls == null ? null : JSON.stringify(toolCalls),
+      expenseRunId, error,
+    );
+    return this.getSkillRun(id);
+  }
+
+  getSkillRun(id) {
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT id, conversation_id AS conversationId, message_id AS messageId,
+             namespace, slug, kind, version, status,
+             inputs_json AS inputsJson, coverage_json AS coverageJson,
+             tool_calls_json AS toolCallsJson, expense_run_id AS expenseRunId,
+             error, created_at AS createdAt, updated_at AS updatedAt
+      FROM skill_runs WHERE tenant_id = ? AND id = ?
+    `).get(t, id);
+    return this._skillRunFromRow(row);
+  }
+
+  updateSkillRun(id, { status = null, messageId = null, error = null } = {}) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      UPDATE skill_runs SET
+        status = COALESCE(?, status),
+        message_id = COALESCE(?, message_id),
+        error = COALESCE(?, error),
+        updated_at = unixepoch()
+      WHERE tenant_id = ? AND id = ?
+    `).run(status, messageId, error, t, id);
+    return this.getSkillRun(id);
+  }
+
+  updateSearchMessagePayload(id, payload) {
+    const t = getCurrentTenantId();
+    this._db.prepare(`
+      UPDATE search_messages SET payload_json = ? WHERE tenant_id = ? AND id = ?
+    `).run(payload == null ? null : JSON.stringify(payload), t, id);
+    return this.getSearchMessage(id);
   }
 
   /** Raw better-sqlite3 handle (e.g. auth routes for `tenants` table). */

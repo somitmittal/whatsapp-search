@@ -1,7 +1,9 @@
 import { expenseIdentity, normalizeText } from './expense-utils.js';
 
-function result(type, chatEntry = null, sheetEntry = null, detail = '') {
-  return { type, chatEntry, sheetEntry, detail };
+function result(type, chatEntry = null, sheetEntry = null, detail = '', candidateSheetEntries = null) {
+  const item = { type, chatEntry, sheetEntry, detail };
+  if (candidateSheetEntries?.length) item.candidateSheetEntries = candidateSheetEntries;
+  return item;
 }
 
 function groupDuplicates(entries) {
@@ -40,7 +42,31 @@ function sameReference(entry, entries, used) {
 function isExactReference(entry, candidate) {
   return Number(candidate.amountMinor) === Number(entry.amountMinor)
     && candidate.currency === entry.currency
-    && candidate.direction === entry.direction;
+    && candidate.direction === entry.direction
+    && (!candidate.date || !entry.date || candidate.date === entry.date);
+}
+
+const GENERIC_TERMS = new Set(['paid', 'payment', 'expense', 'expenses', 'purchase', 'purchased', 'bill', 'invoice', 'amount']);
+
+function expenseTerms(entry) {
+  return new Set([
+    entry.payee,
+    entry.description,
+    entry.category,
+  ].flatMap((value) => normalizeText(value).split(' ')).filter((term) => term.length > 1 && !GENERIC_TERMS.has(term)));
+}
+
+function expenseTextOverlap(left, right) {
+  const a = expenseTerms(left);
+  const b = expenseTerms(right);
+  if (!a.size || !b.size) return false;
+  for (const term of a) if (b.has(term)) return true;
+  return false;
+}
+
+function sameTransactionTerms(left, right) {
+  return left.currency === right.currency && left.direction === right.direction
+    && (!left.date || !right.date || left.date === right.date);
 }
 
 function exactCandidates(entry, entries, used) {
@@ -69,7 +95,10 @@ function amountMismatchCandidates(entry, entries, used) {
     .filter(({ candidate, index }) => (
       !used.has(index)
       && referencesCompatible(entry, candidate)
-      && expenseIdentity(candidate, { includeAmount: false }) === identity
+      && (
+        expenseIdentity(candidate, { includeAmount: false }) === identity
+        || (sameTransactionTerms(entry, candidate) && expenseTextOverlap(entry, candidate))
+      )
       && Number(candidate.amountMinor) !== Number(entry.amountMinor)
     ));
 }
@@ -106,27 +135,30 @@ export function reconcileExpenses(chatEntries = [], sheetEntries = []) {
         chatEntry,
         null,
         `Multiple sheet rows share reference ${chatEntry.reference}`,
+        exactReferenced.map(({ candidate }) => candidate),
       ));
       continue;
     }
     if (referenced.length === 1) {
       const candidate = referenced[0];
       usedSheet.add(candidate.index);
-      const sameTerms = candidate.candidate.currency === chatEntry.currency
-        && candidate.candidate.direction === chatEntry.direction;
+      const sameTerms = sameTransactionTerms(candidate.candidate, chatEntry);
       discrepancies.push(result(
         sameTerms ? 'amount_mismatch' : 'needs_review',
         chatEntry,
         candidate.candidate,
         sameTerms
           ? 'The same expense identity has a different amount'
-          : 'The same reference has a different currency or direction',
+          : 'The same reference has a different date, currency, or direction',
       ));
       continue;
     }
     if (referenced.length > 1) {
       reserve(referenced);
-      discrepancies.push(result('needs_review', chatEntry, null, 'Multiple sheet rows share this reference'));
+      discrepancies.push(result(
+        'needs_review', chatEntry, null, 'Multiple sheet rows share this reference',
+        referenced.map(({ candidate }) => candidate),
+      ));
       continue;
     }
 
@@ -143,6 +175,58 @@ export function reconcileExpenses(chatEntries = [], sheetEntries = []) {
         chatEntry,
         null,
         `Multiple sheet rows match this chat expense: ${exact.map((x) => x.candidate.sheetRow).join(', ')}`,
+        exact.map(({ candidate }) => candidate),
+      ));
+      continue;
+    }
+
+    // Payee wording can differ between a message and a spreadsheet row. When
+    // amount, date, currency, direction, and at least one meaningful text token
+    // agree, a single candidate is a safe match; ambiguous candidates need review.
+    const sameAmount = unusedEntries(sheetEntries, usedSheet).filter(({ candidate }) => (
+      referencesCompatible(chatEntry, candidate)
+      && sameTransactionTerms(chatEntry, candidate)
+      && Number(candidate.amountMinor) === Number(chatEntry.amountMinor)
+      && expenseTextOverlap(chatEntry, candidate)
+    ));
+    if (sameAmount.length === 1) {
+      usedSheet.add(sameAmount[0].index);
+      matches.push({ chatEntry, sheetEntry: sameAmount[0].candidate });
+      continue;
+    }
+    if (sameAmount.length > 1) {
+      reserve(sameAmount);
+      discrepancies.push(result(
+        'needs_review', chatEntry, null, 'Multiple same-amount rows have similar expense details',
+        sameAmount.map(({ candidate }) => candidate),
+      ));
+      continue;
+    }
+
+    // A unique same-day/same-terms amount can still be a likely counterpart
+    // when names are abbreviated or absent. Keep it visible for review instead
+    // of asserting both a missing chat match and an unrelated sheet-only row.
+    const sameMoney = unusedEntries(sheetEntries, usedSheet).filter(({ candidate }) => (
+      referencesCompatible(chatEntry, candidate)
+      && sameTransactionTerms(chatEntry, candidate)
+      && Number(candidate.amountMinor) === Number(chatEntry.amountMinor)
+    ));
+    if (sameMoney.length === 1) {
+      const candidate = sameMoney[0];
+      usedSheet.add(candidate.index);
+      discrepancies.push(result(
+        'needs_review',
+        chatEntry,
+        candidate.candidate,
+        'Amount and date agree, but expense details differ; verify this match',
+      ));
+      continue;
+    }
+    if (sameMoney.length > 1) {
+      reserve(sameMoney);
+      discrepancies.push(result(
+        'needs_review', chatEntry, null, 'Multiple sheet rows share this amount, date, currency, and direction',
+        sameMoney.map(({ candidate }) => candidate),
       ));
       continue;
     }
@@ -160,7 +244,10 @@ export function reconcileExpenses(chatEntries = [], sheetEntries = []) {
     }
     if (changedAmount.length > 1) {
       reserve(changedAmount);
-      discrepancies.push(result('needs_review', chatEntry, null, 'Multiple possible amount-mismatch rows'));
+      discrepancies.push(result(
+        'needs_review', chatEntry, null, 'Multiple possible amount-mismatch rows',
+        changedAmount.map(({ candidate }) => candidate),
+      ));
       continue;
     }
     discrepancies.push(result('missing_from_sheet', chatEntry, null, 'Expense appears in chat but not in the sheet'));

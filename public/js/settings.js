@@ -7,12 +7,16 @@ import { $, esc } from './util.js';
 
 // ── Settings ───────────────────────────────────────────────────────
 export function updateModelOptions() {
-  const p = $('#s-provider').value, sel = $('#s-model');
+  const provider = $('#s-provider');
+  const sel = $('#s-model');
+  if (!provider || !sel) return;
+  const p = provider.value;
   sel.innerHTML = '';
   (MODELS[p] || []).forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
-  $('#s-key-row').style.display = (p === 'ollama') ? 'none' : '';
-  if (p === 'ollama') $('#s-key-env-note').style.display = 'none';
-  const h = $('#s-hint'); h.style.display = ''; h.innerHTML = HINTS[p] || '';
+  if ($('#s-key-row')) $('#s-key-row').style.display = (p === 'ollama') ? 'none' : '';
+  if (p === 'ollama' && $('#s-key-env-note')) $('#s-key-env-note').style.display = 'none';
+  const h = $('#s-hint');
+  if (h) { h.style.display = ''; h.innerHTML = HINTS[p] || ''; }
 }
 
 function applyKeyEnvHints(settings, keyHints) {
@@ -70,25 +74,33 @@ export async function loadSettings() {
     if (sCm) sCm.style.display = 'none';
     if (ssCm) ssCm.style.display = 'none';
     if (smiCm) smiCm.style.display = 'none';
-    if (settings.llm_provider) $('#s-provider').value = settings.llm_provider;
-    updateModelOptions();
-    if (settings.llm_model) $('#s-model').value = settings.llm_model;
-    $('#s-key').value = '';
+    if ($('#s-provider')) {
+      if (settings.llm_provider) $('#s-provider').value = settings.llm_provider;
+      updateModelOptions();
+      if (settings.llm_model && $('#s-model')) $('#s-model').value = settings.llm_model;
+      if ($('#s-key')) $('#s-key').value = '';
+    }
 
-    if (settings.summary_provider) $('#ss-provider').value = settings.summary_provider;
-    else $('#ss-provider').value = 'same';
-    updateSummaryModelOptions();
-    if (settings.summary_model) $('#ss-model').value = settings.summary_model;
-    $('#ss-key').value = '';
+    if ($('#ss-provider')) {
+      if (settings.summary_provider) $('#ss-provider').value = settings.summary_provider;
+      else $('#ss-provider').value = 'same';
+      updateSummaryModelOptions();
+      if (settings.summary_model && $('#ss-model')) $('#ss-model').value = settings.summary_model;
+      if ($('#ss-key')) $('#ss-key').value = '';
+    }
 
-    if (settings.media_index_provider) $('#smi-provider').value = settings.media_index_provider;
-    else $('#smi-provider').value = 'ollama';
-    updateSmiModelOptions();
-    if (settings.media_index_model) $('#smi-model').value = settings.media_index_model;
-    $('#smi-key').value = '';
+    if ($('#smi-provider')) {
+      if (settings.media_index_provider) $('#smi-provider').value = settings.media_index_provider;
+      else $('#smi-provider').value = 'ollama';
+      updateSmiModelOptions();
+      if (settings.media_index_model && $('#smi-model')) $('#smi-model').value = settings.media_index_model;
+      if ($('#smi-key')) $('#smi-key').value = '';
+    }
 
-    applyKeyEnvHints(settings, keyHints);
-    checkHardwareRecommendation();
+    if ($('#s-provider')) {
+      applyKeyEnvHints(settings, keyHints);
+      checkHardwareRecommendation();
+    }
     void loadSmbProfile();
     void loadWabaConfig();
   } catch {}
@@ -102,27 +114,31 @@ function normaliseKeys(raw) {
 
 // ── Summary Provider Settings ───────────────────────────────────
 function updateSummaryModelOptions() {
+  if (!$('#ss-provider')) return;
   const p = $('#ss-provider').value;
   const isSame = p === 'same';
-  $('#ss-key-row').style.display = isSame || p === 'ollama' ? 'none' : '';
-  if (isSame || p === 'ollama') $('#ss-key-env-note').style.display = 'none';
-  $('#ss-model-row').style.display = isSame ? 'none' : '';
+  if ($('#ss-key-row')) $('#ss-key-row').style.display = isSame || p === 'ollama' ? 'none' : '';
+  if ((isSame || p === 'ollama') && $('#ss-key-env-note')) $('#ss-key-env-note').style.display = 'none';
+  if ($('#ss-model-row')) $('#ss-model-row').style.display = isSame ? 'none' : '';
   if (!isSame) {
     const sel = $('#ss-model');
+    if (!sel) return;
     sel.innerHTML = '';
     (MODELS[p] || []).forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
   }
 }
 
 function updateSmiModelOptions() {
+  if (!$('#smi-provider')) return;
   const p = $('#smi-provider').value;
   const isSame = p === 'same';
   const noKey = isSame || p === 'ollama';
-  $('#smi-key-row').style.display = noKey ? 'none' : '';
-  if (noKey) $('#smi-key-env-note').style.display = 'none';
-  $('#smi-model-row').style.display = isSame ? 'none' : '';
+  if ($('#smi-key-row')) $('#smi-key-row').style.display = noKey ? 'none' : '';
+  if (noKey && $('#smi-key-env-note')) $('#smi-key-env-note').style.display = 'none';
+  if ($('#smi-model-row')) $('#smi-model-row').style.display = isSame ? 'none' : '';
   if (!isSame) {
     const sel = $('#smi-model');
+    if (!sel) return;
     sel.innerHTML = '';
     (MODELS[p] || []).forEach(m => {
       const o = document.createElement('option');
@@ -134,13 +150,13 @@ function updateSmiModelOptions() {
 }
 
 export function initSettings() {
-  $('#s-provider').addEventListener('change', () => {
+  $('#s-provider')?.addEventListener('change', () => {
     updateModelOptions();
     checkHardwareRecommendation();
   });
 
   $('#s-key-clear')?.addEventListener('click', () => {
-    $('#s-key').value = '';
+    if ($('#s-key')) $('#s-key').value = '';
     store.settingsKeyState.pendingClearLlm = true;
     const sHint = $('#s-key-stored-hint');
     const sCm = $('#s-key-clear-msg');
@@ -149,7 +165,7 @@ export function initSettings() {
   });
 
   $('#ss-key-clear')?.addEventListener('click', () => {
-    $('#ss-key').value = '';
+    if ($('#ss-key')) $('#ss-key').value = '';
     store.settingsKeyState.pendingClearSummary = true;
     const ssHint = $('#ss-key-stored-hint');
     const ssCm = $('#ss-key-clear-msg');
@@ -158,7 +174,7 @@ export function initSettings() {
   });
 
   $('#smi-key-clear')?.addEventListener('click', () => {
-    $('#smi-key').value = '';
+    if ($('#smi-key')) $('#smi-key').value = '';
     store.settingsKeyState.pendingClearMediaIndex = true;
     const smiHint = $('#smi-key-stored-hint');
     const smiCm = $('#smi-key-clear-msg');
@@ -166,7 +182,7 @@ export function initSettings() {
     if (smiCm) smiCm.style.display = 'inline';
   });
 
-  $('#s-save').addEventListener('click', async () => {
+  $('#s-save')?.addEventListener('click', async () => {
     const provider = $('#s-provider').value, model = $('#s-model').value;
     const keyInput = normaliseKeys($('#s-key').value);
     const body = { provider, model };
@@ -205,10 +221,10 @@ export function initSettings() {
     finally { $('#s-save').disabled = false; void loadSettings(); void refreshAiSetupBanner(); }
   });
 
-  $('#ss-provider').addEventListener('change', updateSummaryModelOptions);
-  $('#smi-provider').addEventListener('change', updateSmiModelOptions);
+  $('#ss-provider')?.addEventListener('change', updateSummaryModelOptions);
+  $('#smi-provider')?.addEventListener('change', updateSmiModelOptions);
 
-  $('#smi-save').addEventListener('click', async () => {
+  $('#smi-save')?.addEventListener('click', async () => {
     const provider = $('#smi-provider').value;
     const model = provider !== 'same' ? $('#smi-model').value : '';
     const body = { provider, model };
@@ -228,7 +244,7 @@ export function initSettings() {
     finally { $('#smi-save').disabled = false; void loadSettings(); }
   });
 
-  $('#ss-save').addEventListener('click', async () => {
+  $('#ss-save')?.addEventListener('click', async () => {
     const provider = $('#ss-provider').value;
     const model = provider !== 'same' ? $('#ss-model').value : '';
     const isOllama = provider === 'ollama';
@@ -267,25 +283,25 @@ export function initSettings() {
     finally { $('#ss-save').disabled = false; void loadSettings(); }
   });
 
-  $('#gen-summaries').addEventListener('click', async () => {
-    $('#sum-status').textContent = 'Generating...';
+  $('#gen-summaries')?.addEventListener('click', async () => {
+    if ($('#sum-status')) $('#sum-status').textContent = 'Generating...';
     try {
       const data = await fetch('/api/summaries/generate', { method: 'POST' }).then(r => r.json());
-      $('#sum-status').textContent = data.error ? `Error: ${data.error}` : `Generated ${data.generated} summaries`;
+      if ($('#sum-status')) $('#sum-status').textContent = data.error ? `Error: ${data.error}` : `Generated ${data.generated} summaries`;
       refreshDash();
-    } catch (err) { $('#sum-status').textContent = err.message; }
+    } catch (err) { if ($('#sum-status')) $('#sum-status').textContent = err.message; }
   });
 
-  $('#regen-summaries').addEventListener('click', async () => {
+  $('#regen-summaries')?.addEventListener('click', async () => {
     if (!confirm('This will clear all existing summaries and regenerate them with the improved prompt. This may take several minutes. Continue?')) return;
-    $('#sum-status').textContent = 'Clearing old summaries...';
+    if ($('#sum-status')) $('#sum-status').textContent = 'Clearing old summaries...';
     $('#regen-summaries').disabled = true;
     try {
       const data = await fetch('/api/summaries/regenerate', { method: 'POST' }).then(r => r.json());
-      $('#sum-status').textContent = `Cleared ${data.cleared} summaries. Regenerating in background...`;
+      if ($('#sum-status')) $('#sum-status').textContent = `Cleared ${data.cleared} summaries. Regenerating in background...`;
       refreshDash();
-    } catch (err) { $('#sum-status').textContent = err.message; }
-    finally { $('#regen-summaries').disabled = false; }
+    } catch (err) { if ($('#sum-status')) $('#sum-status').textContent = err.message; }
+    finally { if ($('#regen-summaries')) $('#regen-summaries').disabled = false; }
   });
 
   updateModelOptions();

@@ -8,6 +8,14 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
 import { extname, join } from 'path';
 import config from '../config.js';
+import { normalizeUnixSeconds } from '../utils/timestamp.js';
+import {
+    avatarActionForContact,
+    avatarFileName,
+    imageExtFromBytes,
+    isAvatarEligibleJid,
+    profilePictureFailure,
+} from './chat-avatars.js';
 import {
     fallbackTitleForOneOnOneJid,
     formatPhoneLocalPart,
@@ -21,34 +29,31 @@ import {
     sanitizePeerSenderName,
 } from './chat-display-name.js';
 import { buildContactPayloadFromInner } from './contact-card.js';
+import { normalizeGroupCreateInput } from './group-create.js';
+import { groupSubjectUpdates } from './group-subjects.js';
+import { RECENT_DAYS_CATCHUP_DAYS, shouldSyncHistoryMessage } from './history-sync-policy.js';
 import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { isImportedChatJid, isWhatsAppLowPriorityFeed, shouldPreserveRawChatJid, sidebarTabForJid } from './jid-filters.js';
-import { isControlOnlyContentType, placeholderForContentType } from './message-content.js';
 import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
 import {
+    extractRenderableTextFromInner,
+    isControlOnlyContentType,
+    placeholderForContentType,
+} from './message-content.js';
+import {
+    normalizeReceiptStatus,
+    receiptAfterSuccessfulRelay,
+    receiptFromGroupReceipt,
+} from './message-receipt.js';
+import {
+    isImmediateReconnectCode,
     isQrUsable,
     qrTtlMsForIndex,
     reconnectDelayMs,
     shouldResetAuthAfterStaleCloses,
 } from './qr-lifecycle.js';
-import { groupSubjectUpdates } from './group-subjects.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
-import { normalizeUnixSeconds } from '../utils/timestamp.js';
-import { shouldSyncHistoryMessage, RECENT_DAYS_CATCHUP_DAYS } from './history-sync-policy.js';
-import { normalizeGroupCreateInput } from './group-create.js';
-import {
-  avatarActionForContact,
-  avatarFileName,
-  imageExtFromBytes,
-  isAvatarEligibleJid,
-  profilePictureFailure,
-} from './chat-avatars.js';
-import {
-  normalizeReceiptStatus,
-  receiptAfterSuccessfulRelay,
-  receiptFromGroupReceipt,
-} from './message-receipt.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -115,26 +120,9 @@ function summarizeContactsArrayMessage(cam) {
 /** Plain text from an inner proto message (after unwrap of ephemeral / view-once). */
 function extractTextFromInner(m) {
   if (!m) return '';
-  let t = (
-    m.conversation ||
-    m.extendedTextMessage?.text ||
-    m.imageMessage?.caption ||
-    m.videoMessage?.caption ||
-    m.documentMessage?.caption ||
-    m.buttonsResponseMessage?.selectedDisplayText ||
-    m.listResponseMessage?.singleSelectReply?.selectedRowId ||
-    m.templateButtonReplyMessage?.selectedDisplayText ||
-    m.liveLocationMessage?.caption ||
-    m.locationMessage?.name ||
-    m.contactMessage?.displayName ||
-    summarizeContactsArrayMessage(m.contactsArrayMessage) ||
-    m.pollCreationMessage?.name ||
-    m.buttonsMessage?.contentText ||
-    m.listMessage?.description ||
-    m.templateMessage?.hydratedTemplate?.hydratedContentText ||
-    m.viewOnceMessage?.message?.imageMessage?.caption ||
-    ''
-  ) || '';
+  let t = extractRenderableTextFromInner(m) || '';
+  const contacts = summarizeContactsArrayMessage(m.contactsArrayMessage);
+  if (contacts && !t) t = contacts;
   const docFn = m.documentMessage?.fileName ? String(m.documentMessage.fileName).trim() : '';
   if (docFn && !t.includes(docFn)) t = t ? `${t} ${docFn}` : docFn;
   return t;
@@ -225,6 +213,8 @@ export default class WaClient {
     /** Messages received per chat during current history sync (for UI progress). */
     this._syncByChat    = new Map();
     this._totalMsgs     = 0;
+    /** WhatsApp-reported history transfer progress (0–100); null when the phone sends none. */
+    this._historyProgress = null;
     this._syncDoneTimer = null;
     this._historyDone   = false;
     /**
@@ -276,8 +266,12 @@ export default class WaClient {
   _clearInitialHistorySyncFlag() {
     this._acceptPhoneHistorySync = true;
     const cfg = loadCfg(this._configFile);
-    if (!cfg.initialHistorySyncDone) return;
-    saveCfg(this._configFile, { ...cfg, initialHistorySyncDone: false });
+    saveCfg(this._configFile, {
+      ...cfg,
+      initialHistorySyncDone: false,
+      // Survives the “already linked → skip history” guard in `_buildSocket`.
+      acceptHistoryOnce: true,
+    });
   }
 
   _clearQr() {
@@ -790,13 +784,24 @@ export default class WaClient {
     if (this._sock) return;
 
     const priorCfg = loadCfg(this._configFile);
-    // An already-linked phone has had its initial archive. Do not ask WhatsApp to
-    // sync again just because this process restarted.
-    if (this.hasSavedCreds && !priorCfg.initialHistorySyncDone) {
-      priorCfg.initialHistorySyncDone = true;
-      saveCfg(this._configFile, priorCfg);
+    // One-shot FULL history (recovery). Keep the flag until a history batch arrives so
+    // conflict/reconnect loops do not permanently skip the phone archive.
+    //
+    // Important: do NOT auto-flip `initialHistorySyncDone` here when creds exist.
+    // After a QR scan Baileys reconnects with saved creds while the flag is still
+    // false — treating that as “already synced” skipped the entire archive (empty chats).
+    let syncFullHistoryOnce = false;
+    if (priorCfg.acceptHistoryOnce) {
+      this._acceptPhoneHistorySync = true;
+      syncFullHistoryOnce = true;
+      saveCfg(this._configFile, { ...priorCfg, initialHistorySyncDone: false });
+      console.log('[WA] Accepting phone history sync (one-shot FULL resync)');
+    } else {
+      this._acceptPhoneHistorySync = !priorCfg.initialHistorySyncDone;
+      if (this._acceptPhoneHistorySync) {
+        console.log('[WA] Accepting phone history sync (initial / recovery)');
+      }
     }
-    this._acceptPhoneHistorySync = !priorCfg.initialHistorySyncDone;
     let version = [2, 3000, 1015901307];
     try {
       const v = await fetchLatestBaileysVersion();
@@ -805,6 +810,7 @@ export default class WaClient {
     console.log(`[WA] Baileys — WA version ${version.join('.')}`);
     this._setState('LOADING', 'Connecting to WhatsApp…');
 
+    const wantFullHistory = Boolean(config.waSyncFullHistory || syncFullHistoryOnce);
     this._sock = makeWASocket({
       version,
       logger: P({ level: 'silent' }),
@@ -812,11 +818,15 @@ export default class WaClient {
       printQRInTerminal: false,
       generateHighQualityLinkPreview: false,
       markOnlineOnConnect: false,
-      syncFullHistory: false,
+      // Keep the linked-device WebSocket warm the way WhatsApp Web does.
+      keepAliveIntervalMs: 25_000,
+      connectTimeoutMs: 60_000,
+      defaultQueryTimeoutMs: 60_000,
+      syncFullHistory: wantFullHistory,
       // One history acceptance per linked account. Reconnects decline so the phone
       // does not raise “syncing with WhatsApp Search” on every socket drop.
       shouldSyncHistoryMessage: (msg) => shouldSyncHistoryMessage(msg, {
-        syncFullHistory: config.waSyncFullHistory,
+        syncFullHistory: wantFullHistory,
         initialHistorySyncDone: !this._acceptPhoneHistorySync,
       }),
       /**
@@ -850,6 +860,7 @@ export default class WaClient {
         const code = lastDisconnect?.error?.output?.statusCode;
         const boomMsg = lastDisconnect?.error?.message || '';
         const loggedOut = code === DisconnectReason.loggedOut || code === 401;
+        const badSession = code === DisconnectReason.badSession || code === 500;
         const staleSessionClose = code === DisconnectReason.connectionLost
           || code === DisconnectReason.connectionClosed
           || code === DisconnectReason.timedOut;
@@ -860,6 +871,7 @@ export default class WaClient {
         // after a successful scan must keep its existing path so freshly saved credentials
         // have time to reach disk.
         const qrExpired = staleSessionClose && !this.hasSavedCreds && this._qrIndex > 0;
+        const immediate = isImmediateReconnectCode(code) || qrExpired;
         console.log(`[WA] Closed — code=${code}, loggedOut=${loggedOut}${boomMsg ? ` — ${boomMsg}` : ''}`);
         this._sock = null;
         // Whatever QR this socket showed died with it; serving it again just gives the
@@ -870,6 +882,11 @@ export default class WaClient {
         this._historySyncStarted = false;
         clearTimeout(this._reconnectTimer);
         this._reconnectTimer = null;
+        if (this._suppressReconnectOnce) {
+          this._suppressReconnectOnce = false;
+          console.log('[WA] Close ignored for intentional history resync');
+          return;
+        }
         if (loggedOut || this._destroyed) {
           this._reconnectAttempt = 0;
           this._staleSessionCloseCount = 0;
@@ -880,20 +897,24 @@ export default class WaClient {
           }
           this._setState('DISCONNECTED', 'Logged out — rescan QR to reconnect');
           this._onDisconnected?.();
+        } else if (badSession) {
+          // Corrupt local keys — only case besides logout where wiping auth is correct.
+          console.log('[WA] Bad session — clearing auth and requesting fresh QR');
+          await this._resetAuthAndRequestQr('Session invalid — generating a new QR…');
         } else if (staleSessionClose) {
+          // Network blips / QR-ref expiry: keep credentials (WhatsApp Web behaviour).
           this._staleSessionCloseCount += 1;
           if (shouldResetAuthAfterStaleCloses({
             hasCreds: this.hasSavedCreds,
             staleCloseCount: this._staleSessionCloseCount,
           })) {
-            console.log(`[WA] Forcing fresh QR after ${this._staleSessionCloseCount} stale disconnects`);
-            await this._resetAuthAndRequestQr('Session timed out — generating a new QR…');
-            return;
+            // Defensive: policy currently never wipes; reconnect with saved auth instead.
+            console.warn(`[WA] Stale disconnect #${this._staleSessionCloseCount} — keeping session and reconnecting`);
           }
-          this._scheduleReconnect(qrExpired);
+          this._scheduleReconnect(immediate);
         } else {
           this._staleSessionCloseCount = 0;
-          this._scheduleReconnect(qrExpired);
+          this._scheduleReconnect(immediate);
         }
       }
 
@@ -922,10 +943,16 @@ export default class WaClient {
         this._pendingHistoryRows = 0;
         this._finishSyncRequested = false;
         this._totalMsgs = 0;
+        this._historyEventsSeen = 0;
+        this._historyProgress = null;
         this._uiPromotedAfterFirstHistoryBatch = false;
 
-        // Fallback if no history batches (unusual)
-        this._armSyncDoneTimer(Math.max(config.waSyncDoneDelayMs, 25_000));
+        // While accepting phone history, wait longer — marking “done” too early permanently
+        // skips later batches and leaves chats empty (seen after re-link).
+        const fallbackMs = this._acceptPhoneHistorySync
+          ? Math.max(config.waSyncDoneDelayMs, 90_000)
+          : Math.max(config.waSyncDoneDelayMs, 25_000);
+        this._armSyncDoneTimer(fallbackMs);
       }
     });
 
@@ -1025,8 +1052,10 @@ export default class WaClient {
         const editedInner = update.message?.editedMessage?.message
           || update.message?.protocolMessage?.editedMessage
           || null;
-        if (editedInner) {
-          const text = extractTextFromInner(extractMessageContent(editedInner) || editedInner);
+        const contentInner = editedInner
+          || (update.message ? (extractMessageContent(update.message) || update.message) : null);
+        if (contentInner) {
+          const text = extractTextFromInner(contentInner);
           if (text) {
             try {
               this._onMessageEdited?.({ chatJid, messageId, text });
@@ -1039,7 +1068,13 @@ export default class WaClient {
     });
 
     // ── History sync (fires in one or more batches) ───────────────────────
-    this._sock.ev.on('messaging-history.set', async ({ chats, messages, contacts }) => {
+    this._sock.ev.on('messaging-history.set', async ({ chats, messages, contacts, progress }) => {
+      const reported = Number(progress);
+      if (progress != null && Number.isFinite(reported)) {
+        // Batches can arrive out of order; never let the bar move backwards.
+        this._historyProgress = Math.max(this._historyProgress ?? 0, Math.min(100, Math.max(0, reported)));
+        this._emitSyncProgress();
+      }
       try {
         for (const c of (chats || [])) {
           const label = c.name;
@@ -1055,6 +1090,13 @@ export default class WaClient {
         console.warn('[WA] history name hydrate:', e.message);
       }
 
+      this._historyEventsSeen = (this._historyEventsSeen || 0) + 1;
+      const onceCfg = loadCfg(this._configFile);
+      if (onceCfg.acceptHistoryOnce) {
+        const next = { ...onceCfg };
+        delete next.acceptHistoryOnce;
+        saveCfg(this._configFile, next);
+      }
       this._captureUnreadCounts(chats);
       this._publishChatRoster(chats);
       console.log(`[WA] History event: ${chats?.length || 0} chats, ${messages?.length || 0} msgs`);
@@ -1643,12 +1685,7 @@ export default class WaClient {
         this._pendingHistoryRows = Math.max(0, this._pendingHistoryRows - chunk.length);
       }
       this._totalMsgs += chunk.length;
-      this._onProgress?.({
-        completed: 0,
-        total: 0,
-        messages: this._totalMsgs,
-        byChat: Object.fromEntries(this._syncByChat),
-      });
+      this._emitSyncProgress();
       const now = Date.now();
       if (now - this._lastSyncingUiAt >= 1200) {
         this._lastSyncingUiAt = now;
@@ -1666,6 +1703,19 @@ export default class WaClient {
     drain();
   }
 
+  _emitSyncProgress({ done = false } = {}) {
+    // Finish already ran. A late history batch must not flip the UI back to "loading".
+    if (this._historyDone && !done) return;
+    this._onProgress?.({
+      completed: 0,
+      total: 0,
+      messages: this._totalMsgs,
+      progress: done ? 100 : this._historyProgress,
+      done,
+      byChat: Object.fromEntries(this._syncByChat),
+    });
+  }
+
   _armSyncDoneTimer(ms) {
     clearTimeout(this._syncDoneTimer);
     this._syncDoneTimer = setTimeout(() => this._finishSync(), ms);
@@ -1681,14 +1731,34 @@ export default class WaClient {
       console.log(`[WA] Waiting for ${this._pendingHistoryRows} queued message row(s) before indexing`);
       return;
     }
+
+    const cfg = loadCfg(this._configFile);
+    const emptyAccept = this._acceptPhoneHistorySync
+      && this._totalMsgs === 0
+      && !(this._historyEventsSeen > 0);
+    if (emptyAccept && (this._historyResyncAttempts || 0) < 2) {
+      this._historyResyncAttempts = (this._historyResyncAttempts || 0) + 1;
+      console.warn(
+        `[WA] No history batches yet (attempt ${this._historyResyncAttempts}/2) — soft-reconnect to request sync again`,
+      );
+      this._setState('SYNCING', 'Retrying chat history sync…');
+      setTimeout(() => { void this.requestHistoryResync(); }, 1500);
+      return;
+    }
+
     this._historyDone = true;
     this._acceptPhoneHistorySync = false;
-    const cfg = loadCfg(this._configFile);
     if (!cfg.initialHistorySyncDone) {
-      saveCfg(this._configFile, { ...cfg, initialHistorySyncDone: true });
-      console.log('[WA] Initial history sync recorded — later reconnects will not notify the phone');
+      // Only lock out future phone history once we actually saw sync traffic or messages.
+      if (this._totalMsgs > 0 || (this._historyEventsSeen || 0) > 0) {
+        saveCfg(this._configFile, { ...cfg, initialHistorySyncDone: true });
+        console.log('[WA] Initial history sync recorded — later reconnects will not notify the phone');
+      } else {
+        console.warn('[WA] Sync finished with no history — leaving flag clear so a later reconnect can retry');
+      }
     }
     this._syncByChat.clear();
+    this._emitSyncProgress({ done: true });
     console.log(`[WA] Sync complete — ${this._totalMsgs} messages`);
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
     this._sortDeferredMediaQueue();
@@ -1696,6 +1766,33 @@ export default class WaClient {
     try { this._onHistorySyncComplete?.(); } catch (e) {
       console.warn('[WA] onHistorySyncComplete:', e.message);
     }
+  }
+
+  /**
+   * Re-open the socket with the same credentials and accept one more phone history sync.
+   * Does not wipe auth (unlike logout / badSession).
+   */
+  async requestHistoryResync() {
+    if (this._destroyed) return;
+    this._clearInitialHistorySyncFlag();
+    this._historyDone = false;
+    this._acceptPhoneHistorySync = true;
+    this._historyEventsSeen = 0;
+    this._totalMsgs = 0;
+    clearTimeout(this._syncDoneTimer);
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
+    this._suppressReconnectOnce = true;
+    const sock = this._sock;
+    this._sock = null;
+    if (sock) {
+      try { sock.end(new Error('history-resync')); } catch { /* ignore */ }
+    }
+    await new Promise((r) => setTimeout(r, 500));
+    this._suppressReconnectOnce = false;
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
+    if (!this._destroyed && !this._sock) await this._connect();
   }
 
   // ── Batch flush ────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import {
   QR_FIRST_TTL_MS,
   QR_NEXT_TTL_MS,
   QR_PAIRING_RECONNECT_MS,
+  isImmediateReconnectCode,
   isQrUsable,
   qrTtlMsForIndex,
   reconnectDelayMs,
@@ -51,26 +52,30 @@ describe('reconnectDelayMs', () => {
     expect(reconnectDelayMs({ hasCreds: false, attempt: 9 })).toBe(QR_PAIRING_RECONNECT_MS);
   });
 
-  test('backs off for a logged-in session', () => {
-    expect(reconnectDelayMs({ hasCreds: true, attempt: 0 })).toBe(5000);
-    expect(reconnectDelayMs({ hasCreds: true, attempt: 1 })).toBe(8000);
+  test('backs off lightly for a logged-in session', () => {
+    expect(reconnectDelayMs({ hasCreds: true, attempt: 0 })).toBe(2000);
+    expect(reconnectDelayMs({ hasCreds: true, attempt: 1 })).toBe(3200);
   });
 
-  test('caps the backoff', () => {
-    expect(reconnectDelayMs({ hasCreds: true, attempt: 50 })).toBe(120_000);
+  test('caps the backoff so recovery stays WhatsApp-Web-like', () => {
+    expect(reconnectDelayMs({ hasCreds: true, attempt: 50 })).toBe(30_000);
   });
 });
 
 describe('shouldResetAuthAfterStaleCloses', () => {
-  test('wipes auth after repeated stale closes on a saved session', () => {
-    expect(shouldResetAuthAfterStaleCloses({ hasCreds: true, staleCloseCount: 3 })).toBe(true);
-  });
-
-  test('leaves a saved session alone below the threshold', () => {
-    expect(shouldResetAuthAfterStaleCloses({ hasCreds: true, staleCloseCount: 2 })).toBe(false);
+  test('never wipes a saved session on transient disconnects', () => {
+    expect(shouldResetAuthAfterStaleCloses({ hasCreds: true, staleCloseCount: 3 })).toBe(false);
+    expect(shouldResetAuthAfterStaleCloses({ hasCreds: true, staleCloseCount: 99 })).toBe(false);
   });
 
   test('never resets while pairing — there is nothing to wipe and it only delays the QR', () => {
     expect(shouldResetAuthAfterStaleCloses({ hasCreds: false, staleCloseCount: 9 })).toBe(false);
+  });
+});
+
+describe('isImmediateReconnectCode', () => {
+  test('treats restartRequired (515) as an immediate reopen', () => {
+    expect(isImmediateReconnectCode(515)).toBe(true);
+    expect(isImmediateReconnectCode(408)).toBe(false);
   });
 });
