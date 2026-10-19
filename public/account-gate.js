@@ -69,16 +69,34 @@
     return true;
   }
 
-  function ensureModal() {
+  function productCopy(cfg) {
+    const days = Number(cfg?.trialDays) || 14;
+    const gpt = typeof location !== 'undefined' && location.pathname.startsWith('/gpt');
+    if (gpt) {
+      return {
+        title: 'Activate WhatsApp GPT',
+        lead: `Create a free account for a <strong>${days}-day Pro trial</strong>. Your WhatsApp chats stay on this device — we only store your email for license and billing.`,
+        later: 'Continue browsing (GPT later)',
+      };
+    }
+    return {
+      title: 'Activate AI search',
+      lead: `Create a free account for a <strong>${days}-day Pro trial</strong>. Your WhatsApp chats stay on this device — we only store your email for license and billing.`,
+      later: 'Continue browsing (AI search later)',
+    };
+  }
+
+  function ensureModal(cfg) {
     let el = document.getElementById('account-gate');
     if (el) return el;
+    const copy = productCopy(cfg);
     el = document.createElement('div');
     el.id = 'account-gate';
     el.innerHTML = `
       <div class="ag-backdrop">
         <div class="ag-card" role="dialog" aria-labelledby="ag-title">
-          <h2 id="ag-title">Activate AI search</h2>
-          <p class="ag-lead">Create a free account for a <strong>14-day Pro trial</strong>. Your WhatsApp chats stay on this device — we only store your email for license and billing.</p>
+          <h2 id="ag-title">${copy.title}</h2>
+          <p class="ag-lead">${copy.lead}</p>
           <label class="ag-label" for="ag-email">Work email</label>
           <input id="ag-email" type="email" autocomplete="email" placeholder="you@company.com" />
           <div id="ag-code-wrap" hidden>
@@ -87,7 +105,7 @@
           </div>
           <p id="ag-msg" class="ag-msg" hidden></p>
           <button type="button" class="ag-primary" id="ag-submit">Email me a code</button>
-          <button type="button" class="ag-secondary" id="ag-later">Continue browsing (AI search later)</button>
+          <button type="button" class="ag-secondary" id="ag-later">${copy.later}</button>
         </div>
       </div>`;
     const style = document.createElement('style');
@@ -118,13 +136,22 @@
     m.className = 'ag-msg ' + (ok ? 'ok' : 'err');
   }
 
-  async function openGate(cfg) {
+  async function openGate(cfg, status = null) {
     persistUtm();
-    const el = ensureModal();
+    const el = ensureModal(cfg);
     el.hidden = false;
+    const copy = productCopy(cfg);
+    const title = document.getElementById('ag-title');
+    const lead = el.querySelector('.ag-lead');
+    const later = document.getElementById('ag-later');
+    const submit = document.getElementById('ag-submit');
     const emailInput = document.getElementById('ag-email');
+    const codeWrap = document.getElementById('ag-code-wrap');
+    if (title) title.textContent = copy.title;
+    if (lead) lead.innerHTML = copy.lead;
+    if (later) later.textContent = copy.later;
     const saved = localStorage.getItem(EMAIL_KEY);
-    if (saved) emailInput.value = saved;
+    if (saved && emailInput) emailInput.value = saved;
 
     document.getElementById('ag-later').onclick = () => {
       localStorage.setItem(SKIP_UNTIL_KEY, String(Date.now() + 6 * 3600000));
@@ -132,9 +159,30 @@
       track(cfg, 'account_gate_dismissed');
     };
 
+    const expired = status?.entitlement?.reason === 'trial_expired';
+    const canPay = expired && cfg?.stripeEnabled;
+    if (canPay) {
+      const days = Number(cfg?.trialDays) || 14;
+      if (title) {
+        title.textContent = location.pathname.startsWith('/gpt')
+          ? 'Subscribe to continue WhatsApp GPT'
+          : 'Subscribe to continue AI search';
+      }
+      if (lead) lead.textContent = `Your ${days}-day Pro trial has ended. Subscribe to keep using AI features.`;
+      if (emailInput) emailInput.hidden = true;
+      if (codeWrap) codeWrap.hidden = true;
+      if (submit) {
+        submit.textContent = 'Subscribe to Pro';
+        submit.onclick = () => {
+          startCheckout(cfg).catch((err) => showMsg(err.message || 'Checkout failed', false));
+        };
+      }
+      return;
+    }
+    if (emailInput) emailInput.hidden = false;
+
     document.getElementById('ag-submit').onclick = async () => {
       const email = emailInput.value.trim().toLowerCase();
-      const codeWrap = document.getElementById('ag-code-wrap');
       const code = (document.getElementById('ag-code').value || '').trim();
       showMsg('');
       try {
@@ -211,7 +259,7 @@
       status = await fetchLicenseStatus(cfg);
     } catch (_) { /* offline */ }
     if (shouldShowGate(cfg, status)) {
-      await openGate(cfg);
+      await openGate(cfg, status);
     }
     return { status, installId: getInstallId(), authHeaders };
   }

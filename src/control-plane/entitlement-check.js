@@ -5,7 +5,8 @@ import { isLicenseGateEnabled } from './license-gate.js';
 import { capturePostHog } from './posthog.js';
 
 /**
- * Resolve AI-search entitlement for a request (local store and/or remote control plane).
+ * Resolve AI entitlement for a request (local store and/or remote control plane).
+ * Same gate for AI search and WhatsApp GPT: account → 14-day trial → pay.
  */
 export async function resolveSearchEntitlement(req, store) {
   if (!isLicenseGateEnabled()) {
@@ -54,20 +55,31 @@ export async function resolveSearchEntitlement(req, store) {
   return { allowed: false, plan: 'none', status: 'missing', reason: 'account_required' };
 }
 
-export function paywallResponse(res, entitlement, store, installId) {
+/** Copy for 402 responses. `product` is `search` (classic AI search) or `gpt`. */
+export function paywallErrorMessage(reason, product = 'search') {
+  const expired = reason === 'trial_expired';
+  if (product === 'gpt') {
+    return expired
+      ? 'Your Pro trial has ended — subscribe to continue WhatsApp GPT'
+      : 'WhatsApp GPT requires a Searchable account';
+  }
+  return expired
+    ? 'Your Pro trial has ended — subscribe to continue AI search'
+    : 'AI search requires a Searchable account';
+}
+
+export function paywallResponse(res, entitlement, store, installId, { product = 'search' } = {}) {
   store?.logProductEvent?.({
     event: 'paywall_shown',
     installId: installId || null,
-    props: { reason: entitlement.reason },
+    props: { reason: entitlement.reason, product },
   });
   void capturePostHog('paywall_shown', {
     distinctId: installId || 'anonymous',
-    properties: { reason: entitlement.reason },
+    properties: { reason: entitlement.reason, product },
   });
   return res.status(402).json({
-    error: entitlement.reason === 'trial_expired'
-      ? 'Your Pro trial has ended — subscribe to continue AI search'
-      : 'AI search requires a Searchable account',
+    error: paywallErrorMessage(entitlement.reason, product),
     code: entitlement.reason || 'not_entitled',
     entitlement,
   });

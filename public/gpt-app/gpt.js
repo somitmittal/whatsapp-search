@@ -1445,7 +1445,12 @@ async function send(textOverride = null) {
     if ((res.headers.get('content-type') || '').includes('application/json')) {
       const data = await res.json();
       live.wrap.remove();
-      if (activeStreamKey() === conversationId) showError(data.error || 'Request failed', data.code);
+      if (activeStreamKey() !== conversationId) return;
+      if (res.status === 402 || data.code === 'trial_expired' || data.code === 'account_required') {
+        renderPaywall(data);
+      } else {
+        showError(data.error || 'Request failed', data.code);
+      }
       return;
     }
     const reader = res.body.getReader();
@@ -1556,6 +1561,10 @@ async function confirmSkillSend(btn) {
       method: 'POST', headers: authHeaders(),
     });
     const data = await res.json().catch(() => ({}));
+    if (res.status === 402 || data.code === 'trial_expired' || data.code === 'account_required') {
+      renderPaywall(data);
+      return;
+    }
     if (!res.ok) throw new Error(data.error || 'Could not send');
     const note = document.createElement('p');
     note.className = 'gpt-skill-sent';
@@ -1568,11 +1577,42 @@ async function confirmSkillSend(btn) {
   }
 }
 
+/** Same account → 14-day trial → pay flow as classic AI search. */
+function renderPaywall(data) {
+  const reason = data.code || data.entitlement?.reason || 'account_required';
+  const days = Number(window.__searchableAppConfig?.trialDays) || 14;
+  const expired = reason === 'trial_expired';
+  let actions = '';
+  if (expired && window.__searchableAppConfig?.stripeEnabled && window.SearchableAccount) {
+    actions = '<button type="button" class="gpt-paywall-btn" id="gpt-checkout">Subscribe to Pro</button>';
+  } else if (window.SearchableAccount) {
+    actions = `<button type="button" class="gpt-paywall-btn" id="gpt-signin">${
+      expired ? 'Sign in to manage billing' : 'Sign in for WhatsApp GPT'
+    }</button>`;
+  }
+  const lead = expired
+    ? `Your ${days}-day Pro trial has ended. Subscribe to keep using WhatsApp GPT.`
+    : `Create a free account for a ${days}-day Pro trial. Chats stay on this device.`;
+  els.thread.insertAdjacentHTML('beforeend', `<div class="gpt-msg gpt-error gpt-paywall">
+    <p class="gpt-paywall-title">${esc(data.error || 'WhatsApp GPT requires an account')}</p>
+    <p class="gpt-paywall-lead">${esc(lead)}</p>
+    ${actions}
+  </div>`);
+  $('#gpt-checkout')?.addEventListener('click', () => {
+    window.SearchableAccount.startCheckout(window.__searchableAppConfig || {}).catch((e) => alert(e.message));
+  });
+  $('#gpt-signin')?.addEventListener('click', () => {
+    window.SearchableAccount.openGate(window.__searchableAppConfig || {});
+  });
+  scrollToBottom(true);
+}
+
 function showError(message, code) {
-  const needsAccount = code === 'trial_expired' || code === 'account_required';
-  els.thread.insertAdjacentHTML('beforeend', `<div class="gpt-msg gpt-error">${esc(message)}${
-    needsAccount && window.SearchableAccount ? ' <button type="button" class="gpt-signin" id="gpt-signin">Sign in</button>' : ''}</div>`);
-  $('#gpt-signin')?.addEventListener('click', () => window.SearchableAccount?.openGate?.(window.__searchableAppConfig || {}));
+  if (code === 'trial_expired' || code === 'account_required') {
+    renderPaywall({ error: message, code });
+    return;
+  }
+  els.thread.insertAdjacentHTML('beforeend', `<div class="gpt-msg gpt-error">${esc(message)}</div>`);
   scrollToBottom(true);
 }
 

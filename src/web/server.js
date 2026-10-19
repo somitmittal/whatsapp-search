@@ -58,6 +58,7 @@ import { getLatestGitHubRelease, sendReleaseError } from '../releases/github-rel
 import { getControlPlaneStore } from '../control-plane/store.js';
 import { registerControlPlaneRoutes } from '../control-plane/routes.js';
 import { isLicenseGateEnabled } from '../control-plane/license-gate.js';
+import { trialDays } from '../control-plane/license.js';
 import { resolveSearchEntitlement, paywallResponse } from '../control-plane/entitlement-check.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 import { registerAuthRoutes } from './auth-routes.js';
@@ -1259,6 +1260,7 @@ export default class WebServer {
         desktop: config.isDesktopApp,
         controlPlaneUrl: config.controlPlaneUrl || '',
         licenseGate: isLicenseGateEnabled(),
+        trialDays: trialDays(),
         stripeEnabled: Boolean(
           (process.env.STRIPE_SECRET_KEY || '').trim()
           && (process.env.STRIPE_PRICE_ID || '').trim(),
@@ -1791,6 +1793,11 @@ export default class WebServer {
     });
 
     this._app.post('/api/skills/runs/:id/send', async (req, res) => {
+      const entitlement = await resolveSearchEntitlement(req, this._controlPlane);
+      if (!entitlement.allowed) {
+        const installId = String(req.get('x-install-id') || req.body?.installId || '').trim();
+        return paywallResponse(res, entitlement, this._controlPlane, installId, { product: 'gpt' });
+      }
       try {
         const result = await this._gpt.sendSkillReport(req.params.id);
         return res.json(result);
@@ -1806,7 +1813,7 @@ export default class WebServer {
       const entitlement = await resolveSearchEntitlement(req, this._controlPlane);
       if (!entitlement.allowed) {
         const installId = String(req.get('x-install-id') || req.body?.installId || '').trim();
-        return paywallResponse(res, entitlement, this._controlPlane, installId);
+        return paywallResponse(res, entitlement, this._controlPlane, installId, { product: 'gpt' });
       }
 
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
