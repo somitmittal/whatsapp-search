@@ -133,26 +133,56 @@ function hideFileSendProgress() {
   if (root) root.hidden = true;
 }
 
+function updateAttachmentPreview(fileInput) {
+  const preview = document.getElementById('msg-attachment-preview');
+  if (!preview) return;
+  const files = Array.from(fileInput?.files || []);
+  const image = preview.querySelector('img');
+  const label = preview.querySelector('.file-attachment-name');
+  const file = files[0];
+  if (preview.dataset.previewUrl) URL.revokeObjectURL(preview.dataset.previewUrl);
+  preview.dataset.previewUrl = '';
+  if (!file) {
+    if (image) { image.hidden = true; image.removeAttribute('src'); }
+    if (label) label.textContent = '';
+    preview.hidden = true;
+    return;
+  }
+  if (label) label.textContent = files.length > 1 ? `${file.name} + ${files.length - 1} more` : file.name;
+  if (image && file.type.startsWith('image/')) {
+    preview.dataset.previewUrl = URL.createObjectURL(file);
+    image.src = preview.dataset.previewUrl;
+    image.hidden = false;
+  } else if (image) {
+    image.hidden = true;
+    image.removeAttribute('src');
+  }
+  preview.hidden = false;
+}
+
 export async function sendCurrentMessage() {
   const jid = store.activeChat;
   const input = document.getElementById('msg-text');
   const fileInput = document.getElementById('msg-file-input');
-  const file = fileInput?.files?.[0];
+  const files = Array.from(fileInput?.files || []);
   const btn = document.getElementById('msg-send');
   if (!jid || !input || !btn) return;
   const text = String(input.value || '').trim();
-  if (!text && !file) return;
-  if (file && store.editTarget?.messageId) { alert('Remove the attachment before editing a message'); return; }
+  if (!text && !files.length) return;
+  if (files.length && store.editTarget?.messageId) { alert('Remove the attachment before editing a message'); return; }
   btn.disabled = true;
   try {
-    if (file) {
-      await uploadFileToChat(file, jid, text);
+    if (files.length) {
+      for (let i = 0; i < files.length; i += 1) {
+        await uploadFileToChat(files[i], jid, i === 0 ? text : '');
+      }
       fileInput.value = '';
+      updateAttachmentPreview(fileInput);
       input.value = '';
       input.placeholder = 'Type a message…';
-      showFileSendProgress('File sent', 100);
+      showFileSendProgress(files.length === 1 ? 'File sent' : `${files.length} files sent`, 100);
       clearReplyTarget();
-      scheduleRefreshDash([{ chatJid: jid, lastMessageTs: Math.floor(Date.now() / 1000), count: 1 }]);
+      scheduleRefreshDash(files.map(() => ({ chatJid: jid, lastMessageTs: Math.floor(Date.now() / 1000), count: 1 })));
       refreshActiveChatAfterSend(jid, 1200);
       setTimeout(hideFileSendProgress, 2500);
       return;
@@ -200,11 +230,21 @@ export function initComposer() {
   document.getElementById('msg-send')?.addEventListener('click', sendCurrentMessage);
 
   const fileInput = document.getElementById('msg-file-input');
+  if (fileInput) fileInput.multiple = true;
   document.getElementById('msg-attach')?.addEventListener('click', () => fileInput?.click());
   fileInput?.addEventListener('change', () => {
+    updateAttachmentPreview(fileInput);
     const file = fileInput.files?.[0];
     const input = document.getElementById('msg-text');
-    if (input) input.placeholder = file ? `Caption for ${file.name}` : 'Type a message…';
+    if (input) input.placeholder = fileInput.files.length > 1
+      ? `Caption for ${fileInput.files.length} files`
+      : file ? `Caption for ${file.name}` : 'Type a message…';
+  });
+  document.getElementById('msg-attachment-remove')?.addEventListener('click', () => {
+    if (fileInput) fileInput.value = '';
+    updateAttachmentPreview(fileInput);
+    const input = document.getElementById('msg-text');
+    if (input) input.placeholder = 'Type a message…';
   });
 
   const dropTargets = [
@@ -232,7 +272,7 @@ export function initComposer() {
     dragDepth = Math.max(0, dragDepth - 1);
     if (dragDepth === 0) for (const dropTarget of dropTargets) dropTarget.classList.remove('file-drop-active');
   });
-  for (const target of dropTargets) target.addEventListener('drop', async (e) => {
+  for (const target of dropTargets) target.addEventListener('drop', (e) => {
     if (!e.dataTransfer?.files?.length) return;
     e.preventDefault();
     dragDepth = 0;
@@ -241,32 +281,15 @@ export function initComposer() {
       alert('Select a WhatsApp chat to attach a file.');
       return;
     }
-    const jid = store.activeChat;
-    const files = Array.from(e.dataTransfer.files);
+    if (!fileInput) return;
+    fileInput.files = e.dataTransfer.files;
+    updateAttachmentPreview(fileInput);
     const captionInput = document.getElementById('msg-text');
-    const sendButton = document.getElementById('msg-send');
-    const caption = String(captionInput?.value || '').trim();
-    if (sendButton) sendButton.disabled = true;
-    try {
-      for (let i = 0; i < files.length; i += 1) {
-        showFileSendProgress(`Preparing file ${i + 1} of ${files.length}: ${files[i].name}…`, 0);
-        await uploadFileToChat(files[i], jid, i === 0 ? caption : '');
-      }
-      showFileSendProgress(files.length === 1 ? 'File sent' : `${files.length} files sent`, 100);
-      if (captionInput) {
-        captionInput.value = '';
-        captionInput.placeholder = 'Type a message…';
-      }
-      if (fileInput) fileInput.value = '';
-      clearReplyTarget();
-      scheduleRefreshDash(files.map(() => ({ chatJid: jid, lastMessageTs: Math.floor(Date.now() / 1000), count: 1 })));
-      refreshActiveChatAfterSend(jid, 1200);
-      setTimeout(hideFileSendProgress, 2500);
-    } catch (error) {
-      showFileSendProgress(`Could not send file: ${error.message || 'unknown error'}`, null);
-      alert(error.message || 'File send failed');
-    } finally {
-      if (sendButton) sendButton.disabled = false;
+    if (captionInput) {
+      captionInput.placeholder = fileInput.files.length > 1
+        ? `Caption for ${fileInput.files.length} files`
+        : `Caption for ${fileInput.files[0].name}`;
+      captionInput.focus();
     }
   });
 

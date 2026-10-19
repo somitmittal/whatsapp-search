@@ -18,7 +18,7 @@ import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, promptDeleteMessage } from '/js/message-actions.js';
 import { buildChatMessagesHtml, closeReactionEmojiPickers, postWaReaction, toggleReactionEmojiPicker } from '/js/messages-render.js';
-import { initOverlays, openOverlay } from '/js/overlays.js';
+import { initOverlays, openOverlay, setSettingsTab as setOverlaySettingsTab } from '/js/overlays.js';
 import { initSettings, loadSettings } from '/js/settings.js';
 import { autoSelectSidebarTab, renderSidebarTabCounts, setSidebarListTab, sidebarTabOf } from '/js/sidebar.js';
 import { store } from '/js/store.js';
@@ -1112,7 +1112,7 @@ function renderChats() {
 function openImportBackup() {
   openOverlay('settings');
   void loadSettings();
-  setSettingsTab('backup');
+  setOverlaySettingsTab('backup');
 }
 
 async function toggleChatAiIndex(jid, enabled) {

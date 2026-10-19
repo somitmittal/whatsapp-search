@@ -26,23 +26,32 @@ export function openOverlay(name) {
   }
 }
 
+/** Classic WhatsApp settings live in #overlay-settings. GPT has its own shell with the
+ *  same data-settings-* attrs — never query the whole document or the first GPT tab
+ *  ("general") blanks every overlay panel. */
+function settingsOverlayRoot() {
+  return document.getElementById('overlay-settings') || document;
+}
+
 function defaultSettingsTab() {
-  const first = document.querySelector('[data-settings-tab]');
+  const first = settingsOverlayRoot().querySelector('[data-settings-tab]');
   return first?.getAttribute('data-settings-tab') || 'ai';
 }
 
 export function setSettingsTab(tabId, persist = true) {
-  const available = [...document.querySelectorAll('[data-settings-tab]')].map((b) => b.getAttribute('data-settings-tab'));
+  const root = settingsOverlayRoot();
+  const available = [...root.querySelectorAll('[data-settings-tab]')].map((b) => b.getAttribute('data-settings-tab'));
   let id = tabId || defaultSettingsTab();
   // GPT renamed the classic WhatsApp tab → linked-devices
   if (id === 'whatsapp' && available.includes('linked-devices')) id = 'linked-devices';
+  // Drop a stale GPT-shell id (e.g. "general") left in localStorage.
   if (available.length && !available.includes(id)) id = available[0];
-  document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
+  root.querySelectorAll('[data-settings-tab]').forEach((btn) => {
     const on = btn.getAttribute('data-settings-tab') === id;
     btn.classList.toggle('active', on);
     btn.setAttribute('aria-selected', on ? 'true' : 'false');
   });
-  document.querySelectorAll('[data-settings-panel]').forEach((panel) => {
+  root.querySelectorAll('[data-settings-panel]').forEach((panel) => {
     panel.classList.toggle('active', panel.getAttribute('data-settings-panel') === id);
   });
   if (id === 'backup') void refreshGmailImportUi();
@@ -163,7 +172,7 @@ export function initOverlays() {
 
   document.addEventListener('click', () => closeAllMenus());
 
-  document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
+  settingsOverlayRoot().querySelectorAll('[data-settings-tab]').forEach((btn) => {
     btn.addEventListener('click', () => setSettingsTab(btn.getAttribute('data-settings-tab')));
   });
 
