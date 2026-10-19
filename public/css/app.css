@@ -933,6 +933,14 @@
     font-size: 20px;
   }
   .chat-composer button.composer-attach:hover { background: #e8edef; }
+  .file-send-progress {
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 7px 14px;
+    color: var(--text2); background: #f0f2f5; font-size: 12px; min-height: 32px;
+  }
+  .file-send-progress[hidden] { display: none !important; }
+  .file-send-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-send-meter { width: min(180px, 30%); height: 8px; accent-color: #00a884; }
+  .file-send-meter[data-indeterminate] { opacity: 0.45; }
   .date-sep { text-align: center; margin: 12px 0; }
   .date-sep span {
     background: #fff; color: #54656f; font-size: 12.5px;

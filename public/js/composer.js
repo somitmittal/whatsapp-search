@@ -84,6 +84,55 @@ function refreshActiveChatAfterSend(jid, delayMs) {
   }, delayMs);
 }
 
+async function uploadFileToChat(file, jid, caption = '') {
+  showFileSendProgress(`Uploading ${file.name}…`, 0);
+  const form = new FormData();
+  form.append('file', file, file.name);
+  form.append('chatJid', jid);
+  if (caption) form.append('caption', caption);
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/wa/send-file');
+    xhr.timeout = 5 * 60 * 1000;
+    xhr.upload.addEventListener('progress', (event) => {
+      const percent = event.lengthComputable && event.total > 0
+        ? Math.min(100, Math.round((event.loaded / event.total) * 100))
+        : null;
+      showFileSendProgress(percent == null
+        ? `Uploading ${file.name}…`
+        : `Uploading ${file.name} · ${percent}%`, percent);
+      if (percent === 100) showFileSendProgress(`Uploaded ${file.name} · sending to WhatsApp…`, 100);
+    });
+    xhr.addEventListener('load', () => {
+      let result = {};
+      try { result = JSON.parse(xhr.responseText || '{}'); } catch { /* handled below */ }
+      if (xhr.status < 200 || xhr.status >= 300) reject(new Error(result?.error || `File send failed (${xhr.status})`));
+      else resolve();
+    });
+    xhr.addEventListener('error', () => reject(new Error('Network error while uploading file')));
+    xhr.addEventListener('timeout', () => reject(new Error('File upload timed out')));
+    xhr.send(form);
+  });
+}
+
+function showFileSendProgress(message, percent = null) {
+  const root = document.getElementById('file-send-progress');
+  if (!root) return;
+  root.hidden = false;
+  const status = root.querySelector('.file-send-status');
+  if (status) status.textContent = message;
+  const meter = root.querySelector('.file-send-meter');
+  if (meter) {
+    meter.value = percent == null ? 0 : percent;
+    meter.toggleAttribute('data-indeterminate', percent == null);
+  }
+}
+
+function hideFileSendProgress() {
+  const root = document.getElementById('file-send-progress');
+  if (root) root.hidden = true;
+}
+
 export async function sendCurrentMessage() {
   const jid = store.activeChat;
   const input = document.getElementById('msg-text');
@@ -97,19 +146,15 @@ export async function sendCurrentMessage() {
   btn.disabled = true;
   try {
     if (file) {
-      const form = new FormData();
-      form.append('file', file, file.name);
-      form.append('chatJid', jid);
-      if (text) form.append('caption', text);
-      const r = await fetch('/api/wa/send-file', { method: 'POST', body: form });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j?.error || 'File send failed');
+      await uploadFileToChat(file, jid, text);
       fileInput.value = '';
       input.value = '';
       input.placeholder = 'Type a message…';
+      showFileSendProgress('File sent', 100);
       clearReplyTarget();
       scheduleRefreshDash([{ chatJid: jid, lastMessageTs: Math.floor(Date.now() / 1000), count: 1 }]);
       refreshActiveChatAfterSend(jid, 1200);
+      setTimeout(hideFileSendProgress, 2500);
       return;
     }
     if (store.editTarget?.messageId) {
@@ -142,6 +187,9 @@ export async function sendCurrentMessage() {
     // The sent message will appear via WA echo + indexing; refresh as a fallback.
     refreshActiveChatAfterSend(jid, 1200);
   } catch (e) {
+    if (document.getElementById('file-send-progress') && !document.getElementById('file-send-progress').hidden) {
+      showFileSendProgress(`Could not send file: ${e.message || 'unknown error'}`, null);
+    }
     alert(e.message || 'Send failed');
   } finally {
     btn.disabled = false;
@@ -159,40 +207,66 @@ export function initComposer() {
     if (input) input.placeholder = file ? `Caption for ${file.name}` : 'Type a message…';
   });
 
-  const chatPanel = document.getElementById('panel-chat');
+  const dropTargets = [
+    document.getElementById('panel-chat'),
+    document.getElementById('gpt-wa-view'),
+    document.getElementById('gpt-wa-composer'),
+  ].filter(Boolean);
   let dragDepth = 0;
-  chatPanel?.addEventListener('dragenter', (e) => {
-    if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+  const isFileDrag = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+  for (const target of dropTargets) target.addEventListener('dragenter', (e) => {
+    if (!isFileDrag(e)) return;
     e.preventDefault();
     dragDepth += 1;
-    chatPanel.classList.add('file-drop-active');
+    target.classList.add('file-drop-active');
   });
-  chatPanel?.addEventListener('dragover', (e) => {
-    if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
+  for (const target of dropTargets) target.addEventListener('dragover', (e) => {
+    if (isFileDrag(e)) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
     }
   });
-  chatPanel?.addEventListener('dragleave', (e) => {
-    if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+  for (const target of dropTargets) target.addEventListener('dragleave', (e) => {
+    if (!isFileDrag(e)) return;
     e.preventDefault();
     dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) chatPanel.classList.remove('file-drop-active');
+    if (dragDepth === 0) for (const dropTarget of dropTargets) dropTarget.classList.remove('file-drop-active');
   });
-  chatPanel?.addEventListener('drop', (e) => {
+  for (const target of dropTargets) target.addEventListener('drop', async (e) => {
     if (!e.dataTransfer?.files?.length) return;
     e.preventDefault();
     dragDepth = 0;
-    chatPanel.classList.remove('file-drop-active');
+    for (const dropTarget of dropTargets) dropTarget.classList.remove('file-drop-active');
     if (!canSendMessageToJid(store.activeChat)) {
       alert('Select a WhatsApp chat to attach a file.');
       return;
     }
-    const transfer = new DataTransfer();
-    transfer.items.add(e.dataTransfer.files[0]);
-    if (fileInput) {
-      fileInput.files = transfer.files;
-      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    const jid = store.activeChat;
+    const files = Array.from(e.dataTransfer.files);
+    const captionInput = document.getElementById('msg-text');
+    const sendButton = document.getElementById('msg-send');
+    const caption = String(captionInput?.value || '').trim();
+    if (sendButton) sendButton.disabled = true;
+    try {
+      for (let i = 0; i < files.length; i += 1) {
+        showFileSendProgress(`Preparing file ${i + 1} of ${files.length}: ${files[i].name}…`, 0);
+        await uploadFileToChat(files[i], jid, i === 0 ? caption : '');
+      }
+      showFileSendProgress(files.length === 1 ? 'File sent' : `${files.length} files sent`, 100);
+      if (captionInput) {
+        captionInput.value = '';
+        captionInput.placeholder = 'Type a message…';
+      }
+      if (fileInput) fileInput.value = '';
+      clearReplyTarget();
+      scheduleRefreshDash(files.map(() => ({ chatJid: jid, lastMessageTs: Math.floor(Date.now() / 1000), count: 1 })));
+      refreshActiveChatAfterSend(jid, 1200);
+      setTimeout(hideFileSendProgress, 2500);
+    } catch (error) {
+      showFileSendProgress(`Could not send file: ${error.message || 'unknown error'}`, null);
+      alert(error.message || 'File send failed');
+    } finally {
+      if (sendButton) sendButton.disabled = false;
     }
   });
 

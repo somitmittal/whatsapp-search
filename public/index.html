@@ -311,10 +311,13 @@
             <button type="button" class="reply-to-clear" id="edit-to-clear" aria-label="Cancel edit">×</button>
           </div>
         </div>
+        <div id="file-send-progress" class="file-send-progress" role="status" aria-live="polite" hidden>
+          <span class="file-send-status"></span><progress class="file-send-meter" max="100" value="0"></progress>
+        </div>
         <div class="chat-composer" id="chat-composer" style="display:none;">
           <input id="msg-file-input" type="file" hidden />
-          <input id="msg-text" type="text" placeholder="Type a message…" autocomplete="off" />
           <button id="msg-attach" class="composer-attach" type="button" title="Attach file" aria-label="Attach file" style="display:inline-flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;min-width:44px;height:44px;padding:0;background:#fff;color:#087e68;border:2px solid #00a884;border-radius:50%;font-size:26px;font-weight:600;line-height:1;">＋</button>
+          <input id="msg-text" type="text" placeholder="Type a message…" autocomplete="off" />
           <button id="msg-send" type="button">Send</button>
         </div>
       </div>

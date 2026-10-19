@@ -340,6 +340,16 @@ html[data-theme="dark"] .gpt-wa-view.messages-area {
   background-color: #0b141a;
   background-image: none;
 }
+.gpt-wa-view.file-drop-active,
+.gpt-wa-composer.file-drop-active { position: relative; }
+.gpt-wa-view.file-drop-active::after,
+.gpt-wa-composer.file-drop-active::after {
+  content: 'Drop to send';
+  position: absolute; inset: 8px; z-index: 30; display: grid; place-items: center;
+  border: 2px dashed #00a884; border-radius: 14px;
+  background: rgba(240, 242, 245, 0.92); color: #087e68;
+  font-size: 18px; font-weight: 700; pointer-events: none;
+}
 html[data-theme="dark"] .date-sep span {
   background: #1f2c33; color: #aebac1; box-shadow: none;
 }
