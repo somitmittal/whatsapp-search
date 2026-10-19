@@ -65,4 +65,16 @@ describe('control-plane store', () => {
     expect(entitlement.allowed).toBe(true);
     expect(store.getLicenseForInstall('inst_abc').id).toBe(license.id);
   });
+
+  test('admin can remotely lock and restore a license', () => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), 'cp-'));
+    store = openControlPlaneStore(path.join(tmp, 'cp.db'));
+    const user = store.upsertUser({ email: 'lockme@example.com' });
+    store.upsertDevice({ installId: 'inst_lock', userId: user.id });
+    store.createTrialLicense(user.id, 14);
+    const locked = store.setLicenseStatusByEmail('lockme@example.com', 'disabled');
+    expect(evaluateEntitlement(locked.license).reason).toBe('account_locked');
+    const restored = store.setLicenseStatusByEmail('lockme@example.com', 'trialing');
+    expect(evaluateEntitlement(restored.license).allowed).toBe(true);
+  });
 });

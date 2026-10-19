@@ -144,11 +144,20 @@
     const h = { 'X-Install-Id': getInstallId() };
     const tok = localStorage.getItem(TOKEN_KEY);
     if (tok) h['X-License-Token'] = tok;
+    const ver = (window.__searchableAppConfig || {}).appVersion;
+    if (ver) h['X-App-Version'] = String(ver);
     return h;
+  }
+
+  function hardLockReason(status) {
+    const reason = status?.entitlement?.reason
+      || (status?.policy?.updateRequired ? 'update_required' : null);
+    return reason === 'account_locked' || reason === 'update_required' ? reason : null;
   }
 
   function shouldShowGate(cfg, status) {
     if (!cfg || !cfg.licenseGate) return false;
+    if (hardLockReason(status)) return true;
     const skipUntil = Number(localStorage.getItem(SKIP_UNTIL_KEY) || 0);
     if (skipUntil > Date.now()) return false;
     if (status?.entitlement?.allowed) return false;
@@ -244,6 +253,42 @@
       el.hidden = true;
       track(cfg, 'account_gate_dismissed');
     };
+
+    const lockReason = hardLockReason(status);
+    if (lockReason === 'update_required') {
+      const min = status?.entitlement?.minAppVersion || status?.policy?.minAppVersion || '';
+      const dl = status?.entitlement?.downloadUrl || status?.policy?.downloadUrl || '/download';
+      if (title) title.textContent = 'Update required';
+      if (lead) {
+        lead.textContent = status?.entitlement?.message
+          || status?.policy?.message
+          || (`Please install Searchable ${min ? `v${min}+` : 'the latest version'} to continue.`);
+      }
+      if (emailInput) emailInput.hidden = true;
+      if (codeWrap) codeWrap.hidden = true;
+      if (later) later.hidden = true;
+      if (submit) {
+        submit.textContent = 'Download update';
+        submit.onclick = () => { window.location.href = dl; };
+      }
+      return;
+    }
+    if (lockReason === 'account_locked') {
+      if (title) title.textContent = 'Account locked';
+      if (lead) {
+        lead.textContent = status?.entitlement?.message
+          || 'This Searchable account has been locked. Contact support if you think this is a mistake.';
+      }
+      if (emailInput) emailInput.hidden = true;
+      if (codeWrap) codeWrap.hidden = true;
+      if (later) later.hidden = true;
+      if (submit) {
+        submit.textContent = 'OK';
+        submit.onclick = () => { el.hidden = true; };
+      }
+      return;
+    }
+    if (later) later.hidden = false;
 
     const expired = status?.entitlement?.reason === 'trial_expired';
     const canPay = expired && cfg?.stripeEnabled;

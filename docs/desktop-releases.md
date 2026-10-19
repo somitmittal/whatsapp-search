@@ -2,6 +2,12 @@
 
 Desktop builds are published to [GitHub Releases](https://github.com/somitmittal/whatsapp-search/releases) when you push a version tag.
 
+## Control plane (required for paid desktop)
+
+Before tagging a release, set the repo Actions secret **`CONTROL_PLANE_URL`** to your Render public URL (same host as `CONTROL_PLANE_PUBLIC_URL`). The release workflow bakes it into `electron/control-plane.defaults.json` so installs check your hosted licenses (trial, Stripe, remote lock, min version). Without that secret, desktop builds use a local-only license DB.
+
+See [monetization.md](./monetization.md).
+
 ## Create a release
 
 The workflow runs when you **push a version tag** — not on ordinary commits to `main`.

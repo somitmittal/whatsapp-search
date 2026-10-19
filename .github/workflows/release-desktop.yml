@@ -19,6 +19,8 @@ jobs:
     runs-on: macos-latest
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      CONTROL_PLANE_URL: ${{ secrets.CONTROL_PLANE_URL }}
+      LICENSE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,6 +29,7 @@ jobs:
           cache: npm
       - run: bash scripts/ci-install-pillow.sh
       - run: npm ci
+      - run: bash scripts/write-control-plane-defaults.sh
       - run: bash scripts/generate-icon-icns.sh
       - run: bash scripts/prepare-node.sh darwin-arm64
       - run: bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node
@@ -41,6 +44,8 @@ jobs:
     runs-on: macos-latest
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      CONTROL_PLANE_URL: ${{ secrets.CONTROL_PLANE_URL }}
+      LICENSE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -49,6 +54,7 @@ jobs:
           cache: npm
       - run: bash scripts/ci-install-pillow.sh
       - run: npm ci
+      - run: bash scripts/write-control-plane-defaults.sh
       - run: bash scripts/generate-icon-icns.sh
       - run: bash scripts/prepare-node.sh darwin-x64
       - run: bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node
@@ -61,6 +67,9 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    env:
+      CONTROL_PLANE_URL: ${{ secrets.CONTROL_PLANE_URL }}
+      LICENSE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,6 +78,8 @@ jobs:
           cache: npm
       - run: pip install pillow
       - run: npm ci
+      - shell: bash
+        run: bash scripts/write-control-plane-defaults.sh
       - run: python scripts/generate-icon.py
       - shell: bash
         run: bash scripts/prepare-node.sh win-x64
@@ -83,6 +94,9 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    env:
+      CONTROL_PLANE_URL: ${{ secrets.CONTROL_PLANE_URL }}
+      LICENSE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -92,6 +106,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libfuse2
       - run: pip install pillow
       - run: npm ci
+      - run: bash scripts/write-control-plane-defaults.sh
       - run: python3 scripts/generate-icon.py
       - run: bash scripts/prepare-node.sh linux-x64
       - run: bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node

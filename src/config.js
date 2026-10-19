@@ -24,6 +24,15 @@ function loadEnv() {
 
 loadEnv();
 
+function readPackageVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'));
+    return String(pkg.version || '').trim();
+  } catch {
+    return '';
+  }
+}
+
 /**
  * One long random string on the **server** (you never paste it in the app — it is not a “user JWT”).
  * `SESSION_SECRET` (clear name) or `JWT_SECRET` (legacy) — used for: multi-tenant sessions, contact
@@ -168,6 +177,8 @@ const config = {
    * Example: `https://your-service.onrender.com`
    */
   controlPlaneUrl: (process.env.CONTROL_PLANE_URL || '').trim().replace(/\/$/, ''),
+  /** App version from package.json (used for min-version force-update). */
+  appVersion: readPackageVersion(),
 };
 
 export default config;

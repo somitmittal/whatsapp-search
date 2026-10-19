@@ -32,6 +32,18 @@ export function evaluateEntitlement(license, now = Date.now()) {
   const status = license.status || 'active';
   const trialEndsAt = license.trial_ends_at || null;
 
+  // Remote lock from control-plane admin (or Stripe-driven disable).
+  if (status === 'disabled' || status === 'revoked' || status === 'locked') {
+    return {
+      allowed: false,
+      plan,
+      status,
+      reason: 'account_locked',
+      trialEndsAt,
+      message: license.lock_message || null,
+    };
+  }
+
   if (status === 'active' && (plan === 'pro' || plan === 'paid')) {
     return { allowed: true, plan: 'pro', status: 'active', reason: null, trialEndsAt };
   }

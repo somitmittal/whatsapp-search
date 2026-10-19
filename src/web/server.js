@@ -1260,6 +1260,7 @@ export default class WebServer {
         importFirstMvp: config.importFirstMvp,
         waLiveSyncAutoConnect: config.waLiveSyncAutoConnect && !config.importFirstMvp,
         desktop: config.isDesktopApp,
+        appVersion: config.appVersion || '',
         controlPlaneUrl: config.controlPlaneUrl || '',
         licenseGate: isLicenseGateEnabled(),
         trialDays: trialDays(),

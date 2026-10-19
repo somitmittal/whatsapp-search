@@ -267,6 +267,37 @@ function wrapStore(db) {
       return this.getLicenseForUser(userId);
     },
 
+    /**
+     * Admin remote lock / unlock. status: disabled|revoked|locked|trialing|active|canceled
+     * Optional plan override (e.g. restore Pro → plan=pro, status=active).
+     */
+    setLicenseStatusByEmail(email, status, { plan = null } = {}) {
+      const user = this.getUserByEmail(email);
+      if (!user) return null;
+      let lic = this.getLicenseForUser(user.id);
+      if (!lic) {
+        lic = this.createTrialLicense(user.id, 14);
+      }
+      const next = String(status || '').trim().toLowerCase();
+      if (!next) throw new Error('status required');
+      let nextPlan = plan != null ? String(plan).trim().toLowerCase() : null;
+      if (!nextPlan && next === 'active') nextPlan = 'pro';
+      if (!nextPlan && next === 'trialing') nextPlan = 'trial';
+      if (nextPlan) {
+        db.prepare(`
+          UPDATE licenses SET status = ?, plan = ?, updated_at = datetime('now') WHERE id = ?
+        `).run(next, nextPlan, lic.id);
+      } else {
+        db.prepare(`
+          UPDATE licenses SET status = ?, updated_at = datetime('now') WHERE id = ?
+        `).run(next, lic.id);
+      }
+      return {
+        user,
+        license: this.getLicenseForUser(user.id),
+      };
+    },
+
     createMagicLink({ email, installId, utmSource, utmCampaign, ttlMinutes = 30 }) {
       const token = randomBytes(24).toString('hex');
       const code = String(Math.floor(100000 + Math.random() * 900000));

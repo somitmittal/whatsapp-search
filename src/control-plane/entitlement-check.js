@@ -1,8 +1,19 @@
 import config from '../config.js';
+import { applyControlPlanePolicy, getUpdateDownloadUrl } from './app-policy.js';
 import { evaluateEntitlement, entitlementFromTokenPayload, verifyLicenseToken } from './license.js';
 import { getServerSecret } from '../auth/jwt-util.js';
 import { isLicenseGateEnabled } from './license-gate.js';
 import { capturePostHog } from './posthog.js';
+
+function withLocalPolicy(entitlement, req) {
+  const appVersion = String(
+    req.get('x-app-version') || req.query?.appVersion || config.appVersion || '',
+  ).slice(0, 40);
+  return applyControlPlanePolicy(entitlement, {
+    appVersion,
+    downloadUrl: getUpdateDownloadUrl(req),
+  }).entitlement;
+}
 
 /**
  * Resolve AI entitlement for a request (local store and/or remote control plane).
@@ -18,17 +29,22 @@ export async function resolveSearchEntitlement(req, store) {
   ).trim();
   const licenseHeader = String(req.get('x-license-token') || '').trim();
   const secret = getServerSecret();
+  const appVersion = String(
+    req.get('x-app-version') || req.query?.appVersion || config.appVersion || '',
+  ).slice(0, 40);
 
   if (licenseHeader && secret) {
     const payload = verifyLicenseToken(licenseHeader, secret);
     const fromToken = entitlementFromTokenPayload(payload);
-    if (fromToken.allowed) return fromToken;
+    if (fromToken.allowed) return withLocalPolicy(fromToken, req);
   }
 
   const remote = (config.controlPlaneUrl || '').replace(/\/$/, '');
   if (remote && installId) {
     try {
-      const url = `${remote}/api/control/license/status?installId=${encodeURIComponent(installId)}`;
+      const qs = new URLSearchParams({ installId });
+      if (appVersion) qs.set('appVersion', appVersion);
+      const url = `${remote}/api/control/license/status?${qs}`;
       const res = await fetch(url, { headers: { Accept: 'application/json' } });
       if (res.ok) {
         const data = await res.json();
@@ -40,8 +56,7 @@ export async function resolveSearchEntitlement(req, store) {
   }
 
   if (store && installId) {
-    const license = store.getLicenseForInstall(installId);
-    return evaluateEntitlement(license);
+    return withLocalPolicy(evaluateEntitlement(store.getLicenseForInstall(installId)), req);
   }
 
   const strict = ['1', 'true', 'yes'].includes(
@@ -49,14 +64,26 @@ export async function resolveSearchEntitlement(req, store) {
   );
   if (!strict && config.isDesktopApp && !installId) {
     // First paint before account modal — allow until UI sets install id.
-    return { allowed: true, plan: 'pending', status: 'pending_account', reason: null };
+    return withLocalPolicy(
+      { allowed: true, plan: 'pending', status: 'pending_account', reason: null, trialEndsAt: null },
+      req,
+    );
   }
 
-  return { allowed: false, plan: 'none', status: 'missing', reason: 'account_required' };
+  return withLocalPolicy(
+    { allowed: false, plan: 'none', status: 'missing', reason: 'account_required', trialEndsAt: null },
+    req,
+  );
 }
 
 /** Copy for 402 responses. `product` is `search` (classic AI search) or `gpt`. */
 export function paywallErrorMessage(reason, product = 'search') {
+  if (reason === 'account_locked') {
+    return 'This Searchable account has been locked. Contact support if you think this is a mistake.';
+  }
+  if (reason === 'update_required') {
+    return 'Please update Searchable to continue using Pro features.';
+  }
   const expired = reason === 'trial_expired';
   if (product === 'gpt') {
     return expired

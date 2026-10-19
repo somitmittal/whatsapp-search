@@ -44,9 +44,54 @@
       <table><thead><tr><th>Version</th><th>Platform</th><th>Count</th></tr></thead><tbody id="by-version"></tbody></table>
       <p style="margin-top:14px;font-size:12px;color:var(--text2)">GitHub’s own asset <code>download_count</code> is also on <code>/api/releases/latest</code> for a sanity check.</p>
     </div>
+    <div class="card">
+      <h2 style="font-size:15px;margin-bottom:10px">Remote license lock</h2>
+      <p class="lead" style="margin-bottom:12px">Lock or restore a user’s Pro/trial license. Locked installs lose AI/GPT until unlocked.</p>
+      <label for="lock-email">User email</label>
+      <input id="lock-email" type="email" placeholder="user@example.com" />
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button type="button" id="lock-btn" style="background:#b91c1c">Lock account</button>
+        <button type="button" id="unlock-btn">Restore trial</button>
+        <button type="button" id="unlock-pro-btn">Restore Pro</button>
+      </div>
+      <p class="err" id="lock-msg" hidden></p>
+      <h2 style="font-size:15px;margin-top:22px">Recent users</h2>
+      <table><thead><tr><th>Email</th><th>Plan</th><th>Status</th><th>Trial ends</th></tr></thead><tbody id="users"></tbody></table>
+    </div>
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
+    function authHeaders() {
+      return { Authorization: 'Bearer ' + $('key').value.trim(), 'Content-Type': 'application/json' };
+    }
+    async function loadUsers() {
+      const res = await fetch('/api/control/admin/users', { headers: authHeaders() });
+      const data = await res.json();
+      if (!res.ok) return;
+      $('users').innerHTML = (data.users || []).map((u) =>
+        '<tr><td>' + (u.email || '') + '</td><td>' + (u.plan || '') + '</td><td>'
+        + (u.license_status || '') + '</td><td>' + (u.trial_ends_at || '') + '</td></tr>'
+      ).join('') || '<tr><td colspan="4">No users yet</td></tr>';
+    }
+    async function setLicense(status) {
+      $('lock-msg').hidden = true;
+      const key = $('key').value.trim();
+      const email = $('lock-email').value.trim().toLowerCase();
+      if (!key) { $('lock-msg').textContent = 'Enter SESSION_SECRET'; $('lock-msg').hidden = false; return; }
+      if (!email) { $('lock-msg').textContent = 'Enter email'; $('lock-msg').hidden = false; return; }
+      const res = await fetch('/api/control/admin/license', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ email, status }),
+      });
+      const data = await res.json();
+      $('lock-msg').hidden = false;
+      $('lock-msg').style.color = res.ok ? '#008f72' : '#b91c1c';
+      $('lock-msg').textContent = res.ok
+        ? ('Updated ' + email + ' → ' + status + ' (allowed=' + !!(data.entitlement && data.entitlement.allowed) + ')')
+        : (data.error || 'Failed');
+      if (res.ok) void loadUsers();
+    }
     async function load() {
       $('err').hidden = true;
       const key = $('key').value.trim();
@@ -64,8 +109,12 @@
       fill('by-platform', data.byPlatform, ['platform', 'count']);
       fill('by-day', data.byDay, ['day', 'platform', 'count']);
       fill('by-version', data.byVersion, ['version', 'platform', 'count']);
+      void loadUsers();
     }
     $('load').addEventListener('click', load);
+    $('lock-btn').addEventListener('click', () => setLicense('disabled'));
+    $('unlock-btn').addEventListener('click', () => setLicense('trialing'));
+    $('unlock-pro-btn').addEventListener('click', () => setLicense('active'));
     const saved = localStorage.getItem('searchable_analytics_key');
     if (saved) { $('key').value = saved; }
   </script>

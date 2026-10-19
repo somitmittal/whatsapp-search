@@ -75,10 +75,36 @@ function getOrCreateSessionSecret(userData) {
   }
 }
 
+function loadControlPlaneDefaults() {
+  const candidates = [
+    path.join(APP_ROOT, 'electron', 'control-plane.defaults.json'),
+    path.join(__dirname, 'control-plane.defaults.json'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (!existsSync(p)) continue;
+      const data = JSON.parse(readFileSync(p, 'utf8'));
+      return {
+        controlPlaneUrl: String(data.controlPlaneUrl || '').trim().replace(/\/$/, ''),
+        licenseGate: String(data.licenseGate ?? '1'),
+      };
+    } catch (err) {
+      console.warn('[Desktop] control-plane defaults:', err.message);
+    }
+  }
+  return { controlPlaneUrl: '', licenseGate: '1' };
+}
+
 function buildServerEnv() {
   const userData = app.getPath('userData');
   const dataDir = path.join(userData, 'data');
   mkdirSync(dataDir, { recursive: true });
+  const cpDefaults = loadControlPlaneDefaults();
+  const controlPlaneUrl = (
+    process.env.CONTROL_PLANE_URL
+    || cpDefaults.controlPlaneUrl
+    || ''
+  ).trim().replace(/\/$/, '');
 
   return {
     ...process.env,
@@ -97,10 +123,12 @@ function buildServerEnv() {
     // Unload idle model quickly — avoids RAM spikes when app is in background
     OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || '60',
     OLLAMA_NUM_PARALLEL: process.env.OLLAMA_NUM_PARALLEL || '2',
-    // Hosted control plane for accounts/billing (optional). When unset, local control_plane.db is used.
-    CONTROL_PLANE_URL: process.env.CONTROL_PLANE_URL || '',
-    CONTROL_PLANE_PUBLIC_URL: process.env.CONTROL_PLANE_PUBLIC_URL || process.env.CONTROL_PLANE_URL || '',
-    LICENSE_GATE: process.env.LICENSE_GATE || '1',
+    // Hosted control plane for accounts/billing. Baked at release via control-plane.defaults.json.
+    CONTROL_PLANE_URL: controlPlaneUrl,
+    CONTROL_PLANE_PUBLIC_URL: (
+      process.env.CONTROL_PLANE_PUBLIC_URL || controlPlaneUrl || ''
+    ).trim().replace(/\/$/, ''),
+    LICENSE_GATE: process.env.LICENSE_GATE || cpDefaults.licenseGate || '1',
   };
 }
 

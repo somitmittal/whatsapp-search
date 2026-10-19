@@ -7,6 +7,10 @@ import config from '../config.js';
 import { getLatestGitHubRelease, sendReleaseError } from '../releases/github-releases.js';
 import { sendMagicLinkEmail } from './email.js';
 import {
+  applyControlPlanePolicy,
+  getUpdateDownloadUrl,
+} from './app-policy.js';
+import {
   evaluateEntitlement,
   signLicenseToken,
   trialDays,
@@ -224,13 +228,18 @@ export function registerControlPlaneRoutes(app, opts = {}) {
   app.get('/api/control/license/status', (req, res) => {
     const installId = String(req.query.installId || '').trim();
     if (!installId) return res.status(400).json({ error: 'installId required' });
+    const appVersion = String(req.query.appVersion || '').slice(0, 40) || null;
     const device = store.upsertDevice({
       installId,
       os: String(req.query.os || '').slice(0, 40) || null,
-      appVersion: String(req.query.appVersion || '').slice(0, 40) || null,
+      appVersion,
     });
     const license = store.getLicenseForInstall(installId);
-    const entitlement = evaluateEntitlement(license);
+    const baseEntitlement = evaluateEntitlement(license);
+    const { entitlement, policy } = applyControlPlanePolicy(baseEntitlement, {
+      appVersion,
+      downloadUrl: getUpdateDownloadUrl(req),
+    });
     let user = null;
     if (device.user_id) user = store.getUserById(device.user_id);
     const secret = getServerSecret();
@@ -249,10 +258,16 @@ export function registerControlPlaneRoutes(app, opts = {}) {
       event: 'license_status_checked',
       userId: user?.id,
       installId,
-      props: { allowed: entitlement.allowed, plan: entitlement.plan },
+      props: {
+        allowed: entitlement.allowed,
+        plan: entitlement.plan,
+        reason: entitlement.reason,
+        appVersion,
+      },
     });
     return res.json({
       entitlement,
+      policy,
       email: user?.email || null,
       userId: user?.id || null,
       licenseToken,
@@ -263,6 +278,7 @@ export function registerControlPlaneRoutes(app, opts = {}) {
 
   app.get('/api/control/entitlement', (req, res) => {
     const installId = String(req.query.installId || req.get('x-install-id') || '').trim();
+    const appVersion = String(req.query.appVersion || req.get('x-app-version') || '').slice(0, 40);
     if (!installId) {
       return res.json({
         allowed: false,
@@ -272,8 +288,11 @@ export function registerControlPlaneRoutes(app, opts = {}) {
       });
     }
     const license = store.getLicenseForInstall(installId);
-    const entitlement = evaluateEntitlement(license);
-    return res.json({ ...entitlement, gateEnabled: isLicenseGateEnabled() });
+    const { entitlement, policy } = applyControlPlanePolicy(evaluateEntitlement(license), {
+      appVersion,
+      downloadUrl: getUpdateDownloadUrl(req),
+    });
+    return res.json({ ...entitlement, policy, gateEnabled: isLicenseGateEnabled() });
   });
 
   app.post('/api/control/billing/checkout', async (req, res) => {
@@ -355,6 +374,54 @@ export function registerControlPlaneRoutes(app, opts = {}) {
   app.get('/api/control/admin/users', (req, res) => {
     if (!adminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
     return res.json({ users: store.listUsers(200) });
+  });
+
+  /**
+   * Remote lock / unlock a user license.
+   * Body: { email, status: 'disabled' | 'revoked' | 'trialing' | 'active' | 'canceled' }
+   */
+  app.post('/api/control/admin/license', (req, res) => {
+    if (!adminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+      const email = String(req.body?.email || '').trim().toLowerCase();
+      const status = String(req.body?.status || '').trim().toLowerCase();
+      if (!email) return res.status(400).json({ error: 'email required' });
+      const allowed = new Set(['disabled', 'revoked', 'locked', 'trialing', 'active', 'canceled', 'past_due']);
+      if (!allowed.has(status)) {
+        return res.status(400).json({
+          error: `status must be one of: ${[...allowed].join(', ')}`,
+        });
+      }
+      const result = store.setLicenseStatusByEmail(email, status);
+      if (!result) return res.status(404).json({ error: 'User not found' });
+      const entitlement = evaluateEntitlement(result.license);
+      store.logProductEvent({
+        event: 'admin_license_update',
+        userId: result.user.id,
+        props: { status, email },
+      });
+      return res.json({
+        ok: true,
+        user: { id: result.user.id, email: result.user.email },
+        license: result.license,
+        entitlement,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/control/admin/policy', (req, res) => {
+    if (!adminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+    const { policy } = applyControlPlanePolicy(
+      { allowed: true, plan: 'pro', status: 'active', reason: null, trialEndsAt: null },
+      { appVersion: '999.0.0', downloadUrl: getUpdateDownloadUrl(req) },
+    );
+    return res.json({
+      minAppVersion: policy.minAppVersion,
+      downloadUrl: policy.downloadUrl,
+      licenseGate: isLicenseGateEnabled(),
+    });
   });
 
   return { store };
