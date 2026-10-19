@@ -3173,6 +3173,10 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         redirectUri,
         returnOrigin,
         tenantId: getCurrentTenantId(),
+        // OAuth state must return in the same browser session that requested it.
+        // Otherwise an attacker can start OAuth for their tenant and trick another
+        // user into authorizing a Google account that gets linked to the attacker.
+        sessionId: getSessionIdFromRequest(req),
       });
       const url = oauth2.generateAuthUrl({
         access_type: 'offline',
@@ -3202,6 +3206,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       const pending = this._gmailOAuthState.get(state);
       if (!pending || Date.now() - pending.ts > 15 * 60 * 1000) {
         return res.status(400).send('Invalid or expired OAuth state. Try connecting again.');
+      }
+      if (pending.sessionId !== getSessionIdFromRequest(req)) {
+        return res.status(400).send('OAuth session changed. Try connecting Google again.');
       }
       this._gmailOAuthState.delete(state);
       const id = config.googleClientId || process.env.GOOGLE_CLIENT_ID;
