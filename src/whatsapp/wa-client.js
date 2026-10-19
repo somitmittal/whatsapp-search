@@ -376,6 +376,21 @@ export default class WaClient {
     }));
   }
 
+  async sendFile(chatJid, buffer, { fileName = 'file', mimetype = 'application/octet-stream', caption = '' } = {}) {
+    if (!this._sock) throw new Error('WhatsApp not connected');
+    if (!chatJid) throw new Error('chatJid required');
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new Error('File is empty');
+    const name = String(fileName || 'file').replace(/[\\/\0]/g, '_').slice(0, 120);
+    const mime = String(mimetype || 'application/octet-stream').slice(0, 160);
+    const text = String(caption || '').trim().slice(0, 4000) || undefined;
+    let content;
+    if (mime.startsWith('image/')) content = { image: buffer, mimetype: mime, caption: text };
+    else if (mime.startsWith('video/')) content = { video: buffer, mimetype: mime, caption: text };
+    else if (mime.startsWith('audio/')) content = { audio: buffer, mimetype: mime, ptt: false };
+    else content = { document: buffer, fileName: name, mimetype: mime, caption: text };
+    return this._noteSuccessfulSend(await this._sock.sendMessage(chatJid, content));
+  }
+
   /**
    * People you can start / continue a 1:1 chat with from the linked WhatsApp session.
    * Drawn from contact/push-name cache (not the phone OS address book — browsers cannot

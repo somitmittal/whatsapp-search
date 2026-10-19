@@ -925,6 +925,14 @@
     min-height: 44px;
     white-space: nowrap;
   }
+  .chat-composer button.composer-attach {
+    background: transparent;
+    color: var(--text2);
+    border: 1px solid var(--border);
+    padding: 8px 13px;
+    font-size: 20px;
+  }
+  .chat-composer button.composer-attach:hover { background: #e8edef; }
   .date-sep { text-align: center; margin: 12px 0; }
   .date-sep span {
     background: #fff; color: #54656f; font-size: 12.5px;
@@ -1226,6 +1234,22 @@
 
   /* Panels */
   .panel { display: none; flex-direction: column; height: 100%; z-index: 1; min-width: 0; overflow: hidden; }
+  #panel-chat { position: relative; }
+  #panel-chat.file-drop-active::after {
+    content: 'Drop file to attach';
+    position: absolute;
+    inset: 12px;
+    z-index: 20;
+    display: grid;
+    place-items: center;
+    border: 2px dashed #00a884;
+    border-radius: 16px;
+    background: rgba(240, 242, 245, 0.92);
+    color: #087e68;
+    font-size: 18px;
+    font-weight: 700;
+    pointer-events: none;
+  }
   .panel.visible { display: flex; }
 
   /* Welcome */

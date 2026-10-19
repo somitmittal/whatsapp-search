@@ -130,6 +130,13 @@
   padding: 10px 16px; font-size: 13px; font-weight: 700; cursor: pointer; min-height: 44px;
   white-space: nowrap; font-family: inherit;
 }
+.chat-composer button.composer-attach {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 44px; width: 44px; min-width: 44px; height: 44px; padding: 0;
+  background: #fff; color: #087e68; border: 2px solid #00a884; border-radius: 50%;
+  font-size: 26px; font-weight: 600; line-height: 1;
+}
+.chat-composer button.composer-attach:hover { background: #e8f5f1; }
 .chat-composer button:disabled { opacity: 0.55; cursor: default; }
 
 .reply-to-bar, .edit-to-bar {

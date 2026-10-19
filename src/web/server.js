@@ -2176,6 +2176,27 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       }
     });
 
+    this._app.post('/api/wa/send-file', preserveTenantAcrossUpload(upload.single('file')), async (req, res) => {
+      const st = this._getTenantState(getCurrentTenantId());
+      if (!st.waClient) return res.status(409).json({ error: 'WhatsApp not connected' });
+      if (st.waState !== 'READY' && st.waState !== 'SYNCING') {
+        return res.status(409).json({ error: 'WhatsApp not ready' });
+      }
+      const chatJid = String(req.body?.chatJid || '').trim();
+      if (!chatJid) return res.status(400).json({ error: 'chatJid required' });
+      if (!req.file?.buffer?.length) return res.status(400).json({ error: 'No file uploaded' });
+      try {
+        const sent = await st.waClient.sendFile(chatJid, req.file.buffer, {
+          fileName: req.file.originalname,
+          mimetype: req.file.mimetype,
+          caption: req.body?.caption,
+        });
+        return res.json({ ok: true, messageId: sent?.key?.id || null });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || 'File send failed' });
+      }
+    });
+
     /** WhatsApp address-book / known 1:1 contacts from the linked session. */
     this._app.get('/api/wa/contacts', (_req, res) => {
       const tid = getCurrentTenantId();

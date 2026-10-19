@@ -87,12 +87,31 @@ function refreshActiveChatAfterSend(jid, delayMs) {
 export async function sendCurrentMessage() {
   const jid = store.activeChat;
   const input = document.getElementById('msg-text');
+  const fileInput = document.getElementById('msg-file-input');
+  const file = fileInput?.files?.[0];
   const btn = document.getElementById('msg-send');
   if (!jid || !input || !btn) return;
   const text = String(input.value || '').trim();
-  if (!text) return;
+  if (!text && !file) return;
+  if (file && store.editTarget?.messageId) { alert('Remove the attachment before editing a message'); return; }
   btn.disabled = true;
   try {
+    if (file) {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      form.append('chatJid', jid);
+      if (text) form.append('caption', text);
+      const r = await fetch('/api/wa/send-file', { method: 'POST', body: form });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || 'File send failed');
+      fileInput.value = '';
+      input.value = '';
+      input.placeholder = 'Type a message…';
+      clearReplyTarget();
+      scheduleRefreshDash([{ chatJid: jid, lastMessageTs: Math.floor(Date.now() / 1000), count: 1 }]);
+      refreshActiveChatAfterSend(jid, 1200);
+      return;
+    }
     if (store.editTarget?.messageId) {
       const mid = store.editTarget.messageId;
       const r = await fetch('/api/wa/edit', {
@@ -131,6 +150,51 @@ export async function sendCurrentMessage() {
 
 export function initComposer() {
   document.getElementById('msg-send')?.addEventListener('click', sendCurrentMessage);
+
+  const fileInput = document.getElementById('msg-file-input');
+  document.getElementById('msg-attach')?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    const input = document.getElementById('msg-text');
+    if (input) input.placeholder = file ? `Caption for ${file.name}` : 'Type a message…';
+  });
+
+  const chatPanel = document.getElementById('panel-chat');
+  let dragDepth = 0;
+  chatPanel?.addEventListener('dragenter', (e) => {
+    if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+    e.preventDefault();
+    dragDepth += 1;
+    chatPanel.classList.add('file-drop-active');
+  });
+  chatPanel?.addEventListener('dragover', (e) => {
+    if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    }
+  });
+  chatPanel?.addEventListener('dragleave', (e) => {
+    if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+    e.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) chatPanel.classList.remove('file-drop-active');
+  });
+  chatPanel?.addEventListener('drop', (e) => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    dragDepth = 0;
+    chatPanel.classList.remove('file-drop-active');
+    if (!canSendMessageToJid(store.activeChat)) {
+      alert('Select a WhatsApp chat to attach a file.');
+      return;
+    }
+    const transfer = new DataTransfer();
+    transfer.items.add(e.dataTransfer.files[0]);
+    if (fileInput) {
+      fileInput.files = transfer.files;
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  });
 
   document.getElementById('msg-text')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); sendCurrentMessage(); }
