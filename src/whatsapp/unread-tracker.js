@@ -10,6 +10,16 @@ export function unreadCountForChat(unreadByChat, chatJid) {
   return Number.isFinite(count) ? Math.max(0, count) : 0;
 }
 
+/** Clear a chat's live unread after the user opens it in Searchable. */
+export function clearUnreadCount(unreadByChat, chatJid) {
+  const jid = String(chatJid || '').trim();
+  if (!jid || !unreadByChat) return false;
+  const prev = unreadByChat.get(jid);
+  const hadUnread = Number.isFinite(prev) && prev > 0;
+  unreadByChat.set(jid, 0);
+  return hadUnread;
+}
+
 /**
  * Combine WhatsApp's unread counter with what we have indexed locally.
  *

@@ -53,7 +53,7 @@ import {
     shouldResetAuthAfterStaleCloses,
 } from './qr-lifecycle.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
-import { captureUnreadCounts, unreadCountForChat } from './unread-tracker.js';
+import { captureUnreadCounts, clearUnreadCount, unreadCountForChat } from './unread-tracker.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -510,6 +510,66 @@ export default class WaClient {
   /** Snapshot of in-memory WhatsApp unread counts for sidebar overlay. */
   getUnreadCountsMap() {
     return new Map(this._unreadByChat);
+  }
+
+  /**
+   * Zero live + persisted unread for a chat the user opened in Searchable.
+   * Emits `onUnreadCounts` so UIs drop the badge without waiting for WhatsApp.
+   */
+  clearChatUnread(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return false;
+    clearUnreadCount(this._unreadByChat, jid);
+    if (typeof this._onUnreadCounts === 'function') {
+      try {
+        this._onUnreadCounts([{ chatJid: jid, unreadCount: 0 }]);
+      } catch (e) {
+        console.warn('[WA] onUnreadCounts clear:', e.message);
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Best-effort WhatsApp mark-as-read so the phone/linked session also clears the badge.
+   * Local unread is cleared by {@link clearChatUnread} regardless of this result.
+   */
+  async markChatRead(chatJid, lastMessageRow) {
+    if (!this._sock) return { ok: false, error: 'WhatsApp not connected' };
+    const jid = String(chatJid || '').trim();
+    if (!jid || isImportedChatJid(jid) || isWhatsAppLowPriorityFeed(jid)) {
+      return { ok: true, skipped: true };
+    }
+    if (!lastMessageRow?.messageId) return { ok: false, error: 'last message required' };
+    let ts = Number(lastMessageRow.timestamp);
+    if (!Number.isFinite(ts) || ts <= 0) ts = Math.floor(Date.now() / 1000);
+    if (ts > 1e12) ts = Math.floor(ts / 1000);
+    const fromMe = lastMessageRow.sender === 'You';
+    const key = {
+      remoteJid: jid,
+      id: String(lastMessageRow.messageId),
+      fromMe,
+    };
+    if (!fromMe && jid.endsWith('@g.us')) {
+      const participant = String(lastMessageRow.senderJid || '').trim();
+      if (!participant) {
+        return { ok: false, error: 'group last message missing participant' };
+      }
+      key.participant = participant;
+    }
+    try {
+      await this._sock.chatModify(
+        {
+          markRead: true,
+          lastMessages: [{ key, messageTimestamp: ts }],
+        },
+        jid,
+      );
+      return { ok: true };
+    } catch (e) {
+      console.warn('[WA] markChatRead:', e?.message || e);
+      return { ok: false, error: e?.message || String(e) };
+    }
   }
 
   _captureUnreadCounts(chats) {

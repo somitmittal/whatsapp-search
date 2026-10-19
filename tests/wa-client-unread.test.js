@@ -1,6 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import {
   captureUnreadCounts,
+  clearUnreadCount,
   effectiveUnreadCount,
   resolveCatchupUnseen,
   shouldShowGroupCatchup,
@@ -27,6 +28,14 @@ describe('WhatsApp unread counts', () => {
     captureUnreadCounts(unreadByChat, [{ id: 'group@g.us', unreadCount: 3 }]);
 
     expect(unreadCountForChat(unreadByChat, 'group@g.us')).toBe(3);
+  });
+
+  test('clearUnreadCount zeros a chat after it is opened', () => {
+    const unreadByChat = new Map();
+    captureUnreadCounts(unreadByChat, [{ id: 'chat@lid', unreadCount: 1 }]);
+    expect(clearUnreadCount(unreadByChat, 'chat@lid')).toBe(true);
+    expect(unreadCountForChat(unreadByChat, 'chat@lid')).toBe(0);
+    expect(clearUnreadCount(unreadByChat, 'chat@lid')).toBe(false);
   });
 
   test('caps WhatsApp unread state to messages available locally', () => {

@@ -776,7 +776,9 @@ export default class WebServer {
           try {
             for (const u of updates || []) {
               if (!u?.chatJid) continue;
-              this.db.setChatUnread(u.chatJid, u.unreadCount);
+              const n = Math.max(0, Number(u.unreadCount) || 0);
+              if (n <= 0) this.db.clearChatUnread(u.chatJid);
+              else this.db.setChatUnread(u.chatJid, n);
             }
           } catch (e) {
             console.warn('[WA] persist unread:', e.message);
@@ -1498,6 +1500,20 @@ export default class WebServer {
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const ts = req.body?.ts != null ? Number(req.body.ts) : null;
         const lastSeenTs = this.db.markChatSeen(chatJid, ts);
+        // markChatSeen clears persisted unread; also drop the live WA map so /api/chats
+        // and the sidebar badge do not keep showing the old count after open.
+        const tid = getCurrentTenantId();
+        const st = this._getTenantState(tid);
+        const wa = st?.waClient;
+        if (wa && typeof wa.clearChatUnread === 'function') {
+          wa.clearChatUnread(chatJid);
+        } else {
+          this._broadcast({ type: 'wa-unread', data: { updates: [{ chatJid, unreadCount: 0 }] } }, tid);
+        }
+        if (wa && typeof wa.markChatRead === 'function') {
+          const last = this.db.getMessagesPaginated(chatJid, 1, 0)?.[0] || null;
+          void wa.markChatRead(chatJid, last).catch(() => {});
+        }
         return res.json({ ok: true, lastSeenTs });
       } catch (err) {
         return res.status(500).json({ error: err.message });

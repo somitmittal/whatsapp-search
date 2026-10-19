@@ -211,6 +211,25 @@ function renderSyncBar(sync) {
     : 'Keep your phone connected';
 }
 
+function applyUnreadUpdates(updates) {
+  if (!Array.isArray(updates) || !updates.length) return;
+  let changed = false;
+  for (const u of updates) {
+    if (!u?.chatJid) continue;
+    const row = state.chats.find((c) => c.chatJid === u.chatJid);
+    if (!row) continue;
+    const next = Math.max(0, Number(u.unreadCount) || 0);
+    if (row.unreadCount !== next) {
+      row.unreadCount = next;
+      changed = true;
+    }
+  }
+  if (changed) {
+    store.chatData = state.chats;
+    renderChats();
+  }
+}
+
 function connectSyncSocket() {
   const ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host);
   ws.onmessage = (e) => {
@@ -221,6 +240,8 @@ function connectSyncSocket() {
       if (msg.data?.done) void loadChats();
     } else if (msg.type === 'wa-status') {
       void syncWaState();
+    } else if (msg.type === 'wa-unread') {
+      applyUnreadUpdates(msg.data?.updates);
     }
   };
   ws.onclose = () => { setTimeout(connectSyncSocket, 3000); };
@@ -1008,6 +1029,10 @@ async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
   setMode('chat');
   refreshStreamingUi();
   els.title.textContent = title;
+  // Clear the unread badge immediately (server /seen also clears live + persisted counts).
+  const openedRow = state.chats.find((c) => c.chatJid === jid);
+  if (openedRow && openedRow.unreadCount) openedRow.unreadCount = 0;
+  store.chatData = state.chats;
   renderTabs();
   renderChats();
   closeThreadSearch();
