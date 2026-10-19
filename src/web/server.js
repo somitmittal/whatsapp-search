@@ -1763,6 +1763,33 @@ export default class WebServer {
       }
     });
 
+    this._app.get('/api/skills/managed', (req, res) => {
+      try {
+        return res.json({ items: this._gpt.listManagedSkills() });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.put('/api/skills', (req, res) => {
+      try {
+        const skill = this._gpt.saveUserSkill(req.body || {});
+        return res.json({ skill });
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    });
+
+    this._app.delete('/api/skills/:namespace/:slug', (req, res) => {
+      try {
+        const result = this._gpt.deleteUserSkill(req.params.namespace, req.params.slug);
+        return res.json(result);
+      } catch (err) {
+        const missing = /no custom skill/i.test(err.message);
+        return res.status(missing ? 404 : 400).json({ error: err.message });
+      }
+    });
+
     this._app.post('/api/skills/runs/:id/send', async (req, res) => {
       try {
         const result = await this._gpt.sendSkillReport(req.params.id);

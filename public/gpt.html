@@ -51,29 +51,93 @@
   </div>
 
   <div class="gpt-settings" id="gpt-settings" hidden>
-    <div class="gpt-popover gpt-settings-panel" role="dialog" aria-label="Settings">
-      <div class="gpt-settings-head">
-        <h2>Settings</h2>
-        <button type="button" class="gpt-icon" id="gpt-settings-close" aria-label="Close settings">×</button>
-      </div>
-      <section class="gpt-settings-section">
-        <h3>Appearance</h3>
-        <div class="gpt-theme-row" role="radiogroup" aria-label="Color theme">
-          <button type="button" class="gpt-theme-opt" data-theme="light" aria-pressed="true">
-            <span class="swatch light"></span>
-            Light
-          </button>
-          <button type="button" class="gpt-theme-opt" data-theme="dark" aria-pressed="false">
-            <span class="swatch dark"></span>
-            Dark
-          </button>
+    <div class="gpt-settings-shell" role="dialog" aria-label="Settings" aria-modal="true">
+      <aside class="gpt-settings-nav">
+        <div class="gpt-settings-nav-head">
+          <h2>Settings</h2>
+          <button type="button" class="gpt-icon" id="gpt-settings-close" aria-label="Close settings">×</button>
         </div>
-      </section>
-      <section class="gpt-settings-section">
-        <h3>AI</h3>
-        <p class="muted">Pick a model for this thread, or set provider API keys from the composer model menu.</p>
-        <button type="button" class="gpt-settings-action" id="gpt-open-models">Open model picker</button>
-      </section>
+        <nav class="gpt-settings-tabs" aria-label="Settings sections">
+          <button type="button" class="gpt-settings-tab on" data-settings-tab="general">General</button>
+          <button type="button" class="gpt-settings-tab" data-settings-tab="skills">Skills</button>
+        </nav>
+      </aside>
+      <div class="gpt-settings-main">
+        <section class="gpt-settings-panel" data-settings-panel="general">
+          <header class="gpt-settings-panel-head">
+            <h3>General</h3>
+            <p class="muted">Appearance and defaults for WhatsApp GPT.</p>
+          </header>
+          <div class="gpt-settings-block">
+            <h4>Theme</h4>
+            <div class="gpt-theme-row" role="radiogroup" aria-label="Color theme">
+              <button type="button" class="gpt-theme-opt" data-theme="light" aria-pressed="true">
+                <span class="swatch light"></span>
+                Light
+              </button>
+              <button type="button" class="gpt-theme-opt" data-theme="dark" aria-pressed="false">
+                <span class="swatch dark"></span>
+                Dark
+              </button>
+            </div>
+          </div>
+          <div class="gpt-settings-block">
+            <h4>Models</h4>
+            <p class="muted">Pick the model for this thread and manage provider API keys from the composer model menu (bottom of the chat).</p>
+          </div>
+        </section>
+
+        <section class="gpt-settings-panel" data-settings-panel="skills" hidden>
+          <header class="gpt-settings-panel-head">
+            <h3>Skills</h3>
+            <p class="muted">Slash skills (type <code>/</code> in the composer). Customize builtins or add your own.</p>
+          </header>
+          <div class="gpt-skills-layout">
+            <div class="gpt-skills-list-pane">
+              <div class="gpt-skills-list-toolbar">
+                <input type="search" id="gpt-skills-filter" placeholder="Search skills…" autocomplete="off">
+                <button type="button" class="gpt-settings-action" id="gpt-skill-new">New Skill</button>
+              </div>
+              <div class="gpt-skills-list" id="gpt-skills-list" role="listbox" aria-label="Skills"></div>
+            </div>
+            <form class="gpt-skill-editor" id="gpt-skill-editor" hidden>
+              <div class="gpt-skill-editor-head">
+                <h4 id="gpt-skill-editor-title">Skill</h4>
+                <span class="gpt-skill-badge" id="gpt-skill-badge" hidden></span>
+              </div>
+              <label class="gpt-field">
+                <span>Name</span>
+                <input type="text" id="gpt-skill-name" required maxlength="80" placeholder="Expense reconciliation">
+              </label>
+              <div class="gpt-field-row">
+                <label class="gpt-field">
+                  <span>Namespace</span>
+                  <input type="text" id="gpt-skill-namespace" required maxlength="40" placeholder="accountant" pattern="[a-z0-9][a-z0-9_-]*">
+                </label>
+                <label class="gpt-field">
+                  <span>Slug</span>
+                  <input type="text" id="gpt-skill-slug" required maxlength="40" placeholder="expense-reconciliation" pattern="[a-z0-9][a-z0-9_-]*">
+                </label>
+              </div>
+              <p class="gpt-skill-path muted">Invoke as <code id="gpt-skill-path-preview">/namespace/slug</code></p>
+              <label class="gpt-field">
+                <span>Description</span>
+                <input type="text" id="gpt-skill-description" maxlength="240" placeholder="Shown in the / skill picker">
+              </label>
+              <label class="gpt-field gpt-field-grow">
+                <span>Instructions</span>
+                <textarea id="gpt-skill-body" rows="12" placeholder="What this skill should do when invoked…"></textarea>
+              </label>
+              <div class="gpt-skill-editor-actions">
+                <button type="submit" class="gpt-settings-action primary" id="gpt-skill-save">Save</button>
+                <button type="button" class="gpt-settings-action danger" id="gpt-skill-delete" hidden>Delete</button>
+                <span class="gpt-skill-status muted" id="gpt-skill-status" aria-live="polite"></span>
+              </div>
+            </form>
+            <div class="gpt-skill-empty muted" id="gpt-skill-empty">Select a skill or create a new one.</div>
+          </div>
+        </section>
+      </div>
     </div>
   </div>
 

@@ -141,6 +141,11 @@ const state = {
   catalog: null,
   manageModels: false,
   hiddenModels: new Set(JSON.parse(localStorage.getItem(HIDDEN_MODELS_KEY) || '[]')),
+  settingsTab: 'general',
+  skills: [],
+  skillFilter: '',
+  selectedSkillPath: null,
+  skillDraftNew: false,
 };
 
 // A stream belongs to its conversation, not to whichever tab is currently visible.
@@ -575,15 +580,205 @@ function openThreadSearch(open = true) {
 
 function closeThreadSearch() { els.threadSearch.hidden = true; }
 
-function openSettings(open = true) {
+function openSettings(open = true, tab = null) {
   els.settings.hidden = !open;
   if (open) {
     closeThreadSearch();
     applyTheme(currentTheme());
+    setSettingsTab(tab || state.settingsTab || 'general');
   }
 }
 
 function closeSettings() { els.settings.hidden = true; }
+
+function setSettingsTab(tab) {
+  state.settingsTab = tab === 'skills' ? 'skills' : 'general';
+  document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
+    btn.classList.toggle('on', btn.dataset.settingsTab === state.settingsTab);
+  });
+  document.querySelectorAll('[data-settings-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.settingsPanel !== state.settingsTab;
+  });
+  if (state.settingsTab === 'skills') void loadManagedSkills();
+}
+
+async function loadManagedSkills() {
+  try {
+    const res = await fetch('/api/skills/managed', { headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load skills');
+    state.skills = data.items || [];
+  } catch (err) {
+    state.skills = [];
+    setSkillStatus(err.message || 'Failed to load skills');
+  }
+  renderSkillsList();
+  if (state.skillDraftNew) {
+    fillSkillEditor(null, { isNew: true });
+    return;
+  }
+  const selected = state.skills.find((s) => s.path === state.selectedSkillPath) || state.skills[0] || null;
+  if (selected) selectSkill(selected.path);
+  else {
+    state.selectedSkillPath = null;
+    fillSkillEditor(null);
+  }
+}
+
+function renderSkillsList() {
+  const list = $('#gpt-skills-list');
+  if (!list) return;
+  const q = state.skillFilter.trim().toLowerCase();
+  const rows = state.skills.filter((s) => {
+    if (!q) return true;
+    return s.path.includes(q)
+      || String(s.name || '').toLowerCase().includes(q)
+      || String(s.description || '').toLowerCase().includes(q);
+  });
+  list.innerHTML = rows.length
+    ? rows.map((s) => {
+      const on = !state.skillDraftNew && s.path === state.selectedSkillPath ? ' on' : '';
+      const tag = s.hasOverride ? 'customized' : (s.isBuiltin ? 'builtin' : 'custom');
+      return `<button type="button" class="gpt-skill-item${on}" role="option" data-skill-path="${escAttr(s.path)}">
+        <span class="nm">${esc(s.name || s.slug)}</span>
+        <span class="sub">/${esc(s.path)} · ${esc(tag)}</span>
+      </button>`;
+    }).join('')
+    : '<p class="muted" style="padding:10px;font-size:13px;">No skills match.</p>';
+}
+
+function selectSkill(path) {
+  state.skillDraftNew = false;
+  state.selectedSkillPath = path;
+  const skill = state.skills.find((s) => s.path === path) || null;
+  fillSkillEditor(skill);
+  renderSkillsList();
+}
+
+function fillSkillEditor(skill, { isNew = false } = {}) {
+  const editor = $('#gpt-skill-editor');
+  const empty = $('#gpt-skill-empty');
+  if (!editor || !empty) return;
+  if (!skill && !isNew) {
+    editor.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  editor.hidden = false;
+  const ns = skill?.namespace || 'custom';
+  const slug = skill?.slug || '';
+  $('#gpt-skill-editor-title').textContent = isNew ? 'New skill' : (skill.name || skill.slug);
+  const badge = $('#gpt-skill-badge');
+  if (isNew) {
+    badge.hidden = false;
+    badge.textContent = 'new';
+  } else if (skill.hasOverride) {
+    badge.hidden = false;
+    badge.textContent = skill.isBuiltin ? 'customized builtin' : 'custom';
+  } else if (skill.isBuiltin) {
+    badge.hidden = false;
+    badge.textContent = 'builtin';
+  } else {
+    badge.hidden = true;
+  }
+  $('#gpt-skill-name').value = skill?.name || '';
+  $('#gpt-skill-namespace').value = ns;
+  $('#gpt-skill-slug').value = slug;
+  $('#gpt-skill-namespace').readOnly = !isNew && !!skill?.isBuiltin;
+  $('#gpt-skill-slug').readOnly = !isNew && !!skill?.isBuiltin;
+  $('#gpt-skill-description').value = skill?.description || '';
+  $('#gpt-skill-body').value = skill?.body || '';
+  updateSkillPathPreview();
+  const del = $('#gpt-skill-delete');
+  del.hidden = isNew || !skill?.canDelete;
+  del.textContent = skill?.isBuiltin ? 'Revert to builtin' : 'Delete';
+  setSkillStatus('');
+}
+
+function updateSkillPathPreview() {
+  const ns = ($('#gpt-skill-namespace')?.value || 'namespace').trim().toLowerCase() || 'namespace';
+  const slug = ($('#gpt-skill-slug')?.value || 'slug').trim().toLowerCase() || 'slug';
+  const el = $('#gpt-skill-path-preview');
+  if (el) el.textContent = `/${ns}/${slug}`;
+}
+
+function setSkillStatus(msg) {
+  const el = $('#gpt-skill-status');
+  if (el) el.textContent = msg || '';
+}
+
+function startNewSkill() {
+  state.skillDraftNew = true;
+  state.selectedSkillPath = null;
+  fillSkillEditor({
+    namespace: 'custom',
+    slug: '',
+    name: '',
+    description: '',
+    body: '',
+    isBuiltin: false,
+    canDelete: false,
+  }, { isNew: true });
+  renderSkillsList();
+  $('#gpt-skill-name')?.focus();
+}
+
+async function saveSkillEditor(e) {
+  e?.preventDefault?.();
+  const payload = {
+    name: $('#gpt-skill-name').value.trim(),
+    namespace: $('#gpt-skill-namespace').value.trim().toLowerCase(),
+    slug: $('#gpt-skill-slug').value.trim().toLowerCase(),
+    description: $('#gpt-skill-description').value.trim(),
+    body: $('#gpt-skill-body').value,
+  };
+  if (!payload.name || !payload.namespace || !payload.slug) {
+    setSkillStatus('Name, namespace, and slug are required.');
+    return;
+  }
+  const saveBtn = $('#gpt-skill-save');
+  saveBtn.disabled = true;
+  setSkillStatus('Saving…');
+  try {
+    const res = await fetch('/api/skills', {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    state.skillDraftNew = false;
+    state.selectedSkillPath = data.skill?.path || `${payload.namespace}/${payload.slug}`;
+    await loadManagedSkills();
+    setSkillStatus('Saved.');
+  } catch (err) {
+    setSkillStatus(err.message || 'Save failed');
+  } finally {
+    saveBtn.disabled = false;
+  }
+}
+
+async function deleteSelectedSkill() {
+  const skill = state.skills.find((s) => s.path === state.selectedSkillPath);
+  if (!skill?.canDelete) return;
+  const label = skill.isBuiltin ? 'Revert this skill to the builtin version?' : `Delete /${skill.path}?`;
+  if (!window.confirm(label)) return;
+  setSkillStatus(skill.isBuiltin ? 'Reverting…' : 'Deleting…');
+  try {
+    const res = await fetch(`/api/skills/${encodeURIComponent(skill.namespace)}/${encodeURIComponent(skill.slug)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Delete failed');
+    state.selectedSkillPath = skill.isBuiltin ? skill.path : null;
+    await loadManagedSkills();
+    setSkillStatus(skill.isBuiltin ? 'Reverted to builtin.' : 'Deleted.');
+  } catch (err) {
+    setSkillStatus(err.message || 'Delete failed');
+  }
+}
 
 async function loadChats() {
   try {
@@ -1492,7 +1687,7 @@ function wire() {
       closeThreadSearch();
     }
     if (!els.settings.hidden
-      && !e.target.closest('#gpt-settings .gpt-popover')
+      && !e.target.closest('#gpt-settings .gpt-settings-shell')
       && !e.target.closest('#gpt-settings-btn')) {
       closeSettings();
     }
@@ -1581,13 +1776,25 @@ function wire() {
   els.threadSearchBtn.addEventListener('click', () => openThreadSearch(els.threadSearch.hidden));
   els.settingsBtn.addEventListener('click', () => openSettings(els.settings.hidden));
   $('#gpt-settings-close').addEventListener('click', closeSettings);
-  $('#gpt-open-models').addEventListener('click', () => {
-    closeSettings();
-    openModelMenu(true);
+  document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => setSettingsTab(btn.dataset.settingsTab));
   });
   document.querySelectorAll('.gpt-theme-opt').forEach((btn) => {
     btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
   });
+  $('#gpt-skills-filter')?.addEventListener('input', (e) => {
+    state.skillFilter = e.target.value || '';
+    renderSkillsList();
+  });
+  $('#gpt-skills-list')?.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-skill-path]');
+    if (item) selectSkill(item.dataset.skillPath);
+  });
+  $('#gpt-skill-new')?.addEventListener('click', startNewSkill);
+  $('#gpt-skill-editor')?.addEventListener('submit', (e) => { void saveSkillEditor(e); });
+  $('#gpt-skill-delete')?.addEventListener('click', () => { void deleteSelectedSkill(); });
+  $('#gpt-skill-namespace')?.addEventListener('input', updateSkillPathPreview);
+  $('#gpt-skill-slug')?.addEventListener('input', updateSkillPathPreview);
 
   $('#gpt-chats-toggle').addEventListener('click', () => els.app.classList.add('chats-hidden'));
   $('#gpt-chats-open').addEventListener('click', () => els.app.classList.remove('chats-hidden'));

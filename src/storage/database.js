@@ -3714,6 +3714,17 @@ export default class Database {
     return this.listUserSkills().find((row) => row.namespace === ns && row.slug === sl) || null;
   }
 
+  deleteUserSkill(namespace, slug) {
+    const t = getCurrentTenantId();
+    const ns = String(namespace || '').trim().toLowerCase();
+    const sl = String(slug || '').trim().toLowerCase();
+    if (!ns || !sl) return false;
+    const result = this._db.prepare(
+      'DELETE FROM user_skills WHERE tenant_id = ? AND namespace = ? AND slug = ?',
+    ).run(t, ns, sl);
+    return result.changes > 0;
+  }
+
   _skillRunFromRow(row) {
     if (!row) return null;
     return {

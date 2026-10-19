@@ -7,7 +7,13 @@ const scratch = mkdtempSync(join(tmpdir(), 'skills-'));
 process.env.DATA_DIR = scratch;
 
 const { parseSkillInvocation } = await import('../src/skills/parse-invocation.js');
-const { matchSkills, mergeSkills, skillFromUserRow } = await import('../src/skills/catalog.js');
+const {
+  listManagedSkills,
+  matchSkills,
+  mergeSkills,
+  normalizeSkillIdentity,
+  skillFromUserRow,
+} = await import('../src/skills/catalog.js');
 const { SYSTEM_SKILLS } = await import('../src/skills/system-skills.js');
 const {
   chatQueryFromRest,
@@ -151,6 +157,40 @@ describe('skill catalog', () => {
 
   test('query matches description text', () => {
     expect(matchSkills('excel', SYSTEM_SKILLS).map((s) => s.slug)).toEqual(['expense-reconciliation']);
+  });
+
+  test('managed skills mark builtin overrides and custom skills', () => {
+    const db = {
+      listUserSkills: () => ([
+        {
+          namespace: 'accountant',
+          slug: 'expense-reconciliation',
+          version: 2,
+          frontmatter: { name: 'Site rules', description: 'Custom' },
+          body: 'Prefer advances.',
+        },
+        {
+          namespace: 'ops',
+          slug: 'daily-digest',
+          version: 1,
+          frontmatter: { name: 'Daily digest', description: 'Recap' },
+          body: 'Summarize the day.',
+        },
+      ]),
+    };
+    const items = listManagedSkills(db);
+    const expense = items.find((s) => s.path === 'accountant/expense-reconciliation');
+    const custom = items.find((s) => s.path === 'ops/daily-digest');
+    expect(expense.hasOverride).toBe(true);
+    expect(expense.canDelete).toBe(true);
+    expect(expense.body).toBe('Prefer advances.');
+    expect(custom.isBuiltin).toBe(false);
+    expect(custom.canDelete).toBe(true);
+    expect(normalizeSkillIdentity('Ops', 'Daily-Digest')).toEqual({
+      namespace: 'ops',
+      slug: 'daily-digest',
+    });
+    expect(() => normalizeSkillIdentity('Bad Name', 'x')).toThrow(/Namespace/);
   });
 });
 

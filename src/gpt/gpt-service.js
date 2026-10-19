@@ -7,8 +7,15 @@ import { runAgent } from './agent.js';
 import { createToolbox } from './tools.js';
 import { GPT_LIMITS, estimateTokens } from './limits.js';
 import { listModelCatalog, providerForSelection, setProviderKey } from './model-registry.js';
+import {
+  listManagedSkills,
+  normalizeSkillIdentity,
+  skillFromUserRow,
+  skillKey,
+} from '../skills/catalog.js';
 import { createSkillRunner } from '../skills/skill-runner.js';
 import { parseSkillInvocation } from '../skills/parse-invocation.js';
+import { SYSTEM_SKILLS } from '../skills/system-skills.js';
 
 function titleFrom(text) {
   const t = String(text || '').trim().replace(/\s+/g, ' ');
@@ -76,6 +83,53 @@ export default class GptService {
 
   skillCandidates(query, limit = 12) {
     return this.skills.list(query, limit);
+  }
+
+  listManagedSkills() {
+    return listManagedSkills(this.db);
+  }
+
+  saveUserSkill({
+    namespace, slug, name, description = '', body = '', version,
+    needsCompleteness = false, inputs = undefined,
+  }) {
+    const id = normalizeSkillIdentity(namespace, slug);
+    const title = String(name || '').trim() || id.slug;
+    const builtin = SYSTEM_SKILLS.find((s) => skillKey(s) === skillKey(id));
+    const existing = this.db.listUserSkills()
+      .map(skillFromUserRow)
+      .find((s) => s && skillKey(s) === skillKey(id));
+    let nextVersion = Number(version);
+    if (!(nextVersion > 0)) {
+      nextVersion = existing ? (Number(existing.version) || 1) + 1 : (Number(builtin?.version) || 1);
+    }
+    const frontmatter = {
+      name: title,
+      description: String(description || '').trim(),
+      needsCompleteness: needsCompleteness != null
+        ? !!needsCompleteness
+        : !!(existing?.needsCompleteness ?? builtin?.needsCompleteness),
+      inputs: inputs && typeof inputs === 'object'
+        ? inputs
+        : (existing?.inputs || builtin?.inputs || {}),
+    };
+    const row = this.db.upsertUserSkill({
+      namespace: id.namespace,
+      slug: id.slug,
+      version: nextVersion,
+      frontmatter,
+      body: String(body || ''),
+    });
+    return listManagedSkills(this.db).find((s) => s.path === skillKey(id))
+      || skillFromUserRow(row);
+  }
+
+  deleteUserSkill(namespace, slug) {
+    const id = normalizeSkillIdentity(namespace, slug);
+    if (!this.db.deleteUserSkill(id.namespace, id.slug)) {
+      throw new Error('No custom skill to remove at that path');
+    }
+    return { ok: true, path: skillKey(id), restored: SYSTEM_SKILLS.some((s) => skillKey(s) === skillKey(id)) };
   }
 
   mentionCandidates(query, limit = 12) {
