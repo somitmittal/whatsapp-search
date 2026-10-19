@@ -6,7 +6,7 @@ import { join } from 'node:path';
 const scratch = mkdtempSync(join(tmpdir(), 'skills-'));
 process.env.DATA_DIR = scratch;
 
-const { parseSkillInvocation } = await import('../src/skills/parse-invocation.js');
+const { isRetryPhrase, parseSkillInvocation } = await import('../src/skills/parse-invocation.js');
 const {
   listManagedSkills,
   matchSkills,
@@ -54,6 +54,14 @@ describe('parseSkillInvocation', () => {
   test('ignores a slash that is not the start of the message', () => {
     expect(parseSkillInvocation('please run /accountant/expense-reconciliation')).toBeNull();
     expect(parseSkillInvocation('hello')).toBeNull();
+  });
+
+  test('recognises a retry only when the whole message is the phrase', () => {
+    expect(isRetryPhrase('pls try again')).toBe(true);
+    expect(isRetryPhrase('please try again')).toBe(true);
+    expect(isRetryPhrase('try again.')).toBe(true);
+    expect(isRetryPhrase('try again for site 2')).toBe(false);
+    expect(isRetryPhrase('/accountant/expense-reconciliation')).toBe(false);
   });
 });
 
@@ -342,6 +350,44 @@ describe('skill runs in the database', () => {
       });
       expect(db.getSkillRun('run-1').coverage.messageCount).toBe(4);
       expect(db.updateSkillRun('run-1', { status: 'sent', messageId: 'msg-1' }).status).toBe('sent');
+    });
+  });
+
+  test('try again re-runs the skill that was stopped', async () => {
+    const gpt = new GptService({
+      db,
+      getProvider: () => { throw new Error('provider should not be asked'); },
+      expenseService: null,
+    });
+    let calls = 0;
+    gpt.skills.run = async ({ text }) => {
+      calls += 1;
+      if (calls === 1) {
+        const err = new Error('aborted');
+        err.name = 'AbortedError';
+        throw err;
+      }
+      return { answer: `ran ${text}`, steps: [], choices: [], skillRun: null, expenseDiff: null };
+    };
+    await runWithTenant(TENANT, async () => {
+      const id = 'retry-after-stop';
+      await expect(gpt.handleTurn({
+        conversationId: id,
+        createConversationIfMissing: true,
+        message: '/accountant/expense-reconciliation please',
+        scopeChatJid: SITE,
+        mentions: [{ type: 'chat', chatJid: SITE, chatName: 'Site 1' }],
+      })).rejects.toThrow(/aborted/);
+
+      const again = await gpt.handleTurn({
+        conversationId: id,
+        message: 'pls try again',
+        scopeChatJid: SITE,
+        mentions: [{ type: 'chat', chatJid: SITE, chatName: 'Site 1' }],
+      });
+      expect(calls).toBe(2);
+      expect(again.answer).toBe('ran /accountant/expense-reconciliation please');
+      expect(again.messages.filter((m) => m.role === 'user').at(-1).content).toBe('pls try again');
     });
   });
 

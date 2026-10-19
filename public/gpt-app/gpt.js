@@ -1334,9 +1334,13 @@ function stepsHtml(steps = [], open = false) {
 function assistantHtml(m) {
   const p = m.payload || {};
   const model = p.model?.model ? `<span class="gpt-msg-model" title="${escAttr(`${p.model.provider} · ${p.model.model}`)}">${esc(shortModel(p.model.model))}</span>` : '';
+  const interrupted = p.stopped || p.error
+    ? `<p class="muted">${esc(p.stopped ? 'Stopped.' : p.error)}</p>`
+    : '';
   return `<div class="gpt-msg gpt-assistant">
-    ${stepsHtml(p.steps || [])}
+    ${stepsHtml(p.steps || [], !!(p.stopped || p.error))}
     <div class="gpt-md">${renderMarkdown(m.content, p.refs || {})}</div>
+    ${interrupted}
     ${p.expenseDiff ? renderExpenseDiff(p.expenseDiff) : ''}
     ${skillChoicesHtml(p.choices)}
     ${skillSendHtml(p.skillRun)}
@@ -1682,6 +1686,18 @@ function liveBubble() {
   };
 }
 
+/** Keep the steps and partial answer on screen when a turn is stopped or fails. */
+function freezeLive(live, note) {
+  if (!live?.wrap) return;
+  if (live.frame) cancelAnimationFrame(live.frame);
+  live.frame = 0;
+  live.wrap.classList.remove('live');
+  const steps = [...(live.list?.querySelectorAll('li') || [])];
+  if (!steps.length) live.wrap.querySelector('.gpt-steps')?.remove();
+  else if (live.summary) live.summary.textContent = steps.length === 1 ? steps[0].textContent : `${steps.length} steps`;
+  live.md.innerHTML = `${live.text ? renderMarkdown(live.text) : ''}<p class="muted">${esc(note)}</p>`;
+}
+
 function paintLive(live) {
   if (live.frame) return;
   live.frame = requestAnimationFrame(() => {
@@ -1890,16 +1906,9 @@ async function send(textOverride = null) {
     renderTabs();
     void loadThreads();
   } catch (err) {
-    const wasActive = activeStreamKey() === conversationId;
-    if (wasActive) {
-      if (err.name === 'AbortError') {
-        live.wrap.classList.remove('live');
-        live.md.innerHTML = `${renderMarkdown(live.text)}<p class="muted">Stopped.</p>`;
-      } else {
-        live.wrap.remove();
-        showError(err.message);
-      }
-    }
+    // The partial answer and the steps already streamed stay in the thread.
+    // The server saved the same turn, so coming back to the tab shows it too.
+    freezeLive(live, err.name === 'AbortError' ? 'Stopped.' : (err.message || 'The answer stopped early'));
   } finally {
     if (activeStreams.get(conversationId)?.ctrl === ctrl) activeStreams.delete(conversationId);
     refreshStreamingUi();

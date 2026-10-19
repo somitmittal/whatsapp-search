@@ -307,6 +307,52 @@ describe('GptService', () => {
     });
   });
 
+  test('keeps the streamed steps and partial answer when the run fails or is stopped', async () => {
+    await runWithTenant(TENANT, async () => {
+      const failing = {
+        name: 'fake',
+        model: 'fake-model',
+        async chat() { return '- memory'; },
+        async *chatStream() {
+          yield 'Cement was ';
+          throw new Error('model disconnected');
+        },
+      };
+      const failedId = 'conv-interrupted-fail';
+      const svc = new GptService({ db, getProvider: () => failing });
+      await expect(svc.handleTurn({
+        conversationId: failedId,
+        createConversationIfMissing: true,
+        message: 'did the cement arrive?',
+        scopeChatJid: SITE,
+        mentions: [{ type: 'chat', chatJid: SITE }],
+        emit: () => {},
+      })).rejects.toThrow(/disconnected/);
+      const failed = svc.getConversation(failedId);
+      expect(failed.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+      expect(failed.messages[1].content).toContain('Cement was');
+      expect(failed.messages[1].payload.error).toMatch(/disconnected/);
+      expect(failed.messages[1].payload.steps.join('\n')).toMatch(/Pulled \d+ relevant messages/);
+      expect(failed.conversation.pins.map((p) => p.chatJid)).toEqual([SITE]);
+
+      const stoppedId = 'conv-interrupted-stop';
+      const provider = scriptedProvider(['unused']);
+      const stopping = new GptService({ db, getProvider: () => provider });
+      await expect(stopping.handleTurn({
+        conversationId: stoppedId,
+        createConversationIfMissing: true,
+        message: 'did the cement arrive?',
+        scopeChatJid: SITE,
+        signal: AbortSignal.abort(),
+        emit: () => {},
+      })).rejects.toThrow(/aborted/);
+      const stopped = stopping.getConversation(stoppedId);
+      expect(stopped.messages[1].payload.stopped).toBe(true);
+      expect(stopped.messages[1].payload.steps.join('\n')).toMatch(/Pulled \d+ relevant messages/);
+      expect(stopped.conversation.pins.map((p) => p.chatJid)).toEqual([SITE]);
+    });
+  });
+
   test('rejects a turn with no provider configured', async () => {
     const svc = new GptService({ db, getProvider: () => null });
     await expect(runWithTenant(TENANT, () => svc.handleTurn({ message: 'hi' }))).rejects.toThrow(/provider/i);

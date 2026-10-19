@@ -14,7 +14,7 @@ import {
   skillKey,
 } from '../skills/catalog.js';
 import { createSkillRunner } from '../skills/skill-runner.js';
-import { parseSkillInvocation } from '../skills/parse-invocation.js';
+import { isRetryPhrase, parseSkillInvocation } from '../skills/parse-invocation.js';
 import { SYSTEM_SKILLS } from '../skills/system-skills.js';
 
 function titleFrom(text) {
@@ -30,6 +30,14 @@ function mergePins(existing, incoming) {
     }
   }
   return out;
+}
+
+function skillSettled(message) {
+  const payload = message?.payload;
+  if (message?.role !== 'assistant' || !payload) return false;
+  if (payload.incomplete || payload.stopped || payload.error) return false;
+  if (payload.skillRun?.status === 'failed') return false;
+  return payload.kind === 'skill' || !!payload.skillRun || !!payload.expenseDiff;
 }
 
 /**
@@ -162,6 +170,12 @@ export default class GptService {
         conversationId, createConversationIfMissing, message: text, scopeChatJid, mentions, model, emit,
       });
     }
+    const retryCommand = this._pendingSkillCommand(conversationId, text);
+    if (retryCommand) {
+      return this._handleSkillTurn({
+        conversationId, createConversationIfMissing, message: text, invokeText: retryCommand, scopeChatJid, mentions, model, emit,
+      });
+    }
     // `model` undefined → keep the thread's choice; null → back to Auto; object → explicit pick.
     const existingModel = conversationId ? this.db.getConversationModel(conversationId) : null;
     const selection = model === undefined ? existingModel : model;
@@ -169,9 +183,12 @@ export default class GptService {
     const provider = resolved.provider;
     if (!provider) throw new Error('No AI provider configured — pick a model from the picker or Settings.');
     const steps = [];
+    let partial = '';
     const sink = emit;
     emit = (event) => {
-      if (event?.type === 'tool') steps.push(event.text);
+      if (event?.type === 'tool' && event.text) steps.push(event.text);
+      else if (event?.type === 'delta') partial += event.text || '';
+      else if (event?.type === 'reset') partial = '';
       sink?.(event);
     };
     const status = (line) => emit?.({ type: 'status', text: line });
@@ -207,6 +224,7 @@ export default class GptService {
       payload: { scopeChatJid: effectiveScopeChatJid, mentions: resolvedMentions },
     });
 
+    try {
     const scopeJids = pins.map((p) => p.chatJid);
     const lastExpense = [...prior].reverse().find((m) => m.role === 'assistant' && m.payload?.expenseDiff);
     const [pre] = await Promise.all([this.context.prefetch({ query: text, scopeJids })]);
@@ -268,15 +286,34 @@ export default class GptService {
       expenseDiff,
       model: { provider: provider.name, model: provider.model },
     };
+    } catch (err) {
+      this._saveInterruptedTurn(conversation.id, {
+        content: partial.trim(),
+        steps,
+        stopped: err?.name === 'AbortedError',
+        error: err?.name === 'AbortedError' ? null : (err?.message || 'The answer stopped early'),
+        model: { provider: provider.name, model: provider.model },
+      });
+      throw err;
+    }
   }
 
   /**
    * Slash command. Resolved from the skill catalog before any model call, then executed
    * as a dry run. Sending the report is a separate confirm.
    */
-  async _handleSkillTurn({ conversationId = null, createConversationIfMissing = false, message, scopeChatJid = null, mentions = [], model = undefined, emit = null }) {
+  async _handleSkillTurn({ conversationId = null, createConversationIfMissing = false, message, invokeText = null, scopeChatJid = null, mentions = [], model = undefined, emit = null }) {
     const text = String(message || '').trim();
-    const status = (line) => emit?.({ type: 'status', text: line });
+    const commandText = String(invokeText || text).trim();
+    if (commandText !== text) {
+      const command = commandText.split(/\s+/)[0];
+      emit?.({ type: 'status', text: `Running ${command} again…` });
+    }
+    const progress = [];
+    const status = (line) => {
+      if (line) progress.push(line);
+      emit?.({ type: 'status', text: line });
+    };
     let conversation = conversationId ? this.db.getSearchConversation(conversationId) : null;
     if (conversationId && !conversation && !createConversationIfMissing) throw new Error('Conversation not found');
     if (!conversation) {
@@ -312,14 +349,27 @@ export default class GptService {
       payload: { scopeChatJid: effectiveScopeChatJid, mentions: resolvedMentions, skill: true },
     });
 
-    const outcome = await this.skills.run({
-      text,
-      mentions: pins,
-      scopeChatJid: effectiveScopeChatJid || pins.find((p) => String(p.chatJid).endsWith('@g.us'))?.chatJid || null,
-      conversationId: conversation.id,
-      status,
-      resolveProvider: resolveExpenseProvider,
-    });
+    let outcome;
+    try {
+      outcome = await this.skills.run({
+        text: commandText,
+        mentions: pins,
+        scopeChatJid: effectiveScopeChatJid || pins.find((p) => String(p.chatJid).endsWith('@g.us'))?.chatJid || null,
+        conversationId: conversation.id,
+        status,
+        resolveProvider: resolveExpenseProvider,
+      });
+    } catch (err) {
+      this._saveInterruptedTurn(conversation.id, {
+        content: '',
+        steps: progress,
+        stopped: err?.name === 'AbortedError',
+        error: err?.name === 'AbortedError' ? null : (err?.message || 'The skill stopped early'),
+        model: null,
+        kind: 'skill',
+      });
+      throw err;
+    }
     const assistant = this.db.addSearchMessage({
       id: randomUUID(),
       conversationId: conversation.id,
@@ -346,6 +396,44 @@ export default class GptService {
       expenseDiff: outcome.expenseDiff || null,
       model: null,
     };
+  }
+
+  /**
+   * "try again" re-runs the latest slash command until that command produces a
+   * finished skill result. A stopped turn, a failed run, and a normal chat
+   * answer do not count as finished.
+   */
+  _pendingSkillCommand(conversationId, text) {
+    if (!conversationId || !isRetryPhrase(text)) return null;
+    const prior = this.db.listSearchMessages(conversationId);
+    let command = null;
+    for (const message of prior) {
+      if (message.role === 'user' && parseSkillInvocation(message.content)) command = message.content;
+      else if (skillSettled(message)) command = null;
+    }
+    return command;
+  }
+
+  /** Keep a stopped or failed turn, including the steps already streamed. */
+  _saveInterruptedTurn(conversationId, { content = '', steps = [], stopped = false, error = null, model = null, kind = 'gpt' }) {
+    try {
+      this.db.addSearchMessage({
+        id: randomUUID(),
+        conversationId,
+        role: 'assistant',
+        content,
+        payload: {
+          kind,
+          incomplete: true,
+          stopped: !!stopped,
+          ...(error ? { error } : {}),
+          steps,
+          ...(model ? { model } : {}),
+        },
+      });
+    } catch (err) {
+      console.error('Could not save interrupted GPT turn:', err.message);
+    }
   }
 
   /** Confirm a dry run: post the report that was already written. */
