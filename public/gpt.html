@@ -33,6 +33,7 @@
     </div>
 
     <div class="gpt-top-actions">
+      <button type="button" class="gpt-trial-chip" id="gpt-trial-chip" hidden title="Account"></button>
       <button type="button" class="gpt-icon" id="gpt-thread-search-btn" title="Search previous threads" aria-label="Search threads" aria-haspopup="dialog">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </button>
@@ -42,6 +43,14 @@
       <div class="gpt-model" id="gpt-model"></div>
     </div>
   </header>
+
+  <div class="gpt-trial-nudge" id="gpt-trial-nudge" role="status" hidden>
+    <p class="gpt-trial-nudge-text" id="gpt-trial-nudge-text"></p>
+    <div class="gpt-trial-nudge-actions">
+      <button type="button" class="gpt-trial-nudge-btn" id="gpt-trial-nudge-cta">Subscribe</button>
+      <button type="button" class="gpt-trial-nudge-dismiss" id="gpt-trial-nudge-dismiss" aria-label="Dismiss">×</button>
+    </div>
+  </div>
 
   <div class="gpt-thread-search" id="gpt-thread-search" hidden>
     <div class="gpt-popover" role="dialog" aria-label="Search threads">
@@ -59,6 +68,7 @@
         </div>
         <nav class="gpt-settings-tabs" aria-label="Settings sections">
           <button type="button" class="gpt-settings-tab on" data-settings-tab="general">General</button>
+          <button type="button" class="gpt-settings-tab" data-settings-tab="account">Account</button>
           <button type="button" class="gpt-settings-tab" data-settings-tab="skills">Skills</button>
         </nav>
       </aside>
@@ -84,6 +94,26 @@
           <div class="gpt-settings-block">
             <h4>Models</h4>
             <p class="muted">Pick the model for this thread and manage provider API keys from the composer model menu (bottom of the chat).</p>
+          </div>
+        </section>
+
+        <section class="gpt-settings-panel" data-settings-panel="account" hidden>
+          <header class="gpt-settings-panel-head">
+            <h3>Account</h3>
+            <p class="muted">Searchable login, trial status, and billing. Chats stay on this device.</p>
+          </header>
+          <div class="gpt-settings-block" id="gpt-account-card">
+            <h4>Signed in as</h4>
+            <p id="gpt-account-email" class="gpt-account-email">Not signed in</p>
+            <p id="gpt-account-plan" class="gpt-account-plan muted">—</p>
+            <p id="gpt-account-trial" class="gpt-account-trial" hidden></p>
+            <div class="gpt-account-actions">
+              <button type="button" class="gpt-settings-action primary" id="gpt-account-signin" hidden>Sign in</button>
+              <button type="button" class="gpt-settings-action primary" id="gpt-account-subscribe" hidden>Subscribe to Pro</button>
+              <button type="button" class="gpt-settings-action" id="gpt-account-billing" hidden>Manage billing</button>
+              <button type="button" class="gpt-settings-action danger" id="gpt-account-logout" hidden>Log out</button>
+            </div>
+            <p class="muted" id="gpt-account-hint" style="margin-top:10px;"></p>
           </div>
         </section>
 

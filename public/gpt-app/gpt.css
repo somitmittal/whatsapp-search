@@ -138,6 +138,39 @@ button { font: inherit; color: inherit; }
 .gpt-top-actions {
   display: flex; align-items: center; gap: 2px; flex-shrink: 0; padding-left: 4px;
 }
+.gpt-trial-chip {
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--accent-2); font: inherit; font-size: 11.5px; font-weight: 600;
+  padding: 4px 10px; border-radius: 999px; cursor: pointer; max-width: 200px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gpt-trial-chip[hidden] { display: none; }
+.gpt-trial-chip:hover { filter: brightness(1.03); }
+.gpt-trial-chip.expired { background: #fff3cd; color: #856404; border-color: #f3d98b; }
+.gpt-trial-chip.pro { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); }
+.gpt-trial-nudge {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 14px; background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
+  border-bottom: 1px solid var(--line); flex-shrink: 0;
+}
+.gpt-trial-nudge[hidden] { display: none; }
+.gpt-trial-nudge.expired { background: #fff3cd; color: #856404; }
+.gpt-trial-nudge-text { margin: 0; font-size: 13px; line-height: 1.4; flex: 1; min-width: 0; }
+.gpt-trial-nudge-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.gpt-trial-nudge-btn {
+  border: 0; border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  background: var(--accent); color: #fff; font: inherit; font-size: 12.5px; font-weight: 600;
+}
+.gpt-trial-nudge-dismiss {
+  width: 28px; height: 28px; border: 0; border-radius: 7px; background: transparent;
+  color: inherit; cursor: pointer; font-size: 18px; line-height: 1;
+}
+.gpt-trial-nudge-dismiss:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+.gpt-account-email { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: var(--fg); }
+.gpt-account-plan { margin: 0; }
+.gpt-account-trial { margin: 8px 0 0; font-size: 13px; font-weight: 600; color: var(--accent-2); }
+.gpt-account-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .gpt-icon {
   width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px;
   background: transparent; border: 0; color: var(--fg-2); cursor: pointer;

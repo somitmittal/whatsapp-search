@@ -24,6 +24,7 @@ import { autoSelectSidebarTab, renderSidebarTabCounts, setSidebarListTab, sideba
 import { store } from '/js/store.js';
 import { esc, escAttr } from '/js/util.js';
 import { initWaBootstrap } from '/js/wa-bootstrap.js';
+import { accountPlanSummary, shouldAutoLogout } from '/js/trial-status.js';
 import { isWaUiReady, updateWaUI } from '/js/wa-connection.js';
 
 initFetchShim();
@@ -146,6 +147,8 @@ const state = {
   skillFilter: '',
   selectedSkillPath: null,
   skillDraftNew: false,
+  accountStatus: null,
+  trialNudgeDismissed: false,
 };
 
 // A stream belongs to its conversation, not to whichever tab is currently visible.
@@ -592,14 +595,138 @@ function openSettings(open = true, tab = null) {
 function closeSettings() { els.settings.hidden = true; }
 
 function setSettingsTab(tab) {
-  state.settingsTab = tab === 'skills' ? 'skills' : 'general';
-  document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
+  const allowed = new Set(['general', 'account', 'skills']);
+  state.settingsTab = allowed.has(tab) ? tab : 'general';
+  // Scope to the GPT settings shell — classic overlay settings share the same data attrs.
+  els.settings.querySelectorAll('[data-settings-tab]').forEach((btn) => {
     btn.classList.toggle('on', btn.dataset.settingsTab === state.settingsTab);
   });
-  document.querySelectorAll('[data-settings-panel]').forEach((panel) => {
+  els.settings.querySelectorAll('[data-settings-panel]').forEach((panel) => {
     panel.hidden = panel.dataset.settingsPanel !== state.settingsTab;
   });
   if (state.settingsTab === 'skills') void loadManagedSkills();
+  if (state.settingsTab === 'account') void refreshAccountPanel();
+}
+
+function cfg() {
+  return window.__searchableAppConfig || {};
+}
+
+function accountSnapshot() {
+  const status = window.SearchableAccount?.getLastStatus?.() || state.accountStatus || null;
+  const entitlement = status?.entitlement || null;
+  const email = status?.email || window.SearchableAccount?.getEmail?.() || null;
+  return { status, entitlement, email, summary: accountPlanSummary(entitlement, { email }) };
+}
+
+function renderAccountChrome() {
+  const { entitlement, email, summary } = accountSnapshot();
+  const chip = $('#gpt-trial-chip');
+  if (chip) {
+    const show = summary.kind === 'trial' || summary.kind === 'expired' || summary.kind === 'pro';
+    chip.hidden = !show;
+    chip.textContent = summary.kind === 'pro' ? 'Pro' : summary.text;
+    chip.classList.toggle('expired', summary.kind === 'expired');
+    chip.classList.toggle('pro', summary.kind === 'pro');
+  }
+  const nudge = $('#gpt-trial-nudge');
+  const nudgeText = $('#gpt-trial-nudge-text');
+  const nudgeCta = $('#gpt-trial-nudge-cta');
+  if (nudge && nudgeText) {
+    const expired = shouldAutoLogout(entitlement);
+    const dismissed = state.trialNudgeDismissed && !expired;
+    if (expired && !dismissed) {
+      nudge.hidden = false;
+      nudge.classList.add('expired');
+      nudgeText.textContent = 'Your Pro trial has ended. Log in again after you subscribe — WhatsApp GPT is locked until then.';
+      if (nudgeCta) {
+        nudgeCta.hidden = !cfg().stripeEnabled;
+        nudgeCta.textContent = 'Subscribe to Pro';
+      }
+    } else if (summary.kind === 'trial' && summary.daysLeft === 1 && !dismissed) {
+      // Last calendar day (daysLeft is ceil of time until the server's trialEndsAt).
+      nudge.hidden = false;
+      nudge.classList.remove('expired');
+      nudgeText.textContent = 'Last day of your Pro trial. Subscribe to keep using WhatsApp GPT.';
+      if (nudgeCta) {
+        nudgeCta.hidden = !cfg().stripeEnabled;
+        nudgeCta.textContent = 'Subscribe';
+      }
+    } else {
+      nudge.hidden = true;
+    }
+  }
+  void email;
+}
+
+async function refreshAccountPanel() {
+  const sa = window.SearchableAccount;
+  if (sa?.refreshAccount && cfg().licenseGate) {
+    try {
+      state.accountStatus = await sa.refreshAccount(cfg());
+    } catch {
+      state.accountStatus = sa.getLastStatus?.() || null;
+    }
+  } else {
+    state.accountStatus = sa?.getLastStatus?.() || null;
+  }
+  const { entitlement, email, summary } = accountSnapshot();
+  const emailEl = $('#gpt-account-email');
+  const planEl = $('#gpt-account-plan');
+  const trialEl = $('#gpt-account-trial');
+  const hint = $('#gpt-account-hint');
+  const btnSignIn = $('#gpt-account-signin');
+  const btnSub = $('#gpt-account-subscribe');
+  const btnBilling = $('#gpt-account-billing');
+  const btnLogout = $('#gpt-account-logout');
+  if (emailEl) emailEl.textContent = email || 'Not signed in';
+  if (planEl) planEl.textContent = summary.text;
+  if (trialEl) {
+    const showDays = summary.kind === 'trial' && summary.daysLeft != null;
+    trialEl.hidden = !showDays;
+    if (showDays) {
+      trialEl.textContent = summary.daysLeft === 1
+        ? '1 day left in your Pro trial'
+        : `${summary.daysLeft} days left in your Pro trial`;
+    }
+  }
+  const signedIn = Boolean(email || sa?.hasSession?.());
+  const expired = shouldAutoLogout(entitlement);
+  const isPro = summary.kind === 'pro';
+  if (btnSignIn) btnSignIn.hidden = signedIn && !expired;
+  if (btnLogout) btnLogout.hidden = !signedIn;
+  if (btnSub) btnSub.hidden = !(cfg().stripeEnabled && (expired || summary.kind === 'trial'));
+  if (btnBilling) btnBilling.hidden = !(cfg().stripeEnabled && isPro);
+  if (hint) {
+    if (!cfg().licenseGate) {
+      hint.textContent = 'License gate is off on this install — GPT stays open without an account.';
+    } else if (expired) {
+      hint.textContent = 'Trial ended. You were signed out of Pro features. Subscribe to continue.';
+    } else if (!signedIn) {
+      hint.textContent = 'Sign in for a free Pro trial. Your chats never leave this device.';
+    } else {
+      hint.textContent = '';
+    }
+  }
+  renderAccountChrome();
+}
+
+function onAccountChanged(detail = {}) {
+  if (detail.status) state.accountStatus = detail.status;
+  if (detail.signedOut) {
+    state.accountStatus = null;
+    state.trialNudgeDismissed = false;
+  }
+  if (detail.trialExpired) {
+    state.trialNudgeDismissed = false;
+    renderPaywall({
+      error: 'Your Pro trial has ended — subscribe to continue WhatsApp GPT',
+      code: 'trial_expired',
+      entitlement: detail.status?.entitlement,
+    });
+  }
+  renderAccountChrome();
+  if (!els.settings.hidden && state.settingsTab === 'account') void refreshAccountPanel();
 }
 
 async function loadManagedSkills() {
@@ -1816,12 +1943,46 @@ function wire() {
   els.threadSearchBtn.addEventListener('click', () => openThreadSearch(els.threadSearch.hidden));
   els.settingsBtn.addEventListener('click', () => openSettings(els.settings.hidden));
   $('#gpt-settings-close').addEventListener('click', closeSettings);
-  document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
+  els.settings.querySelectorAll('[data-settings-tab]').forEach((btn) => {
     btn.addEventListener('click', () => setSettingsTab(btn.dataset.settingsTab));
   });
   document.querySelectorAll('.gpt-theme-opt').forEach((btn) => {
     btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
   });
+  $('#gpt-trial-chip')?.addEventListener('click', () => openSettings(true, 'account'));
+  $('#gpt-trial-nudge-dismiss')?.addEventListener('click', () => {
+    state.trialNudgeDismissed = true;
+    renderAccountChrome();
+  });
+  $('#gpt-trial-nudge-cta')?.addEventListener('click', () => {
+    const sa = window.SearchableAccount;
+    if (cfg().stripeEnabled && sa?.startCheckout) {
+      sa.startCheckout(cfg()).catch((e) => alert(e.message));
+    } else {
+      sa?.openGate?.(cfg(), state.accountStatus);
+    }
+  });
+  $('#gpt-account-signin')?.addEventListener('click', () => {
+    window.SearchableAccount?.openGate?.(cfg(), state.accountStatus);
+  });
+  $('#gpt-account-subscribe')?.addEventListener('click', () => {
+    window.SearchableAccount?.startCheckout?.(cfg()).catch((e) => alert(e.message));
+  });
+  $('#gpt-account-billing')?.addEventListener('click', () => {
+    window.SearchableAccount?.openBillingPortal?.(cfg()).catch((e) => alert(e.message));
+  });
+  $('#gpt-account-logout')?.addEventListener('click', () => {
+    if (!confirm('Log out of your Searchable account on this device? WhatsApp chats stay local.')) return;
+    window.SearchableAccount?.logout?.(cfg());
+    void refreshAccountPanel();
+  });
+  window.__searchableOnAccountChanged = onAccountChanged;
+  window.__searchableOnTrialExpired = (status) => {
+    onAccountChanged({ trialExpired: true, status });
+    if (cfg().licenseGate) {
+      window.SearchableAccount?.openGate?.(cfg(), status);
+    }
+  };
   $('#gpt-skills-filter')?.addEventListener('input', (e) => {
     state.skillFilter = e.target.value || '';
     renderSkillsList();
@@ -2041,6 +2202,17 @@ async function boot() {
   else if (!state.activeChatJid) els.input.focus();
   if (location.hash === '#models') openModelMenu(true);
   if (location.hash === '#settings') openSettings(true);
+  if (location.hash === '#account') openSettings(true, 'account');
+  state.accountStatus = window.SearchableAccount?.getLastStatus?.() || null;
+  renderAccountChrome();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && cfg().licenseGate) {
+      void window.SearchableAccount?.refreshAccount?.(cfg()).then((status) => {
+        state.accountStatus = status;
+        renderAccountChrome();
+      }).catch(() => {});
+    }
+  });
   restoringTabs = false;
   localStorage.setItem(ACTIVE_TAB_KEY, activeTabKey());
 }

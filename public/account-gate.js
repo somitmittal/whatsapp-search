@@ -42,6 +42,39 @@
     return u;
   }
 
+  let lastStatus = null;
+  let expiryTimer = null;
+
+  function getEmail() {
+    return localStorage.getItem(EMAIL_KEY);
+  }
+
+  function hasSession() {
+    return Boolean(localStorage.getItem(TOKEN_KEY) || localStorage.getItem(EMAIL_KEY));
+  }
+
+  function getLastStatus() {
+    return lastStatus;
+  }
+
+  /** Drop the license session. Install id stays so the device can re-link. */
+  function clearSession({ keepEmail = false } = {}) {
+    localStorage.removeItem(TOKEN_KEY);
+    if (!keepEmail) localStorage.removeItem(EMAIL_KEY);
+    localStorage.removeItem(SKIP_UNTIL_KEY);
+  }
+
+  function logout(cfg) {
+    clearSession({ keepEmail: false });
+    lastStatus = null;
+    clearTimeout(expiryTimer);
+    expiryTimer = null;
+    track(cfg || window.__searchableAppConfig || {}, 'account_logout', {});
+    if (typeof window.__searchableOnAccountChanged === 'function') {
+      window.__searchableOnAccountChanged({ signedOut: true });
+    }
+  }
+
   async function fetchLicenseStatus(cfg) {
     const installId = getInstallId();
     const url = apiUrl(cfg, '/api/control/license/status?installId=' + encodeURIComponent(installId)
@@ -51,7 +84,60 @@
     const data = await res.json().catch(() => ({}));
     if (data.licenseToken) localStorage.setItem(TOKEN_KEY, data.licenseToken);
     if (data.email) localStorage.setItem(EMAIL_KEY, data.email);
+    // Expired / inactive: drop a stale token so GPT cannot keep sending it.
+    if (data.entitlement && data.entitlement.allowed === false) {
+      localStorage.removeItem(TOKEN_KEY);
+    }
+    lastStatus = data;
     return data;
+  }
+
+  /**
+   * Fire once when trialEndsAt is reached (from the server's date — not a poll interval).
+   * Clears the license and nudges the UI / subscribe gate.
+   */
+  function armTrialExpiry(cfg, status) {
+    clearTimeout(expiryTimer);
+    expiryTimer = null;
+    const entitlement = status?.entitlement;
+    if (!entitlement?.trialEndsAt) return;
+    if (entitlement.plan === 'pro' && entitlement.allowed) return;
+    const ends = new Date(entitlement.trialEndsAt).getTime();
+    if (!Number.isFinite(ends)) return;
+    const fire = () => {
+      expiryTimer = null;
+      clearSession({ keepEmail: true });
+      const expiredStatus = {
+        ...status,
+        entitlement: {
+          ...entitlement,
+          allowed: false,
+          plan: 'trial',
+          status: 'expired',
+          reason: 'trial_expired',
+        },
+        licenseToken: null,
+      };
+      lastStatus = expiredStatus;
+      track(cfg, 'trial_expired_autologout', {});
+      if (typeof window.__searchableOnTrialExpired === 'function') {
+        window.__searchableOnTrialExpired(expiredStatus);
+      } else if (cfg?.licenseGate) {
+        openGate(cfg, expiredStatus);
+      }
+      if (typeof window.__searchableOnAccountChanged === 'function') {
+        window.__searchableOnAccountChanged({ trialExpired: true, status: expiredStatus });
+      }
+    };
+    const ms = ends - Date.now();
+    if (ms <= 0) {
+      // Already expired: init/refresh clears the session and may open the gate.
+      // Only force a logout if the status still claims the trial is active.
+      if (entitlement.allowed) fire();
+      return;
+    }
+    // setTimeout's max delay is 2^31-1 ms (~24.8d); trials are 14d.
+    expiryTimer = setTimeout(fire, Math.min(ms + 250, 2147483647));
   }
 
   function authHeaders() {
@@ -218,6 +304,8 @@
         localStorage.setItem(EMAIL_KEY, email);
         el.hidden = true;
         track(cfg, 'account_created', { email });
+        // Refresh so trialEndsAt is armed for auto-logout at the real end time.
+        void refreshAccount(cfg).catch(() => {});
         if (window.__searchableOnAccountReady) window.__searchableOnAccountReady(data);
       } catch (err) {
         showMsg(err.message || 'Something went wrong', false);
@@ -233,6 +321,17 @@
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Checkout failed');
+    if (data.url) window.location.href = data.url;
+  }
+
+  async function openBillingPortal(cfg) {
+    const res = await fetch(apiUrl(cfg, '/api/control/billing/portal'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ installId: getInstallId() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Billing portal failed');
     if (data.url) window.location.href = data.url;
   }
 
@@ -258,18 +357,44 @@
     try {
       status = await fetchLicenseStatus(cfg);
     } catch (_) { /* offline */ }
+    if (status?.entitlement?.reason === 'trial_expired') {
+      clearSession({ keepEmail: true });
+    }
+    armTrialExpiry(cfg, status);
     if (shouldShowGate(cfg, status)) {
       await openGate(cfg, status);
+    }
+    if (typeof window.__searchableOnAccountChanged === 'function') {
+      window.__searchableOnAccountChanged({ status });
     }
     return { status, installId: getInstallId(), authHeaders };
   }
 
+  async function refreshAccount(cfg) {
+    const status = await fetchLicenseStatus(cfg || window.__searchableAppConfig || {});
+    if (status?.entitlement?.reason === 'trial_expired') {
+      clearSession({ keepEmail: true });
+    }
+    armTrialExpiry(cfg || window.__searchableAppConfig || {}, status);
+    if (typeof window.__searchableOnAccountChanged === 'function') {
+      window.__searchableOnAccountChanged({ status });
+    }
+    return status;
+  }
+
   window.SearchableAccount = {
     getInstallId,
+    getEmail,
+    hasSession,
+    getLastStatus,
     authHeaders,
     initAccountGate,
     fetchLicenseStatus,
+    refreshAccount,
+    clearSession,
+    logout,
     startCheckout,
+    openBillingPortal,
     openGate,
     track,
   };
