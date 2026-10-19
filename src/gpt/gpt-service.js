@@ -33,6 +33,19 @@ function mergePins(existing, incoming) {
 }
 
 /**
+ * Ask AI threads start scoped to their own chat; explicit @mentions add chats on top.
+ * The scope chat always stays first so single-chat tools keep targeting it.
+ */
+function threadPins(scopeChatJid, scopeChatName, memoryPins, mentions) {
+  const merged = mergePins(memoryPins, mentions);
+  if (!scopeChatJid) return merged;
+  return mergePins(
+    [{ type: 'chat', chatJid: scopeChatJid, chatName: scopeChatName }],
+    merged.filter((p) => p.chatJid !== scopeChatJid),
+  );
+}
+
+/**
  * WhatsApp GPT turn orchestration: pins (@chat mentions), auto-context, agent loop with tools,
  * persistence, and background memory compaction of older turns.
  */
@@ -169,6 +182,7 @@ export default class GptService {
     if (!conversation) {
       conversation = this.db.createSearchConversation({ id: conversationId || randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
     }
+    const effectiveScopeChatJid = scopeChatJid || conversation.chatJid || null;
     // Let the tab persist the conversation before context gathering or a skill run
     // starts. The user may switch tabs while that work is still in progress.
     emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: !conversationId || createConversationIfMissing });
@@ -179,16 +193,21 @@ export default class GptService {
     const resolvedMentions = (mentions || []).map((p) => (p?.chatJid
       ? { type: 'chat', chatJid: p.chatJid, chatName: p.chatName || this.directory.name(p.chatJid) }
       : null)).filter(Boolean);
-    const pins = mergePins(memory.pins, resolvedMentions);
-    if (pins.length !== memory.pins.length) this.db.setConversationPins(conversation.id, pins);
+    const pins = threadPins(
+      effectiveScopeChatJid,
+      effectiveScopeChatJid ? this.directory.name(effectiveScopeChatJid) : null,
+      memory.pins,
+      resolvedMentions,
+    );
+    if (JSON.stringify(pins) !== JSON.stringify(memory.pins)) this.db.setConversationPins(conversation.id, pins);
 
     const prior = this.db.listSearchMessages(conversation.id);
     this.db.addSearchMessage({
       id: randomUUID(), conversationId: conversation.id, role: 'user', content: text,
-      payload: { scopeChatJid, mentions: resolvedMentions },
+      payload: { scopeChatJid: effectiveScopeChatJid, mentions: resolvedMentions },
     });
 
-    const scopeJids = [...pins.map((p) => p.chatJid), scopeChatJid].filter(Boolean);
+    const scopeJids = pins.map((p) => p.chatJid);
     const lastExpense = [...prior].reverse().find((m) => m.role === 'assistant' && m.payload?.expenseDiff);
     const [pre] = await Promise.all([this.context.prefetch({ query: text, scopeJids })]);
     const contextText = [
@@ -215,7 +234,7 @@ export default class GptService {
       contextText,
       query: text,
       toolbox: this.toolbox,
-      ctx: { status, scopeChatJid: scopeJids[0] || null, prefetched: pre.messages },
+      ctx: { status, scopeChatJid: effectiveScopeChatJid || scopeJids[0] || null, prefetched: pre.messages },
       emit,
       signal,
     });
@@ -263,6 +282,7 @@ export default class GptService {
     if (!conversation) {
       conversation = this.db.createSearchConversation({ id: conversationId || randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
     }
+    const effectiveScopeChatJid = scopeChatJid || conversation.chatJid || null;
     // Slash commands can take long enough for the user to navigate away. Publish
     // the durable ID first so the draft tab is recoverable even if its stream closes.
     emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: !conversationId || createConversationIfMissing });
@@ -279,18 +299,23 @@ export default class GptService {
     const resolvedMentions = (mentions || []).map((p) => (p?.chatJid
       ? { type: 'chat', chatJid: p.chatJid, chatName: p.chatName || this.directory.name(p.chatJid) }
       : null)).filter(Boolean);
-    const pins = mergePins(memory.pins, resolvedMentions);
-    if (pins.length !== memory.pins.length) this.db.setConversationPins(conversation.id, pins);
+    const pins = threadPins(
+      effectiveScopeChatJid,
+      effectiveScopeChatJid ? this.directory.name(effectiveScopeChatJid) : null,
+      memory.pins,
+      resolvedMentions,
+    );
+    if (JSON.stringify(pins) !== JSON.stringify(memory.pins)) this.db.setConversationPins(conversation.id, pins);
 
     this.db.addSearchMessage({
       id: randomUUID(), conversationId: conversation.id, role: 'user', content: text,
-      payload: { scopeChatJid, mentions: resolvedMentions, skill: true },
+      payload: { scopeChatJid: effectiveScopeChatJid, mentions: resolvedMentions, skill: true },
     });
 
     const outcome = await this.skills.run({
       text,
       mentions: pins,
-      scopeChatJid: scopeChatJid || pins.find((p) => String(p.chatJid).endsWith('@g.us'))?.chatJid || null,
+      scopeChatJid: effectiveScopeChatJid || pins.find((p) => String(p.chatJid).endsWith('@g.us'))?.chatJid || null,
       conversationId: conversation.id,
       status,
       resolveProvider: resolveExpenseProvider,

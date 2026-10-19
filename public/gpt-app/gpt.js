@@ -94,7 +94,14 @@ function normalizeTab(item) {
     return { kind: 'gpt', id: item };
   }
   if (item.kind === 'chat' && item.jid) return { kind: 'chat', jid: String(item.jid), name: item.name || '' };
-  if (item.kind === 'gpt' && item.id) return { kind: 'gpt', id: String(item.id) };
+  if (item.kind === 'gpt' && item.id) {
+    return {
+      kind: 'gpt',
+      id: String(item.id),
+      ...(item.scopeChatJid ? { scopeChatJid: String(item.scopeChatJid) } : {}),
+      ...(item.name ? { name: String(item.name) } : {}),
+    };
+  }
   if (item.kind === 'draft') return {
     kind: 'draft',
     ...(item.scopeChatJid ? { scopeChatJid: String(item.scopeChatJid) } : {}),
@@ -287,12 +294,7 @@ async function reloadActiveWaMessages() {
   } catch { /* ignore */ }
 }
 
-function askAiAboutActiveChat(seed = '') {
-  const jid = state.activeChatJid;
-  if (!jid) return;
-  const title = els.title.textContent
-    || displayChatTitle(jid, state.chats.find((c) => c.chatJid === jid)?.chatName || jid);
-  // Fresh GPT thread with only this chat as context (drop any pins from browsing other chats).
+function openFreshAskDraft(jid, title, seed = '') {
   state.conversationId = null;
   state.scopeChatJid = jid;
   state.pins = [{ type: 'chat', chatJid: jid, chatName: title }];
@@ -315,6 +317,87 @@ function askAiAboutActiveChat(seed = '') {
   renderChats();
   if (seed) void send(seed);
   else els.input.focus();
+}
+
+function askAiAboutActiveChat(seed = '') {
+  const jid = state.activeChatJid;
+  if (!jid) return;
+  const title = els.title.textContent
+    || displayChatTitle(jid, state.chats.find((c) => c.chatJid === jid)?.chatName || jid);
+
+  // 1) Same Ask draft still in the strip → focus it with chat context (sync).
+  const draft = state.openTabs.find((t) => t.kind === 'draft' && t.scopeChatJid === jid);
+  if (draft) {
+    openScopedDraft({ ...draft, name: draft.name || `Ask: ${title}` });
+    els.input.placeholder = `Ask about ${title}…  (@ to add a chat, / for a skill)`;
+    if (seed) void send(seed);
+    else els.input.focus();
+    return;
+  }
+
+  // 2) Prior Ask thread for this chat → focus that tab. If the id is stale, fall
+  // back to a fresh scoped draft so context is never lost.
+  const gpt = state.openTabs.find((t) => t.kind === 'gpt' && t.scopeChatJid === jid)
+    || state.openTabs.find((t) => {
+      if (t.kind !== 'gpt') return false;
+      return state.conversations.some((c) => c.id === t.id && c.chatJid === jid);
+    });
+  if (gpt) {
+    // Leave the chat tab immediately so Ask AI never looks stuck on WhatsApp.
+    state.activeChatJid = null;
+    store.activeChat = null;
+    state.conversationId = gpt.id;
+    state.scopeChatJid = jid;
+    state.pins = [{ type: 'chat', chatJid: jid, chatName: title }];
+    ensureTab({
+      kind: 'gpt',
+      id: gpt.id,
+      scopeChatJid: jid,
+      name: gpt.name || `Ask: ${title}`,
+    });
+    setMode('gpt');
+    els.title.textContent = gpt.name || `Ask about ${title}`;
+    els.input.placeholder = `Ask about ${title}…  (@ to add a chat, / for a skill)`;
+    els.empty.hidden = true;
+    history.replaceState(null, '', `/gpt?c=${encodeURIComponent(gpt.id)}`);
+    renderTabs();
+    renderPills();
+    renderChats();
+    void (async () => {
+      try {
+        const res = await fetch(`/api/gpt/conversations/${encodeURIComponent(gpt.id)}`, {
+          headers: authHeaders(),
+        });
+        if (!res.ok) throw new Error('missing');
+        await openConversation(gpt.id, { pushUrl: false });
+        if (state.conversationId !== gpt.id) return;
+        // openConversation may clear scope when the row has no chatJid — restore it.
+        state.scopeChatJid = jid;
+        if (!state.pins.some((p) => p.chatJid === jid)) {
+          state.pins = [{ type: 'chat', chatJid: jid, chatName: title }, ...state.pins];
+        }
+        ensureTab({
+          kind: 'gpt',
+          id: gpt.id,
+          scopeChatJid: jid,
+          name: gpt.name || `Ask: ${title}`,
+        });
+        els.input.placeholder = `Ask about ${title}…  (@ to add a chat, / for a skill)`;
+        renderPills();
+        renderTabs();
+        if (seed) await send(seed);
+        else els.input.focus();
+      } catch {
+        state.openTabs = state.openTabs.filter((t) => !(t.kind === 'gpt' && t.id === gpt.id));
+        persistTabs();
+        openFreshAskDraft(jid, title, seed);
+      }
+    })();
+    return;
+  }
+
+  // 3) First Ask AI for this chat — original behavior.
+  openFreshAskDraft(jid, title, seed);
 }
 
 function currentTheme() {
@@ -425,6 +508,7 @@ function tabTitle(t) {
   if (tab.kind === 'chat') {
     return tab.name || displayChatTitle(tab.jid, state.chats.find((c) => c.chatJid === tab.jid)?.chatName || tab.jid);
   }
+  if (tab.name) return tab.name;
   const c = state.conversations.find((x) => x.id === tab.id);
   return c?.title || 'Chat';
 }
@@ -434,7 +518,13 @@ function ensureTab(tab) {
   const key = tabKey(t);
   const idx = state.openTabs.findIndex((x) => tabKey(x) === key);
   if (idx >= 0) {
-    if (t.kind === 'chat' && t.name) state.openTabs[idx] = { ...state.openTabs[idx], name: t.name };
+    // Keep identity fields (id/jid) from the existing tab; refresh name/scope metadata.
+    state.openTabs[idx] = {
+      ...state.openTabs[idx],
+      ...t,
+      ...(state.openTabs[idx].kind === 'gpt' ? { kind: 'gpt', id: state.openTabs[idx].id } : {}),
+      ...(state.openTabs[idx].kind === 'chat' ? { kind: 'chat', jid: state.openTabs[idx].jid } : {}),
+    };
   } else {
     state.openTabs.push(t);
   }
@@ -553,6 +643,10 @@ function renderTabs() {
       <span class="x" data-close-tab="${escAttr(key)}" title="Close" aria-label="Close tab" draggable="false">×</span>
     </button>`;
   }).join('');
+  // The tab strip is horizontally scrollable and can contain more tabs than fit
+  // in the top bar. Keep the newly selected tab visible when Ask AI creates a
+  // conversation at the end of a long tab list (and when restoring a saved tab).
+  els.tabs.querySelector('.gpt-tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 async function activateTab(tab) {
@@ -569,7 +663,11 @@ function openScopedDraft(tab) {
   store.activeChat = null;
   state.scopeChatJid = tab.scopeChatJid;
   const row = state.chats.find((c) => c.chatJid === tab.scopeChatJid);
-  const title = tab.name || displayChatTitle(tab.scopeChatJid, row?.chatName || tab.scopeChatJid);
+  // tab.name is the tab label ("Ask: <chat>"), not the chat's own name.
+  const fromTab = String(tab.name || '').replace(/^Ask:\s*/, '');
+  const title = row?.chatName
+    ? displayChatTitle(tab.scopeChatJid, row.chatName)
+    : (fromTab || displayChatTitle(tab.scopeChatJid, tab.scopeChatJid));
   state.pins = [{ type: 'chat', chatJid: tab.scopeChatJid, chatName: title }];
   clearReplyTarget();
   clearEditTarget();
@@ -601,6 +699,13 @@ async function loadThreads() {
   // Open tabs are a separate, persistent user choice. The thread sidebar is
   // limited to recent conversations, so it cannot be used to validate tabs.
   if (!state.openTabs.length) state.openTabs = [{ kind: 'draft' }];
+  // Backfill Ask-AI scope onto GPT tabs so reopen can find them after refresh.
+  state.openTabs = state.openTabs.map((t) => {
+    if (t.kind !== 'gpt' || t.scopeChatJid) return t;
+    const c = state.conversations.find((x) => x.id === t.id);
+    if (!c?.chatJid) return t;
+    return { ...t, scopeChatJid: c.chatJid };
+  });
   persistTabs();
   renderTabs();
   renderThreads();
@@ -1123,20 +1228,32 @@ async function openConversation(id, { pushUrl = true } = {}) {
   store.activeChat = null;
   clearReplyTarget();
   clearEditTarget();
-  ensureTab({ kind: 'gpt', id });
-  // Drop empty draft tab when focusing a real GPT thread (Cursor-like).
-  if (state.openTabs.some((t) => t.kind === 'draft') && state.openTabs.length > 1) {
-    state.openTabs = state.openTabs.filter((t) => t.kind !== 'draft');
-    persistTabs();
-  }
   state.pins = (data.conversation?.pins || []).map((p) => ({ ...p, saved: true }));
   state.scopeChatJid = data.conversation?.chatJid
     || (state.pins.length === 1 ? state.pins[0].chatJid : null);
+  ensureTab({
+    kind: 'gpt',
+    id,
+    ...(state.scopeChatJid ? { scopeChatJid: state.scopeChatJid } : {}),
+    ...(data.conversation?.title ? { name: data.conversation.title } : {}),
+  });
+  // Drop empty draft tab when focusing a real GPT thread (Cursor-like).
+  if (state.openTabs.some((t) => t.kind === 'draft' && !t.scopeChatJid) && state.openTabs.length > 1) {
+    // Keep Ask AI drafts for other chats; only discard the generic blank draft.
+    state.openTabs = state.openTabs.filter((t) => t.kind !== 'draft' || t.scopeChatJid);
+    persistTabs();
+  }
   state.model = data.conversation?.model || null;
   state.modelDirty = false;
   renderModelLabel();
   els.title.textContent = data.conversation?.title || 'Chat';
-  els.input.placeholder = 'Ask anything, @ a chat, or / a skill';
+  if (state.scopeChatJid) {
+    const scopeName = state.pins.find((p) => p.chatJid === state.scopeChatJid)?.chatName
+      || displayChatTitle(state.scopeChatJid, state.scopeChatJid);
+    els.input.placeholder = `Ask about ${scopeName}…  (@ to add a chat, / for a skill)`;
+  } else {
+    els.input.placeholder = 'Ask anything, @ a chat, or / a skill';
+  }
   setMode('gpt');
   renderMessages(data.messages || []);
   const pendingStream = activeStreams.get(id);
@@ -1276,11 +1393,11 @@ function renderModelLabel() {
   if (state.model) {
     els.modelLabel.textContent = shortModel(state.model.model);
     els.modelBtn.title = `${providerName(state.model.provider)} · ${state.model.model} (this thread)`;
-    els.model.textContent = `${providerName(state.model.provider)} · ${shortModel(state.model.model)}`;
+    if (els.model) els.model.textContent = `${providerName(state.model.provider)} · ${shortModel(state.model.model)}`;
   } else {
     els.modelLabel.textContent = 'Auto';
     els.modelBtn.title = def ? `Auto — uses your default: ${providerName(def.provider)} · ${def.model}` : 'Auto';
-    els.model.textContent = def ? `Auto · ${shortModel(def.model)}` : '';
+    if (els.model) els.model.textContent = def ? `Auto · ${shortModel(def.model)}` : '';
   }
 }
 
@@ -1594,10 +1711,23 @@ async function send(textOverride = null) {
     // Navigation can abort the stream at any point, including before the
     // server's first SSE event reaches the browser.
     const draftKey = activeTabKey();
+    const scopeChatJid = state.scopeChatJid || null;
+    let draftIdx = state.openTabs.findIndex((t) => tabKey(t) === draftKey);
+    if (draftIdx < 0 && scopeChatJid) {
+      draftIdx = state.openTabs.findIndex((t) => t.kind === 'draft' && t.scopeChatJid === scopeChatJid);
+    }
+    const draftTab = draftIdx >= 0 ? state.openTabs[draftIdx] : null;
     state.conversationId = crypto.randomUUID();
-    const draftIdx = state.openTabs.findIndex((t) => tabKey(t) === draftKey);
-    if (draftIdx >= 0) state.openTabs[draftIdx] = { kind: 'gpt', id: state.conversationId };
-    else ensureTab({ kind: 'gpt', id: state.conversationId });
+    const nextTab = {
+      kind: 'gpt',
+      id: state.conversationId,
+      ...(scopeChatJid || draftTab?.scopeChatJid
+        ? { scopeChatJid: scopeChatJid || draftTab.scopeChatJid }
+        : {}),
+      ...(draftTab?.name ? { name: draftTab.name } : {}),
+    };
+    if (draftIdx >= 0) state.openTabs[draftIdx] = nextTab;
+    else ensureTab(nextTab);
     persistTabs();
     history.replaceState(null, '', `/gpt?c=${encodeURIComponent(state.conversationId)}`);
     renderTabs();
@@ -1659,10 +1789,24 @@ async function send(textOverride = null) {
           // command may still be reconciling when the user switches tabs.
           if (activeStreams.get(conversationId)?.ctrl === ctrl && ev.conversationId) {
             if (ev.conversationId !== conversationId) {
-              state.openTabs = state.openTabs.map((t) => t.kind === 'gpt' && t.id === conversationId
-                ? { kind: 'gpt', id: ev.conversationId }
-                : t);
-              ensureTab({ kind: 'gpt', id: ev.conversationId });
+              const scope = state.openTabs.find((t) => t.kind === 'gpt' && t.id === conversationId)?.scopeChatJid
+                || state.scopeChatJid
+                || null;
+              const name = state.openTabs.find((t) => t.kind === 'gpt' && t.id === conversationId)?.name;
+              state.openTabs = state.openTabs.map((t) => (t.kind === 'gpt' && t.id === conversationId
+                ? {
+                  kind: 'gpt',
+                  id: ev.conversationId,
+                  ...(scope ? { scopeChatJid: scope } : {}),
+                  ...(name ? { name } : {}),
+                }
+                : t));
+              ensureTab({
+                kind: 'gpt',
+                id: ev.conversationId,
+                ...(scope ? { scopeChatJid: scope } : {}),
+                ...(name ? { name } : {}),
+              });
               persistTabs();
             }
             if (activeStreamKey() === conversationId) {
@@ -1691,26 +1835,54 @@ async function send(textOverride = null) {
     if (!done) throw new Error('The answer stream ended early.');
     cancelAnimationFrame(live.frame);
     const msg = done.message || { content: done.answer, payload: { sources: done.sources, expenseDiff: done.expenseDiff } };
-    const wasActive = activeStreamKey() === conversationId;
+    const wasActive = activeStreamKey() === conversationId
+      || (!state.activeChatJid && state.conversationId === (done.conversationId || conversationId));
     live.wrap.outerHTML = assistantHtml(msg);
+    const doneId = done.conversationId || conversationId;
+    const doneScope = done.conversation?.chatJid || state.scopeChatJid || null;
+    const prevName = state.openTabs.find((t) => t.kind === 'gpt' && (t.id === conversationId || t.id === doneId))?.name;
     if (done.conversationId && done.conversationId !== conversationId) {
-      state.openTabs = state.openTabs.map((t) => t.kind === 'gpt' && t.id === conversationId
-        ? { kind: 'gpt', id: done.conversationId }
-        : t);
+      state.openTabs = state.openTabs.map((t) => (t.kind === 'gpt' && t.id === conversationId
+        ? {
+          kind: 'gpt',
+          id: done.conversationId,
+          ...(doneScope || t.scopeChatJid ? { scopeChatJid: doneScope || t.scopeChatJid } : {}),
+          ...(t.name ? { name: t.name } : {}),
+        }
+        : t));
       persistTabs();
     }
-    ensureTab({ kind: 'gpt', id: done.conversationId || conversationId });
+    ensureTab({
+      kind: 'gpt',
+      id: doneId,
+      ...(doneScope ? { scopeChatJid: doneScope } : {}),
+      ...(prevName ? { name: prevName } : {}),
+    });
     if (wasActive) {
-      state.conversationId = done.conversationId || conversationId;
+      state.conversationId = doneId;
       state.activeChatJid = null;
       store.activeChat = null;
       state.pins = (done.conversation?.pins || []).map((p) => ({ ...p, saved: true }));
+      state.scopeChatJid = done.conversation?.chatJid
+        || (state.pins.length === 1 ? state.pins[0].chatJid : state.scopeChatJid);
+      // Keep Ask-AI chat context even if the server omitted chatJid/pins.
+      if (!state.scopeChatJid && doneScope) state.scopeChatJid = doneScope;
+      if (state.scopeChatJid && !state.pins.some((p) => p.chatJid === state.scopeChatJid)) {
+        const scopeName = displayChatTitle(state.scopeChatJid, state.scopeChatJid);
+        state.pins = [{ type: 'chat', chatJid: state.scopeChatJid, chatName: scopeName, saved: true }];
+      }
       state.model = done.conversation?.model || null;
       state.modelDirty = false;
       renderModelLabel();
       renderPills();
       els.title.textContent = done.conversation?.title || els.title.textContent;
-      els.input.placeholder = 'Ask anything, @ a chat, or / a skill';
+      if (state.scopeChatJid) {
+        const scopeName = state.pins.find((p) => p.chatJid === state.scopeChatJid)?.chatName
+          || displayChatTitle(state.scopeChatJid, state.scopeChatJid);
+        els.input.placeholder = `Ask about ${scopeName}…  (@ to add a chat, / for a skill)`;
+      } else {
+        els.input.placeholder = 'Ask anything, @ a chat, or / a skill';
+      }
       setMode('gpt');
       els.empty.hidden = true;
       history.replaceState(null, '', `/gpt?c=${encodeURIComponent(state.conversationId)}`);
@@ -1922,12 +2094,15 @@ function wire() {
 
   $('#gpt-new').addEventListener('click', newChat);
   els.tabs.addEventListener('click', (e) => {
-    if (tabDrag.moved) { tabDrag.moved = false; e.preventDefault(); e.stopPropagation(); return; }
     const close = e.target.closest('[data-close-tab]');
     if (close) { e.stopPropagation(); closeTabMenu(); closeTab(close.dataset.closeTab); return; }
     const tab = e.target.closest('[data-tab]');
     if (!tab) return;
-    void activateTab(normalizeTab(tab.dataset.tab));
+    // Resolve against the stored tab model instead of reconstructing from its
+    // display key. Scoped drafts and future tab kinds may have keys that aren't
+    // conversation IDs.
+    const tabState = state.openTabs.find((t) => tabKey(t) === tab.dataset.tab);
+    if (tabState) void activateTab(tabState);
   });
   els.tabs.addEventListener('contextmenu', (e) => {
     const tab = e.target.closest('.gpt-tab[data-tab]');

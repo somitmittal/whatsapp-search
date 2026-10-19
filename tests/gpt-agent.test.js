@@ -282,6 +282,31 @@ describe('GptService', () => {
     });
   });
 
+  test('Ask AI thread stays on its chat until another chat is @mentioned', async () => {
+    await runWithTenant(TENANT, async () => {
+      const provider = scriptedProvider(['ok', 'ok']);
+      const svc = new GptService({ db, getProvider: () => provider });
+      const first = await svc.handleTurn({
+        message: 'any dinner plans?',
+        scopeChatJid: SITE,
+        mentions: [{ type: 'chat', chatJid: SITE }],
+        emit: () => {},
+      });
+      expect(first.conversation.pins.map((p) => p.chatJid)).toEqual([SITE]);
+      expect(provider.calls[0].at(-1).content).not.toContain('Dinner at 8');
+
+      const second = await svc.handleTurn({
+        conversationId: first.conversationId,
+        message: 'any dinner plans?',
+        scopeChatJid: SITE,
+        mentions: [{ type: 'chat', chatJid: SITE }, { type: 'chat', chatJid: FAMILY }],
+        emit: () => {},
+      });
+      expect(second.conversation.pins.map((p) => p.chatJid)).toEqual([SITE, FAMILY]);
+      expect(provider.calls[1].at(-1).content).toContain('Dinner at 8');
+    });
+  });
+
   test('rejects a turn with no provider configured', async () => {
     const svc = new GptService({ db, getProvider: () => null });
     await expect(runWithTenant(TENANT, () => svc.handleTurn({ message: 'hi' }))).rejects.toThrow(/provider/i);
