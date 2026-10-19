@@ -941,6 +941,20 @@
   .file-send-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-send-meter { width: min(180px, 30%); height: 8px; accent-color: #00a884; }
   .file-send-meter[data-indeterminate] { opacity: 0.45; }
+  .msg-media-img { cursor: zoom-in; }
+  .chat-image-viewer[hidden] { display: none !important; }
+  .chat-image-viewer {
+    position: fixed; inset: 0; z-index: 10080; display: flex; align-items: center; justify-content: center;
+    padding: 56px 24px 48px; background: rgba(8, 12, 15, 0.94);
+  }
+  .chat-image-viewer-stage { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 0; }
+  .chat-image-viewer-stage img { display: block; max-width: 96vw; max-height: 88vh; width: auto; height: auto; object-fit: contain; border-radius: 4px; }
+  .chat-image-viewer-close {
+    position: absolute; top: max(12px, env(safe-area-inset-top)); right: 18px; z-index: 1;
+    width: 42px; height: 42px; border: 0; border-radius: 50%; background: rgba(255,255,255,.14);
+    color: white; font-size: 28px; cursor: pointer;
+  }
+  .chat-image-viewer-caption { position: absolute; left: 24px; right: 24px; bottom: max(14px, env(safe-area-inset-bottom)); color: #fff; text-align: center; font-size: 14px; }
   .date-sep { text-align: center; margin: 12px 0; }
   .date-sep span {
     background: #fff; color: #54656f; font-size: 12.5px;

@@ -4,6 +4,80 @@ import { dateFmt, formatChatBubbleDateTime, formatChatDateSeparator, messageTime
 import { mediaDownloadUrl, mediaUrlForMessage, messageMediaDownloadAnchor } from './media.js';
 import { $, esc, escAttr, hash } from './util.js';
 
+let imageViewerEl = null;
+const MORE_REACTION_EMOJIS = [
+  '😀','😃','😄','😁','😆','😅','😂','🤣','🥲','😊','😇','🙂','🙃','😉','😍','🥰',
+  '😘','😗','😋','😛','🤪','😎','🤩','🥳','😏','😔','😟','😢','😭','😤','😡','🤔',
+  '🫡','🤗','🤫','🤭','🫣','🤥','😴','🤒','🤧','🥺','😱','😮','😲','😳','🤯','🥶',
+  '👍','👎','👏','🙌','👐','🤝','🙏','💪','🫶','👋','✌️','🤞','🤟','👌','🤌','🤘',
+  '❤️','🧡','💛','💚','💙','💜','🖤','🤍','💔','❣️','💕','💞','💓','💗','💖','💘',
+  '🔥','🎉','💯','✨','⭐','🌟','💥','💫','🎊','✅','❌','⚠️','💡','🎂','🍕','☕',
+  '🐶','🐱','🐼','🦁','🐸','🦄','🌈','☀️','🌹','🌻','🍀','⚽','🏆','🚀','💰','📈',
+];
+
+export function toggleReactionEmojiPicker(button) {
+  const picker = button?.closest('.bubble-toolbar')?.querySelector('.wa-reaction-picker');
+  if (!picker) return;
+  const shouldOpen = picker.hidden;
+  closeReactionEmojiPickers();
+  if (shouldOpen && !picker.dataset.ready) {
+    picker.innerHTML = MORE_REACTION_EMOJIS.map((emoji) =>
+      `<button type="button" class="wa-tb" data-wa-react="${escAttr(emoji)}" title="React ${escAttr(emoji)}" aria-label="React ${escAttr(emoji)}">${esc(emoji)}</button>`,
+    ).join('');
+    picker.dataset.ready = '1';
+  }
+  picker.hidden = !shouldOpen;
+}
+
+export function closeReactionEmojiPickers() {
+  document.querySelectorAll('.wa-reaction-picker:not([hidden])').forEach((picker) => { picker.hidden = true; });
+}
+
+document.addEventListener('click', (event) => {
+  if (!event.target?.closest?.('.bubble-toolbar')) closeReactionEmojiPickers();
+});
+
+function closeChatImageViewer() {
+  if (!imageViewerEl) return;
+  imageViewerEl.hidden = true;
+  imageViewerEl.setAttribute('aria-hidden', 'true');
+  const image = imageViewerEl.querySelector('img');
+  if (image) image.removeAttribute('src');
+}
+
+function openChatImageViewer(source, alt = '', caption = '') {
+  if (!imageViewerEl) {
+    imageViewerEl = document.createElement('div');
+    imageViewerEl.className = 'chat-image-viewer';
+    imageViewerEl.hidden = true;
+    imageViewerEl.setAttribute('role', 'dialog');
+    imageViewerEl.setAttribute('aria-modal', 'true');
+    imageViewerEl.setAttribute('aria-label', 'Image preview');
+    imageViewerEl.innerHTML = '<button class="chat-image-viewer-close" type="button" aria-label="Close image">×</button><div class="chat-image-viewer-stage"><img alt=""></div><div class="chat-image-viewer-caption"></div>';
+    document.body.appendChild(imageViewerEl);
+    imageViewerEl.addEventListener('click', (event) => {
+      if (event.target === imageViewerEl || event.target.closest('.chat-image-viewer-close')) closeChatImageViewer();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && imageViewerEl && !imageViewerEl.hidden) closeChatImageViewer();
+    });
+  }
+  const image = imageViewerEl.querySelector('img');
+  if (image) { image.src = source; image.alt = alt || 'Chat image'; }
+  const captionEl = imageViewerEl.querySelector('.chat-image-viewer-caption');
+  if (captionEl) captionEl.textContent = caption;
+  imageViewerEl.hidden = false;
+  imageViewerEl.setAttribute('aria-hidden', 'false');
+}
+
+document.addEventListener('click', (event) => {
+  const image = event.target?.closest?.('.msg-media-img');
+  if (!image) return;
+  event.preventDefault();
+  const wrap = image.closest('.media-wrap');
+  openChatImageViewer(image.currentSrc || image.src, image.alt, wrap?.querySelector('.media-cap')?.textContent || '');
+});
+
 /** Classic chat panel + GPT WhatsApp transcript. */
 function msgBlocks(selector = '.msg-block[data-message-id]') {
   return document.querySelectorAll(`#cv-messages ${selector}, #gpt-wa-view ${selector}`);
@@ -105,38 +179,77 @@ function reactionCountsHtml(counts) {
   if (!entries.length) return '';
   const inner = entries.map(([e, n]) => {
     const num = Number(n);
-    return `<span class="rx-chip">${esc(e)}${num > 1 ? `<span class="rx-n">${num}</span>` : ''}</span>`;
+    return `<span class="rx-chip" data-reaction-emoji="${escAttr(e)}" data-reaction-count="${num}">${esc(e)}${num > 1 ? `<span class="rx-n">${num}</span>` : ''}</span>`;
   }).join('');
   return `<div class="bubble-reactions" aria-label="Reactions">${inner}</div>`;
 }
 
+const ownReactionByMessage = new Map();
+
+function reactionCountsFromBlock(block) {
+  const counts = {};
+  block.querySelectorAll('.bubble-reactions .rx-chip').forEach((chip) => {
+    const emoji = chip.getAttribute('data-reaction-emoji');
+    const count = Number(chip.getAttribute('data-reaction-count')) || 0;
+    if (emoji && count > 0) counts[emoji] = count;
+  });
+  return counts;
+}
+
+function replaceBlockReactionCounts(block, counts) {
+  const previous = block.querySelector('.bubble-reactions');
+  const html = reactionCountsHtml(counts);
+  if (!html) previous?.remove();
+  else if (previous) previous.outerHTML = html;
+  else block.insertAdjacentHTML('beforeend', html);
+}
+
+function findReactionBlock(chatJid, messageId) {
+  return [...msgBlocks()].find((block) =>
+    block.getAttribute('data-message-id') === String(messageId)
+    && (!chatJid || block.getAttribute('data-storage-jid') === String(chatJid)),
+  ) || null;
+}
+
 export function applyIncomingReactionToDom(data) {
-  const { messageId, counts } = data || {};
+  const { chatJid, messageId, counts } = data || {};
   if (!messageId || !counts || typeof counts !== 'object') return;
-  const mid = String(messageId);
-  const blocks = msgBlocks();
-  for (const block of blocks) {
-    if (block.getAttribute('data-message-id') !== mid) continue;
-    const html = reactionCountsHtml(counts);
-    const prev = block.querySelector('.bubble-reactions');
-    if (!html) {
-      if (prev) prev.remove();
-      break;
-    }
-    if (prev) prev.outerHTML = html;
-    else block.insertAdjacentHTML('beforeend', html);
-    break;
-  }
+  const block = findReactionBlock(chatJid, messageId);
+  if (block) replaceBlockReactionCounts(block, counts);
 }
 
 export async function postWaReaction(chatJid, messageId, emoji) {
-  const r = await fetch('/api/wa/react', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chatJid, messageId, emoji }),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j?.error || 'Reaction failed');
+  const key = `${chatJid}\u0000${messageId}`;
+  const block = findReactionBlock(chatJid, messageId);
+  const before = block ? reactionCountsFromBlock(block) : null;
+  const priorOwn = ownReactionByMessage.get(key) || '';
+  const nextEmoji = String(emoji ?? '');
+  const effectiveEmoji = nextEmoji && nextEmoji === priorOwn ? '' : nextEmoji;
+  if (block && before) {
+    const optimistic = { ...before };
+    if (priorOwn && optimistic[priorOwn]) {
+      optimistic[priorOwn] -= 1;
+      if (optimistic[priorOwn] <= 0) delete optimistic[priorOwn];
+    }
+    if (effectiveEmoji) optimistic[effectiveEmoji] = (Number(optimistic[effectiveEmoji]) || 0) + 1;
+    replaceBlockReactionCounts(block, optimistic);
+  }
+  if (effectiveEmoji) ownReactionByMessage.set(key, effectiveEmoji);
+  else ownReactionByMessage.delete(key);
+  try {
+    const r = await fetch('/api/wa/react', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatJid, messageId, emoji: effectiveEmoji }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j?.error || 'Reaction failed');
+  } catch (error) {
+    if (priorOwn) ownReactionByMessage.set(key, priorOwn);
+    else ownReactionByMessage.delete(key);
+    if (block && before) replaceBlockReactionCounts(block, before);
+    throw error;
+  }
 }
 
 /** Escape text but turn http(s) URLs into breakable links (long links must not blow layout). */
@@ -269,9 +382,11 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
           <button type="button" class="wa-tb" data-wa-react="😂" title="React 😂">😂</button>
           <button type="button" class="wa-tb" data-wa-react="😮" title="React 😮">😮</button>
           <button type="button" class="wa-tb" data-wa-react="😢" title="React 😢">😢</button>
-          <button type="button" class="wa-tb" data-wa-react="🙏" title="React 🙏">🙏</button>` : ''}
+          <button type="button" class="wa-tb wa-tb-emoji-picker" data-wa-emoji-picker-toggle="1" title="More emojis" aria-label="More emojis">☻</button>
+          <button type="button" class="wa-tb wa-tb-remove-reaction" data-wa-react="" title="Remove your reaction" aria-label="Remove your reaction">×</button>` : ''}
           ${actionBtns}
           </div>
+          ${liveOk ? '<div class="wa-reaction-picker" hidden aria-label="Choose a reaction"></div>' : ''}
         </div>` : '';
     html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxHtml}</div>`;
   }

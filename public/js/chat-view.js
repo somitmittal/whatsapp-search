@@ -7,7 +7,7 @@ import { displayChatTitle, formatChatBubbleDateTime, formatDate, isResolvedChatN
 import { mediaDownloadUrl } from './media.js';
 import { activeChatHasLocalMessages } from './menus.js';
 import { openForwardOverlay, promptDeleteMessage } from './message-actions.js';
-import { buildChatMessagesHtml, mediaIndexStateHtml, postWaReaction, renderMessages } from './messages-render.js';
+import { buildChatMessagesHtml, closeReactionEmojiPickers, mediaIndexStateHtml, postWaReaction, renderMessages, toggleReactionEmojiPicker } from './messages-render.js';
 import { closeAllOverlays, setMobileChatOpen, switchPanel } from './overlays.js';
 import { clearSearch, openSearchAssistant } from './search.js';
 import { renderChatsFromState, setSidebarListTab, sidebarTabOf } from './sidebar.js';
@@ -538,11 +538,18 @@ export function initChatView() {
       const block = e.target.closest('.msg-block');
       if (!block?.dataset?.messageId) return;
       e.stopPropagation();
+      closeReactionEmojiPickers();
       try {
-        await postWaReaction(block.dataset.storageJid || store.activeChat, block.dataset.messageId, reactEl.getAttribute('data-wa-react') || '👍');
+        await postWaReaction(block.dataset.storageJid || store.activeChat, block.dataset.messageId, reactEl.getAttribute('data-wa-react') ?? '👍');
       } catch (err) {
         alert(err.message || 'Reaction failed');
       }
+      return;
+    }
+    const emojiPickerToggle = e.target.closest('[data-wa-emoji-picker-toggle]');
+    if (emojiPickerToggle) {
+      e.stopPropagation();
+      toggleReactionEmojiPicker(emojiPickerToggle);
       return;
     }
     const fwd = e.target.closest('[data-wa-forward]');

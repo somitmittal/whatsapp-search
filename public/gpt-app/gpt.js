@@ -17,8 +17,8 @@ import { displayChatTitle } from '/js/format.js';
 import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, promptDeleteMessage } from '/js/message-actions.js';
-import { buildChatMessagesHtml, postWaReaction } from '/js/messages-render.js';
-import { initOverlays, openOverlay, setSettingsTab } from '/js/overlays.js';
+import { buildChatMessagesHtml, closeReactionEmojiPickers, postWaReaction, toggleReactionEmojiPicker } from '/js/messages-render.js';
+import { initOverlays, openOverlay } from '/js/overlays.js';
 import { initSettings, loadSettings } from '/js/settings.js';
 import { autoSelectSidebarTab, renderSidebarTabCounts, setSidebarListTab, sidebarTabOf } from '/js/sidebar.js';
 import { store } from '/js/store.js';
@@ -1940,16 +1940,22 @@ function wire() {
       const block = e.target.closest('.msg-block');
       if (!block?.dataset?.messageId) return;
       e.stopPropagation();
+      closeReactionEmojiPickers();
       try {
         await postWaReaction(
           block.dataset.storageJid || store.activeChat,
           block.dataset.messageId,
-          reactEl.getAttribute('data-wa-react') || '👍',
+          reactEl.getAttribute('data-wa-react') ?? '👍',
         );
-        void reloadActiveWaMessages();
       } catch (err) {
         alert(err.message || 'Reaction failed');
       }
+      return;
+    }
+    const emojiPickerToggle = e.target.closest('[data-wa-emoji-picker-toggle]');
+    if (emojiPickerToggle) {
+      e.stopPropagation();
+      toggleReactionEmojiPicker(emojiPickerToggle);
       return;
     }
     const fwd = e.target.closest('[data-wa-forward]');
