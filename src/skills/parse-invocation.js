@@ -19,10 +19,3 @@ export function parseSkillInvocation(text) {
 export function skillCommand(skill) {
   return `/${skill.namespace}/${skill.slug}`;
 }
-
-/** A whole message that means "run the last skill again", with no extra instructions. */
-const RETRY = /^(?:(?:please|pls|plz)\s+)?(?:try(?:\s+it)?\s+again|retry|run(?:\s+it)?\s+again|do\s+it\s+again)[.!]?$/i;
-
-export function isRetryPhrase(text) {
-  return RETRY.test(String(text || '').trim());
-}

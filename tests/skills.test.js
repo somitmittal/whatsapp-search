@@ -6,7 +6,7 @@ import { join } from 'node:path';
 const scratch = mkdtempSync(join(tmpdir(), 'skills-'));
 process.env.DATA_DIR = scratch;
 
-const { isRetryPhrase, parseSkillInvocation } = await import('../src/skills/parse-invocation.js');
+const { parseSkillInvocation } = await import('../src/skills/parse-invocation.js');
 const {
   listManagedSkills,
   matchSkills,
@@ -54,14 +54,6 @@ describe('parseSkillInvocation', () => {
   test('ignores a slash that is not the start of the message', () => {
     expect(parseSkillInvocation('please run /accountant/expense-reconciliation')).toBeNull();
     expect(parseSkillInvocation('hello')).toBeNull();
-  });
-
-  test('recognises a retry only when the whole message is the phrase', () => {
-    expect(isRetryPhrase('pls try again')).toBe(true);
-    expect(isRetryPhrase('please try again')).toBe(true);
-    expect(isRetryPhrase('try again.')).toBe(true);
-    expect(isRetryPhrase('try again for site 2')).toBe(false);
-    expect(isRetryPhrase('/accountant/expense-reconciliation')).toBe(false);
   });
 });
 
@@ -353,41 +345,51 @@ describe('skill runs in the database', () => {
     });
   });
 
-  test('try again re-runs the skill that was stopped', async () => {
+  test('try again goes through the model, which can CALL reconcile', async () => {
+    let skillCalls = 0;
+    const replies = [
+      'CALL {"tool":"reconcile","args":{"chat":"Site 1"}}',
+      'Re-ran reconciliation for Site 1 as requested.',
+    ];
+    let call = 0;
+    const provider = {
+      name: 'fake',
+      model: 'fake-model',
+      async chat() { return '- memory'; },
+      async *chatStream() {
+        const reply = replies[Math.min(call, replies.length - 1)];
+        call += 1;
+        yield reply;
+      },
+    };
     const gpt = new GptService({
       db,
-      getProvider: () => { throw new Error('provider should not be asked'); },
+      getProvider: () => provider,
       expenseService: null,
     });
-    let calls = 0;
     gpt.skills.run = async ({ text }) => {
-      calls += 1;
-      if (calls === 1) {
-        const err = new Error('aborted');
-        err.name = 'AbortedError';
-        throw err;
-      }
-      return { answer: `ran ${text}`, steps: [], choices: [], skillRun: null, expenseDiff: null };
+      skillCalls += 1;
+      return {
+        answer: `ran ${text}`,
+        steps: ['reconcile'],
+        choices: [],
+        skillRun: { id: 'run-retry', status: 'needs_input', canSend: false },
+        expenseDiff: null,
+      };
     };
     await runWithTenant(TENANT, async () => {
-      const id = 'retry-after-stop';
-      await expect(gpt.handleTurn({
-        conversationId: id,
-        createConversationIfMissing: true,
-        message: '/accountant/expense-reconciliation please',
-        scopeChatJid: SITE,
-        mentions: [{ type: 'chat', chatJid: SITE, chatName: 'Site 1' }],
-      })).rejects.toThrow(/aborted/);
-
       const again = await gpt.handleTurn({
-        conversationId: id,
+        conversationId: 'retry-via-model',
+        createConversationIfMissing: true,
         message: 'pls try again',
         scopeChatJid: SITE,
-        mentions: [{ type: 'chat', chatJid: SITE, chatName: 'Site 1' }],
+        mentions: [],
+        emit: () => {},
       });
-      expect(calls).toBe(2);
-      expect(again.answer).toBe('ran /accountant/expense-reconciliation please');
+      expect(skillCalls).toBe(1);
+      expect(again.answer).toMatch(/Re-ran reconciliation|ran \/accountant\/expense-reconciliation/);
       expect(again.messages.filter((m) => m.role === 'user').at(-1).content).toBe('pls try again');
+      expect(again.messages.at(-1).payload.skillRun?.id).toBe('run-retry');
     });
   });
 

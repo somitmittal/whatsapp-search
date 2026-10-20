@@ -1716,8 +1716,11 @@ async function send(textOverride = null) {
   autosize();
   els.empty.hidden = true;
 
+  // @mentions apply to this message only (unsaved pills). The thread home chat stays as saved scope.
   const mentions = state.pins.filter((p) => !p.saved).map((p) => ({ type: 'chat', chatJid: p.chatJid, chatName: p.chatName }));
   els.thread.insertAdjacentHTML('beforeend', userHtml({ content: text, payload: { mentions } }));
+  state.pins = state.pins.filter((p) => p.saved);
+  renderPills();
   const live = liveBubble();
   scrollToBottom(true);
 
@@ -1767,7 +1770,7 @@ async function send(textOverride = null) {
         conversationId: state.conversationId || undefined,
         createConversationIfMissing: isNewConversation,
         scopeChatJid: state.scopeChatJid || undefined,
-        mentions: state.pins.map((p) => ({ type: 'chat', chatJid: p.chatJid, chatName: p.chatName })),
+        mentions,
         ...(state.modelDirty ? { model: state.model } : {}),
         installId: window.SearchableAccount?.getInstallId?.(),
       }),

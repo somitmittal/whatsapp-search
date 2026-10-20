@@ -24,11 +24,16 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
     [
       'CONTEXT: WhatsApp messages are given as lines "[m123] date · sender: text" grouped under "## Chat name".',
       'Cite the messages you rely on with their handle, e.g. [m123], right after the claim. Never invent handles.',
+      '@mentions on the current user message set which chats are in scope for this turn only.',
+      'When no chat is @mentioned, the thread\'s home chat (see "Pinned chats") is the default.',
+      'Expense comparisons in context are labelled with their site — use the matching site; do not mix sites.',
       '',
       'TOOLS: if the context is not enough, reply with ONLY tool calls, one per line, nothing else:',
       'CALL {"tool":"search","args":{"query":"cement delivery","chat":"Site 2"}}',
       'You may issue several CALL lines at once; they run in parallel. Results come back and you continue.',
       'Prefer answering straight away when the context already answers the question.',
+      'For expense reconciliation, retries ("try again"), or comparing another site, CALL reconcile with that site\'s chat name.',
+      'Do not invent reconciliation numbers — always CALL reconcile (or use a labelled comparison already in context).',
       tools,
       '',
       'ANSWER STYLE: lead with the direct answer, then supporting detail. Use short paragraphs or bullets,',
@@ -40,13 +45,37 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
 
 export function expenseDiffBlock(diff) {
   if (!diff) return '';
+  const site = diff.chatName || diff.chatJid || 'site';
   const rows = (diff.sheetRows || diff.discrepancies || []).slice(0, GPT_LIMITS.maxMessagesInContext);
   const lines = rows.map((r) => `- ${r.rowTone || r.type}: ${r.category || r.payee || r.description || 'row'} · chat ${r.chatAmount || '—'} · sheet ${r.sheetAmount || '—'}`);
   return [
-    `# Last expense comparison — ${diff.chatName || 'site'} · ${diff.businessDate || ''} · ${diff.sourceFileName || ''}`,
+    `# Expense comparison — site: ${site} · ${diff.businessDate || ''} · ${diff.sourceFileName || ''}`,
+    `chatJid: ${diff.chatJid || 'unknown'}`,
     'Tones: match = green, extra-sheet = red (on sheet, not in chat), missing-sheet = yellow (in chat, not on sheet), mismatch = amber.',
     ...lines,
   ].join('\n');
+}
+
+/**
+ * Prior reconciliation results for the model, newest first, packed into the history token budget.
+ * Each block is labelled with its site so follow-ups can pick the right one.
+ */
+export function expenseHistoryBlocks(prior = []) {
+  const blocks = [];
+  for (let i = prior.length - 1; i >= 0; i--) {
+    const m = prior[i];
+    if (m?.role !== 'assistant' || !m.payload?.expenseDiff) continue;
+    blocks.push(expenseDiffBlock(m.payload.expenseDiff));
+  }
+  const kept = [];
+  let used = 0;
+  for (const block of blocks) {
+    const cost = estimateTokens(block);
+    if (used + cost > GPT_LIMITS.historyTokens && kept.length) break;
+    used += cost;
+    kept.push(block);
+  }
+  return kept.reverse().join('\n\n');
 }
 
 /**

@@ -5,7 +5,8 @@ import {
   packMessages,
   parseDay,
 } from './retrieval.js';
-import { resolveSiteChat, summarizeExpenseRun } from '../search/search-conversation-service.js';
+import { skillCommand } from '../skills/parse-invocation.js';
+import { SYSTEM_SKILLS } from '../skills/system-skills.js';
 
 export const TOOL_SPECS = [
   {
@@ -30,10 +31,13 @@ export const TOOL_SPECS = [
   },
   {
     name: 'reconcile',
-    args: '{"chat": name}',
-    about: "compare a site's chat expenses with that day's Excel sheet (colored sheet in the UI)",
+    args: '{"chat"?: name}',
+    about: "dry-run expense reconciliation for a site group (Excel/CSV in that chat). Pass chat when the user names or @mentions a site; omit to use this turn's scoped chat.",
   },
 ];
+
+const EXPENSE_SKILL = SYSTEM_SKILLS.find((s) => s.slug === 'expense-reconciliation');
+const EXPENSE_COMMAND = EXPENSE_SKILL ? skillCommand(EXPENSE_SKILL) : '/accountant/expense-reconciliation';
 
 function dayRange(args) {
   if (args.date) {
@@ -49,7 +53,7 @@ function dayRange(args) {
  * Tool implementations. Each returns `{ text, messages?, payload? }`; `messages` are
  * registered as citable sources for this turn.
  */
-export function createToolbox({ db, embeddings, directory, expenseService }) {
+export function createToolbox({ db, embeddings, directory, runSkill = null }) {
   const chatOrNull = (ref) => (ref ? directory.resolve(ref) : null);
   const label = (chat, ref) => (chat ? chat.chatName : ref);
 
@@ -123,20 +127,39 @@ export function createToolbox({ db, embeddings, directory, expenseService }) {
     },
 
     async reconcile(args, _budget, ctx) {
-      if (!expenseService) return { text: 'Expense reconciliation is not enabled on this install.' };
-      const chat = chatOrNull(args.chat);
-      const siteJid = resolveSiteChat(db, args.chat || '', chat?.chatJid || ctx.scopeChatJid || null);
-      if (!siteJid) {
-        const sites = typeof db.listExpenseSiteChats === 'function' ? db.listExpenseSiteChats() : [];
-        return { text: `Which site? Known sites: ${sites.map((s) => s.chatName || s.chatJid).join(', ') || 'none configured'}.` };
+      if (typeof runSkill !== 'function') {
+        return { text: 'Expense reconciliation is not enabled on this install.' };
       }
-      ctx.status('Comparing chat expenses with the sheet…');
-      const run = await expenseService.runForChat({ chatJid: siteJid, notifyWhatsApp: false, forceRerun: true });
-      if (!run || run.status === 'failed') {
-        return { text: `Reconciliation failed: ${run?.error || 'unknown error'}` };
-      }
-      const { answer, expenseDiff } = summarizeExpenseRun(run);
-      return { text: answer, payload: { expenseDiff } };
+      const named = String(args.chat || '').trim();
+      const fallback = !named && ctx.scopeChatName ? ctx.scopeChatName : '';
+      const rest = named || fallback;
+      const text = rest ? `${EXPENSE_COMMAND} ${rest}` : EXPENSE_COMMAND;
+      ctx.status?.(`Reconciling${rest ? ` ${rest}` : ''}…`);
+      const outcome = await runSkill({
+        text,
+        mentions: ctx.turnMentions || [],
+        scopeChatJid: ctx.scopeChatJid || null,
+        scopeChatName: ctx.scopeChatName || null,
+        conversationId: ctx.conversationId || null,
+        status: ctx.status || null,
+        resolveProvider: ctx.resolveProvider || null,
+      });
+      const site = outcome.expenseDiff?.chatName
+        || outcome.skillRun?.inputs?.chatJid
+        || rest
+        || 'site';
+      const labelled = outcome.expenseDiff
+        ? `${outcome.answer}\n\n(Site: ${outcome.expenseDiff.chatName || site})`
+        : outcome.answer;
+      return {
+        text: labelled,
+        payload: {
+          ...(outcome.expenseDiff ? { expenseDiff: outcome.expenseDiff } : {}),
+          ...(outcome.skillRun ? { skillRun: outcome.skillRun } : {}),
+          ...(outcome.choices?.length ? { choices: outcome.choices } : {}),
+          ...(outcome.steps?.length ? { skillSteps: outcome.steps } : {}),
+        },
+      };
     },
   };
 }

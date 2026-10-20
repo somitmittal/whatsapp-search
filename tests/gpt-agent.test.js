@@ -9,9 +9,9 @@ process.env.DATA_DIR = scratch;
 const { default: Database } = await import('../src/storage/database.js');
 const { runWithTenant } = await import('../src/storage/tenant-context.js');
 const { parseToolCalls, runAgent } = await import('../src/gpt/agent.js');
-const { buildChatOverview, buildHistory, ContextEngine } = await import('../src/gpt/context.js');
+const { buildChatOverview, buildHistory, ContextEngine, expenseDiffBlock, expenseHistoryBlocks } = await import('../src/gpt/context.js');
 const { detectTimeRange, hybridSearch, isBroadQuery, packMessages } = await import('../src/gpt/retrieval.js');
-const { default: GptService } = await import('../src/gpt/gpt-service.js');
+const { default: GptService, turnScopePins } = await import('../src/gpt/gpt-service.js');
 
 const TENANT = 'tenant-gpt';
 const SITE = 'site2@g.us';
@@ -259,7 +259,7 @@ describe('runAgent', () => {
 });
 
 describe('GptService', () => {
-  test('answers from auto-context, pins @mentions, and persists sources', async () => {
+  test('answers from auto-context, uses @mentions for that turn, and persists sources', async () => {
     await runWithTenant(TENANT, async () => {
       const [hit] = db.searchMessages('40 bags cement', SITE, 1);
       const provider = scriptedProvider([`Suresh confirmed **40 bags** of cement [m${hit.id}].`]);
@@ -267,29 +267,32 @@ describe('GptService', () => {
       const { events, emit } = collect();
       const out = await svc.handleTurn({
         message: 'did the cement arrive?',
-        mentions: [{ type: 'chat', chatJid: SITE }],
+        mentions: [{ type: 'chat', chatJid: SITE, chatName: 'Site 2' }],
         emit,
       });
       expect(provider.calls).toHaveLength(1);
       expect(provider.calls[0].at(-1).content).toContain('40 bags of cement');
+      expect(provider.calls[0].at(-1).content).toContain('Active chats this turn: Site 2');
       expect(out.sources[0].messageId).toBe('a2');
-      expect(out.conversation.pins.map((p) => p.chatJid)).toEqual([SITE]);
+      // @mentions are not durable pins when the thread has no home chat.
+      expect(out.conversation.pins).toEqual([]);
       expect(events.find((e) => e.type === 'tool').text).toMatch(/Pulled \d+ relevant messages/);
 
       const saved = svc.getConversation(out.conversationId);
       expect(saved.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+      expect(saved.messages[0].payload.mentions.map((p) => p.chatJid)).toEqual([SITE]);
       expect(saved.messages[1].payload.sources[0].ref).toBe(`m${hit.id}`);
     });
   });
 
-  test('Ask AI thread stays on its chat until another chat is @mentioned', async () => {
+  test('Ask AI defaults to the thread chat; @mentions apply to that message only', async () => {
     await runWithTenant(TENANT, async () => {
-      const provider = scriptedProvider(['ok', 'ok']);
+      const provider = scriptedProvider(['ok', 'ok', 'ok']);
       const svc = new GptService({ db, getProvider: () => provider });
       const first = await svc.handleTurn({
         message: 'any dinner plans?',
         scopeChatJid: SITE,
-        mentions: [{ type: 'chat', chatJid: SITE }],
+        mentions: [],
         emit: () => {},
       });
       expect(first.conversation.pins.map((p) => p.chatJid)).toEqual([SITE]);
@@ -299,12 +302,69 @@ describe('GptService', () => {
         conversationId: first.conversationId,
         message: 'any dinner plans?',
         scopeChatJid: SITE,
-        mentions: [{ type: 'chat', chatJid: SITE }, { type: 'chat', chatJid: FAMILY }],
+        mentions: [{ type: 'chat', chatJid: FAMILY, chatName: 'Family' }],
         emit: () => {},
       });
-      expect(second.conversation.pins.map((p) => p.chatJid)).toEqual([SITE, FAMILY]);
+      // Mentions are per-message; durable pins stay on the thread home chat.
+      expect(second.conversation.pins.map((p) => p.chatJid)).toEqual([SITE]);
       expect(provider.calls[1].at(-1).content).toContain('Dinner at 8');
+      expect(provider.calls[1].at(-1).content).toContain('Active chats this turn: Family');
+
+      const third = await svc.handleTurn({
+        conversationId: first.conversationId,
+        message: 'any dinner plans?',
+        scopeChatJid: SITE,
+        mentions: [],
+        emit: () => {},
+      });
+      expect(third.conversation.pins.map((p) => p.chatJid)).toEqual([SITE]);
+      expect(provider.calls[2].at(-1).content).not.toContain('Dinner at 8');
     });
+  });
+
+  test('turnScopePins uses mentions when present, else the thread home chat', () => {
+    expect(turnScopePins(SITE, 'Site 2', [])).toEqual([
+      { type: 'chat', chatJid: SITE, chatName: 'Site 2' },
+    ]);
+    expect(turnScopePins(SITE, 'Site 2', [
+      { type: 'chat', chatJid: FAMILY, chatName: 'Family' },
+    ])).toEqual([
+      { type: 'chat', chatJid: FAMILY, chatName: 'Family' },
+    ]);
+    expect(turnScopePins(null, null, [])).toEqual([]);
+  });
+
+  test('expense history blocks are labelled per site', () => {
+    const prior = [
+      {
+        role: 'assistant',
+        payload: {
+          expenseDiff: {
+            chatJid: SITE,
+            chatName: 'Site 2',
+            businessDate: '2026-10-14',
+            sourceFileName: 'a.xlsx',
+            sheetRows: [{ rowTone: 'match', category: 'cement', chatAmount: '100', sheetAmount: '100' }],
+          },
+        },
+      },
+      {
+        role: 'assistant',
+        payload: {
+          expenseDiff: {
+            chatJid: FAMILY,
+            chatName: 'Family',
+            businessDate: '2026-10-15',
+            sourceFileName: 'b.xlsx',
+            sheetRows: [{ rowTone: 'mismatch', category: 'food', chatAmount: '10', sheetAmount: '12' }],
+          },
+        },
+      },
+    ];
+    const block = expenseHistoryBlocks(prior);
+    expect(block).toContain('site: Site 2');
+    expect(block).toContain('site: Family');
+    expect(expenseDiffBlock(prior[0].payload.expenseDiff)).toContain(`chatJid: ${SITE}`);
   });
 
   test('keeps the streamed steps and partial answer when the run fails or is stopped', async () => {

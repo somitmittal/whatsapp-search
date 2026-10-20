@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { getCurrentTenantId, runWithTenant } from '../storage/tenant-context.js';
 import ChatDirectory from './chat-directory.js';
-import { ContextEngine, buildChatOverview, buildHistory, buildSystemPrompt, expenseDiffBlock } from './context.js';
+import { ContextEngine, buildChatOverview, buildHistory, buildSystemPrompt, expenseHistoryBlocks } from './context.js';
 import { isBroadQuery } from './retrieval.js';
 import { runAgent } from './agent.js';
 import { createToolbox } from './tools.js';
@@ -14,7 +14,7 @@ import {
   skillKey,
 } from '../skills/catalog.js';
 import { createSkillRunner } from '../skills/skill-runner.js';
-import { isRetryPhrase, parseSkillInvocation } from '../skills/parse-invocation.js';
+import { parseSkillInvocation } from '../skills/parse-invocation.js';
 import { SYSTEM_SKILLS } from '../skills/system-skills.js';
 
 function titleFrom(text) {
@@ -32,25 +32,34 @@ function mergePins(existing, incoming) {
   return out;
 }
 
-function skillSettled(message) {
-  const payload = message?.payload;
-  if (message?.role !== 'assistant' || !payload) return false;
-  if (payload.incomplete || payload.stopped || payload.error) return false;
-  if (payload.skillRun?.status === 'failed') return false;
-  return payload.kind === 'skill' || !!payload.skillRun || !!payload.expenseDiff;
+/**
+ * Cursor-style turn scope: @mentions on this message only.
+ * When the message names no chat, the thread's home chat is the default.
+ * Mentions are not merged into persistent conversation pins.
+ */
+export function turnScopePins(scopeChatJid, scopeChatName, mentions = []) {
+  if (mentions.length) return mentions;
+  if (scopeChatJid) {
+    return [{ type: 'chat', chatJid: scopeChatJid, chatName: scopeChatName || null }];
+  }
+  return [];
 }
 
-/**
- * Ask AI threads start scoped to their own chat; explicit @mentions add chats on top.
- * The scope chat always stays first so single-chat tools keep targeting it.
- */
-function threadPins(scopeChatJid, scopeChatName, memoryPins, mentions) {
-  const merged = mergePins(memoryPins, mentions);
-  if (!scopeChatJid) return merged;
-  return mergePins(
-    [{ type: 'chat', chatJid: scopeChatJid, chatName: scopeChatName }],
-    merged.filter((p) => p.chatJid !== scopeChatJid),
-  );
+function resolveMentionPins(mentions, directory) {
+  return (mentions || []).map((p) => (p?.chatJid
+    ? { type: 'chat', chatJid: p.chatJid, chatName: p.chatName || directory.name(p.chatJid) }
+    : null)).filter(Boolean);
+}
+
+/** Keep the thread home chat as the only durable pin (UI identity). */
+function ensureScopePin(db, conversationId, scopeChatJid, scopeChatName, memoryPins) {
+  if (!scopeChatJid) return memoryPins || [];
+  const home = [{ type: 'chat', chatJid: scopeChatJid, chatName: scopeChatName || null }];
+  if (JSON.stringify(memoryPins) !== JSON.stringify(home)) {
+    db.setConversationPins(conversationId, home);
+    return home;
+  }
+  return memoryPins;
 }
 
 /**
@@ -64,9 +73,14 @@ export default class GptService {
     this._resolveProvider = resolveProvider;
     this.directory = new ChatDirectory(db);
     this.context = new ContextEngine({ db, embeddings, directory: this.directory });
-    this.toolbox = createToolbox({ db, embeddings, directory: this.directory, expenseService });
     this.expenseService = expenseService;
     this.skills = createSkillRunner({ db, directory: this.directory, expenseService });
+    this.toolbox = createToolbox({
+      db,
+      embeddings,
+      directory: this.directory,
+      runSkill: (opts) => this.skills.run(opts),
+    });
     this._compacting = new Set();
   }
 
@@ -170,12 +184,6 @@ export default class GptService {
         conversationId, createConversationIfMissing, message: text, scopeChatJid, mentions, model, emit,
       });
     }
-    const retryCommand = this._pendingSkillCommand(conversationId, text);
-    if (retryCommand) {
-      return this._handleSkillTurn({
-        conversationId, createConversationIfMissing, message: text, invokeText: retryCommand, scopeChatJid, mentions, model, emit,
-      });
-    }
     // `model` undefined → keep the thread's choice; null → back to Auto; object → explicit pick.
     const existingModel = conversationId ? this.db.getConversationModel(conversationId) : null;
     const selection = model === undefined ? existingModel : model;
@@ -200,6 +208,7 @@ export default class GptService {
       conversation = this.db.createSearchConversation({ id: conversationId || randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
     }
     const effectiveScopeChatJid = scopeChatJid || conversation.chatJid || null;
+    const scopeChatName = effectiveScopeChatJid ? this.directory.name(effectiveScopeChatJid) : null;
     // Let the tab persist the conversation before context gathering or a skill run
     // starts. The user may switch tabs while that work is still in progress.
     emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: !conversationId || createConversationIfMissing });
@@ -207,16 +216,9 @@ export default class GptService {
       this.db.setConversationModel(conversation.id, resolved.selection);
     }
     const memory = this.db.getConversationMemory(conversation.id);
-    const resolvedMentions = (mentions || []).map((p) => (p?.chatJid
-      ? { type: 'chat', chatJid: p.chatJid, chatName: p.chatName || this.directory.name(p.chatJid) }
-      : null)).filter(Boolean);
-    const pins = threadPins(
-      effectiveScopeChatJid,
-      effectiveScopeChatJid ? this.directory.name(effectiveScopeChatJid) : null,
-      memory.pins,
-      resolvedMentions,
-    );
-    if (JSON.stringify(pins) !== JSON.stringify(memory.pins)) this.db.setConversationPins(conversation.id, pins);
+    const resolvedMentions = resolveMentionPins(mentions, this.directory);
+    const turnPins = turnScopePins(effectiveScopeChatJid, scopeChatName, resolvedMentions);
+    ensureScopePin(this.db, conversation.id, effectiveScopeChatJid, scopeChatName, memory.pins);
 
     const prior = this.db.listSearchMessages(conversation.id);
     this.db.addSearchMessage({
@@ -224,13 +226,23 @@ export default class GptService {
       payload: { scopeChatJid: effectiveScopeChatJid, mentions: resolvedMentions },
     });
 
+    const resolveExpenseProvider = async () => {
+      const next = await this._resolveProvider(this.db, selection, this.getProvider());
+      return next.provider;
+    };
+
     try {
-    const scopeJids = pins.map((p) => p.chatJid);
-    const lastExpense = [...prior].reverse().find((m) => m.role === 'assistant' && m.payload?.expenseDiff);
+    const scopeJids = turnPins.map((p) => p.chatJid);
+    const expenseHistory = expenseHistoryBlocks(prior);
     const [pre] = await Promise.all([this.context.prefetch({ query: text, scopeJids })]);
     const contextText = [
-      pins.length ? `# Pinned chats: ${pins.map((p) => p.chatName || p.chatJid).join(', ')}` : '',
-      lastExpense ? expenseDiffBlock(lastExpense.payload.expenseDiff) : '',
+      turnPins.length
+        ? `# Active chats this turn: ${turnPins.map((p) => p.chatName || p.chatJid).join(', ')}`
+        : '',
+      effectiveScopeChatJid
+        ? `# Thread home chat: ${scopeChatName || effectiveScopeChatJid}`
+        : '',
+      expenseHistory,
       pre.text,
     ].filter(Boolean).join('\n\n');
     if (pre.messages.length) {
@@ -240,10 +252,11 @@ export default class GptService {
     status('Thinking…');
 
     const { messages: history } = buildHistory(prior, memory);
+    const defaultChat = turnPins[0] || null;
     const overview = provider.name === 'ollama'
       && /\b1b\b/i.test(String(provider.model || ''))
       && isBroadQuery(text) && scopeJids.length === 1 && !pre.range
-      ? buildChatOverview(pins.find((p) => p.chatJid === scopeJids[0])?.chatName || this.directory.name(scopeJids[0]), pre.messages)
+      ? buildChatOverview(defaultChat?.chatName || this.directory.name(scopeJids[0]), pre.messages)
       : null;
     const result = overview || await runAgent({
       provider,
@@ -252,27 +265,41 @@ export default class GptService {
       contextText,
       query: text,
       toolbox: this.toolbox,
-      ctx: { status, scopeChatJid: effectiveScopeChatJid || scopeJids[0] || null, prefetched: pre.messages },
+      ctx: {
+        status,
+        scopeChatJid: defaultChat?.chatJid || effectiveScopeChatJid || null,
+        scopeChatName: defaultChat?.chatName || scopeChatName || null,
+        turnMentions: resolvedMentions,
+        conversationId: conversation.id,
+        resolveProvider: resolveExpenseProvider,
+        prefetched: pre.messages,
+      },
       emit,
       signal,
     });
     if (overview) emit?.({ type: 'delta', text: overview.answer });
 
     const expenseDiff = result.payload.expenseDiff || null;
+    const skillRun = result.payload.skillRun || null;
+    const choices = result.payload.choices || [];
+    if (Array.isArray(result.payload.skillSteps)) steps.push(...result.payload.skillSteps);
     const assistant = this.db.addSearchMessage({
       id: randomUUID(),
       conversationId: conversation.id,
       role: 'assistant',
       content: result.answer,
       payload: {
-        kind: expenseDiff ? 'expense_diff' : 'gpt',
+        kind: expenseDiff ? 'expense_diff' : (skillRun ? 'skill' : 'gpt'),
         sources: result.sources,
         refs: result.refs,
         steps,
         model: { provider: provider.name, model: provider.model },
+        ...(choices.length ? { choices } : {}),
+        ...(skillRun ? { skillRun } : {}),
         ...(expenseDiff ? { expenseDiff } : {}),
       },
     });
+    if (skillRun?.id) this.db.updateSkillRun(skillRun.id, { messageId: assistant.id });
 
     this._scheduleCompaction(conversation.id, provider);
     const fresh = this.getConversation(conversation.id);
@@ -302,13 +329,8 @@ export default class GptService {
    * Slash command. Resolved from the skill catalog before any model call, then executed
    * as a dry run. Sending the report is a separate confirm.
    */
-  async _handleSkillTurn({ conversationId = null, createConversationIfMissing = false, message, invokeText = null, scopeChatJid = null, mentions = [], model = undefined, emit = null }) {
+  async _handleSkillTurn({ conversationId = null, createConversationIfMissing = false, message, scopeChatJid = null, mentions = [], model = undefined, emit = null }) {
     const text = String(message || '').trim();
-    const commandText = String(invokeText || text).trim();
-    if (commandText !== text) {
-      const command = commandText.split(/\s+/)[0];
-      emit?.({ type: 'status', text: `Running ${command} again…` });
-    }
     const progress = [];
     const status = (line) => {
       if (line) progress.push(line);
@@ -320,6 +342,7 @@ export default class GptService {
       conversation = this.db.createSearchConversation({ id: conversationId || randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
     }
     const effectiveScopeChatJid = scopeChatJid || conversation.chatJid || null;
+    const scopeChatName = effectiveScopeChatJid ? this.directory.name(effectiveScopeChatJid) : null;
     // Slash commands can take long enough for the user to navigate away. Publish
     // the durable ID first so the draft tab is recoverable even if its stream closes.
     emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: !conversationId || createConversationIfMissing });
@@ -333,16 +356,9 @@ export default class GptService {
       return resolved.provider;
     };
     const memory = this.db.getConversationMemory(conversation.id);
-    const resolvedMentions = (mentions || []).map((p) => (p?.chatJid
-      ? { type: 'chat', chatJid: p.chatJid, chatName: p.chatName || this.directory.name(p.chatJid) }
-      : null)).filter(Boolean);
-    const pins = threadPins(
-      effectiveScopeChatJid,
-      effectiveScopeChatJid ? this.directory.name(effectiveScopeChatJid) : null,
-      memory.pins,
-      resolvedMentions,
-    );
-    if (JSON.stringify(pins) !== JSON.stringify(memory.pins)) this.db.setConversationPins(conversation.id, pins);
+    const resolvedMentions = resolveMentionPins(mentions, this.directory);
+    const turnPins = turnScopePins(effectiveScopeChatJid, scopeChatName, resolvedMentions);
+    ensureScopePin(this.db, conversation.id, effectiveScopeChatJid, scopeChatName, memory.pins);
 
     this.db.addSearchMessage({
       id: randomUUID(), conversationId: conversation.id, role: 'user', content: text,
@@ -352,9 +368,10 @@ export default class GptService {
     let outcome;
     try {
       outcome = await this.skills.run({
-        text: commandText,
-        mentions: pins,
-        scopeChatJid: effectiveScopeChatJid || pins.find((p) => String(p.chatJid).endsWith('@g.us'))?.chatJid || null,
+        text,
+        mentions: turnPins,
+        scopeChatJid: turnPins[0]?.chatJid || effectiveScopeChatJid || null,
+        scopeChatName: turnPins[0]?.chatName || scopeChatName || null,
         conversationId: conversation.id,
         status,
         resolveProvider: resolveExpenseProvider,
@@ -396,22 +413,6 @@ export default class GptService {
       expenseDiff: outcome.expenseDiff || null,
       model: null,
     };
-  }
-
-  /**
-   * "try again" re-runs the latest slash command until that command produces a
-   * finished skill result. A stopped turn, a failed run, and a normal chat
-   * answer do not count as finished.
-   */
-  _pendingSkillCommand(conversationId, text) {
-    if (!conversationId || !isRetryPhrase(text)) return null;
-    const prior = this.db.listSearchMessages(conversationId);
-    let command = null;
-    for (const message of prior) {
-      if (message.role === 'user' && parseSkillInvocation(message.content)) command = message.content;
-      else if (skillSettled(message)) command = null;
-    }
-    return command;
   }
 
   /** Keep a stopped or failed turn, including the steps already streamed. */
