@@ -32,8 +32,10 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
       'CALL {"tool":"search","args":{"query":"cement delivery","chat":"Site 2"}}',
       'You may issue several CALL lines at once; they run in parallel. Results come back and you continue.',
       'Prefer answering straight away when the context already answers the question.',
-      'For expense reconciliation, retries ("try again"), or comparing another site, CALL reconcile with that site\'s chat name.',
-      'Do not invent reconciliation numbers — always CALL reconcile (or use a labelled comparison already in context).',
+      'For expense reconciliation, retries ("try again"), or other sites, CALL reconcile.',
+      'When several chats are @mentioned this turn, CALL reconcile once with no chat arg (it runs each mentioned site).',
+      'When only one site is needed, CALL reconcile with that chat name.',
+      'Do not invent reconciliation numbers — always CALL reconcile (or use a labelled comparison already in context for that same site).',
       tools,
       '',
       'ANSWER STYLE: lead with the direct answer, then supporting detail. Use short paragraphs or bullets,',
@@ -59,13 +61,21 @@ export function expenseDiffBlock(diff) {
 /**
  * Prior reconciliation results for the model, newest first, packed into the history token budget.
  * Each block is labelled with its site so follow-ups can pick the right one.
+ * When `chatJids` is set, only comparisons for those sites are included (avoids leaking
+ * Site 1's result into a Site 2 / Site 3 turn).
  */
-export function expenseHistoryBlocks(prior = []) {
+export function expenseHistoryBlocks(prior = [], { chatJids = null } = {}) {
+  const allow = Array.isArray(chatJids) && chatJids.length
+    ? new Set(chatJids.filter(Boolean))
+    : null;
   const blocks = [];
   for (let i = prior.length - 1; i >= 0; i--) {
     const m = prior[i];
-    if (m?.role !== 'assistant' || !m.payload?.expenseDiff) continue;
-    blocks.push(expenseDiffBlock(m.payload.expenseDiff));
+    const diff = m?.payload?.expenseDiff;
+    if (m?.role !== 'assistant' || !diff) continue;
+    if (allow && diff.chatJid && !allow.has(diff.chatJid)) continue;
+    if (allow && !diff.chatJid) continue;
+    blocks.push(expenseDiffBlock(diff));
   }
   const kept = [];
   let used = 0;

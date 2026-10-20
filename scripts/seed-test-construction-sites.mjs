@@ -27,33 +27,69 @@ import {
 
 const SHOULD_RUN = process.argv.includes('--run');
 const TODAY = new Date();
-const DATE = `${TODAY.getFullYear()}-${String(TODAY.getMonth() + 1).padStart(2, '0')}-${String(TODAY.getDate()).padStart(2, '0')}`;
-const DAY_START = Math.floor(new Date(`${DATE}T08:00:00`).getTime() / 1000);
+
+function ymd(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function dayAgo(n) {
+  const d = new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate() - n);
+  const date = ymd(d);
+  return { date, dayStart: Math.floor(new Date(`${date}T08:00:00`).getTime() / 1000) };
+}
+
+const D0 = dayAgo(0);
+const D1 = dayAgo(1);
+const D2 = dayAgo(2);
+const DATE = D0.date;
+const DAY_START = D0.dayStart;
 
 /**
  * Chat lines include Ref VOU-xxx so the reconciler can pair them with the sheet.
  * Intentional gaps: amount mismatch, missing-from-sheet, only-in-sheet.
+ * Site 1 spans three days so Ask AI has denser history to work with.
  */
 const SITES = [
   {
     n: 1,
     chatJid: '120363999000000001@g.us',
     chatName: 'Site 1',
-    messages: [
-      'Paid labour for fuel Rs. 5000 Ref VOU-S1-01',
-      'Paid for electricity Rs. 4000 Ref VOU-S1-02',
-      'Paid cement supplier Rs. 12000 Ref VOU-S1-03',
-      'Received advance from client Rs. 20000 Ref VOU-S1-04',
-      'Paid labour wages Rs. 8500 Ref VOU-S1-05',
+    // [{ dayStart, text }] — timestamps follow each day's morning.
+    messageEntries: [
+      { dayStart: D2.dayStart, text: 'Paid diesel for excavator Rs. 4200 Ref VOU-S1-D2-01' },
+      { dayStart: D2.dayStart, text: 'Paid bricks Rs. 9000 Ref VOU-S1-D2-02' },
+      { dayStart: D2.dayStart, text: 'Paid mason wages Rs. 6500 Ref VOU-S1-D2-03' },
+      { dayStart: D2.dayStart, text: 'Paid water tanker Rs. 1800 Ref VOU-S1-D2-04' },
+      { dayStart: D1.dayStart, text: 'Paid labour for fuel Rs. 5100 Ref VOU-S1-D1-01' },
+      { dayStart: D1.dayStart, text: 'Paid sand Rs. 4500 Ref VOU-S1-D1-02' },
+      { dayStart: D1.dayStart, text: 'Paid electrician Rs. 3200 Ref VOU-S1-D1-03' },
+      { dayStart: D1.dayStart, text: 'Received scrap sale Rs. 2500 Ref VOU-S1-D1-04' },
+      { dayStart: D1.dayStart, text: 'Paid shuttering hire Rs. 4000 Ref VOU-S1-D1-05' },
+      { dayStart: D0.dayStart, text: 'Paid labour for fuel Rs. 5000 Ref VOU-S1-01' },
+      { dayStart: D0.dayStart, text: 'Paid for electricity Rs. 4000 Ref VOU-S1-02' },
+      { dayStart: D0.dayStart, text: 'Paid cement supplier Rs. 12000 Ref VOU-S1-03' },
+      { dayStart: D0.dayStart, text: 'Received advance from client Rs. 20000 Ref VOU-S1-04' },
+      { dayStart: D0.dayStart, text: 'Paid labour wages Rs. 8500 Ref VOU-S1-05' },
+      { dayStart: D0.dayStart, text: 'Paid hardware store Rs. 2750 Ref VOU-S1-06' },
     ],
-    // Electricity amount mismatch (3500 vs 4000). Wages omitted. Extra tool hire only in sheet.
+    // D2: bricks mismatch. D1: shuttering missing from sheet, extra crane only in sheet.
+    // D0: electricity mismatch, wages omitted, extra tool hire only in sheet.
     sheetRows: [
-      // Date, Particulars, Paid To, Amount, Type, Balance, Reference
-      [DATE, 'Fuel for generator', 'Fuel pump', 5000, 'Debit', 5000, 'VOU-S1-01'],
-      [DATE, 'Electricity bill', 'SEB', 3500, 'Debit', 8500, 'VOU-S1-02'],
-      [DATE, 'Cement bags', 'Sharma Traders', 12000, 'Debit', 20500, 'VOU-S1-03'],
-      [DATE, 'Client advance', 'Client', 20000, 'Credit', 500, 'VOU-S1-04'],
-      [DATE, 'Tool hire', 'Hire Mart', 1500, 'Debit', 2000, 'VOU-S1-99'],
+      [D2.date, 'Excavator diesel', 'Fuel pump', 4200, 'Debit', 4200, 'VOU-S1-D2-01'],
+      [D2.date, 'Clay bricks', 'Brick Kiln', 8500, 'Debit', 12700, 'VOU-S1-D2-02'],
+      [D2.date, 'Mason wages', 'Labour', 6500, 'Debit', 19200, 'VOU-S1-D2-03'],
+      [D2.date, 'Water tanker', 'Jal Agency', 1800, 'Debit', 21000, 'VOU-S1-D2-04'],
+      [D1.date, 'Diesel for mixer', 'Fuel pump', 5100, 'Debit', 5100, 'VOU-S1-D1-01'],
+      [D1.date, 'River sand', 'Quarry', 4500, 'Debit', 9600, 'VOU-S1-D1-02'],
+      [D1.date, 'Wiring work', 'Electrician', 3200, 'Debit', 12800, 'VOU-S1-D1-03'],
+      [D1.date, 'Scrap sale', 'Kabadi', 2500, 'Credit', 10300, 'VOU-S1-D1-04'],
+      [D1.date, 'Mobile crane hire', 'Crane Co', 6000, 'Debit', 16300, 'VOU-S1-D1-99'],
+      [D0.date, 'Fuel for generator', 'Fuel pump', 5000, 'Debit', 5000, 'VOU-S1-01'],
+      [D0.date, 'Electricity bill', 'SEB', 3500, 'Debit', 8500, 'VOU-S1-02'],
+      [D0.date, 'Cement bags', 'Sharma Traders', 12000, 'Debit', 20500, 'VOU-S1-03'],
+      [D0.date, 'Client advance', 'Client', 20000, 'Credit', 500, 'VOU-S1-04'],
+      [D0.date, 'Hardware purchase', 'Hardware Store', 2750, 'Debit', 3250, 'VOU-S1-06'],
+      [D0.date, 'Tool hire', 'Hire Mart', 1500, 'Debit', 4750, 'VOU-S1-99'],
     ],
   },
   {
@@ -145,8 +181,17 @@ async function main() {
     const allRows = [];
     for (const site of SITES) {
       const { path, fileName } = await writeSiteStatement(site, mediaDir);
-      let t = DAY_START;
-      for (let i = 0; i < site.messages.length; i += 1) {
+      const entries = Array.isArray(site.messageEntries)
+        ? site.messageEntries
+        : (site.messages || []).map((text) => ({ dayStart: DAY_START, text }));
+      let t = entries[0]?.dayStart || DAY_START;
+      let lastDay = null;
+      for (let i = 0; i < entries.length; i += 1) {
+        const entry = entries[i];
+        if (entry.dayStart !== lastDay) {
+          t = entry.dayStart;
+          lastDay = entry.dayStart;
+        }
         t += 120;
         allRows.push({
           messageId: `test-site${site.n}-msg-${i + 1}`,
@@ -154,7 +199,7 @@ async function main() {
           chatName: site.chatName,
           sender: i % 2 === 0 ? 'Supervisor' : 'Accountant',
           senderJid: `91990000000${site.n}${i}@s.whatsapp.net`,
-          text: site.messages[i],
+          text: entry.text,
           timestamp: t,
         });
       }
@@ -171,7 +216,7 @@ async function main() {
         mediaCaption: fileName,
         timestamp: t,
       });
-      console.log(`[seed] ${site.chatName}: ${site.messages.length} messages + ${fileName}`);
+      console.log(`[seed] ${site.chatName}: ${entries.length} messages + ${fileName}`);
     }
 
     // Re-seed: delete prior test rows / runs for these JIDs so reruns stay clean.

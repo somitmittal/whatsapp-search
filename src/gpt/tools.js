@@ -32,7 +32,7 @@ export const TOOL_SPECS = [
   {
     name: 'reconcile',
     args: '{"chat"?: name}',
-    about: "dry-run expense reconciliation for a site group (Excel/CSV in that chat). Pass chat when the user names or @mentions a site; omit to use this turn's scoped chat.",
+    about: "dry-run expense reconciliation for a site group (Excel/CSV in that chat). Pass chat for one site; omit chat when several chats are @mentioned this turn to reconcile each of them.",
   },
 ];
 
@@ -131,33 +131,63 @@ export function createToolbox({ db, embeddings, directory, runSkill = null }) {
         return { text: 'Expense reconciliation is not enabled on this install.' };
       }
       const named = String(args.chat || '').trim();
-      const fallback = !named && ctx.scopeChatName ? ctx.scopeChatName : '';
-      const rest = named || fallback;
-      const text = rest ? `${EXPENSE_COMMAND} ${rest}` : EXPENSE_COMMAND;
-      ctx.status?.(`Reconciling${rest ? ` ${rest}` : ''}…`);
-      const outcome = await runSkill({
-        text,
-        mentions: ctx.turnMentions || [],
-        scopeChatJid: ctx.scopeChatJid || null,
-        scopeChatName: ctx.scopeChatName || null,
-        conversationId: ctx.conversationId || null,
-        status: ctx.status || null,
-        resolveProvider: ctx.resolveProvider || null,
-      });
-      const site = outcome.expenseDiff?.chatName
-        || outcome.skillRun?.inputs?.chatJid
-        || rest
-        || 'site';
-      const labelled = outcome.expenseDiff
-        ? `${outcome.answer}\n\n(Site: ${outcome.expenseDiff.chatName || site})`
-        : outcome.answer;
+      const mentionTargets = (ctx.turnMentions || [])
+        .map((m) => String(m.chatName || m.chatJid || '').trim())
+        .filter(Boolean);
+      // One named chat → that site. Else every @mention this turn. Else thread home.
+      const targets = named
+        ? [named]
+        : (mentionTargets.length ? mentionTargets : (ctx.scopeChatName ? [ctx.scopeChatName] : ['']));
+
+      const runOne = async (siteLabel) => {
+        const rest = String(siteLabel || '').trim();
+        const resolved = rest ? chatOrNull(rest) : null;
+        const text = rest ? `${EXPENSE_COMMAND} ${rest}` : EXPENSE_COMMAND;
+        ctx.status?.(`Reconciling${rest ? ` ${rest}` : ''}…`);
+        const outcome = await runSkill({
+          text,
+          // Pin exactly this site so multi-@mention turns do not ask "which site?".
+          mentions: resolved
+            ? [{ type: 'chat', chatJid: resolved.chatJid, chatName: resolved.chatName }]
+            : (rest ? [] : (ctx.turnMentions || [])),
+          scopeChatJid: resolved?.chatJid || ctx.scopeChatJid || null,
+          scopeChatName: resolved?.chatName || rest || ctx.scopeChatName || null,
+          conversationId: ctx.conversationId || null,
+          status: ctx.status || null,
+          resolveProvider: ctx.resolveProvider || null,
+        });
+        const site = outcome.expenseDiff?.chatName || rest || 'site';
+        const labelled = outcome.expenseDiff
+          ? `${outcome.answer}\n\n(Site: ${outcome.expenseDiff.chatName || site})`
+          : outcome.answer;
+        return { labelled, outcome };
+      };
+
+      const parts = [];
+      const expenseDiffs = [];
+      const skillSteps = [];
+      let lastSkillRun = null;
+      let lastChoices = [];
+      let lastExpenseDiff = null;
+      for (const target of targets) {
+        const { labelled, outcome } = await runOne(target);
+        parts.push(labelled);
+        if (outcome.expenseDiff) {
+          expenseDiffs.push(outcome.expenseDiff);
+          lastExpenseDiff = outcome.expenseDiff;
+        }
+        if (outcome.skillRun) lastSkillRun = outcome.skillRun;
+        if (outcome.choices?.length) lastChoices = outcome.choices;
+        if (outcome.steps?.length) skillSteps.push(...outcome.steps);
+      }
       return {
-        text: labelled,
+        text: parts.join('\n\n---\n\n'),
         payload: {
-          ...(outcome.expenseDiff ? { expenseDiff: outcome.expenseDiff } : {}),
-          ...(outcome.skillRun ? { skillRun: outcome.skillRun } : {}),
-          ...(outcome.choices?.length ? { choices: outcome.choices } : {}),
-          ...(outcome.steps?.length ? { skillSteps: outcome.steps } : {}),
+          ...(lastExpenseDiff ? { expenseDiff: lastExpenseDiff } : {}),
+          ...(expenseDiffs.length > 1 ? { expenseDiffs } : {}),
+          ...(lastSkillRun ? { skillRun: lastSkillRun } : {}),
+          ...(lastChoices.length ? { choices: lastChoices } : {}),
+          ...(skillSteps.length ? { skillSteps } : {}),
         },
       };
     },

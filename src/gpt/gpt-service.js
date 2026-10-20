@@ -233,7 +233,9 @@ export default class GptService {
 
     try {
     const scopeJids = turnPins.map((p) => p.chatJid);
-    const expenseHistory = expenseHistoryBlocks(prior);
+    // Only inject comparisons for chats in scope this turn — not the thread home by default
+    // when the user @mentioned other sites.
+    const expenseHistory = expenseHistoryBlocks(prior, { chatJids: scopeJids });
     const [pre] = await Promise.all([this.context.prefetch({ query: text, scopeJids })]);
     const contextText = [
       turnPins.length
@@ -258,12 +260,16 @@ export default class GptService {
       && isBroadQuery(text) && scopeJids.length === 1 && !pre.range
       ? buildChatOverview(defaultChat?.chatName || this.directory.name(scopeJids[0]), pre.messages)
       : null;
+    const mentionHint = resolvedMentions.length
+      ? `\n\n(@mentioned this turn: ${resolvedMentions.map((p) => p.chatName || p.chatJid).join(', ')}. `
+        + 'If they asked to reconcile, CALL reconcile with no chat arg so each mentioned site runs.)'
+      : '';
     const result = overview || await runAgent({
       provider,
       system: buildSystemPrompt({ db: this.db, businessContext }),
       history,
       contextText,
-      query: text,
+      query: `${text}${mentionHint}`,
       toolbox: this.toolbox,
       ctx: {
         status,

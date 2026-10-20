@@ -297,7 +297,8 @@ async function reloadActiveWaMessages() {
 function openFreshAskDraft(jid, title, seed = '') {
   state.conversationId = null;
   state.scopeChatJid = jid;
-  state.pins = [{ type: 'chat', chatJid: jid, chatName: title }];
+  // Home chat is durable scope (saved), not a per-message @mention.
+  state.pins = [{ type: 'chat', chatJid: jid, chatName: title, saved: true }];
   state.activeChatJid = null;
   store.activeChat = null;
   clearReplyTarget();
@@ -348,7 +349,7 @@ function askAiAboutActiveChat(seed = '') {
     store.activeChat = null;
     state.conversationId = gpt.id;
     state.scopeChatJid = jid;
-    state.pins = [{ type: 'chat', chatJid: jid, chatName: title }];
+    state.pins = [{ type: 'chat', chatJid: jid, chatName: title, saved: true }];
     ensureTab({
       kind: 'gpt',
       id: gpt.id,
@@ -374,7 +375,9 @@ function askAiAboutActiveChat(seed = '') {
         // openConversation may clear scope when the row has no chatJid — restore it.
         state.scopeChatJid = jid;
         if (!state.pins.some((p) => p.chatJid === jid)) {
-          state.pins = [{ type: 'chat', chatJid: jid, chatName: title }, ...state.pins];
+          state.pins = [{ type: 'chat', chatJid: jid, chatName: title, saved: true }, ...state.pins];
+        } else {
+          state.pins = state.pins.map((p) => (p.chatJid === jid ? { ...p, saved: true } : p));
         }
         ensureTab({
           kind: 'gpt',
@@ -668,7 +671,7 @@ function openScopedDraft(tab) {
   const title = row?.chatName
     ? displayChatTitle(tab.scopeChatJid, row.chatName)
     : (fromTab || displayChatTitle(tab.scopeChatJid, tab.scopeChatJid));
-  state.pins = [{ type: 'chat', chatJid: tab.scopeChatJid, chatName: title }];
+  state.pins = [{ type: 'chat', chatJid: tab.scopeChatJid, chatName: title, saved: true }];
   clearReplyTarget();
   clearEditTarget();
   els.thread.innerHTML = '';

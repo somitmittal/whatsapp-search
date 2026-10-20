@@ -365,6 +365,8 @@ describe('GptService', () => {
     expect(block).toContain('site: Site 2');
     expect(block).toContain('site: Family');
     expect(expenseDiffBlock(prior[0].payload.expenseDiff)).toContain(`chatJid: ${SITE}`);
+    expect(expenseHistoryBlocks(prior, { chatJids: [FAMILY] })).toContain('site: Family');
+    expect(expenseHistoryBlocks(prior, { chatJids: [FAMILY] })).not.toContain('site: Site 2');
   });
 
   test('keeps the streamed steps and partial answer when the run fails or is stopped', async () => {
