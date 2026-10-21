@@ -356,6 +356,15 @@ async function loadOlderChatPage() {
   }
 }
 
+/**
+ * Reload the open chat transcript. GPT shell paints `#gpt-wa-view` via
+ * `store.onActiveChatRefresh`; classic UI uses `#cv-messages`.
+ */
+export function refreshOpenChatMessages() {
+  if (typeof store.onActiveChatRefresh === 'function') return store.onActiveChatRefresh();
+  return refreshActiveChatMessages();
+}
+
 export async function refreshActiveChatMessages() {
   const jid = store.activeChat;
   if (!jid) return;

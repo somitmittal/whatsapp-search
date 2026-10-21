@@ -348,6 +348,14 @@ export default class WaClient {
     sent.status = next;
     const chatJid = sent.key.remoteJid ? String(sent.key.remoteJid) : '';
     const messageId = String(sent.key.id);
+    // Index before the HTTP send handler returns so the open chat can reload and see it.
+    // Baileys does not always emit a messages.upsert echo for our own sends.
+    try {
+      const row = this._msgToRow(sent);
+      if (row) this._onMessages?.([row]);
+    } catch (e) {
+      console.warn('[WA] index outbound send:', e?.message || e);
+    }
     if (chatJid) {
       process.nextTick(() => {
         try {

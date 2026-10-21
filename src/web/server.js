@@ -1,6 +1,6 @@
 import { parse } from 'cookie';
 import cookieParser from 'cookie-parser';
-import { existsSync, mkdirSync, readFileSync, renameSync, realpathSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, realpathSync, rmSync, unlinkSync } from 'fs';
 import { createServer } from 'http';
 import { createRequire } from 'module';
 import { randomBytes } from 'node:crypto';
@@ -10,7 +10,7 @@ import { getSessionIdFromRequest, setSessionCookie, UserSessionService } from '.
 import config from '../config.js';
 import { IMPORT_MAX_UPLOAD_BYTES, MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
-import { decodeExportBuffer, extractMediaFromZip, extractTextFromZip, importExportedChat, slugForImportChatJid } from '../import/chat-import.js';
+import { decodeExportBuffer, extractChatExportFromZip, extractMediaFromZip, importExportedChat, normalizeImportChatName, slugForImportChatJid } from '../import/chat-import.js';
 import {
     effectiveSearchApiKey,
     effectiveSummaryApiKey,
@@ -290,6 +290,21 @@ export default class WebServer {
 
   _desktopTenantId() {
     return config.defaultTenantId || LEGACY_TENANT_ID;
+  }
+
+  /** Remove the on-disk media folder created for an `@imported` archive. */
+  _removeImportedChatMedia(chatJid) {
+    if (!String(chatJid || '').endsWith('@imported')) return;
+    const dirName = String(chatJid).replace(/[^a-zA-Z0-9._-]+/g, '_');
+    const dir = resolve(config.mediaDir, dirName);
+    const root = resolve(config.mediaDir);
+    const rel = relative(root, dir);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) return;
+    try {
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn('[Import] media cleanup failed:', err.message);
+    }
   }
 
   /**
@@ -1659,6 +1674,9 @@ export default class WebServer {
         const chatJid = decodeURIComponent(req.params.chatJid);
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const deleted = this.db.deleteChat(chatJid);
+        if (String(chatJid).endsWith('@imported')) {
+          this._removeImportedChatMedia(chatJid);
+        }
         const tid = getCurrentTenantId();
         const st = this._getTenantState(tid);
         this._broadcast(
@@ -3375,11 +3393,17 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
           let textContent;
           let mediaMap;
-          const chatName = fileName.replace(/\.(zip|txt)$/i, '').replace(/^WhatsApp Chat with /i, '');
+          let chatName = normalizeImportChatName(fileName);
 
           if (isZip) {
-            textContent = extractTextFromZip(file.buffer);
+            const extracted = extractChatExportFromZip(file.buffer);
+            textContent = extracted?.text || null;
             if (!textContent) { results.push({ chatName, error: 'No chat .txt found in zip' }); continue; }
+            // Prefer the transcript filename inside the zip — upload names are often mangled
+            // (e.g. "WhatsApp Chat - Foo.zip WhatsApp Chat - Foo.zip").
+            if (extracted.entryName) {
+              chatName = normalizeImportChatName(extracted.entryName) || chatName;
+            }
             const slug = slugForImportChatJid(chatName);
             const chatJid = `import_${slug}@imported`;
             mediaMap = extractMediaFromZip(file.buffer, chatJid);

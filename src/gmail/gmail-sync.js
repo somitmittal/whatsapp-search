@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { google } = require('googleapis');
 
-import { importExportedChat, extractTextFromZip, decodeExportBuffer } from '../import/chat-import.js';
+import { importExportedChat, extractChatExportFromZip, decodeExportBuffer, normalizeImportChatName } from '../import/chat-import.js';
 
 const SETTINGS_IMPORTED = 'gmail_imported_keys';
 const MAX_IMPORTED_KEYS = 2000;
@@ -26,7 +26,7 @@ export function isLikelyWhatsAppExportFilename(filename) {
  * @returns {string}
  */
 export function chatNameFromFilename(fileName) {
-  return fileName.replace(/\.(zip|txt)$/i, '').replace(/^WhatsApp Chat with /i, '');
+  return normalizeImportChatName(fileName);
 }
 
 /**
@@ -110,17 +110,21 @@ export async function syncWhatsAppExportsFromGmail(db, oauth2Client) {
         const buf = Buffer.from(raw, 'base64url');
         const lower = att.filename.toLowerCase();
         let textContent;
+        let chatName = chatNameFromFilename(att.filename);
         if (lower.endsWith('.zip')) {
-          textContent = extractTextFromZip(buf);
+          const extracted = extractChatExportFromZip(buf);
+          textContent = extracted?.text || null;
           if (!textContent) {
             errors.push(`${att.filename}: no chat .txt in zip`);
             continue;
+          }
+          if (extracted.entryName) {
+            chatName = normalizeImportChatName(extracted.entryName) || chatName;
           }
         } else {
           textContent = decodeExportBuffer(buf);
         }
 
-        const chatName = chatNameFromFilename(att.filename);
         const result = importExportedChat(db, textContent, chatName);
         results.push({ chatName, filename: att.filename, messageId, ...result });
         importedSet.add(key);

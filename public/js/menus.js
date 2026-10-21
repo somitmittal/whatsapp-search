@@ -67,21 +67,38 @@ function closeSidebarContextMenu() {
   store._ctxMenuJid = null;
 }
 
-function promptDeleteChat(jid) {
-  const ch = store.chatData.find(c => c.chatJid === jid);
+export function promptDeleteChat(jid) {
+  if (!jid) return;
+  const ch = store.chatData.find((c) => c.chatJid === jid);
   const name = ch?.chatName || jid;
-  $('#confirm-delete-msg').textContent = `All ${(ch?.messageCount || 0).toLocaleString()} messages and summaries for "${name}" will be permanently deleted.`;
+  const imported = String(jid).endsWith('@imported');
+  const msg = $('#confirm-delete-msg');
+  if (msg) {
+    msg.textContent = imported
+      ? `Permanently delete the imported chat "${name}" and its ${(ch?.messageCount || 0).toLocaleString()} local messages, summaries, and media?`
+      : `All ${(ch?.messageCount || 0).toLocaleString()} messages and summaries for "${name}" will be permanently deleted.`;
+  }
+  const title = $('#confirm-delete-title');
+  if (title) title.textContent = imported ? 'Delete imported chat?' : 'Delete chat?';
   store._pendingDeleteJid = jid;
-  $('#confirm-delete').classList.add('open');
+  $('#confirm-delete')?.classList.add('open');
+}
+
+export async function deleteChatByJid(jid) {
+  const res = await fetch(`/api/chats/${encodeURIComponent(jid)}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || 'Delete failed');
+  if (typeof store.onChatDeleted === 'function') store.onChatDeleted(jid);
+  return data;
 }
 
 export function initMenus() {
-  $('#btn-chat-menu').addEventListener('click', (e) => {
+  $('#btn-chat-menu')?.addEventListener('click', (e) => {
     e.stopPropagation();
     closeMenu();
     syncFetchOlderMenuItem();
     syncIndexChatMenuItem();
-    $('#chat-menu').classList.toggle('open');
+    $('#chat-menu')?.classList.toggle('open');
   });
 
   $('#menu-index-chat')?.addEventListener('click', () => {
@@ -126,43 +143,47 @@ export function initMenus() {
     if (!e.target.closest('.chat-item')) closeSidebarContextMenu();
   });
 
-  $('#ctx-open-chat').addEventListener('click', () => {
-    if (store._ctxMenuJid) openChat(store._ctxMenuJid);
+  $('#ctx-open-chat')?.addEventListener('click', () => {
+    const jid = store._ctxMenuJid;
     closeSidebarContextMenu();
+    if (!jid) return;
+    if (typeof store.onOpenChatContext === 'function') store.onOpenChatContext(jid);
+    else void openChat(jid);
   });
 
-  $('#ctx-delete-chat').addEventListener('click', () => {
+  $('#ctx-delete-chat')?.addEventListener('click', () => {
     const jid = store._ctxMenuJid;
     closeSidebarContextMenu();
     if (!jid) return;
     promptDeleteChat(jid);
   });
 
-  $('#menu-delete-chat').addEventListener('click', () => {
+  $('#menu-delete-chat')?.addEventListener('click', () => {
     closeChatMenu();
     if (!store.activeChat) return;
     promptDeleteChat(store.activeChat);
   });
 
-  $('#confirm-delete-no').addEventListener('click', () => {
-    $('#confirm-delete').classList.remove('open');
+  $('#confirm-delete-no')?.addEventListener('click', () => {
+    $('#confirm-delete')?.classList.remove('open');
     store._pendingDeleteJid = null;
   });
 
-  $('#confirm-delete-yes').addEventListener('click', async () => {
-    $('#confirm-delete').classList.remove('open');
+  $('#confirm-delete-yes')?.addEventListener('click', async () => {
+    $('#confirm-delete')?.classList.remove('open');
     const jid = store._pendingDeleteJid;
     store._pendingDeleteJid = null;
     if (!jid) return;
     try {
-      const res = await fetch(`/api/chats/${encodeURIComponent(jid)}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (data.ok) {
+      await deleteChatByJid(jid);
+      // GPT shell handles UI via onChatDeleted; classic clears the open panel here.
+      if (typeof store.onChatDeleted !== 'function') {
         if (store.activeChat === jid) { store.activeChat = null; switchPanel(); }
-        refreshDash();
+        void refreshDash();
       }
     } catch (err) {
       console.error('Delete failed:', err);
+      alert(err.message || 'Delete failed');
     }
   });
 }

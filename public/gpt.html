@@ -214,6 +214,7 @@
         </button>
         <div class="gpt-title" id="gpt-title">New chat</div>
         <button type="button" class="gpt-ask-ai" id="gpt-ask-ai" hidden title="Ask AI about this chat">Ask AI</button>
+        <button type="button" class="gpt-delete-chat" id="gpt-delete-chat" hidden title="Delete imported chat">Delete</button>
       </header>
 
       <section class="gpt-scroll" id="gpt-scroll">
@@ -507,6 +508,28 @@
     </div>
   </div>
 </div>
+</div>
+
+<div id="sidebar-ctx-menu">
+  <div class="menu-item" id="ctx-open-chat">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+    Open chat
+  </div>
+  <div class="menu-item danger" id="ctx-delete-chat">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+    Delete chat
+  </div>
+</div>
+
+<div class="confirm-overlay" id="confirm-delete">
+  <div class="confirm-box">
+    <h4 id="confirm-delete-title">Delete chat?</h4>
+    <p id="confirm-delete-msg">All messages and summaries for this chat will be permanently deleted from local storage.</p>
+    <div class="confirm-actions">
+      <button type="button" class="btn-cancel" id="confirm-delete-no">Cancel</button>
+      <button type="button" class="btn-danger" id="confirm-delete-yes">Delete</button>
+    </div>
+  </div>
 </div>
 
 <div class="confirm-overlay" id="confirm-delete-message">

@@ -17,6 +17,7 @@ import { displayChatTitle } from '/js/format.js';
 import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, promptDeleteMessage } from '/js/message-actions.js';
+import { initMenus, promptDeleteChat, showSidebarContextMenu } from '/js/menus.js';
 import { buildChatMessagesHtml, closeReactionEmojiPickers, postWaReaction, toggleReactionEmojiPicker } from '/js/messages-render.js';
 import { initOverlays, openOverlay, setSettingsTab as setOverlaySettingsTab } from '/js/overlays.js';
 import { initSettings, loadSettings } from '/js/settings.js';
@@ -30,6 +31,7 @@ import { isWaUiReady, updateWaUI } from '/js/wa-connection.js';
 initFetchShim();
 initComposer();
 initMessageActions();
+initMenus();
 initOverlays();
 initSettings();
 initBusiness();
@@ -58,6 +60,7 @@ const els = {
   waComposer: $('#gpt-wa-composer'),
   waComposerHint: $('#gpt-wa-composer-hint'),
   askAi: $('#gpt-ask-ai'),
+  deleteChat: $('#gpt-delete-chat'),
   suggest: $('#gpt-suggest'),
   input: $('#gpt-input'),
   send: $('#gpt-send'),
@@ -181,10 +184,29 @@ function syncWaComposerUi() {
   const inChat = !!state.activeChatJid;
   if (els.waComposer) els.waComposer.hidden = !inChat;
   if (els.askAi) els.askAi.hidden = !inChat;
+  if (els.deleteChat) {
+    els.deleteChat.hidden = !(inChat && String(state.activeChatJid || '').endsWith('@imported'));
+  }
   store.activeChat = state.activeChatJid || null;
   updateComposerVisibility();
   const canSend = canSendMessageToJid(store.activeChat);
   if (els.waComposerHint) els.waComposerHint.hidden = !inChat || canSend;
+}
+
+function handleChatDeleted(jid) {
+  state.chats = state.chats.filter((c) => c.chatJid !== jid);
+  state.chatMessages.delete(jid);
+  store.chatData = state.chats;
+  state.openTabs = state.openTabs.filter((t) => !(t.kind === 'chat' && t.jid === jid));
+  persistTabs();
+  if (state.activeChatJid === jid) {
+    state.activeChatJid = null;
+    store.activeChat = null;
+    newChat();
+  } else {
+    renderTabs();
+  }
+  renderChats();
 }
 
 function setMode(mode) {
@@ -289,9 +311,32 @@ async function reloadActiveWaMessages() {
     );
     const msgs = res.ok ? await res.json() : [];
     const list = Array.isArray(msgs) ? msgs : [];
-    state.chatMessages.set(jid, list);
-    if (state.activeChatJid === jid) paintWaMessages(jid, list);
+    // Keep optimistic outbound bubbles until the server has indexed them.
+    const prev = state.chatMessages.get(jid) || [];
+    const serverIds = new Set(list.map((m) => m.messageId).filter(Boolean));
+    const pending = prev.filter((m) => m.sender === 'You' && m.messageId && !serverIds.has(m.messageId));
+    const merged = pending.length ? [...list, ...pending] : list;
+    state.chatMessages.set(jid, merged);
+    if (state.activeChatJid === jid) paintWaMessages(jid, merged);
   } catch { /* ignore */ }
+}
+
+/** Show an outbound bubble immediately while the server indexes / WA echoes. */
+function appendOptimisticOutbound(row) {
+  const jid = row?.chatJid;
+  if (!jid || state.activeChatJid !== jid) return;
+  const list = [...(state.chatMessages.get(jid) || [])];
+  if (row.messageId && list.some((m) => m.messageId === row.messageId)) return;
+  list.push({
+    messageId: row.messageId || `local-${Date.now()}`,
+    chatJid: jid,
+    sender: 'You',
+    text: row.text || '',
+    timestamp: row.timestamp || Math.floor(Date.now() / 1000),
+    receiptStatus: row.receiptStatus || 'server_ack',
+  });
+  state.chatMessages.set(jid, list);
+  paintWaMessages(jid, list);
 }
 
 function openFreshAskDraft(jid, title, seed = '') {
@@ -2251,6 +2296,9 @@ function wire() {
     void loadSettings();
   });
   $('#gpt-btn-import')?.addEventListener('click', openImportBackup);
+  els.deleteChat?.addEventListener('click', () => {
+    if (state.activeChatJid) promptDeleteChat(state.activeChatJid);
+  });
   document.querySelectorAll('#gpt-chats-pane [data-sidebar-tab]').forEach((btn) => {
     btn.addEventListener('click', () => setSidebarListTab(btn.getAttribute('data-sidebar-tab')));
   });
@@ -2269,6 +2317,11 @@ function wire() {
     if (!item?.dataset.jid) return;
     const name = item.dataset.name || displayChatTitle(item.dataset.jid, item.dataset.jid);
     void openChatTab(item.dataset.jid, name);
+  });
+  els.chatList.addEventListener('contextmenu', (e) => {
+    const item = e.target.closest('.chat-item');
+    if (!item?.dataset.jid || !els.chatList.contains(item)) return;
+    showSidebarContextMenu(e, item.dataset.jid);
   });
 
   els.filter.addEventListener('input', renderThreads);
@@ -2401,6 +2454,12 @@ function wire() {
 async function boot() {
   applyTheme(localStorage.getItem(THEME_KEY) || 'light');
   store.onActiveChatRefresh = () => reloadActiveWaMessages();
+  store.onOptimisticOutbound = appendOptimisticOutbound;
+  store.onChatDeleted = handleChatDeleted;
+  store.onOpenChatContext = (jid) => {
+    const name = displayChatTitle(jid, state.chats.find((c) => c.chatJid === jid)?.chatName || jid);
+    void openChatTab(jid, name);
+  };
   store.chatData = store.chatData || [];
   setMode('gpt');
   if (matchMedia('(max-width: 820px)').matches) els.app.classList.add('chats-hidden');

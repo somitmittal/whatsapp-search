@@ -111,4 +111,10 @@ export const store = {
   pullPollTimer: null,
   /** Optional hook (e.g. GPT shell) to refresh the open WhatsApp transcript after send/edit. */
   onActiveChatRefresh: null,
+  /** Optional hook to paint an outbound bubble before the reload round-trip completes. */
+  onOptimisticOutbound: null,
+  /** Optional hook after a chat is deleted via /api/chats (e.g. GPT shell closes the tab). */
+  onChatDeleted: null,
+  /** Optional hook when the sidebar context menu opens a chat (GPT shell vs classic). */
+  onOpenChatContext: null,
 };

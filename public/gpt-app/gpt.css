@@ -455,6 +455,32 @@ button { font: inherit; color: inherit; }
 }
 .gpt-ask-ai:hover { border-color: var(--accent); color: var(--accent-2); }
 .gpt-ask-ai[hidden] { display: none !important; }
+.gpt-delete-chat {
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+  background: var(--panel-2); color: var(--danger);
+  border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
+  cursor: pointer; flex-shrink: 0;
+}
+.gpt-delete-chat:hover { background: color-mix(in srgb, var(--danger) 12%, var(--panel)); }
+.gpt-delete-chat[hidden] { display: none !important; }
+
+#sidebar-ctx-menu {
+  display: none; position: fixed; z-index: 200; min-width: 160px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 4px; color: var(--fg);
+}
+#sidebar-ctx-menu .menu-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border-radius: 8px; cursor: pointer; font-size: 13px;
+}
+#sidebar-ctx-menu .menu-item:hover { background: var(--panel-2); }
+#sidebar-ctx-menu .menu-item.danger { color: var(--danger); }
+#sidebar-ctx-menu .menu-item.danger:hover { background: color-mix(in srgb, var(--danger) 10%, var(--panel)); }
+#sidebar-ctx-menu .menu-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+.confirm-box .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm-box .confirm-actions button {
+  padding: 8px 14px; border-radius: 8px; border: none; font: inherit; font-size: 13.5px; cursor: pointer;
+}
 
 /* Open WhatsApp chat transcript + composer follow theme */
 html[data-theme="dark"] .gpt-wa-view.messages-area {

@@ -3530,13 +3530,27 @@ export default class Database {
   deleteChat(chatJid) {
     const t = getCurrentTenantId();
     const msgCount = this._db.prepare('SELECT COUNT(*) AS c FROM messages WHERE tenant_id = ? AND chat_jid = ?').get(t, chatJid)?.c || 0;
+    try {
+      this._db.prepare(`
+        DELETE FROM message_embeddings
+        WHERE tenant_id = ?
+          AND message_rowid IN (SELECT id FROM messages WHERE tenant_id = ? AND chat_jid = ?)
+      `).run(t, t, chatJid);
+    } catch { /* table may be missing */ }
     this._db.prepare('DELETE FROM messages WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
     this._db.prepare('DELETE FROM daily_summaries WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
     this._db.prepare('DELETE FROM thread_summaries WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
     this._db.prepare('DELETE FROM thread_facts WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
-    try {
-      this._db.prepare('DELETE FROM chat_action_items WHERE tenant_id = ? AND chat_jid = ?').run(t, chatJid);
-    } catch { /* table may be missing on very old DBs */ }
+    const optional = [
+      'DELETE FROM chat_action_items WHERE tenant_id = ? AND chat_jid = ?',
+      'DELETE FROM chat_import_touches WHERE tenant_id = ? AND chat_jid = ?',
+      'DELETE FROM chat_unread WHERE tenant_id = ? AND chat_jid = ?',
+      'DELETE FROM index_opt_in WHERE tenant_id = ? AND chat_jid = ?',
+      'DELETE FROM expense_reconciliation_runs WHERE tenant_id = ? AND chat_jid = ?',
+    ];
+    for (const sql of optional) {
+      try { this._db.prepare(sql).run(t, chatJid); } catch { /* older schemas */ }
+    }
     try {
       this._db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
       this._db.exec("INSERT INTO summaries_fts(summaries_fts) VALUES('rebuild')");

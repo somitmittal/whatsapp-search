@@ -4,6 +4,7 @@ import {
   parseTimestamp,
   detectImportDateOrder,
   slugForImportChatJid,
+  normalizeImportChatName,
   extractTextFromZip,
   decodeExportBuffer,
 } from '../src/import/chat-import.js';
@@ -167,6 +168,22 @@ describe('parseExportedChat', () => {
 describe('slugForImportChatJid', () => {
   test('sanitizes special characters', () => {
     expect(slugForImportChatJid('Café / Team #1')).toMatch(/^caf/);
+  });
+});
+
+describe('normalizeImportChatName', () => {
+  test('collapses doubled zip filenames onto one stable title', () => {
+    expect(normalizeImportChatName('WhatsApp Chat - Phonpay.zip WhatsApp Chat - Phonpay.zip'))
+      .toBe('WhatsApp Chat - Phonpay');
+    expect(normalizeImportChatName('WhatsApp Chat - Phonpay.zip'))
+      .toBe('WhatsApp Chat - Phonpay');
+    expect(slugForImportChatJid('WhatsApp Chat - Phonpay.zip WhatsApp Chat - Phonpay.zip'))
+      .toBe(slugForImportChatJid('WhatsApp Chat - Phonpay.zip'));
+  });
+
+  test('uses zip transcript basename and strips WhatsApp Chat with', () => {
+    expect(normalizeImportChatName('WhatsApp Chat with Bob/WhatsApp Chat with Bob.txt')).toBe('Bob');
+    expect(normalizeImportChatName('folder/WhatsApp Chat - Site 1.txt')).toBe('WhatsApp Chat - Site 1');
   });
 });
 

@@ -1,6 +1,6 @@
 import { store } from './store.js';
 import { applyChatAvatar } from './avatars.js';
-import { loadActionItemsForChat, refreshActiveChatMessages } from './chat-view.js';
+import { loadActionItemsForChat, refreshOpenChatMessages } from './chat-view.js';
 import { applyMessageReceipt, applyUnreadUpdates, handleSummaryProgress, mergeSyncChatsPreview, refreshDash } from './dashboard.js';
 import { loadExpenseRuns } from './expenses.js';
 import { syncIndexChatMenuItem } from './menus.js';
@@ -23,12 +23,12 @@ function connectWS() {
       }
       else if (msg.type === 'new-messages') {
         scheduleRefreshDash(msg.data?.chatTouches);
-        void refreshActiveChatMessages();
+        void refreshOpenChatMessages();
         if (store._waState === 'READY') { /* keep welcome hidden */ }
       }
       else if (msg.type === 'chat-action-items' && msg.data?.chatJid === store.activeChat) {
         void loadActionItemsForChat(store.activeChat);
-        void refreshActiveChatMessages();
+        void refreshOpenChatMessages();
       }
       else if (msg.type === 'expense-reconciliation' && $('#overlay-expenses')?.classList.contains('open')) {
         void loadExpenseRuns();
@@ -74,7 +74,7 @@ function connectWS() {
       else if (msg.type === 'message-deleted' && msg.data) { applyMessageDeletedToDom(msg.data); }
       else if (msg.type === 'message-edited' && msg.data) { applyMessageEditedToDom(msg.data); }
       else if (msg.type === 'message-media-ready' && msg.data?.chatJid === store.activeChat) {
-        void refreshActiveChatMessages();
+        void refreshOpenChatMessages();
       }
     } catch {}
   };
@@ -93,7 +93,7 @@ export function initWs() {
         store._lastSeenMsgCount = n;
         if (grew) {
           void refreshDash();
-          void refreshActiveChatMessages();
+          void refreshOpenChatMessages();
         }
       } else if (n) {
         store._lastSeenMsgCount = n;

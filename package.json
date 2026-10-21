@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-gpt",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "WhatsApp GPT - a ChatGPT/Cursor-style agent over your WhatsApp chats, 100% local data",
   "main": "electron/main.cjs",
   "type": "module",

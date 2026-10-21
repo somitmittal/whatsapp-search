@@ -372,9 +372,33 @@ export function extractMediaFromZip(zipBuffer, chatJid) {
   return mediaMap;
 }
 
+/**
+ * Turn an upload filename or zip .txt path into a stable import chat title.
+ * Collapses glued duplicate names like
+ * `WhatsApp Chat - Phonpay.zip WhatsApp Chat - Phonpay.zip` → `WhatsApp Chat - Phonpay`
+ * so the same export always lands on one `@imported` JID.
+ */
+export function normalizeImportChatName(raw) {
+  let name = String(raw || '').replace(/\\/g, '/').trim();
+  if (!name) return 'chat';
+  // Zip entry paths only — do not basename titles that merely contain "/" (e.g. "Café / Team").
+  if (/\.(zip|txt)$/i.test(name)) name = basename(name);
+  while (/\.(zip|txt)$/i.test(name)) name = name.replace(/\.(zip|txt)$/i, '');
+  // Mid-string leftovers from a doubled filename ("….zip WhatsApp…").
+  name = name.replace(/\.zip\b/gi, '').replace(/\.txt\b/gi, '');
+  name = name.replace(/\s+/g, ' ').trim();
+  const dup = name.match(/^(.+?)\s+\1$/i);
+  if (dup) name = dup[1].trim();
+  // Match prior /api/import behavior: "WhatsApp Chat with Alice" → "Alice".
+  // Keep "WhatsApp Chat - Group" as-is (common export title form).
+  const withoutWith = name.replace(/^WhatsApp Chat with /i, '').trim();
+  if (withoutWith) name = withoutWith;
+  return name || 'chat';
+}
+
 /** Safe local part for synthetic import JID (WhatsApp-style @domain). */
 export function slugForImportChatJid(name) {
-  const s = String(name || 'chat')
+  const s = normalizeImportChatName(name)
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^\w\s.-]/g, '_')
@@ -393,6 +417,7 @@ export function slugForImportChatJid(name) {
  * @returns {{ inserted: number, total: number, parsedCount?: number, parseFailed?: boolean, parseHead?: string, mediaCount?: number }}
  */
 export function importExportedChat(db, content, chatName, mediaMap) {
+  chatName = normalizeImportChatName(chatName);
   const { messages } = parseExportedChat(content, chatName);
   const trimmed = String(content || '').trim();
   if (messages.length === 0) {
@@ -520,13 +545,13 @@ function scoreZipTxtEntry(e) {
 }
 
 /**
- * Extracts the chat .txt content from a WhatsApp exported .zip file.
- * Tries every .txt (decoded); picks the body that parses into the most messages (fixes wrong file / encoding).
+ * Extracts the chat .txt from a WhatsApp export zip, plus the entry path used
+ * (so import can name the chat from the real transcript, not a mangled upload filename).
  *
  * @param {Buffer} zipBuffer
- * @returns {string | null} text content of the chat file, or null if not found
+ * @returns {{ text: string, entryName: string } | null}
  */
-export function extractTextFromZip(zipBuffer) {
+export function extractChatExportFromZip(zipBuffer) {
   const zip = new AdmZip(zipBuffer);
   const entries = zip.getEntries().filter((e) => {
     if (e.isDirectory) return false;
@@ -535,7 +560,7 @@ export function extractTextFromZip(zipBuffer) {
   });
   if (!entries.length) return null;
 
-  let bestText = null;
+  let best = null;
   let bestCount = -1;
   for (const e of entries) {
     let text = '';
@@ -547,16 +572,28 @@ export function extractTextFromZip(zipBuffer) {
     const n = parseExportedChat(text, '').messages.length;
     if (n > bestCount) {
       bestCount = n;
-      bestText = text;
+      best = { text, entryName: e.entryName || '' };
     }
   }
 
-  if (bestCount > 0 && bestText) return bestText;
+  if (bestCount > 0 && best) return best;
 
   entries.sort((a, b) => scoreZipTxtEntry(b) - scoreZipTxtEntry(a));
   try {
-    return decodeExportBuffer(entries[0].getData());
+    return {
+      text: decodeExportBuffer(entries[0].getData()),
+      entryName: entries[0].entryName || '',
+    };
   } catch {
     return null;
   }
+}
+
+/**
+ * Extracts the chat .txt content from a WhatsApp exported .zip file.
+ * @param {Buffer} zipBuffer
+ * @returns {string | null}
+ */
+export function extractTextFromZip(zipBuffer) {
+  return extractChatExportFromZip(zipBuffer)?.text ?? null;
 }

@@ -1,5 +1,5 @@
 import { store } from './store.js';
-import { refreshActiveChatMessages } from './chat-view.js';
+import { refreshOpenChatMessages } from './chat-view.js';
 import { applyMessageEditedToDom } from './messages-render.js';
 import { scheduleRefreshDash } from './sidebar.js';
 import { $ } from './util.js';
@@ -76,12 +76,14 @@ export function setEditTarget(messageId, preview) {
   }
 }
 
-function refreshActiveChatAfterSend(jid, delayMs) {
-  setTimeout(() => {
+function refreshActiveChatAfterSend(jid, delayMs = 0) {
+  const run = () => {
     if (store.activeChat !== jid) return;
-    if (typeof store.onActiveChatRefresh === 'function') void store.onActiveChatRefresh();
-    else void refreshActiveChatMessages();
-  }, delayMs);
+    void refreshOpenChatMessages();
+  };
+  // Immediate reload (send response / indexed row) plus a short retry for the WA echo.
+  run();
+  if (delayMs > 0) setTimeout(run, delayMs);
 }
 
 async function uploadFileToChat(file, jid, caption = '') {
@@ -213,8 +215,17 @@ export async function sendCurrentMessage() {
     if (!r.ok) throw new Error(j?.error || 'Send failed');
     input.value = '';
     clearReplyTarget();
-    scheduleRefreshDash([{ chatJid: jid, lastMessageTs: Math.floor(Date.now() / 1000), count: 1 }]);
-    // The sent message will appear via WA echo + indexing; refresh as a fallback.
+    const sentAt = Math.floor(Date.now() / 1000);
+    if (typeof store.onOptimisticOutbound === 'function') {
+      store.onOptimisticOutbound({
+        chatJid: jid,
+        messageId: j.messageId || null,
+        text,
+        timestamp: sentAt,
+      });
+    }
+    scheduleRefreshDash([{ chatJid: jid, lastMessageTs: sentAt, count: 1 }]);
+    // Indexed on the server before the response; retry once for any lagging echo.
     refreshActiveChatAfterSend(jid, 1200);
   } catch (e) {
     if (document.getElementById('file-send-progress') && !document.getElementById('file-send-progress').hidden) {
