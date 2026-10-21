@@ -55,8 +55,10 @@ npm run dist:linux       # on Linux or CI
 ## Packaging smoke check
 
 `scripts/after-pack-mac.cjs` runs on **every** platform after electron-builder packs the app.
-It loads `better-sqlite3`, `googleapis`, `exceljs`, and `src/gmail/gmail-sync.js` under the
-**bundled** Node binary. If a hoisted transitive dependency is missing from the package,
+It loads `better-sqlite3`, `googleapis`, `exceljs`, and the `qs` / `dunder-proto` chain under the
+**bundled** Node binary, with module resolution clamped to the packaged `app/` tree (so CI cannot
+false-pass by walking up into the checkout’s `node_modules`). Missing hoisted packages are copied
+from the project install into `app/node_modules` before the check. If the graph is still incomplete,
 the GitHub Action fails instead of shipping a DMG/EXE that shows “Searchable failed to start”.
 
 ## macOS install (unsigned / ad-hoc builds)

@@ -269,11 +269,12 @@ function createWindow() {
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     try {
-      const u = new URL(url);
       if (url.startsWith(origin)) return;
-      if (u.protocol === 'https:') return;
-    } catch { /* fall through */ }
-    event.preventDefault();
+      event.preventDefault();
+      if (isSafeExternalUrl(url)) shell.openExternal(url);
+    } catch {
+      event.preventDefault();
+    }
   });
 
   mainWindow.on('closed', () => {

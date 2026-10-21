@@ -2,6 +2,7 @@
  * Control-plane HTTP routes: download analytics, accounts, licenses, Stripe, admin.
  */
 import { resolve } from 'path';
+import express from 'express';
 import { getServerSecret } from '../auth/jwt-util.js';
 import config from '../config.js';
 import { getLatestGitHubRelease, sendReleaseError } from '../releases/github-releases.js';
@@ -32,6 +33,11 @@ import { getControlPlaneStore } from './store.js';
 
 export { isLicenseGateEnabled } from './license-gate.js';
 
+function isPublicInternetDeploy() {
+  return process.env.RENDER === 'true'
+    || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
+}
+
 function publicBaseUrl(req) {
   const envUrl = (process.env.CONTROL_PLANE_PUBLIC_URL || process.env.PUBLIC_WEB_URL || process.env.RENDER_EXTERNAL_URL || '').trim();
   if (envUrl) return envUrl.replace(/\/$/, '');
@@ -45,8 +51,45 @@ function adminAuthorized(req) {
   if (!secret) return false;
   const header = req.get('authorization') || '';
   const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  const query = (req.query.key || '').trim();
-  return bearer === secret || query === secret;
+  // Query-string keys leak via logs / Referer — Bearer only.
+  return Boolean(bearer) && bearer === secret;
+}
+
+/** Strict email shape — rejects HTML / quote characters used in stored XSS. */
+export function isValidControlPlaneEmail(email) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!e || e.length > 254) return false;
+  if (/[<>"'`\\]/.test(e)) return false;
+  return /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(e);
+}
+
+/**
+ * Must be mounted **before** `express.json()` so Stripe signature verification sees raw bytes.
+ * @param {import('express').Application} app
+ * @param {ReturnType<typeof getControlPlaneStore>} store
+ */
+export function registerStripeWebhookRoute(app, store) {
+  app.post(
+    '/api/control/webhooks/stripe',
+    express.raw({ type: 'application/json', limit: '1mb' }),
+    async (req, res) => {
+      try {
+        const sig = req.get('stripe-signature');
+        if (!sig) {
+          return res.status(400).json({ error: 'Missing stripe-signature header' });
+        }
+        if (!Buffer.isBuffer(req.body)) {
+          return res.status(400).json({ error: 'Expected raw request body' });
+        }
+        const event = await constructWebhookEvent(req.body, sig);
+        await handleStripeEvent(store, event);
+        return res.json({ received: true });
+      } catch (err) {
+        console.error('[stripe webhook]', err.message);
+        return res.status(400).json({ error: err.message });
+      }
+    },
+  );
 }
 
 function clientIpCountry(req) {
@@ -59,29 +102,6 @@ function clientIpCountry(req) {
  */
 export function registerControlPlaneRoutes(app, opts = {}) {
   const store = opts.store || getControlPlaneStore(config.controlPlaneDbPath);
-
-  // Stripe webhook needs raw body — register before json parser if possible.
-  // server.js already uses express.json; we accept JSON-constructed events in test,
-  // and for production document mounting raw parser. Dual-path: raw Buffer or parsed.
-  app.post('/api/control/webhooks/stripe', async (req, res) => {
-    try {
-      const sig = req.get('stripe-signature');
-      let event;
-      if (Buffer.isBuffer(req.body)) {
-        event = await constructWebhookEvent(req.body, sig);
-      } else if (req.rawBody) {
-        event = await constructWebhookEvent(req.rawBody, sig);
-      } else {
-        // Dev fallback when raw body unavailable
-        event = req.body;
-      }
-      await handleStripeEvent(store, event);
-      return res.json({ received: true });
-    } catch (err) {
-      console.error('[stripe webhook]', err.message);
-      return res.status(400).json({ error: err.message });
-    }
-  });
 
   app.get('/api/releases/download/:platform', async (req, res) => {
     const platform = normalizePlatform(req.params.platform);
@@ -144,8 +164,14 @@ export function registerControlPlaneRoutes(app, opts = {}) {
   app.post('/api/control/auth/request-link', async (req, res) => {
     try {
       const email = String(req.body?.email || '').trim().toLowerCase();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      if (!isValidControlPlaneEmail(email)) {
         return res.status(400).json({ error: 'Valid email required' });
+      }
+      const hasResend = Boolean((process.env.RESEND_API_KEY || '').trim());
+      const publicDeploy = isPublicInternetDeploy();
+      // Public hosts must send real email — never return OTP in the JSON body.
+      if (publicDeploy && !hasResend) {
+        return res.status(503).json({ error: 'Email delivery is not configured' });
       }
       const installId = String(req.body?.installId || '').trim().slice(0, 80) || null;
       const utmSource = String(req.body?.utmSource || req.body?.utm_source || '').slice(0, 80) || null;
@@ -174,14 +200,13 @@ export function registerControlPlaneRoutes(app, opts = {}) {
       });
 
       const payload = { ok: true, expiresAt, email };
-      // When Resend is not configured, surface the code in-app (desktop / local).
-      if (
-        !(process.env.RESEND_API_KEY || '').trim()
-        || process.env.CONTROL_PLANE_EXPOSE_DEV_CODE === '1'
-        || process.env.NODE_ENV === 'test'
-      ) {
-        payload.devCode = code;
-      }
+      // Local / test only — never on Render or when CONTROL_PLANE_EXPOSE_DEV_CODE is unset on public.
+      const allowDevCode = process.env.NODE_ENV === 'test'
+        || (!publicDeploy && (
+          !hasResend
+          || process.env.CONTROL_PLANE_EXPOSE_DEV_CODE === '1'
+        ));
+      if (allowDevCode) payload.devCode = code;
       if (process.env.NODE_ENV === 'test') payload.devToken = token;
       return res.json(payload);
     } catch (err) {
@@ -213,6 +238,9 @@ export function registerControlPlaneRoutes(app, opts = {}) {
   app.post('/api/control/auth/verify-code', (req, res) => {
     try {
       const email = String(req.body?.email || '').trim().toLowerCase();
+      if (!isValidControlPlaneEmail(email)) {
+        return res.status(400).json({ error: 'Valid email required' });
+      }
       const code = String(req.body?.code || '').trim();
       const row = store.consumeMagicLinkByCode(email, code);
       if (!row) return res.status(400).json({ error: 'Invalid or expired code' });

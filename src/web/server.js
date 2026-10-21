@@ -56,7 +56,7 @@ import WabaIngestService, { verifyWabaSignature } from '../whatsapp/waba-client.
 import { getWabaConfig, publicWabaConfig, saveWabaConfig } from '../whatsapp/waba-settings.js';
 import { getLatestGitHubRelease, sendReleaseError } from '../releases/github-releases.js';
 import { getControlPlaneStore } from '../control-plane/store.js';
-import { registerControlPlaneRoutes } from '../control-plane/routes.js';
+import { registerControlPlaneRoutes, registerStripeWebhookRoute } from '../control-plane/routes.js';
 import { isLicenseGateEnabled } from '../control-plane/license-gate.js';
 import { trialDays } from '../control-plane/license.js';
 import { resolveSearchEntitlement, paywallResponse } from '../control-plane/entitlement-check.js';
@@ -1168,6 +1168,9 @@ export default class WebServer {
       next();
     });
     this._app.use(cookieParser());
+    // Stripe signature verification needs the raw body — before express.json().
+    this._controlPlane = getControlPlaneStore(config.controlPlaneDbPath);
+    registerStripeWebhookRoute(this._app, this._controlPlane);
     this._app.use(express.json({ limit: '5mb' }));
 
     this._registerWabaWebhookRoutes();
@@ -1234,7 +1237,6 @@ export default class WebServer {
       isSecureCookie: () => this._isSecureCookieDeployment(),
     });
 
-    this._controlPlane = getControlPlaneStore(config.controlPlaneDbPath);
     registerControlPlaneRoutes(this._app, { store: this._controlPlane });
 
     // WhatsApp + Chrome extension ingest are tenant-scoped via the JWT middleware above.

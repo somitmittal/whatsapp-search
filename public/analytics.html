@@ -61,6 +61,14 @@
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
+    function esc(s) {
+      return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
     function authHeaders() {
       return { Authorization: 'Bearer ' + $('key').value.trim(), 'Content-Type': 'application/json' };
     }
@@ -69,8 +77,8 @@
       const data = await res.json();
       if (!res.ok) return;
       $('users').innerHTML = (data.users || []).map((u) =>
-        '<tr><td>' + (u.email || '') + '</td><td>' + (u.plan || '') + '</td><td>'
-        + (u.license_status || '') + '</td><td>' + (u.trial_ends_at || '') + '</td></tr>'
+        '<tr><td>' + esc(u.email) + '</td><td>' + esc(u.plan) + '</td><td>'
+        + esc(u.license_status) + '</td><td>' + esc(u.trial_ends_at) + '</td></tr>'
       ).join('') || '<tr><td colspan="4">No users yet</td></tr>';
     }
     async function setLicense(status) {
@@ -96,14 +104,16 @@
       $('err').hidden = true;
       const key = $('key').value.trim();
       if (!key) { $('err').textContent = 'Enter SESSION_SECRET'; $('err').hidden = false; return; }
-      localStorage.setItem('searchable_analytics_key', key);
+      // Session-only — avoid persisting SESSION_SECRET across browser sessions.
+      sessionStorage.setItem('searchable_analytics_key', key);
+      localStorage.removeItem('searchable_analytics_key');
       const res = await fetch('/api/analytics/downloads', { headers: { Authorization: 'Bearer ' + key } });
       const data = await res.json();
       if (!res.ok) { $('err').textContent = data.error || 'Failed'; $('err').hidden = false; return; }
       $('results').hidden = false;
       $('total').textContent = String(data.total || 0);
       const fill = (id, rows, cols) => {
-        $(id).innerHTML = (rows || []).map((r) => '<tr>' + cols.map((c) => '<td>' + (r[c] ?? '') + '</td>').join('') + '</tr>').join('')
+        $(id).innerHTML = (rows || []).map((r) => '<tr>' + cols.map((c) => '<td>' + esc(r[c]) + '</td>').join('') + '</tr>').join('')
           || '<tr><td colspan="' + cols.length + '">No data yet</td></tr>';
       };
       fill('by-platform', data.byPlatform, ['platform', 'count']);
@@ -115,8 +125,13 @@
     $('lock-btn').addEventListener('click', () => setLicense('disabled'));
     $('unlock-btn').addEventListener('click', () => setLicense('trialing'));
     $('unlock-pro-btn').addEventListener('click', () => setLicense('active'));
-    const saved = localStorage.getItem('searchable_analytics_key');
-    if (saved) { $('key').value = saved; }
+    const saved = sessionStorage.getItem('searchable_analytics_key')
+      || localStorage.getItem('searchable_analytics_key');
+    if (saved) {
+      $('key').value = saved;
+      localStorage.removeItem('searchable_analytics_key');
+      sessionStorage.setItem('searchable_analytics_key', saved);
+    }
   </script>
 </body>
 </html>
