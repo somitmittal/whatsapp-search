@@ -52,6 +52,13 @@ npm run dist:linux       # on Linux or CI
 - Override repo with env `GITHUB_REPO=owner/repo` if needed
 - Accounts / trial / Stripe: [monetization.md](./monetization.md)
 
+## Packaging smoke check
+
+`scripts/after-pack-mac.cjs` runs on **every** platform after electron-builder packs the app.
+It loads `better-sqlite3`, `googleapis`, `exceljs`, and `src/gmail/gmail-sync.js` under the
+**bundled** Node binary. If a hoisted transitive dependency is missing from the package,
+the GitHub Action fails instead of shipping a DMG/EXE that shows “Searchable failed to start”.
+
 ## macOS install (unsigned / ad-hoc builds)
 
 CI builds are **not** Apple Developer–signed or notarized. Clearing quarantine with `xattr` alone is **not enough** when the download has a broken or incomplete signature — macOS will still say the app is damaged.

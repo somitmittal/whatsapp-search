@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-gpt",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "WhatsApp GPT - a ChatGPT/Cursor-style agent over your WhatsApp chats, 100% local data",
   "main": "electron/main.cjs",
   "type": "module",
@@ -21,8 +21,10 @@
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^11.7.0",
+    "call-bind-apply-helpers": "^1.0.2",
     "cookie": "^0.7.1",
     "cookie-parser": "^1.4.7",
+    "es-abstract-get": "^1.0.0",
     "exceljs": "^4.4.0",
     "expo": "^55.0.17",
     "express": "^5.2.1",
@@ -79,7 +81,7 @@
         "dmg"
       ],
       "identity": "-",
-      "hardenedRuntime": true,
+      "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
