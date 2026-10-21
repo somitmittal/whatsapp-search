@@ -21,7 +21,7 @@ const {
   resolveExpenseChat,
   resolveExpenseSheet,
 } = await import('../src/skills/expense-inputs.js');
-const { createSkillRunner } = await import('../src/skills/skill-runner.js');
+const { createSkillRunner, sheetFileName } = await import('../src/skills/skill-runner.js');
 const { default: Database } = await import('../src/storage/database.js');
 const { runWithTenant } = await import('../src/storage/tenant-context.js');
 const { default: GptService } = await import('../src/gpt/gpt-service.js');
@@ -115,7 +115,7 @@ describe('expense skill inputs', () => {
       resolveChat: () => ({ chatJid: '9198@s.whatsapp.net', chatName: 'Mahesh' }),
     });
     expect(picked.status).toBe('needs_input');
-    expect(picked.answer).toContain('not a group');
+    expect(picked.answer).toMatch(/not a (group|site chat)/i);
   });
 
   test('asks which sheet when the chat has more than one', () => {
@@ -135,6 +135,32 @@ describe('expense skill inputs', () => {
     const picked = resolveExpenseSheet({ rest: '16-oct.xlsx', chat, sheets, now: NOW });
     expect(chatQueryFromRest('Site A 16-oct.xlsx')).toBe('Site A');
     expect(picked.messageId).toBe('old');
+  });
+
+  test('choice messages include the day so Phone-pay PDFs do not all collapse to expenses.xlsx', () => {
+    const pdfSheets = [
+      { chatJid: SITE, messageId: 'p1', fileName: 'Phone pay - 14.10.26.pdf', timestamp: SHEET_TS },
+      { chatJid: SITE, messageId: 'p2', fileName: 'Phone pay - 13.10.26.pdf', timestamp: SHEET_TS - 86400 },
+    ];
+    const picked = resolveExpenseSheet({ rest: '', chat, sheets: pdfSheets, now: NOW });
+    expect(picked.status).toBe('needs_input');
+    expect(picked.choices[0].label).toMatch(/Phone pay - 14\.10\.26\.pdf/);
+    expect(picked.choices[0].message).toMatch(/2026-10-17/);
+    const byDay = resolveExpenseSheet({
+      rest: 'Phonpay 2026-10-17 Phone pay - 14.10.26.pdf',
+      chat: { chatJid: SITE, chatName: 'Phonpay' },
+      sheets: pdfSheets,
+      now: NOW,
+    });
+    expect(byDay.status).toBe('ready');
+    expect(byDay.messageId).toBe('p1');
+  });
+
+  test('sheetFileName reads Phone pay PDF names from WhatsApp attachment text', () => {
+    expect(sheetFileName({
+      text: 'Phone pay - 14.10.26.pdf • 1 page <attached: 00010636-Phone pay - 14.10.26.pdf>',
+      mediaPath: '/media/00010636-Phone_pay_-_14.10.26.pdf',
+    })).toBe('00010636-Phone pay - 14.10.26.pdf');
   });
 });
 

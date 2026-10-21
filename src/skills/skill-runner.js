@@ -14,17 +14,29 @@ import {
 import { resolveExpenseChat, resolveExpenseSheet } from './expense-inputs.js';
 import { parseSkillInvocation, skillCommand } from './parse-invocation.js';
 
-function sheetFileName(row) {
-  const candidate = [row?.mediaCaption, row?.text, row?.mediaPath]
+/** Real document name for picker labels — not a hardcoded expenses.xlsx fallback. */
+export function sheetFileName(row) {
+  const sources = [row?.mediaCaption, row?.text, row?.mediaPath]
     .map((value) => String(value || '').trim())
-    .find((value) => /\.(xlsx|csv)\b/i.test(value));
-  return basename(candidate || 'expenses.xlsx');
+    .filter(Boolean);
+  for (const src of sources) {
+    const attached = src.match(/<attached:\s*([^>]+)>/i);
+    if (attached) {
+      const name = basename(attached[1].trim());
+      if (/\.(xlsx|xlsm|csv|tsv|txt|pdf|docx)$/i.test(name)) return name;
+    }
+    const named = src.match(/([^/\\]+?\.(?:xlsx|xlsm|csv|tsv|txt|pdf|docx))\b/i);
+    if (named) return basename(named[1].trim());
+  }
+  const fromPath = basename(String(row?.mediaPath || ''));
+  if (/\.(xlsx|xlsm|csv|tsv|txt|pdf|docx)$/i.test(fromPath)) return fromPath;
+  return 'expenses.xlsx';
 }
 
 function sheetsForChat(db, chatJid) {
   const rows = typeof db.listExpenseSheetMessages === 'function' ? db.listExpenseSheetMessages(chatJid) : [];
   return (rows || [])
-    .filter((row) => isExpenseSheetMessage(row, row.mediaPath))
+    .filter((row) => isExpenseSheetMessage(row, row.mediaPath, { strict: false }))
     .map((row) => ({
       chatJid: row.chatJid,
       messageId: row.messageId,

@@ -17,7 +17,8 @@ export function normalizeText(value) {
   return String(value ?? '')
     .normalize('NFKD')
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/(\p{Script=Latin})\p{M}+/gu, '$1')
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ')
     .trim()
     .replace(/\s+/g, ' ');
 }
@@ -71,6 +72,57 @@ export function parseAmountMinor(value) {
   return Math.round(Math.abs(parsed) * 100) * (negative ? -1 : 1);
 }
 
+/** Devanagari digits (०-९) → ASCII so Hindi-typed amounts parse like English ones. */
+export function normalizeDigits(value) {
+  return String(value ?? '').replace(/[०-९]/g, (digit) => String(digit.charCodeAt(0) - 0x0966));
+}
+
+/**
+ * Remove numbers that are never money: attachment names, URLs, Indian mobile numbers
+ * (10 digits starting 6-9, optional +91), long transaction/UTR/account IDs, dates, and times.
+ */
+export function stripNonAmountNumbers(value) {
+  return normalizeDigits(value)
+    .replace(/<attached:[^>]*>/gi, ' ')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/\b[\w.()-]+\.(?:jpe?g|png|webp|gif|heic|pdf|xlsx|xls|csv|docx?|opus|ogg|mp3|mp4|vcf)\b/gi, ' ')
+    .replace(/(?:\+91|(?<!\d)91)[\s-]?[6-9](?:[\s-]?\d){9}(?!\d)/g, ' ')
+    .replace(/(?<!\d)[6-9](?:\d{9}|\d{4}[\s-]\d{5}|\d{3}[\s-]\d{3}[\s-]\d{3}|\d{2}[\s-]\d{3}[\s-]\d{4}|\d{3}[\s-]\d{6})(?!\d)/g, ' ')
+    .replace(/(?<!\d)\d{11,}(?!\d)/g, ' ')
+    .replace(/\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b/g, (token) => (/\d/.test(token) ? ' ' : token))
+    .replace(/(?<!\d)\d{1,4}[./-]\d{1,2}[./-]\d{2,4}(?!\d)/g, ' ')
+    .replace(/(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?/gi, ' ');
+}
+
+/** Every amount (minor units) literally written in the text, after dropping non-money numbers. */
+export function amountCandidatesMinor(value) {
+  const out = new Set();
+  const clean = stripNonAmountNumbers(value);
+  for (const match of clean.matchAll(/\d[\d,]*(?:\.\d+)?(?:\s*(?:k|thousand|lakh|lac|cr|crore)\b)?/gi)) {
+    const amount = parseAmountMinor(match[0]);
+    if (amount) out.add(Math.abs(amount));
+  }
+  return out;
+}
+
+/** True when the amount is literally present in the text (guards against model-invented numbers). */
+export function amountGroundedInText(amountMinor, value) {
+  return amountCandidatesMinor(value).has(Math.abs(Number(amountMinor)));
+}
+
+/**
+ * Looser check for document text, where printouts glue columns together
+ * ("Diesel hydra 5000255025" = amount + fee + total): the amount's digits must appear somewhere.
+ */
+export function amountAppearsInDocument(amountMinor, value) {
+  const minor = Math.abs(Number(amountMinor));
+  if (!Number.isFinite(minor) || minor === 0) return false;
+  const digits = normalizeDigits(value).replace(/(?<=\d)[,\s](?=\d{2,3}\b)/g, '');
+  const major = minor / 100;
+  const forms = new Set([String(major), major.toFixed(2)]);
+  return [...forms].some((form) => digits.includes(form));
+}
+
 export function normalizeDirection(value, amountMinor = null, header = '') {
   const text = normalizeText(value || header);
   if (/\b(credit|cr|refund|received|receipt)\b/.test(text)) return 'credit';
@@ -78,16 +130,19 @@ export function normalizeDirection(value, amountMinor = null, header = '') {
   return Number(amountMinor) < 0 ? 'credit' : 'debit';
 }
 
+const ISO_CURRENCIES = new Set(typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('currency') : []);
+
 export function normalizeCurrency(value) {
   const raw = String(value ?? '').trim().toUpperCase();
   if (!raw || /₹|\bRS\.?\b|\bINR\b|\bRUPEES?\b/.test(raw)) return 'INR';
   const code = raw.match(/\b([A-Z]{3})\b/);
-  if (code) return code[1];
+  if (code && (!ISO_CURRENCIES.size || ISO_CURRENCIES.has(code[1]))) return code[1];
   if (raw.includes('$')) return 'USD';
   if (raw.includes('€') || /\bEUROS?\b/.test(raw)) return 'EUR';
   if (raw.includes('£') || /\bPOUNDS?\b/.test(raw)) return 'GBP';
   if (raw.includes('¥') || /\bYEN\b/.test(raw)) return 'JPY';
-  return raw.replace(/[^A-Z]/g, '').slice(0, 3) || 'INR';
+  // Model noise ("diye", "upi") is not a currency; keep the existing INR default.
+  return 'INR';
 }
 
 export function isoDate(value, fallback = null) {

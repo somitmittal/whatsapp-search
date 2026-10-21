@@ -135,7 +135,19 @@ async function uploadBatch(fileList) {
 
   try {
     setImportPhase('parse');
-    const data = await fetch('/api/import', { method: 'POST', credentials: 'same-origin', body: form }).then((r) => r.json());
+    const res = await fetch('/api/import', { method: 'POST', credentials: 'same-origin', body: form });
+    const raw = await res.text();
+    let data;
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error(res.ok
+        ? 'Import returned a non-JSON response'
+        : `Import failed (HTTP ${res.status}). The file may be too large for the server.`);
+    }
+    if (!res.ok && !data.error) {
+      throw new Error(`Import failed (HTTP ${res.status})`);
+    }
 
     setImportPhase('index');
     await new Promise(r => setTimeout(r, 600));

@@ -140,6 +140,18 @@ export function buildReconciledSheetRows(reconciliation = {}) {
       }
       continue;
     }
+    if (type === 'needs_review' && item.chatEntry && !item.sheetEntry) {
+      rows.push({
+        tone: 'mismatch',
+        status: item.detail || 'Needs review',
+        fill: EXPENSE_ROW_FILLS.mismatch,
+        sheetEntry: null,
+        chatEntry: item.chatEntry,
+        chatAmount: item.chatEntry.amountMinor ? money(item.chatEntry.amountMinor) : '',
+        sheetAmount: '',
+      });
+      continue;
+    }
     if (type === 'duplicate' && item.sheetEntry) {
       sheetHandled.add(item.sheetEntry);
       rows.push({
@@ -255,7 +267,7 @@ export async function buildExpenseReportWorkbook({
     }
     // For yellow (chat-only) rows, amounts live under the sheet amount column too for readability
     if (!row.sheetEntry && row.chatEntry && mapping.amount != null) {
-      values[mapping.amount] = money(row.chatEntry.amountMinor);
+      values[mapping.amount] = row.chatEntry.amountMinor ? money(row.chatEntry.amountMinor) : '';
     }
     const chatEntry = row.chatEntry;
     let sourceText = chatEntry?.sourceText || '';

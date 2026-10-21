@@ -200,6 +200,23 @@ describe('expense reconciliation', () => {
     expect(result.discrepancies.map((item) => item.type)).toEqual(['missing_from_sheet', 'only_in_sheet']);
   });
 
+  test('matches a bare-amount chat message to the unique same-day row of that amount', () => {
+    const chat = [{ ...base, source: 'chat', sourceMessageId: 'm1', reference: '', amountMinor: 150000, payee: '', description: '', category: 'other' }];
+    const sheet = [{ ...base, source: 'sheet', sheetRow: 2, reference: '', amountMinor: 150000, payee: '', description: 'Ramesh labour advance rewa', category: '' }];
+    const result = reconcileExpenses(chat, sheet);
+    expect(result.matches).toEqual([{ chatEntry: chat[0], sheetEntry: sheet[0] }]);
+    expect(result.discrepancies).toEqual([]);
+  });
+
+  test('reviews one row when the same amount and date are read as paid on one side and received on the other', () => {
+    const chat = [{ ...base, source: 'chat', sourceMessageId: 'm1', reference: '', amountMinor: 4000000, direction: 'debit', payee: '', description: '40000 diye' }];
+    const sheet = [{ ...base, source: 'sheet', sheetRow: 4, reference: '', amountMinor: 4000000, direction: 'credit', payee: 'Santosh bhaiya', description: 'Santosh bhaiya' }];
+    const result = reconcileExpenses(chat, sheet);
+    expect(result.discrepancies).toEqual([
+      expect.objectContaining({ type: 'needs_review', chatEntry: chat[0], sheetEntry: sheet[0] }),
+    ]);
+  });
+
   test('flags a shared reference with a different currency for review', () => {
     const chat = [{ ...base, source: 'chat', sourceMessageId: 'm1', amountMinor: 10000, currency: 'USD' }];
     const sheet = [{ ...base, source: 'sheet', sheetRow: 2, amountMinor: 10000, currency: 'INR' }];

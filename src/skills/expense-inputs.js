@@ -19,21 +19,37 @@ export function dateHintFromRest(rest, now = new Date()) {
 }
 
 export function fileHintFromRest(rest) {
-  const match = String(rest || '').match(/\S+\.(?:xlsx|csv)\b/i);
-  return match ? match[0] : null;
+  const text = String(rest || '');
+  const attached = text.match(/<attached:\s*([^>]+)>/i);
+  if (attached && /\.(xlsx|xlsm|csv|tsv|txt|pdf|docx)$/i.test(attached[1].trim())) {
+    return attached[1].trim().split(/[/\\]/).pop();
+  }
+  // Compact names first (16-oct.xlsx) so "Site A 16-oct.xlsx" does not swallow the chat name.
+  const compact = text.match(/\b[A-Za-z0-9._()-]+\.(?:xlsx|xlsm|csv|tsv|txt|pdf|docx)\b/gi);
+  if (compact?.length) return compact[compact.length - 1];
+  // Spaced Phone-pay PDF titles: "Phone pay - 14.10.26.pdf"
+  const phonePay = text.match(/\b(?:phone|phn|phon)\s+pay\b[^.]*\.(?:pdf)\b/i);
+  return phonePay ? phonePay[0].trim() : null;
 }
 
 export function chatQueryFromRest(rest) {
-  return String(rest || '')
+  let text = String(rest || '');
+  const file = fileHintFromRest(text);
+  if (file) text = text.replace(file, ' ');
+  return text
     .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
     .replace(/\b(?:today|yesterday)\b/gi, ' ')
-    .replace(/\S+\.(?:xlsx|csv)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+function isExpenseChatJid(jid) {
+  const s = String(jid || '');
+  return s.endsWith('@g.us') || s.endsWith('@imported');
+}
+
 function groupMentions(mentions) {
-  return (mentions || []).filter((pin) => String(pin?.chatJid || '').endsWith('@g.us'));
+  return (mentions || []).filter((pin) => isExpenseChatJid(pin?.chatJid));
 }
 
 function ask(answer, choices = []) {
@@ -62,7 +78,7 @@ function attachedGroup({ mentions = [], scopeChatJid = null, scopeChatName = nul
       })),
     );
   }
-  if (String(scopeChatJid || '').endsWith('@g.us')) {
+  if (isExpenseChatJid(scopeChatJid)) {
     return { status: 'ready', chat: { chatJid: scopeChatJid, chatName: scopeChatName || scopeChatJid } };
   }
   return null;
@@ -86,8 +102,8 @@ export function resolveExpenseChat({
   if (chatQuery) {
     const named = resolveChat(chatQuery);
     if (named?.chatJid && mentionsChat(named, chatQuery)) {
-      if (!String(named.chatJid).endsWith('@g.us')) {
-        return ask(`${named.chatName || chatQuery} is not a group. Expense reconciliation runs on a site group.`);
+      if (!isExpenseChatJid(named.chatJid)) {
+        return ask(`${named.chatName || chatQuery} is not a site chat. Expense reconciliation runs on a group or imported archive.`);
       }
       return { status: 'ready', chat: named };
     }
@@ -118,7 +134,10 @@ export function resolveExpenseSheet({
   }
   if (fileHint) {
     const needle = fileHint.toLowerCase();
-    candidates = candidates.filter((sheet) => String(sheet.fileName || '').toLowerCase().includes(needle));
+    candidates = candidates.filter((sheet) => {
+      const name = String(sheet.fileName || '').toLowerCase();
+      return name === needle || name.includes(needle) || needle.includes(name);
+    });
   }
   if (candidates.length === 1) {
     const sheet = candidates[0];
@@ -129,9 +148,10 @@ export function resolveExpenseSheet({
       `More than one sheet in ${chat.chatName || 'that chat'} matches. Send one of these:`,
       candidates.slice(0, 8).map((sheet) => {
         const day = dayBoundsFromTimestamp(sheet.timestamp).date;
+        // Include the calendar day so a click uniquely selects even when names collide.
         return {
           label: `${sheet.fileName} (${day})`,
-          message: `${command} ${chat.chatName || ''} ${sheet.fileName}`.replace(/\s+/g, ' ').trim(),
+          message: `${command} ${chat.chatName || ''} ${day} ${sheet.fileName}`.replace(/\s+/g, ' ').trim(),
         };
       }),
     );

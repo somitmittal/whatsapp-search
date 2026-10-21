@@ -3385,12 +3385,12 @@ export default class Database {
   }
 
   /**
-   * Candidate CSV/XLSX document messages in a site group (newest first).
+   * Candidate expense documents (spreadsheet, PDF, Word, text) in a site chat (newest first).
    * Callers still apply isExpenseSheetMessage for report-prefix / import filters.
    */
   listExpenseSheetMessages(chatJid) {
     const jid = String(chatJid || '').trim();
-    if (!jid.endsWith('@g.us')) return [];
+    if (!jid.endsWith('@g.us') && !jid.endsWith('@imported')) return [];
     const t = getCurrentTenantId();
     return this._db.prepare(`
       SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
@@ -3402,13 +3402,15 @@ export default class Database {
         AND sender != 'You'
         AND media_type = 'document'
         AND media_path IS NOT NULL
+        AND lower(media_path) NOT LIKE '%searchable-expense-report-%'
         AND (
-          lower(coalesce(text, '')) LIKE '%.xlsx%'
-          OR lower(coalesce(text, '')) LIKE '%.csv%'
-          OR lower(coalesce(media_caption, '')) LIKE '%.xlsx%'
-          OR lower(coalesce(media_caption, '')) LIKE '%.csv%'
-          OR lower(media_path) LIKE '%.xlsx'
-          OR lower(media_path) LIKE '%.csv'
+          lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.xlsx%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.xlsm%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.csv%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.tsv%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.txt%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.pdf%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.docx%'
         )
       ORDER BY timestamp DESC, id DESC
     `).all(t, jid);

@@ -95,11 +95,135 @@ describe('chat expense extraction', () => {
         .mockResolvedValueOnce('[]'),
     };
     const result = await extractChatExpenses(provider, [
-      datedMessage('m-one', 'Hello'),
-      datedMessage('m-two', 'Thanks'),
+      datedMessage('m-one', 'Meet at gate 3'),
+      datedMessage('m-two', 'Bring 2 helmets'),
     ], { date: '2026-10-15' });
     expect(result).toEqual([]);
     expect(provider.chat).toHaveBeenCalledTimes(4);
+  });
+
+  test('skips the model entirely when no message contains an amount', async () => {
+    const provider = { chat: jest.fn() };
+    const result = await extractChatExpenses(provider, [
+      datedMessage('m-one', 'Hello'),
+      datedMessage('m-two', 'image omitted'),
+    ], { date: '2026-10-15' });
+    expect(result).toEqual([]);
+    expect(provider.chat).not.toHaveBeenCalled();
+  });
+
+  test('accepts positional rows from small models and ignores non-ISO currency noise', async () => {
+    const provider = {
+      chat: jest.fn().mockResolvedValue('["m-a", 1500, "diye", "debit", "2026-10-15", "Staff", "other", "labour", ""],\n["m-b", "40000", "INR", "credit", "2026-10-15", "", "", "funds", ""]'),
+    };
+    const result = await extractChatExpenses(provider, [
+      datedMessage('m-a', '1500'),
+      datedMessage('m-b', '40000 diye'),
+    ], { date: '2026-10-15' });
+    expect(result.map((e) => [e.sourceMessageId, e.amountMinor, e.currency, e.direction, e.payee])).toEqual([
+      ['m-a', 150000, 'INR', 'debit', ''],
+      ['m-b', 4000000, 'INR', 'credit', ''],
+    ]);
+  });
+
+  test('a single garbled batch does not fail the run when other batches are readable', async () => {
+    const lines = Array.from({ length: 21 }, (_, i) => datedMessage(`m-${i}`, `Paid ${100 + i} for item ${i}`));
+    const provider = {
+      chat: jest.fn(async ([{ content }]) => (content.includes('[m-20]') && !content.includes('[m-0]')
+        ? 'garbled'
+        : JSON.stringify(lines.slice(0, 20).map((row, i) => ({ source_message_id: row.messageId, amount: 100 + i }))))),
+    };
+    const result = await extractChatExpenses(provider, lines, { date: '2026-10-15' });
+    expect(result).toHaveLength(21);
+    expect(result[20]).toEqual(expect.objectContaining({ sourceMessageId: 'm-20', amountMinor: 12000 }));
+  });
+
+  describe('real-world Hinglish PhonePe group', () => {
+    const phonepeDay = [
+      datedMessage('p-phone', '6260093951', '2026-10-14'),
+      datedMessage('p-1500', '1500', '2026-10-14'),
+      datedMessage('p-img', 'image omitted', '2026-10-14'),
+      datedMessage('p-diesel', '5000/- Hydra diesel ke liye dalwa dijiye', '2026-10-14'),
+      { ...datedMessage('p-paid', 'Paid using PhonePe UPI. Explore the app now: https://phon.pe/download \u200e<attached: 00010630-PHOTO-2026-10-14-10-20-01.jpg>', '2026-10-14'), mediaType: 'image' },
+      datedMessage('p-fund', '40000 diye', '2026-10-14'),
+    ];
+
+    test('drops phone numbers, invented screenshot amounts, and zero rows the model returns', async () => {
+      const provider = {
+        chat: jest.fn().mockResolvedValue(JSON.stringify([
+          { source_message_id: 'p-phone', amount: 6260093951, direction: 'debit' },
+          { source_message_id: 'p-1500', amount: 1500, direction: 'debit', description: 'labour advance' },
+          { source_message_id: 'p-diesel', amount: 5000, direction: 'debit', description: 'Hydra diesel' },
+          { source_message_id: 'p-paid', amount: 1000, direction: 'debit', description: 'Paid using PhonePe UPI' },
+          { source_message_id: 'p-paid', amount: 0, direction: 'credit' },
+          { source_message_id: 'p-fund', amount: 40000, direction: 'credit', description: 'funds received' },
+        ])),
+      };
+      const result = await extractChatExpenses(provider, phonepeDay, { date: '2026-10-14' });
+      expect(result.map((e) => [e.sourceMessageId, e.amountMinor, e.direction])).toEqual([
+        ['p-1500', 150000, 'debit'],
+        ['p-diesel', 500000, 'debit'],
+        ['p-fund', 4000000, 'credit'],
+      ]);
+      const transcript = provider.chat.mock.calls[0][0][0].content;
+      expect(transcript).toContain('[image]');
+      expect(transcript).not.toContain('phon.pe');
+    });
+
+    test('takes paid vs received from the wording when a small model flips it', async () => {
+      const provider = {
+        chat: jest.fn().mockResolvedValue(JSON.stringify({ expenses: [
+          { source_message_id: 'p-1500', amount: 1500, direction: 'credit', description: 'None' },
+          { source_message_id: 'p-diesel', amount: 5000, direction: 'credit' },
+          { source_message_id: 'p-fund', amount: 40000, direction: 'debit' },
+        ] })),
+      };
+      const result = await extractChatExpenses(provider, phonepeDay, { date: '2026-10-14' });
+      expect(result.map((e) => [e.amountMinor, e.direction, e.description])).toEqual([
+        [150000, 'debit', ''],
+        [500000, 'debit', ''],
+        [4000000, 'credit', ''],
+      ]);
+    });
+
+    test('re-attributes an amount cited on the neighbouring image message', async () => {
+      const provider = {
+        chat: jest.fn().mockResolvedValue(JSON.stringify([
+          { source_message_id: 'p-img', amount: 5000, direction: 'debit', description: 'Hydra diesel' },
+          { source_message_id: 'p-1500', amount: 1500 },
+          { source_message_id: 'p-fund', amount: 40000, direction: 'credit' },
+        ])),
+      };
+      const result = await extractChatExpenses(provider, phonepeDay, { date: '2026-10-14' });
+      expect(result.find((e) => e.amountMinor === 500000)?.sourceMessageId).toBe('p-diesel');
+    });
+
+    test('reads amounts from indexed screenshot text and keeps one row per paid request', async () => {
+      const provider = {
+        chat: jest.fn().mockResolvedValue(JSON.stringify([
+          { source_message_id: 'p-diesel', amount: 5000, direction: 'debit' },
+          { source_message_id: 'p-paid', amount: 5000, direction: 'debit' },
+          { source_message_id: 'p-1500', amount: 1500 },
+          { source_message_id: 'p-fund', amount: 40000, direction: 'credit' },
+        ])),
+      };
+      const withOcr = phonepeDay.map((row) => (row.messageId === 'p-paid'
+        ? { ...row, mediaAiIndex: 'PhonePe payment successful ₹5,000 paid to Hydra fuel UTR 412345678901' }
+        : row));
+      const result = await extractChatExpenses(provider, withOcr, { date: '2026-10-14' });
+      expect(result.filter((e) => e.amountMinor === 500000).map((e) => e.sourceMessageId)).toEqual(['p-diesel']);
+    });
+
+    test('reports unreadable payment messages instead of failing the whole run', async () => {
+      const provider = { chat: jest.fn().mockResolvedValue('[]') };
+      const unreadable = [];
+      const result = await extractChatExpenses(provider, [
+        datedMessage('m-ambiguous', 'Paid Rs. 500 for supplies and Rs. 300 for delivery'),
+        datedMessage('m-hindi', 'प्रदीप इसमें ₹10000 डाल दो'),
+      ], { date: '2026-10-15', onUnreadable: (rows) => unreadable.push(...rows) });
+      expect(result).toEqual([expect.objectContaining({ sourceMessageId: 'm-hindi', amountMinor: 1000000, direction: 'debit' })]);
+      expect(unreadable.map((row) => row.messageId)).toEqual(['m-ambiguous']);
+    });
   });
 
   test('uses the real source message ID when the model invents one', async () => {

@@ -8,7 +8,7 @@ import { basename, isAbsolute, join, relative, resolve } from 'path';
 import { isJwtAuthEnabled } from '../auth/jwt-util.js';
 import { getSessionIdFromRequest, setSessionCookie, UserSessionService } from '../auth/user-session.js';
 import config from '../config.js';
-import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
+import { IMPORT_MAX_UPLOAD_BYTES, MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
 import { decodeExportBuffer, extractMediaFromZip, extractTextFromZip, importExportedChat, slugForImportChatJid } from '../import/chat-import.js';
 import {
@@ -81,7 +81,7 @@ const QRCode = require('qrcode');
 
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: IMPORT_MAX_UPLOAD_BYTES } });
 
 /** Never expose raw filesystem paths to the browser — only `hasMediaFile` + `/api/message-media`. */
 function sanitizeClientMessage(m) {
@@ -2710,7 +2710,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const chatJid = String(req.query?.chatJid || '').trim();
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const sheets = (this.db.listExpenseSheetMessages(chatJid) || [])
-          .filter((row) => isExpenseSheetMessage(row, row.mediaPath))
+          .filter((row) => isExpenseSheetMessage(row, row.mediaPath, { strict: false }))
           .map((row) => ({
             messageId: row.messageId,
             chatJid: row.chatJid,
@@ -3441,6 +3441,23 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
     // Legacy WhatsApp mirror UI (optional). Primary entry is /gpt.
     this._app.get('/chats', (_req, res) => res.sendFile(resolve(config.publicDir, 'index.html')));
+
+    // Multer (and other) errors must stay JSON — the import UI calls res.json().
+    this._app.use((err, _req, res, next) => {
+      if (!err) return next();
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        const maxMb = Math.round(IMPORT_MAX_UPLOAD_BYTES / (1024 * 1024));
+        return res.status(413).json({
+          error: `File too large (max ${maxMb} MB). Export a smaller zip, or set IMPORT_MAX_UPLOAD_BYTES.`,
+        });
+      }
+      if (err.name === 'MulterError') {
+        return res.status(400).json({ error: err.message || 'Upload failed' });
+      }
+      if (res.headersSent) return next(err);
+      console.error('[API]', err.message || err);
+      return res.status(500).json({ error: err.message || 'Internal error' });
+    });
   }
 
   _triggerSummaryGen() {

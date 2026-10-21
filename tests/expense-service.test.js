@@ -72,13 +72,17 @@ function fakeDb(mediaPath) {
 }
 
 describe('expense reconciliation automation', () => {
-  test('only accepts incoming CSV/XLSX documents in live groups', () => {
+  test('accepts CSV/XLSX/Phone-pay PDFs in live groups and imported chats', () => {
     const row = { chatJid: 'site@g.us', sender: 'Staff', text: 'daily.xlsx' };
     expect(isExpenseSheetMessage(row, '/tmp/daily.xlsx')).toBe(true);
     expect(isExpenseSheetMessage({ ...row, sender: 'You' }, '/tmp/daily.xlsx')).toBe(false);
-    expect(isExpenseSheetMessage({ ...row, chatJid: 'import_site@imported' }, '/tmp/daily.xlsx')).toBe(false);
+    expect(isExpenseSheetMessage({ ...row, chatJid: 'import_site@imported' }, '/tmp/daily.xlsx')).toBe(true);
     expect(isExpenseSheetMessage(row, '/tmp/searchable-expense-report-7.xlsx')).toBe(false);
     expect(isExpenseSheetMessage({ ...row, text: 'receipt.pdf' }, '/tmp/receipt.pdf')).toBe(false);
+    expect(isExpenseSheetMessage(
+      { ...row, chatJid: 'import_phonpay@imported', text: 'Phone pay - 14.10.26.pdf' },
+      '/tmp/Phone_pay_-_14.10.26.pdf',
+    )).toBe(true);
   });
 
   test('reconciles once and sends the generated report to the same group', async () => {
@@ -258,6 +262,37 @@ describe('expense reconciliation automation', () => {
     expect(selectedProviderCalls).toBeGreaterThan(0);
     expect(run.status).toBe('completed');
     expect(run.reportPath).toBeTruthy();
+  });
+
+  test('limits chat evidence to messages after the previous sheet and before this one was posted', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Transactions');
+    sheet.addRow(['Date', 'Paid To', 'Amount', 'Description']);
+    sheet.addRow(['2026-10-13', 'Harsh', 9500, 'Room rent']);
+    sheet.addRow(['2026-10-14', 'Diesel', 5000, 'Hydra diesel']);
+    const path = join(scratch, 'since-last-sheet.xlsx');
+    await workbook.xlsx.writeFile(path);
+
+    const db = fakeDb(path);
+    const day13 = dayBoundsFromDate('2026-10-13').startTs;
+    const postedAt = dayBoundsFromDate('2026-10-14').startTs + 20 * 3600;
+    const baseRow = db.getMessageRowByMessageId('sheet-1');
+    db.getMessageRowByMessageId = () => ({ ...baseRow, timestamp: postedAt });
+    const messages = [
+      { messageId: 'm-before', chatJid: 'site-a@g.us', sender: 'Staff', text: 'Paid 9500 room rent', timestamp: day13 + 20 * 3600 },
+      // Previous day's sheet: no stored file, like many imported chats.
+      { messageId: 'sheet-0', chatJid: 'site-a@g.us', sender: 'Accountant', text: 'phn pay 13.10.26.pdf • 1 page', mediaType: 'document', mediaPath: null, timestamp: day13 + 21 * 3600 },
+      { messageId: 'm-after', chatJid: 'site-a@g.us', sender: 'Staff', text: 'Paid 5000 hydra diesel', timestamp: postedAt - 3600 },
+    ];
+    let range;
+    db.getMessagesByTimeRange = (_jid, start, end) => { range = { start, end }; return messages; };
+    const prompts = [];
+    const provider = { chat: async ([{ content }]) => { prompts.push(content); return '[]'; } };
+    const service = new ExpenseReconciliationService({ db, getProvider: () => provider });
+    await service.runForChat({ chatJid: 'site-a@g.us', messageId: 'sheet-1', notifyWhatsApp: false }, 'tenant-range');
+    expect(range.end).toBe(postedAt);
+    expect(prompts.join('\n')).toContain('[m-after]');
+    expect(prompts.join('\n')).not.toContain('[m-before]');
   });
 
   test('loads chat evidence for every date represented across the workbook', async () => {

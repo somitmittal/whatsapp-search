@@ -76,6 +76,9 @@ export default class OllamaProvider {
         temperature: options.temperature ?? 0.3,
       },
     };
+    // Schema-constrained output: small local models otherwise emit broken or multi-value JSON.
+    // (Plain format:'json' lets them pad whitespace until num_predict, so require a schema.)
+    if (options.jsonSchema) body.format = options.jsonSchema;
 
     const res = await this._fetch('/api/chat', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
     const data = await res.json();

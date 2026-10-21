@@ -8,7 +8,9 @@ import {
   extractChatExpenses,
   inferExpenseHeaders,
 } from './chat-expense-extractor.js';
-import { parseExpenseWorkbook } from './sheet-parser.js';
+import { parseExpenseSheet } from './sheet-parser.js';
+import { looksLikeExpensePdfName } from './pdf-sheet-parser.js';
+import { documentExtension, isSupportedSheetExtension } from './document-sheet-parser.js';
 import { reconcileExpenses } from './reconciler.js';
 import { writeExpenseReport } from './report-workbook.js';
 import {
@@ -18,23 +20,65 @@ import {
 
 const REPORT_PREFIX = 'searchable-expense-report-';
 
-export function isExpenseSheetMessage(row, mediaPath) {
+/** Live site groups and imported archive chats (manual reconcile / Ask AI). */
+export function isExpenseChatJid(chatJid) {
+  const jid = String(chatJid || '');
+  return jid.endsWith('@g.us') || jid.endsWith('@imported');
+}
+
+/**
+ * @param {{ strict?: boolean }} [options] strict (auto path on every incoming file) only accepts
+ *   spreadsheets and statement-named PDFs; non-strict (user picked the file) accepts any document
+ *   or photo the parser can read.
+ */
+export function isExpenseSheetMessage(row, mediaPath, { strict = true } = {}) {
   if (!row || row.sender === 'You') return false;
-  if (!String(row.chatJid || '').endsWith('@g.us')) return false;
-  const names = [mediaPath, row.text, row.mediaCaption]
+  if (!isExpenseChatJid(row.chatJid)) return false;
+  const names = [mediaPath, row.text, row.mediaCaption, writtenFileName(row)]
     .map((value) => basename(String(value || '')).toLowerCase())
     .filter(Boolean);
   if (names.some((name) => name.startsWith(REPORT_PREFIX))) return false;
-  return names.some((name) => ['.xlsx', '.csv'].includes(extname(name)));
+  if (names.some((name) => ['.xlsx', '.csv'].includes(extname(name)))) return true;
+  if (names.some((name) => looksLikeExpensePdfName(name))) return true;
+  if (strict) return false;
+  return isSupportedSheetExtension(documentExtension(writtenFileName(row, mediaPath), mediaPath));
+}
+
+const FILE_NAME_EXTENSIONS = 'xlsx|xlsm|csv|tsv|txt|pdf|docx|jpe?g|png|webp';
+
+/** A file name actually written in the message (WhatsApp attachment line or caption), else ''. */
+function writtenFileName(row, mediaPath = null) {
+  const pattern = new RegExp(`\\.(?:${FILE_NAME_EXTENSIONS})\\b`, 'i');
+  const attached = String(row?.text || '').match(/<attached:\s*(?:\d+-)?([^>]+)>/i)?.[1]?.trim();
+  if (attached && pattern.test(attached)) return basename(attached);
+  const candidate = [row?.mediaCaption, row?.text, mediaPath]
+    .map((value) => String(value || '').trim())
+    .find((value) => pattern.test(value));
+  if (!candidate) return '';
+  const match = candidate.match(new RegExp(`([^/\\\\\\s][^/\\\\]*\\.(?:${FILE_NAME_EXTENSIONS}))\\b`, 'i'));
+  return basename(match?.[1] || candidate);
 }
 
 function originalExpenseFileName(row, mediaPath) {
-  const candidate = [row?.mediaCaption, row?.text, mediaPath]
-    .map((value) => String(value || '').trim())
-    .find((value) => /\.(xlsx|csv)\b/i.test(value));
-  if (!candidate) return basename(String(mediaPath || 'expenses.xlsx'));
-  const match = candidate.match(/([^/\\\s][^/\\]*\.(?:xlsx|csv))\b/i);
-  return basename(match?.[1] || candidate);
+  return writtenFileName(row, mediaPath) || basename(String(mediaPath || 'expenses.xlsx'));
+}
+
+function unreadableChatEntries(rows) {
+  return rows.map((row) => ({
+    source: 'chat',
+    sourceMessageId: row.messageId,
+    date: row.date,
+    amountMinor: 0,
+    currency: 'INR',
+    direction: 'debit',
+    description: row.text,
+    payee: '',
+    category: '',
+    reference: '',
+    sourceText: row.text,
+    sourceSender: row.sender,
+    rawJson: JSON.stringify({ unreadable: true, sourceText: row.text, sourceSender: row.sender }),
+  }));
 }
 
 function reportCaption(run, reconciliation) {
@@ -85,12 +129,14 @@ export default class ExpenseReconciliationService {
         throw new Error('Enable the Construction expense agent first');
       }
       const jid = String(chatJid || '').trim();
-      if (!jid.endsWith('@g.us')) throw new Error('Pick a WhatsApp group (site chat)');
+      if (!isExpenseChatJid(jid)) throw new Error('Pick a WhatsApp group or imported site chat');
       let mid = String(messageId || '').trim();
       if (!mid) {
-        const latest = this.db.listExpenseSheetMessages?.(jid)?.[0];
+        const sheets = this.db.listExpenseSheetMessages?.(jid) || [];
+        const latest = sheets.find((sheet) => isExpenseSheetMessage(sheet, sheet.mediaPath))
+          || sheets.find((sheet) => isExpenseSheetMessage(sheet, sheet.mediaPath, { strict: false }));
         if (!latest?.messageId) {
-          throw new Error('No CSV/XLSX expense sheet found in that chat yet');
+          throw new Error('No expense sheet (Excel, CSV, PDF, Word, or text file) found in that chat yet');
         }
         mid = latest.messageId;
       }
@@ -180,6 +226,27 @@ export default class ExpenseReconciliationService {
     });
   }
 
+  /**
+   * Chat messages a sheet should account for: its date span, but not before the previous
+   * sheet was posted (those payments belong to that sheet) and not after this one was posted.
+   */
+  _chatMessages(sheetRow, firstDate, lastDate) {
+    const startTs = dayBoundsFromDate(firstDate).startTs;
+    const lastDay = dayBoundsFromDate(lastDate);
+    let endTs = lastDay.endTs;
+    const postedAt = Number(sheetRow.timestamp);
+    // Posted on its last day (the usual evening hisab): later messages belong to the next sheet.
+    if (Number.isFinite(postedAt) && postedAt >= lastDay.startTs && postedAt < endTs) endTs = postedAt;
+    const messages = this.db.getMessagesByTimeRange(sheetRow.chatJid, startTs, endTs) || [];
+    // The previous sheet message may have no stored file (imports often omit media), so look at messages.
+    const previous = [...messages].reverse().find((message) => (
+      message.messageId !== sheetRow.messageId
+      && Number(message.timestamp) < postedAt
+      && isExpenseSheetMessage({ ...message, chatJid: message.chatJid || sheetRow.chatJid }, message.mediaPath)
+    ));
+    return previous ? messages.filter((message) => Number(message.timestamp) > Number(previous.timestamp)) : messages;
+  }
+
   _emit(runId, status, extra = {}) {
     this.onProgress?.({ runId, status, ...extra }, getCurrentTenantId());
   }
@@ -194,7 +261,8 @@ export default class ExpenseReconciliationService {
     const row = this.db.getMessageRowByMessageId(messageId);
     const media = this.db.getMessageMediaRecord(messageId);
     const mediaPath = media?.mediaPath;
-    if (!mediaPath || !existsSync(mediaPath) || !isExpenseSheetMessage(row, mediaPath)) return null;
+    if (!mediaPath || !existsSync(mediaPath)
+      || !isExpenseSheetMessage(row, mediaPath, { strict: requireSiteAllowlist })) return null;
     if (requireSiteAllowlist && !isConstructionExpenseSiteAllowed(this.db, row.chatJid)) return null;
 
     const bounds = dayBoundsFromTimestamp(row.timestamp);
@@ -224,27 +292,32 @@ export default class ExpenseReconciliationService {
     try {
       const provider = providerOverride || this.getProvider?.();
       if (!provider?.chat) throw new Error('Configure an AI provider before reconciling expenses');
-      const parsedSheet = await parseExpenseWorkbook(mediaPath, {
+      const parsedSheet = await parseExpenseSheet(mediaPath, {
         fallbackDate: bounds.date,
         fileName: sourceFileName,
+        provider,
         inferHeaders: (headers, fields) => inferExpenseHeaders(provider, headers, fields),
       });
       const sheetDates = parsedSheet.entries.map((entry) => entry.date).filter(Boolean).sort();
       const firstDate = sheetDates[0] || bounds.date;
       const lastDate = sheetDates[sheetDates.length - 1] || firstDate;
       const businessDate = firstDate === lastDate ? firstDate : `${firstDate} – ${lastDate}`;
-      const businessStart = dayBoundsFromDate(firstDate);
-      const businessEnd = dayBoundsFromDate(lastDate);
-      const messages = this.db.getMessagesByTimeRange(
-        row.chatJid,
-        businessStart.startTs,
-        businessEnd.endTs,
-      );
+      const messages = this._chatMessages(row, firstDate, lastDate);
+      let unreadable = [];
       const chatEntries = await extractChatExpenses(provider, messages, {
         date: firstDate,
         excludedMessageId: messageId,
+        onUnreadable: (rows) => { unreadable = unreadableChatEntries(rows); },
       });
       const reconciliation = reconcileExpenses(chatEntries, parsedSheet.entries);
+      for (const entry of unreadable) {
+        reconciliation.discrepancies.push({
+          type: 'needs_review',
+          chatEntry: entry,
+          sheetEntry: null,
+          detail: 'Payment message whose amount could not be read safely — check it against the sheet',
+        });
+      }
       reconciliation.totals = {
         ...reconciliation.totals,
         chatEntryCount: chatEntries.length,
@@ -255,7 +328,7 @@ export default class ExpenseReconciliationService {
 
       this.db.replaceExpenseReconciliationData(
         run.id,
-        [...chatEntries, ...parsedSheet.entries],
+        [...chatEntries, ...unreadable, ...parsedSheet.entries],
         reconciliation.discrepancies,
       );
       const reportName = `${REPORT_PREFIX}${run.id}.xlsx`;

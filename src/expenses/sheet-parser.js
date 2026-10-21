@@ -1,5 +1,12 @@
 import ExcelJS from 'exceljs';
-import { extname } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename, extname } from 'node:path';
+import {
+  documentExtension,
+  extractDocumentText,
+  extractSheetRowsWithModel,
+  isSupportedSheetExtension,
+} from './document-sheet-parser.js';
 import {
   CANONICAL_EXPENSE_FIELDS,
   canonicalHeader,
@@ -9,6 +16,7 @@ import {
   normalizeText,
   parseAmountMinor,
 } from './expense-utils.js';
+import { extractPdfText, parseExpensePdf, parsePhonePayPdfText } from './pdf-sheet-parser.js';
 
 const STANDARD_HEADERS = ['Date', 'Direction', 'Amount', 'Currency', 'Payee', 'Category', 'Description', 'Reference', 'Source worksheet'];
 const STANDARD_MAPPING = { date: 0, direction: 1, amount: 2, currency: 3, payee: 4, category: 5, description: 6, reference: 7, worksheetName: 8 };
@@ -155,16 +163,59 @@ async function parseWorksheet(worksheet, { fallbackDate, inferHeaders }) {
   return null;
 }
 
+function sheetExtension(fileName, filePath) {
+  const named = String(fileName || '').match(/\.(xlsx|csv|pdf)\b/i);
+  if (named) return `.${named[1].toLowerCase()}`;
+  return extname(String(filePath || '')).toLowerCase();
+}
+
+/**
+ * Read an expense sheet from any supported file: spreadsheets by column mapping, Phone-pay
+ * printouts deterministically when every dated line parses, everything else (other PDF layouts,
+ * Word, text, photos, spreadsheets without recognisable columns) through the AI model.
+ */
+export async function parseExpenseSheet(filePath, {
+  fallbackDate = null,
+  inferHeaders = null,
+  fileName = null,
+  provider = null,
+} = {}) {
+  const ext = documentExtension(fileName, filePath);
+  const label = basename(String(fileName || filePath || 'expense file'));
+  if (ext === '.xlsx' || ext === '.csv') {
+    try {
+      return await parseExpenseWorkbook(filePath, { fallbackDate, inferHeaders, fileName });
+    } catch (error) {
+      if (!provider?.chat) throw error;
+    }
+  }
+  if (!isSupportedSheetExtension(ext)) {
+    throw new Error(`Unsupported expense file type ${ext || '(unknown)'}; send .xlsx, .csv, .pdf, .docx, .txt, or a photo of the sheet`);
+  }
+  let text;
+  if (ext === '.pdf') {
+    text = await extractPdfText(readFileSync(filePath));
+    const fast = parsePhonePayPdfText(text, { fallbackDate });
+    if (fast.complete) return fast.sheet;
+  } else {
+    text = await extractDocumentText(filePath, { ext, provider });
+  }
+  return extractSheetRowsWithModel(provider, text, { fallbackDate, label });
+}
+
 export async function parseExpenseWorkbook(filePath, {
   fallbackDate = null,
   inferHeaders = null,
   fileName = null,
 } = {}) {
+  const ext = sheetExtension(fileName, filePath);
+  if (ext === '.pdf') {
+    return parseExpensePdf(filePath, { fallbackDate, fileName });
+  }
   const workbook = new ExcelJS.Workbook();
-  const ext = extname(String(fileName || filePath || '')).toLowerCase();
   if (ext === '.csv') await workbook.csv.readFile(filePath);
   else if (ext === '.xlsx') await workbook.xlsx.readFile(filePath);
-  else throw new Error('Only .xlsx and .csv expense sheets are supported');
+  else throw new Error('Only .xlsx, .csv, and Phone-pay .pdf expense sheets are supported');
 
   const parsedWorksheets = [];
   for (const worksheet of workbook.worksheets) {

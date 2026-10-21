@@ -46,14 +46,32 @@ function isExactReference(entry, candidate) {
     && (!candidate.date || !entry.date || candidate.date === entry.date);
 }
 
-const GENERIC_TERMS = new Set(['paid', 'payment', 'expense', 'expenses', 'purchase', 'purchased', 'bill', 'invoice', 'amount']);
+const GENERIC_TERMS = new Set([
+  'paid', 'payment', 'expense', 'expenses', 'purchase', 'purchased', 'bill', 'invoice', 'amount',
+  'other', 'misc', 'miscellaneous', 'request', 'upi', 'phonepe',
+]);
 
+// Hindi/Hinglish filler that carries no expense identity ("ke liye dalwa dijiye", "इसमें डाल दो").
+const FILLER_TERMS = new Set([
+  'ke', 'ki', 'ka', 'ko', 'se', 'me', 'mein', 'hai', 'he', 'ho', 'kar', 'karo', 'kardo', 'karne', 'karna',
+  'do', 'de', 'dijiye', 'digiye', 'diye', 'diya', 'dena', 'liye', 'ye', 'yeh', 'is', 'isme', 'aur', 'bhi',
+  'ji', 'sir', 'please', 'plz', 'using', 'image', 'file', 'explore', 'app', 'now', 'dalwa', 'daal', 'dal',
+  'bhej', 'the', 'for', 'and', 'to', 'of', 'in', 'on', 'kardo', 'bhaiya', 'paid', 'done', 'ok',
+  'ten', 'hundred', 'thousand', 'lakh', 'lac', 'crore', 'hazar', 'hajar', 'sau', 'rs', 'rupees', 'inr',
+  'के', 'की', 'का', 'को', 'से', 'में', 'है', 'हे', 'दो', 'दे', 'इसमें', 'और', 'डाल', 'दिए', 'दिया',
+]);
+
+/**
+ * Identity words for overlap. Chat rows use the words actually in the message (plus the payee),
+ * not the model's description, which small models sometimes copy from a neighbouring message.
+ */
 function expenseTerms(entry) {
-  return new Set([
-    entry.payee,
-    entry.description,
-    entry.category,
-  ].flatMap((value) => normalizeText(value).split(' ')).filter((term) => term.length > 1 && !GENERIC_TERMS.has(term)));
+  const values = entry.source === 'chat' && entry.sourceText
+    ? [entry.payee, entry.sourceText, entry.sourceContext]
+    : [entry.payee, entry.description, entry.category];
+  return new Set(values
+    .flatMap((value) => normalizeText(value).split(' '))
+    .filter((term) => term.length > 1 && !/^\d+$/.test(term) && !GENERIC_TERMS.has(term) && !FILLER_TERMS.has(term)));
 }
 
 function expenseTextOverlap(left, right) {
@@ -214,6 +232,11 @@ export function reconcileExpenses(chatEntries = [], sheetEntries = []) {
     if (sameMoney.length === 1) {
       const candidate = sameMoney[0];
       usedSheet.add(candidate.index);
+      // A bare "1500" message has no details to contradict the row; amount + date is all the evidence there is.
+      if (!expenseTerms(chatEntry).size) {
+        matches.push({ chatEntry, sheetEntry: candidate.candidate });
+        continue;
+      }
       discrepancies.push(result(
         'needs_review',
         chatEntry,
@@ -227,6 +250,27 @@ export function reconcileExpenses(chatEntries = [], sheetEntries = []) {
       discrepancies.push(result(
         'needs_review', chatEntry, null, 'Multiple sheet rows share this amount, date, currency, and direction',
         sameMoney.map(({ candidate }) => candidate),
+      ));
+      continue;
+    }
+
+    // Chat wording like "40000 diye" is easy to read as paid vs received; a unique
+    // same-amount, same-date row on the other side is one transaction to review, not two gaps.
+    const flipped = unusedEntries(sheetEntries, usedSheet).filter(({ candidate, index }) => (
+      !ambiguousSheet.has(index)
+      && referencesCompatible(chatEntry, candidate)
+      && candidate.currency === chatEntry.currency
+      && candidate.direction !== chatEntry.direction
+      && (!candidate.date || !chatEntry.date || candidate.date === chatEntry.date)
+      && Number(candidate.amountMinor) === Number(chatEntry.amountMinor)
+    ));
+    if (flipped.length === 1) {
+      usedSheet.add(flipped[0].index);
+      discrepancies.push(result(
+        'needs_review',
+        chatEntry,
+        flipped[0].candidate,
+        'Amount and date agree, but one side records money paid and the other money received',
       ));
       continue;
     }
