@@ -29,9 +29,11 @@ import {
   constructWebhookEvent,
   isStripeConfigured,
 } from './stripe-billing.js';
+import { adminAuthorized, requireAdmin } from './admin-auth.js';
 import { getControlPlaneStore } from './store.js';
 
 export { isLicenseGateEnabled } from './license-gate.js';
+export { adminAuthorized, requireAdmin } from './admin-auth.js';
 
 function isPublicInternetDeploy() {
   return process.env.RENDER === 'true'
@@ -44,15 +46,6 @@ function publicBaseUrl(req) {
   const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
   const host = req.get('x-forwarded-host') || req.get('host');
   return `${proto}://${host}`;
-}
-
-function adminAuthorized(req) {
-  const secret = getServerSecret();
-  if (!secret) return false;
-  const header = req.get('authorization') || '';
-  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  // Query-string keys leak via logs / Referer — Bearer only.
-  return Boolean(bearer) && bearer === secret;
 }
 
 /** Strict email shape — rejects HTML / quote characters used in stored XSS. */
@@ -145,10 +138,7 @@ export function registerControlPlaneRoutes(app, opts = {}) {
     }
   });
 
-  app.get('/api/analytics/downloads', async (req, res) => {
-    if (!adminAuthorized(req)) {
-      return res.status(401).json({ error: 'Unauthorized — pass Authorization: Bearer $SESSION_SECRET' });
-    }
+  app.get('/api/analytics/downloads', requireAdmin, async (req, res) => {
     const summary = await store.downloadSummary();
     return res.json({
       ...summary,
@@ -157,7 +147,7 @@ export function registerControlPlaneRoutes(app, opts = {}) {
     });
   });
 
-  app.get('/analytics', (_req, res) => {
+  app.get('/analytics', requireAdmin, (_req, res) => {
     res.sendFile(resolve(config.publicDir, 'analytics.html'));
   });
 
@@ -399,8 +389,7 @@ export function registerControlPlaneRoutes(app, opts = {}) {
     return res.json({ ok: true });
   });
 
-  app.get('/api/control/admin/users', async (req, res) => {
-    if (!adminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+  app.get('/api/control/admin/users', requireAdmin, async (_req, res) => {
     return res.json({ users: await store.listUsers(200) });
   });
 
@@ -408,8 +397,7 @@ export function registerControlPlaneRoutes(app, opts = {}) {
    * Remote lock / unlock a user license.
    * Body: { email, status: 'disabled' | 'revoked' | 'trialing' | 'active' | 'canceled' }
    */
-  app.post('/api/control/admin/license', async (req, res) => {
-    if (!adminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+  app.post('/api/control/admin/license', requireAdmin, async (req, res) => {
     try {
       const email = String(req.body?.email || '').trim().toLowerCase();
       const status = String(req.body?.status || '').trim().toLowerCase();
@@ -439,8 +427,7 @@ export function registerControlPlaneRoutes(app, opts = {}) {
     }
   });
 
-  app.get('/api/control/admin/policy', (req, res) => {
-    if (!adminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+  app.get('/api/control/admin/policy', requireAdmin, (req, res) => {
     const { policy } = applyControlPlanePolicy(
       { allowed: true, plan: 'pro', status: 'active', reason: null, trialEndsAt: null },
       { appVersion: '999.0.0', downloadUrl: getUpdateDownloadUrl(req) },

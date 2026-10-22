@@ -31,7 +31,11 @@ describe('control-plane security', () => {
       app = express();
       app.use(express.json());
       registerControlPlaneRoutes(app, { store });
-      for (const k of ['RENDER', 'RENDER_EXTERNAL_URL', 'RESEND_API_KEY', 'CONTROL_PLANE_EXPOSE_DEV_CODE', 'SESSION_SECRET', 'JWT_SECRET', 'NODE_ENV']) {
+      for (const k of [
+        'RENDER', 'RENDER_EXTERNAL_URL', 'RESEND_API_KEY', 'CONTROL_PLANE_EXPOSE_DEV_CODE',
+        'SESSION_SECRET', 'JWT_SECRET', 'NODE_ENV',
+        'CONTROL_PLANE_ADMIN_USER', 'CONTROL_PLANE_ADMIN_PASSWORD',
+      ]) {
         prev[k] = process.env[k];
       }
       process.env.SESSION_SECRET = 'test-session-secret-for-admin';
@@ -40,6 +44,8 @@ describe('control-plane security', () => {
       delete process.env.RENDER_EXTERNAL_URL;
       delete process.env.RESEND_API_KEY;
       delete process.env.CONTROL_PLANE_EXPOSE_DEV_CODE;
+      delete process.env.CONTROL_PLANE_ADMIN_USER;
+      delete process.env.CONTROL_PLANE_ADMIN_PASSWORD;
     });
 
     afterEach(() => {
@@ -79,6 +85,8 @@ describe('control-plane security', () => {
 
     it('rejects admin auth via query-string key', async () => {
       process.env.NODE_ENV = 'production';
+      delete process.env.CONTROL_PLANE_ADMIN_USER;
+      delete process.env.CONTROL_PLANE_ADMIN_PASSWORD;
       const { server, base } = await listen();
       try {
         const bad = await fetch(`${base}/api/analytics/downloads?key=test-session-secret-for-admin`);
@@ -89,6 +97,27 @@ describe('control-plane security', () => {
         expect(good.status).toBe(200);
       } finally {
         server.close();
+      }
+    });
+
+    it('accepts admin Basic username/password', async () => {
+      process.env.NODE_ENV = 'production';
+      process.env.CONTROL_PLANE_ADMIN_USER = 'admin';
+      process.env.CONTROL_PLANE_ADMIN_PASSWORD = 'basic-pass';
+      const { server, base } = await listen();
+      try {
+        const unauth = await fetch(`${base}/api/analytics/downloads`);
+        expect(unauth.status).toBe(401);
+        expect(unauth.headers.get('www-authenticate') || '').toMatch(/Basic/i);
+        const token = Buffer.from('admin:basic-pass', 'utf8').toString('base64');
+        const good = await fetch(`${base}/api/analytics/downloads`, {
+          headers: { Authorization: `Basic ${token}` },
+        });
+        expect(good.status).toBe(200);
+      } finally {
+        server.close();
+        delete process.env.CONTROL_PLANE_ADMIN_USER;
+        delete process.env.CONTROL_PLANE_ADMIN_PASSWORD;
       }
     });
   });

@@ -31,6 +31,15 @@ Optional remote-control knobs on the **hosted** control plane:
 
 Set `CONTROL_PLANE_ONLY=1` on the Render web service. That boots a minimal server (licenses, Stripe webhook, `/download`, `/analytics`) and does **not** serve `/gpt` or WhatsApp APIs. Desktop apps keep chats local and call this host only for entitlement.
 
+Protect `/analytics` with HTTP Basic:
+
+```bash
+CONTROL_PLANE_ADMIN_USER=admin
+CONTROL_PLANE_ADMIN_PASSWORD=…   # long random secret
+```
+
+License/auth APIs for the desktop app stay public (no Basic). Bearer `SESSION_SECRET` still works for scripts.
+
 ### Durable control-plane DB (Turso — recommended on free Render)
 
 Render’s free filesystem is wiped on deploy. Prefer **Turso** (hosted SQLite):

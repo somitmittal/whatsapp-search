@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Searchable — Download analytics</title>
+  <title>Searchable — Admin</title>
   <style>
     :root { --green: #00a884; --text: #111b21; --text2: #667781; --bg: #f0f2f5; --card: #fff; --border: #e9edef; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -21,16 +21,20 @@
     th { color: var(--text2); font-weight: 600; }
     .err { color: #b91c1c; font-size: 13px; margin-top: 10px; }
     .total { font-size: 28px; font-weight: 700; color: var(--green); }
+    details { margin-top: 10px; font-size: 13px; color: var(--text2); }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Download analytics</h1>
-    <p class="lead">Tracked clicks through <code>/api/releases/download/:platform</code>. Auth with your server <code>SESSION_SECRET</code>.</p>
+    <h1>Searchable admin</h1>
+    <p class="lead">Downloads + license lock. Sign in with the browser username/password prompt (HTTP Basic). Desktop license APIs stay public.</p>
     <div class="card">
-      <label for="key">Admin key (SESSION_SECRET)</label>
-      <input id="key" type="password" autocomplete="off" placeholder="Paste SESSION_SECRET" />
       <button type="button" id="load">Load stats</button>
+      <details>
+        <summary>Advanced: Bearer SESSION_SECRET</summary>
+        <label for="key" style="margin-top:10px">Admin key</label>
+        <input id="key" type="password" autocomplete="off" placeholder="Optional — only if Basic auth is not set" />
+      </details>
       <p class="err" id="err" hidden></p>
     </div>
     <div class="card" id="results" hidden>
@@ -42,11 +46,10 @@
       <table><thead><tr><th>Day</th><th>Platform</th><th>Count</th></tr></thead><tbody id="by-day"></tbody></table>
       <h2 style="font-size:15px;margin-top:18px">By version</h2>
       <table><thead><tr><th>Version</th><th>Platform</th><th>Count</th></tr></thead><tbody id="by-version"></tbody></table>
-      <p style="margin-top:14px;font-size:12px;color:var(--text2)">GitHub’s own asset <code>download_count</code> is also on <code>/api/releases/latest</code> for a sanity check.</p>
     </div>
     <div class="card">
       <h2 style="font-size:15px;margin-bottom:10px">Remote license lock</h2>
-      <p class="lead" style="margin-bottom:12px">Lock or restore a user’s Pro/trial license. Locked installs lose AI/GPT until unlocked.</p>
+      <p class="lead" style="margin-bottom:12px">Lock or restore a user’s Pro/trial license.</p>
       <label for="lock-email">User email</label>
       <input id="lock-email" type="email" placeholder="user@example.com" />
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -70,11 +73,21 @@
         .replace(/'/g, '&#39;');
     }
     function authHeaders() {
-      return { Authorization: 'Bearer ' + $('key').value.trim(), 'Content-Type': 'application/json' };
+      const h = { 'Content-Type': 'application/json' };
+      const key = $('key').value.trim();
+      if (key) h.Authorization = 'Bearer ' + key;
+      return h;
+    }
+    function api(path, opts = {}) {
+      return fetch(path, {
+        credentials: 'same-origin',
+        ...opts,
+        headers: { ...authHeaders(), ...(opts.headers || {}) },
+      });
     }
     async function loadUsers() {
-      const res = await fetch('/api/control/admin/users', { headers: authHeaders() });
-      const data = await res.json();
+      const res = await api('/api/control/admin/users');
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) return;
       $('users').innerHTML = (data.users || []).map((u) =>
         '<tr><td>' + esc(u.email) + '</td><td>' + esc(u.plan) + '</td><td>'
@@ -83,16 +96,13 @@
     }
     async function setLicense(status) {
       $('lock-msg').hidden = true;
-      const key = $('key').value.trim();
       const email = $('lock-email').value.trim().toLowerCase();
-      if (!key) { $('lock-msg').textContent = 'Enter SESSION_SECRET'; $('lock-msg').hidden = false; return; }
       if (!email) { $('lock-msg').textContent = 'Enter email'; $('lock-msg').hidden = false; return; }
-      const res = await fetch('/api/control/admin/license', {
+      const res = await api('/api/control/admin/license', {
         method: 'POST',
-        headers: authHeaders(),
         body: JSON.stringify({ email, status }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       $('lock-msg').hidden = false;
       $('lock-msg').style.color = res.ok ? '#008f72' : '#b91c1c';
       $('lock-msg').textContent = res.ok
@@ -103,13 +113,14 @@
     async function load() {
       $('err').hidden = true;
       const key = $('key').value.trim();
-      if (!key) { $('err').textContent = 'Enter SESSION_SECRET'; $('err').hidden = false; return; }
-      // Session-only — avoid persisting SESSION_SECRET across browser sessions.
-      sessionStorage.setItem('searchable_analytics_key', key);
-      localStorage.removeItem('searchable_analytics_key');
-      const res = await fetch('/api/analytics/downloads', { headers: { Authorization: 'Bearer ' + key } });
-      const data = await res.json();
-      if (!res.ok) { $('err').textContent = data.error || 'Failed'; $('err').hidden = false; return; }
+      if (key) sessionStorage.setItem('searchable_analytics_key', key);
+      const res = await api('/api/analytics/downloads');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $('err').textContent = data.error || (res.status === 401 ? 'Sign in required (browser username/password)' : 'Failed');
+        $('err').hidden = false;
+        return;
+      }
       $('results').hidden = false;
       $('total').textContent = String(data.total || 0);
       const fill = (id, rows, cols) => {
@@ -125,13 +136,10 @@
     $('lock-btn').addEventListener('click', () => setLicense('disabled'));
     $('unlock-btn').addEventListener('click', () => setLicense('trialing'));
     $('unlock-pro-btn').addEventListener('click', () => setLicense('active'));
-    const saved = sessionStorage.getItem('searchable_analytics_key')
-      || localStorage.getItem('searchable_analytics_key');
-    if (saved) {
-      $('key').value = saved;
-      localStorage.removeItem('searchable_analytics_key');
-      sessionStorage.setItem('searchable_analytics_key', saved);
-    }
+    const saved = sessionStorage.getItem('searchable_analytics_key');
+    if (saved) $('key').value = saved;
+    // Page already passed Basic auth — load stats immediately.
+    void load();
   </script>
 </body>
 </html>
