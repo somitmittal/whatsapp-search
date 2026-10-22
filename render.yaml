@@ -9,16 +9,13 @@ services:
     startCommand: npm start
     healthCheckPath: /health
     envVars:
-      - key: LLM_PROVIDER
-        value: groq
-      - key: SUMMARY_PROVIDER
-        value: ollama_cloud
-      - key: MEDIA_INDEX_PROVIDER
-        value: gemini
+      # Hosted control plane only — no GPT / WhatsApp UI on this service.
+      - key: CONTROL_PLANE_ONLY
+        value: "1"
       - key: OLLAMA_AUTO_START
         value: "false"
       # Set these as secrets in the Render dashboard:
       # - SESSION_SECRET (required)
-      # - GROQ_API_KEY (search)
-      # - OLLAMA_CLOUD_API_KEY (summaries)
-      # - GEMINI_API_KEY (media indexing, optional)
+      # - TURSO_DATABASE_URL + TURSO_AUTH_TOKEN (durable license DB)
+      # - RESEND_API_KEY (magic-link email)
+      # - STRIPE_* (optional billing)

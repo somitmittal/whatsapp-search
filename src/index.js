@@ -37,6 +37,18 @@ function assertJwtOnPublicHost() {
 async function main() {
   assertJwtOnPublicHost();
 
+  const { isControlPlaneOnlyEnv, startControlPlaneOnlyServer } = await import('./control-plane/standalone-server.js');
+  if (isControlPlaneOnlyEnv()) {
+    console.log('=================================');
+    console.log('  Searchable control plane');
+    console.log('  Accounts / licenses / downloads');
+    console.log('  (no GPT / WhatsApp UI on this host)');
+    console.log('=================================\n');
+    mkdirSync(config.dataDir, { recursive: true });
+    await startControlPlaneOnlyServer();
+    return;
+  }
+
   console.log('=================================');
   console.log('  WhatsApp Mirror');
   console.log('  Local AI Search + Chrome Extension');
