@@ -25,5 +25,13 @@ export npm_config_runtime=node
 export npm_config_target="$VERSION"
 export npm_config_arch="$ARCH"
 export npm_config_platform="$PLATFORM"
+# Homebrew Python 3.12+ has no stdlib distutils; node-gyp still imports it.
+# Prefer macOS /usr/bin/python3 (3.9) which still ships distutils.
+if [[ -z "${npm_config_python:-}${PYTHON:-}" ]]; then
+  if [[ -x /usr/bin/python3 ]] && /usr/bin/python3 -c 'from distutils.version import StrictVersion' 2>/dev/null; then
+    export npm_config_python=/usr/bin/python3
+    export PYTHON=/usr/bin/python3
+  fi
+fi
 npm rebuild better-sqlite3 --build-from-source
 echo "better-sqlite3 ready for Node ${VERSION}"
