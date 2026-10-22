@@ -1718,11 +1718,11 @@ export default class WebServer {
           mediaType || null,
           { businessContext: !!businessContext },
         );
-        this._controlPlane.logProductEvent({
+        void Promise.resolve(this._controlPlane.logProductEvent({
           event: 'ai_search_run',
           installId: String(req.get('x-install-id') || '').trim() || null,
           props: { plan: entitlement.plan },
-        });
+        })).catch(() => {});
         return res.json(result);
       } catch (err) {
         console.error('Search API error:', err.message);
@@ -1874,11 +1874,11 @@ export default class WebServer {
           emit,
           signal: controller.signal,
         });
-        this._controlPlane.logProductEvent({
+        void Promise.resolve(this._controlPlane.logProductEvent({
           event: 'gpt_chat',
           installId: String(req.get('x-install-id') || '').trim() || null,
           props: { plan: entitlement.plan, kind: result.expenseDiff ? 'expense' : 'chat' },
-        });
+        })).catch(() => {});
         emit({ type: 'done', ...result });
       } catch (err) {
         if (err?.name !== 'AbortedError') {
@@ -1940,14 +1940,14 @@ export default class WebServer {
           businessContext: !!req.body?.businessContext,
           emit,
         });
-        this._controlPlane.logProductEvent({
+        void Promise.resolve(this._controlPlane.logProductEvent({
           event: 'ai_search_chat',
           installId: String(req.get('x-install-id') || '').trim() || null,
           props: {
             plan: entitlement.plan,
             kind: result.expenseDiff ? 'expense' : 'search',
           },
-        });
+        })).catch(() => {});
         if (wantsStream) {
           emit({ type: 'done', ...result });
           return res.end();

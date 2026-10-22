@@ -166,7 +166,7 @@ const config = {
   /** WhatsApp export date order for ambiguous DD/MM vs MM/DD: `auto`, `DMY`, or `MDY`. */
   importDateOrder: (process.env.IMPORT_DATE_ORDER || 'auto').trim().toUpperCase(),
   /**
-   * Control-plane DB (accounts, licenses, download analytics). Separate from chat DB.
+   * Local control-plane SQLite path (used when TURSO_* is unset). Separate from chat DB.
    * Default: `<DATA_DIR>/control_plane.db`
    */
   controlPlaneDbPath: process.env.CONTROL_PLANE_DB
@@ -174,7 +174,7 @@ const config = {
     : resolve(dataDir, 'control_plane.db'),
   /**
    * When the desktop app should use a hosted control plane (Render) for accounts/billing.
-   * Example: `https://your-service.onrender.com`
+   * Example: `https://whatsapp-search-yhdg.onrender.com`
    */
   controlPlaneUrl: (process.env.CONTROL_PLANE_URL || '').trim().replace(/\/$/, ''),
   /** App version from package.json (used for min-version force-update). */

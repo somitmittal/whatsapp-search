@@ -56,7 +56,8 @@ export async function resolveSearchEntitlement(req, store) {
   }
 
   if (store && installId) {
-    return withLocalPolicy(evaluateEntitlement(store.getLicenseForInstall(installId)), req);
+    const license = await store.getLicenseForInstall(installId);
+    return withLocalPolicy(evaluateEntitlement(license), req);
   }
 
   const strict = ['1', 'true', 'yes'].includes(
@@ -96,11 +97,11 @@ export function paywallErrorMessage(reason, product = 'search') {
 }
 
 export function paywallResponse(res, entitlement, store, installId, { product = 'search' } = {}) {
-  store?.logProductEvent?.({
+  void Promise.resolve(store?.logProductEvent?.({
     event: 'paywall_shown',
     installId: installId || null,
     props: { reason: entitlement.reason, product },
-  });
+  })).catch(() => {});
   void capturePostHog('paywall_shown', {
     distinctId: installId || 'anonymous',
     properties: { reason: entitlement.reason, product },

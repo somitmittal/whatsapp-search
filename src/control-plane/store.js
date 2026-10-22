@@ -1,13 +1,19 @@
 /**
- * Control-plane SQLite store (accounts, licenses, download analytics).
+ * Control-plane store (accounts, licenses, download analytics).
  * Separate from the local chat DB — never stores message content.
+ *
+ * Backend:
+ * - Turso (hosted SQLite) when TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set
+ * - Local SQLite file otherwise (desktop / tests / ephemeral Render)
  */
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { randomBytes, createHash } from 'crypto';
+import { isTursoConfigured, openTursoControlPlaneStore } from './store-turso.js';
 
 let singleton = null;
+let initPromise = null;
 
 export function openControlPlaneStore(dbPath) {
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -15,13 +21,46 @@ export function openControlPlaneStore(dbPath) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   initSchema(db);
-  return wrapStore(db);
+  const store = wrapStore(db);
+  store.kind = 'sqlite';
+  return store;
+}
+
+/**
+ * Prefer this on startup (awaits Turso schema). Safe to call multiple times.
+ */
+export async function ensureControlPlaneStore(dbPath) {
+  if (singleton) return singleton;
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    if (isTursoConfigured()) {
+      singleton = await openTursoControlPlaneStore();
+      console.log('[control-plane] backend=turso');
+    } else {
+      singleton = openControlPlaneStore(dbPath);
+      console.log('[control-plane] backend=sqlite');
+    }
+    return singleton;
+  })();
+  try {
+    return await initPromise;
+  } finally {
+    initPromise = null;
+  }
 }
 
 export function getControlPlaneStore(dbPath) {
-  if (!singleton) singleton = openControlPlaneStore(dbPath);
+  if (singleton) return singleton;
+  if (isTursoConfigured()) {
+    throw new Error(
+      'Turso is configured — call await ensureControlPlaneStore() before getControlPlaneStore()',
+    );
+  }
+  singleton = openControlPlaneStore(dbPath);
   return singleton;
 }
+
+export { isTursoConfigured };
 
 /** @internal test helper */
 export function resetControlPlaneStoreForTests() {
@@ -29,6 +68,7 @@ export function resetControlPlaneStoreForTests() {
     try { singleton.close(); } catch { /* ignore */ }
     singleton = null;
   }
+  initPromise = null;
 }
 
 function initSchema(db) {
@@ -353,6 +393,13 @@ function wrapStore(db) {
         ORDER BY u.created_at DESC
         LIMIT ?
       `).all(limit);
+    },
+
+    findUserIdByStripeCustomerId(customerId) {
+      const row = db.prepare(
+        'SELECT user_id FROM licenses WHERE stripe_customer_id = ? LIMIT 1',
+      ).get(customerId);
+      return row?.user_id || null;
     },
   };
 }

@@ -27,6 +27,18 @@ Optional remote-control knobs on the **hosted** control plane:
 | `APP_MIN_VERSION` | e.g. `1.0.11` — installs below this get `update_required` and cannot use Pro |
 | `APP_UPDATE_DOWNLOAD_URL` | Override download page (default: `{CONTROL_PLANE_PUBLIC_URL}/download`) |
 
+### Durable control-plane DB (Turso — recommended on free Render)
+
+Render’s free filesystem is wiped on deploy. Prefer **Turso** (hosted SQLite):
+
+1. Create a free DB at [turso.tech](https://turso.tech).
+2. On Render → Environment set:
+   - `TURSO_DATABASE_URL=libsql://…`
+   - `TURSO_AUTH_TOKEN=…`
+3. Redeploy. Schema is applied automatically on boot.
+
+Without Turso, the control plane uses local SQLite (`CONTROL_PLANE_DB` / `DATA_DIR`) which is ephemeral unless you attach a paid Render disk.
+
 ### Desktop builds (important)
 
 Desktop releases must bake the hosted URL, or each install uses a **local** `control_plane.db` and Stripe/admin lock never apply.

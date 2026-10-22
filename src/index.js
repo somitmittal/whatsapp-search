@@ -9,6 +9,7 @@ import EmbeddingIndexService from './search/embedding-index-service.js';
 import { terminateMiniLmEncoder } from './search/minilm-encoder.js';
 import DailySummaryService from './search/daily-summary-service.js';
 import WebServer from './web/server.js';
+import { ensureControlPlaneStore } from './control-plane/store.js';
 import ActionItemService from './search/action-item-service.js';
 import ExpenseReconciliationService from './expenses/expense-reconciliation-service.js';
 import { createProvider } from './llm/provider.js';
@@ -215,6 +216,9 @@ async function main() {
       webServer?._broadcast?.({ type: 'expense-reconciliation', data }, tenantId);
     },
   });
+  // Control plane: Turso when TURSO_* is set, else local SQLite.
+  await ensureControlPlaneStore(config.controlPlaneDbPath);
+
   webServer = new WebServer({
     db,
     searchEngine,
