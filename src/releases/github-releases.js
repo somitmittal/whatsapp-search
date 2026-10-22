@@ -15,14 +15,23 @@ function releasePageUrl(repo) {
   return `https://github.com/${repo}/releases/latest`;
 }
 
-function githubHeaders() {
+/** Reject empty / docs-placeholder values that would cause GitHub 401 Bad credentials. */
+export function usableGithubToken(raw = process.env.GITHUB_TOKEN) {
+  const t = String(raw || '').trim();
+  if (!t) return '';
+  if (/^<.*>$/.test(t)) return '';
+  if (/read-only\s*PAT/i.test(t)) return '';
+  if (/^(your[-_]?token|changeme|xxx+|placeholder)/i.test(t)) return '';
+  return t;
+}
+
+function githubHeaders(token) {
   const headers = {
     Accept: 'application/vnd.github+json',
     'User-Agent': 'searchable-desktop-download',
     'X-GitHub-Api-Version': '2022-11-28',
   };
-  const ghToken = (process.env.GITHUB_TOKEN || '').trim();
-  if (ghToken) headers.Authorization = `Bearer ${ghToken}`;
+  if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
 }
 
@@ -44,9 +53,9 @@ function mapRelease(release, repo) {
   };
 }
 
-async function fetchFromGitHub(repo) {
+async function fetchFromGitHub(repo, { token } = {}) {
   const ghRes = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-    headers: githubHeaders(),
+    headers: githubHeaders(token),
   });
   if (ghRes.status === 404) {
     const err = new Error('No published release yet. Push a version tag (e.g. v1.0.0) to trigger the release workflow.');
@@ -82,15 +91,28 @@ export async function getLatestGitHubRelease(repoOverride) {
     return { ...cache.data, cached: true };
   }
 
+  const token = usableGithubToken();
   try {
-    const data = await fetchFromGitHub(repo);
+    const data = await fetchFromGitHub(repo, { token });
     cache = { at: now, data };
     return data;
   } catch (err) {
-    if (cache.data && (err.status === 403 || err.status === 429)) {
+    let finalErr = err;
+    // Bad / revoked PAT — retry once unauthenticated (public repos only).
+    if (token && err.status === 401) {
+      try {
+        const data = await fetchFromGitHub(repo, { token: '' });
+        cache = { at: now, data };
+        console.warn('[releases] GITHUB_TOKEN rejected by GitHub (401); used unauthenticated request');
+        return data;
+      } catch (retryErr) {
+        finalErr = retryErr;
+      }
+    }
+    if (cache.data && (finalErr.status === 403 || finalErr.status === 429 || finalErr.status === 401)) {
       return { ...cache.data, cached: true, stale: true };
     }
-    throw err;
+    throw finalErr;
   }
 }
 
@@ -98,12 +120,16 @@ export async function getLatestGitHubRelease(repoOverride) {
 export function sendReleaseError(res, err, repo) {
   const releasePage = err.releasePage || (repo ? releasePageUrl(repo) : '');
   const status = err.status === 404 ? 404 : (err.status === 503 ? 503 : 502);
+  let hint;
+  if (err.status === 401) {
+    hint = 'GITHUB_TOKEN on Render is invalid — set a real read-only PAT, or remove the env var for public repos.';
+  } else if (err.status === 403 || err.status === 429) {
+    hint = 'GitHub rate-limited this host. Set a real GITHUB_TOKEN (read-only PAT) on Render, or use the GitHub Releases link below.';
+  }
   return res.status(status).json({
     error: err.message,
     releasePage,
-    hint: status === 403 || err.status === 429
-      ? 'Set GITHUB_TOKEN in Render environment for higher API limits, or use the GitHub Releases link below.'
-      : undefined,
+    hint,
   });
 }
 
