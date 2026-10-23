@@ -2,7 +2,7 @@
  * Electron main process — bundles WhatsApp Search as a native Mac app.
  * Spawns the Node server as a child using a real Node binary (system or bundled).
  */
-const { app, BrowserWindow, shell, dialog, session } = require('electron');
+const { app, BrowserWindow, shell, dialog, session, powerMonitor, powerSaveBlocker } = require('electron');
 const { spawn, execFileSync } = require('child_process');
 const crypto = require('crypto');
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('fs');
@@ -314,6 +314,12 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   app.isQuitting = true;
+  try {
+    if (_waBusyPollTimer) clearInterval(_waBusyPollTimer);
+    if (_sleepBlockerId !== null && powerSaveBlocker.isStarted(_sleepBlockerId)) {
+      powerSaveBlocker.stop(_sleepBlockerId);
+    }
+  } catch { /* ignore */ }
   stopServer();
 });
 
@@ -347,7 +353,6 @@ function setPhoneSyncPaused(paused, reason) {
 
 function hookSystemSleepPause() {
   try {
-    const { powerMonitor } = require('electron');
     powerMonitor.on('suspend', () => setPhoneSyncPaused(true, 'suspend'));
     powerMonitor.on('resume', () => setPhoneSyncPaused(false, 'resume'));
     powerMonitor.on('lock-screen', () => setPhoneSyncPaused(true, 'lock-screen'));
@@ -355,6 +360,59 @@ function hookSystemSleepPause() {
   } catch (err) {
     console.warn('[Desktop] powerMonitor unavailable:', err.message);
   }
+  // The permanent fix (zero impact on history pull): while the initial history sync
+  // is actively downloading, hold the machine awake so the pull cannot be aborted
+  // by auto-sleep. An aborted sync makes the phone retry — each retry re-alerts,
+  // which is the "sync stopped" notification storm. Released as soon as sync ends.
+  _ensureSyncAwakePolling();
+}
+
+/** ── Sync-awake guard ────────────────────────────────────────────── */
+let _sleepBlockerId = null;
+let _waBusyPollTimer = null;
+
+function _ensureSleepBlocked(active) {
+  try {
+    if (active && _sleepBlockerId === null) {
+      _sleepBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+      console.log('[Desktop] system auto-sleep blocked while WhatsApp history sync is running');
+    } else if (!active && _sleepBlockerId !== null) {
+      if (powerSaveBlocker.isStarted(_sleepBlockerId)) powerSaveBlocker.stop(_sleepBlockerId);
+      _sleepBlockerId = null;
+      console.log('[Desktop] system auto-sleep allowed again (sync idle)');
+    }
+  } catch (err) {
+    console.warn('[Desktop] powerSaveBlocker unavailable:', err.message);
+  }
+}
+
+function _pollWaBusyOnce() {
+  if (!serverProcess || !Number.isInteger(serverPort)) return;
+  const req = http.request({
+    host: '127.0.0.1',
+    port: serverPort,
+    path: '/api/wa/local-status',
+    method: 'GET',
+    headers: { 'x-local-sync-token': serverSessionSecret || '' },
+    timeout: 4000,
+  }, (res) => {
+    let body = '';
+    res.on('data', (chunk) => { body += chunk; });
+    res.on('end', () => {
+      try {
+        const d = JSON.parse(body || '{}');
+        _ensureSleepBlocked(Boolean(d.syncing));
+      } catch { /* ignore malformed */ }
+    });
+  });
+  req.on('error', () => { /* server restarting; next tick retries */ });
+  req.end();
+}
+
+function _ensureSyncAwakePolling() {
+  _pollWaBusyOnce();
+  if (_waBusyPollTimer) return;
+  _waBusyPollTimer = setInterval(_pollWaBusyOnce, 30 * 1000);
 }
 
 app.on('window-all-closed', () => {

@@ -1202,7 +1202,8 @@ export default class WebServer {
         || path.startsWith('/api/releases/download/')
         || path.startsWith('/api/control/')
         || path === '/api/analytics/downloads'
-        || path === '/api/wa/sync-quota' // desktop shell hook, loopback + secret-token checked in the handler
+        || path === '/api/wa/sync-quota'  // desktop shell hook, loopback + secret-token checked in the handler
+        || path === '/api/wa/local-status' // desktop shell sleep-guard poll, same loopback auth
       ) {
         return runWithTenant(LEGACY_TENANT_ID, () => next());
       }
@@ -2265,6 +2266,25 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       const paused = Boolean(req.body?.paused);
       st.waClient.setPhoneHistoryPaused(paused);
       return res.json({ ok: true, paused });
+    });
+
+    /** Desktop shell asks: is history ingestion active? (keeps the machine awake so the
+     *  initial pull cannot be aborted by auto-sleep — the root cause of the phone's
+     *  repeated "syncing stopped" alerts). Loopback + secret token, same as sync-quota. */
+    this._app.get('/api/wa/local-status', (req, res) => {
+      const secret = (config.serverSecret || '').trim();
+      const token = String(req.headers['x-local-sync-token'] || '').trim();
+      const remote = String(req.socket?.remoteAddress || '');
+      const isLoopback = remote.includes('127.0.0.1') || remote === '::1';
+      if (!isLoopback || !secret || token !== secret) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      return res.json({
+        waState: st.waState || null,
+        syncing: Boolean(this.isTenantWaHistoryBusy(tid)),
+      });
     });
 
     this._app.post('/api/wa/send', async (req, res) => {
