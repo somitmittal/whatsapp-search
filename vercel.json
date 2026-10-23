@@ -5,9 +5,15 @@
   "installCommand": "npm ci",
   "buildCommand": "echo 'control-plane: no frontend build'",
   "outputDirectory": "public",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/api" }
-  ],
+  "rewrites": {
+    "beforeFiles": [
+      { "source": "/", "destination": "/api" },
+      { "source": "/index.html", "destination": "/api" }
+    ],
+    "afterFiles": [
+      { "source": "/(.*)", "destination": "/api" }
+    ]
+  },
   "functions": {
     "api/index.js": {
       "maxDuration": 10,
