@@ -31,3 +31,7 @@ Thumbs.db
 
 # Parallel git worktrees (local agent checkouts)
 .worktrees/
+.vercel
+
+# Vercel env (local secrets)
+env.vercel
