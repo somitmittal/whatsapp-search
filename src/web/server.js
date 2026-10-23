@@ -1190,6 +1190,7 @@ export default class WebServer {
         || path.startsWith('/api/releases/download/')
         || path.startsWith('/api/control/')
         || path === '/api/analytics/downloads'
+        || path === '/api/wa/sync-quota' // desktop shell hook, loopback + secret-token checked in the handler
       ) {
         return runWithTenant(LEGACY_TENANT_ID, () => next());
       }
@@ -2205,6 +2206,11 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       const chatJid = String(req.body?.chatJid || '').trim();
       if (!chatJid) return res.status(400).json({ error: 'chatJid required' });
       const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || 50));
+      // Anti notification-spam: one sync in flight, cooldown per chat, paused during sleep/lock.
+      const guard = wa.canFetchPhoneHistory?.(chatJid);
+      if (guard && !guard.ok) {
+        return res.status(guard.http).json({ error: guard.message, code: guard.code });
+      }
       try {
         const anchorRow = this.db.getOldestMessageAnchor(chatJid);
         if (!anchorRow?.messageId) {
@@ -2218,8 +2224,35 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid, ...anchorRow }, count);
         res.json({ ok: true, requestId: requestId ?? null });
       } catch (err) {
+        if (err.status && err.code) {
+          return res.status(err.status).json({ error: err.message, code: err.code });
+        }
         res.status(500).json({ error: err.message || String(err) });
       }
+    });
+
+    /**
+     * Desktop shell hook (all platforms): pause/resume phone-side history syncs around
+     * system sleep/lock. Aborting a linked-device sync mid-flight is what makes the
+     * phone show repeated “syncing stopped” notifications. Loopback-only; bound to
+     * localhost by the desktop app's server (127.0.0.1) and authorized with the
+     * local SESSION_SECRET (the desktop process generated it).
+     */
+    this._app.post('/api/wa/sync-quota', async (req, res) => {
+      const st = this._getTenantState(getCurrentTenantId());
+      const secret = (config.serverSecret || '').trim();
+      const token = String(req.headers['x-local-sync-token'] || '').trim();
+      const remote = String(req.socket?.remoteAddress || '');
+      const isLoopback = remote.includes('127.0.0.1') || remote === '::1';
+      if (!isLoopback || !secret || token !== secret) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      if (!st?.waClient?.setPhoneHistoryPaused) {
+        return res.status(409).json({ error: 'WhatsApp client not available' });
+      }
+      const paused = Boolean(req.body?.paused);
+      st.waClient.setPhoneHistoryPaused(paused);
+      return res.json({ ok: true, paused });
     });
 
     this._app.post('/api/wa/send', async (req, res) => {

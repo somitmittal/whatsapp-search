@@ -24,6 +24,8 @@ const HEALTH_PATH = '/api/health';
 let serverProcess = null;
 let mainWindow = null;
 let serverPort = DEFAULT_PORT;
+/** Loopback hook auth token (mirrors the server's SESSION_SECRET). */
+let serverSessionSecret = '';
 
 function bundledNodeName() {
   return process.platform === 'win32' ? 'node.exe' : 'node';
@@ -105,6 +107,9 @@ function buildServerEnv() {
     || cpDefaults.controlPlaneUrl
     || ''
   ).trim().replace(/\/$/, '');
+  // Session secret also authorizes the loopback sync-quota hook (see setPhoneSyncPaused).
+  const sessionSecret = process.env.SESSION_SECRET || getOrCreateSessionSecret(userData);
+  serverSessionSecret = sessionSecret;
 
   return {
     ...process.env,
@@ -114,7 +119,7 @@ function buildServerEnv() {
     WEB_PORT: String(serverPort),
     HOST: '127.0.0.1',
     PORT: String(serverPort),
-    SESSION_SECRET: process.env.SESSION_SECRET || getOrCreateSessionSecret(userData),
+    SESSION_SECRET: sessionSecret,
     DEFAULT_TENANT_ID: 'legacy-default',
     // Desktop: local Ollama by default, import-first flow
     LLM_PROVIDER: process.env.LLM_PROVIDER || 'ollama',
@@ -297,6 +302,7 @@ app.whenReady().then(async () => {
     }
     await startServer();
     createWindow();
+    hookSystemSleepPause();
   } catch (err) {
     console.error('[Desktop] Failed to start:', err.message);
     try {
@@ -310,6 +316,46 @@ app.on('before-quit', () => {
   app.isQuitting = true;
   stopServer();
 });
+
+/**
+ * Pausing phone-side history syncs around sleep/lock fixes repeated phone
+ * notifications ("syncing with WhatsApp Search" / "syncing stopped") on every
+ * platform the app ships to: an aborted linked-device sync makes WhatsApp
+ * retry and re-alert. Works via Electron powerMonitor (mac/win/linux).
+ */
+let _lastSyncPauseState = null;
+function setPhoneSyncPaused(paused, reason) {
+  if (!serverProcess || !Number.isInteger(serverPort)) return;
+  if (_lastSyncPauseState === paused) return;
+  _lastSyncPauseState = paused;
+  try {
+    const req = require('http').request({
+      host: '127.0.0.1',
+      port: serverPort,
+      path: '/api/wa/sync-quota',
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-local-sync-token': serverSessionSecret || '',
+      },
+      timeout: 4000,
+    });
+    req.on('error', () => {/* server may be restarting; nothing to do */});
+    req.end(JSON.stringify({ paused: Boolean(paused), reason: reason || '' }), 'utf8');
+  } catch { /* never crash the desktop shell for a sync hint */ }
+}
+
+function hookSystemSleepPause() {
+  try {
+    const { powerMonitor } = require('electron');
+    powerMonitor.on('suspend', () => setPhoneSyncPaused(true, 'suspend'));
+    powerMonitor.on('resume', () => setPhoneSyncPaused(false, 'resume'));
+    powerMonitor.on('lock-screen', () => setPhoneSyncPaused(true, 'lock-screen'));
+    powerMonitor.on('unlock-screen', () => setPhoneSyncPaused(false, 'unlock-screen'));
+  } catch (err) {
+    console.warn('[Desktop] powerMonitor unavailable:', err.message);
+  }
+}
 
 app.on('window-all-closed', () => {
   stopServer();

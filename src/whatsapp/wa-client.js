@@ -74,6 +74,10 @@ const QRCode   = require('qrcode');
 const P        = require('pino');
 
 const BATCH_MS = 2000;
+
+/** Guard window for on-demand phone history pulls (anti "syncing stopped" notif spam). */
+const PHONE_HISTORY_INFLIGHT_MS = 90 * 1000;
+const PHONE_HISTORY_COOLDOWN_MS = 3 * 60 * 1000;
 /** Pause between WhatsApp network calls while draining media and profile pictures. */
 const WA_DRAIN_GAP_MS = 120;
 
@@ -2325,6 +2329,19 @@ export default class WaClient {
     let ts = Number(timestamp);
     if (!Number.isFinite(ts) || ts <= 0) throw new Error('Invalid anchor timestamp');
     if (ts < 1e12) ts *= 1000;
+    // One phone-side sync at a time, a per-chat cooldown, and full stop while the
+    // machine sleeps/locks. Repeated/aborted syncs are what generate the phone's
+    // “syncing stopped” notification spam (see /api/wa/sync-quota).
+    const guard = this.canFetchPhoneHistory(chatJid);
+    if (!guard.ok) {
+      const err = new Error(guard.message);
+      err.code = guard.code;
+      err.status = guard.http;
+      throw err;
+    }
+    const state = this._ensurePhoneHistoryState();
+    state.inflight = { chatJid, until: Date.now() + PHONE_HISTORY_INFLIGHT_MS };
+    state.lastSyncAt.set(chatJid, Date.now());
     const key = {
       remoteJid: chatJid,
       id: String(messageId),
@@ -2332,5 +2349,42 @@ export default class WaClient {
     };
     const n = Math.min(100, Math.max(1, Math.floor(Number(count) || 50)));
     return this._sock.fetchMessageHistory(n, key, ts);
+  }
+
+  _ensurePhoneHistoryState() {
+    if (!this._phoneHistory) {
+      this._phoneHistory = { paused: false, inflight: null, lastSyncAt: new Map() };
+    }
+    return this._phoneHistory;
+  }
+
+  /** Guard + bookkeeping for phone-side history pulls (shared across builds). */
+  canFetchPhoneHistory(chatJid) {
+    const state = this._ensurePhoneHistoryState();
+    if (this._state && this._state !== 'READY') return { ok: false, code: 'WA_NOT_READY', http: 409, message: `WhatsApp connection is ${this._state} — try again once it is READY.` };
+    const now = Date.now();
+    if (state.paused) {
+      return { ok: false, code: 'SYNC_PAUSED', http: 423, message: 'Sync paused while the device sleeps or is locked — it resumes automatically when you unlock.' };
+    }
+    if (state.inflight && now < state.inflight.until) {
+      return { ok: false, code: 'SYNC_IN_FLIGHT', http: 429, message: 'A phone history sync is already running. Wait a few seconds for it to finish before asking again.' };
+    }
+    if (state.inflight && now >= state.inflight.until) state.inflight = null;
+    const last = state.lastSyncAt.get(chatJid) || 0;
+    const waitMs = PHONE_HISTORY_COOLDOWN_MS - (now - last);
+    if (waitMs > 0) {
+      const wait = waitMs > 60_000 ? `~${Math.ceil(waitMs / 60_000)} min` : `~${Math.ceil(waitMs / 1000)}s`;
+      return { ok: false, code: 'CHAT_COOLDOWN', http: 429, message: `Older history for this chat was just requested. Retrying too fast repeats the phone notification — try again in ${wait}.` };
+    }
+    return { ok: true };
+  }
+
+  /** Called by the desktop shell (Electron powerMonitor) around system sleep/lock. */
+  setPhoneHistoryPaused(paused) {
+    const state = this._ensurePhoneHistoryState();
+    const p = Boolean(paused);
+    if (state.paused === p) return;
+    state.paused = p;
+    console.log(`[WA] phone history sync ${p ? 'PAUSED (device sleeping/locked — syncs aborted here would spam phone notifications)' : 'RESUMED'}`);
   }
 }
