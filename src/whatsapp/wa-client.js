@@ -31,7 +31,7 @@ import {
 import { buildContactPayloadFromInner } from './contact-card.js';
 import { normalizeGroupCreateInput } from './group-create.js';
 import { groupSubjectUpdates } from './group-subjects.js';
-import { RECENT_DAYS_CATCHUP_DAYS, shouldSyncHistoryMessage } from './history-sync-policy.js';
+import { RECENT_DAYS_CATCHUP_DAYS, fullHistoryBackoffSec, shouldSyncHistoryMessage } from './history-sync-policy.js';
 import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { isImportedChatJid, isWhatsAppLowPriorityFeed, shouldPreserveRawChatJid, sidebarTabForJid } from './jid-filters.js';
 import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
@@ -247,6 +247,8 @@ export default class WaClient {
     this._connectSeq = Promise.resolve();
     /** @type {ReturnType<typeof setTimeout> | null} */
     this._reconnectTimer = null;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    this._historyRetryTimer = null;
     /** Increments on each non-logout close; reset when `connection === 'open'`. */
     this._reconnectAttempt = 0;
     /** Throttle `SYNCING` status lines so history batches don’t spam WebSocket/UI. */
@@ -269,6 +271,9 @@ export default class WaClient {
 
   _clearInitialHistorySyncFlag() {
     this._acceptPhoneHistorySync = true;
+    // Linking / QR-scan / resync are user actions — never hold them for backoff.
+    // requestHistoryResync({ auto: true }) overrides right after with auto pacing.
+    this._forceFullHistoryOnce = true;
     const cfg = loadCfg(this._configFile);
     saveCfg(this._configFile, {
       ...cfg,
@@ -282,6 +287,63 @@ export default class WaClient {
     this._latestQr = null;
     this._qrIssuedAt = 0;
     this._qrTtlMs = 0;
+  }
+
+  /** ── Full-history retry backoff (never refuses, only delays) ──────────────
+   *  Rows are timestamps (ms) of past full-history requests, persisted in
+   *  wa-config.json so restarts do not reset the pacing. */
+  _fullHistoryRequestsInWindow(cfg = {}) {
+    const now = Date.now();
+    const WINDOW_MS = 24 * 60 * 60 * 1000;
+    const list = Array.isArray(cfg.fullHistoryRequests) ? cfg.fullHistoryRequests : [];
+    return list
+      .map(Number)
+      .filter((t) => Number.isFinite(t) && t > 0 && now - t >= 0 && now - t < WINDOW_MS)
+      .sort((a, b) => a - b);
+  }
+
+  /** How much longer must zero-touch retries wait, given the persisted request log. */
+  _fullHistoryRemainingWaitMs(cfg = {}) {
+    const requests = this._fullHistoryRequestsInWindow(cfg);
+    if (!requests.length) return 0;
+    const last = requests[requests.length - 1];
+    const gapSec = fullHistoryBackoffSec(requests.length);
+    if (!gapSec) return 0;
+    const elapsed = Date.now() - last;
+    return Math.max(0, gapSec * 1000 - elapsed);
+  }
+
+  /** Persist a new request timestamp; returns the updated cfg for follow-up saves. */
+  _recordFullHistoryRequest(cfg = {}) {
+    const next = { ...cfg, fullHistoryRequests: [...this._fullHistoryRequestsInWindow(cfg), Date.now()] };
+    try {
+      saveCfg(this._configFile, next);
+    } catch (err) {
+      console.warn('[WA] Could not persist history request log:', err?.message || err);
+    }
+    return next;
+  }
+
+  /** Zero-touch retry hook: ask again automatically when the backoff gap expires. */
+  _scheduleHistoryRetry(remainingMs) {
+    if (this._destroyed) return;
+    clearTimeout(this._historyRetryTimer);
+    const wait = Math.max(Math.ceil(Number(remainingMs) || 0), 1000);
+    console.log(`[WA] Auto history retry scheduled in ${Math.round(wait / 1000)}s (backoff; full history is not skipped)`);
+    this._historyRetryTimer = setTimeout(() => {
+      this._historyRetryTimer = null;
+      if (this._destroyed) return;
+      // Skip an already-fulfilled retry: if the archive landed while the timer waited,
+      // a soft-reconnect now would just raise one more phone alert for nothing.
+      try {
+        const cfg = loadCfg(this._configFile);
+        if (cfg.initialHistorySyncDone && !cfg.acceptHistoryOnce) {
+          console.log('[WA] Auto history retry skipped — full history already synced');
+          return;
+        }
+      } catch { /* proceed */ }
+      void this.requestHistoryResync({ auto: true });
+    }, wait);
   }
   /** True while Baileys may still send `messaging-history.set` batches (UI may already be READY). */
   get isInitialHistorySync() {
@@ -810,7 +872,9 @@ export default class WaClient {
     clearTimeout(this._flushTimer);
     clearTimeout(this._syncDoneTimer);
     clearTimeout(this._reconnectTimer);
+    clearTimeout(this._historyRetryTimer);
     this._reconnectTimer = null;
+    this._historyRetryTimer = null;
     this._mediaQueue.length = 0;
     this._queuedMediaIds.clear();
     try { this._sock?.end?.(new Error('destroy')); } catch {}
@@ -879,15 +943,34 @@ export default class WaClient {
     // false — treating that as “already synced” skipped the entire archive (empty chats).
     let syncFullHistoryOnce = false;
     if (priorCfg.acceptHistoryOnce) {
+      syncFullHistoryOnce = true;
+    } else if (!priorCfg.initialHistorySyncDone) {
+      syncFullHistoryOnce = false;
+    }
+    // Paced acceptance: user-initiated resyncs always run immediately; automated
+    // zero-touch retries wait out the backoff gap first, then retry automatically.
+    // Nothing is ever refused — the archive is always completed, just not hammered.
+    const forcedByUser = this._forceFullHistoryOnce === true;
+    const waitingMs = forcedByUser ? 0 : this._fullHistoryRemainingWaitMs(priorCfg);
+    if (waitingMs > 0) {
+      this._acceptPhoneHistorySync = false;
+      syncFullHistoryOnce = false;
+      console.warn(`[WA] Holding phone history request ${Math.round(waitingMs / 1000)}s (pacing recent sync attempts — no repeat alert storm)`);
+      this._scheduleHistoryRetry(waitingMs);
+    } else if (priorCfg.acceptHistoryOnce) {
+      this._forceFullHistoryOnce = false;
+      const recorded = this._recordFullHistoryRequest(priorCfg);
       this._acceptPhoneHistorySync = true;
       syncFullHistoryOnce = true;
-      saveCfg(this._configFile, { ...priorCfg, initialHistorySyncDone: false });
+      saveCfg(this._configFile, { ...recorded, initialHistorySyncDone: false });
       console.log('[WA] Accepting phone history sync (one-shot FULL resync)');
+    } else if (!priorCfg.initialHistorySyncDone) {
+      this._forceFullHistoryOnce = false;
+      this._recordFullHistoryRequest(priorCfg);
+      this._acceptPhoneHistorySync = true;
+      console.log('[WA] Accepting phone history sync (initial / recovery)');
     } else {
-      this._acceptPhoneHistorySync = !priorCfg.initialHistorySyncDone;
-      if (this._acceptPhoneHistorySync) {
-        console.log('[WA] Accepting phone history sync (initial / recovery)');
-      }
+      this._acceptPhoneHistorySync = false;
     }
     let version = [2, 3000, 1015901307];
     try {
@@ -1829,7 +1912,7 @@ export default class WaClient {
         `[WA] No history batches yet (attempt ${this._historyResyncAttempts}/2) — soft-reconnect to request sync again`,
       );
       this._setState('SYNCING', 'Retrying chat history sync…');
-      setTimeout(() => { void this.requestHistoryResync(); }, 1500);
+      setTimeout(() => { void this.requestHistoryResync({ auto: true }); }, 1500);
       return;
     }
 
@@ -1858,15 +1941,21 @@ export default class WaClient {
   /**
    * Re-open the socket with the same credentials and accept one more phone history sync.
    * Does not wipe auth (unlike logout / badSession).
+   * Manual calls (Settings button, server API) always run immediately; internal automatic
+   * retries ({ auto: true }) respect the phone-notification pacing backoff.
    */
-  async requestHistoryResync() {
+  async requestHistoryResync({ auto = false } = {}) {
     if (this._destroyed) return;
     this._clearInitialHistorySyncFlag();
+    this._forceFullHistoryOnce = !auto;
     this._historyDone = false;
     this._acceptPhoneHistorySync = true;
     this._historyEventsSeen = 0;
     this._totalMsgs = 0;
     clearTimeout(this._syncDoneTimer);
+    // An explicit resync supersedes any pending automatic retry.
+    clearTimeout(this._historyRetryTimer);
+    this._historyRetryTimer = null;
     clearTimeout(this._reconnectTimer);
     this._reconnectTimer = null;
     this._suppressReconnectOnce = true;
