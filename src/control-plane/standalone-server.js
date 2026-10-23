@@ -99,6 +99,9 @@ export async function createControlPlaneApp() {
 
   app.get('/', (_req, res) => res.redirect(302, '/download'));
 
+  /** Convenience alias — the admin console lives at /analytics (requireAdmin). */
+  app.get(['/admin', '/admin/'], (_req, res) => res.redirect(302, '/analytics'));
+
   app.get(['/gpt', '/gpt.html', '/index.html'], (_req, res) => {
     res.status(404).type('text/plain').send('This host is the Searchable control plane only. Use the desktop app.');
   });
