@@ -16,9 +16,12 @@ Chats stay on-device. The **control plane** stores only accounts, licenses, down
 2. Verified users get a **14-day Pro trial**.
 3. Free forever: import + browse. Pro: AI search / WhatsApp GPT (and Stripe subscription after trial).
 
-### Env (Render)
+### Env (hosted control plane)
 
-See `env.render.example` — `RESEND_API_KEY`, `STRIPE_*`, `POSTHOG_*`, `CONTROL_PLANE_PUBLIC_URL`, `LICENSE_GATE`.
+See `env.vercel.example` (preferred) or `env.render.example` — `RESEND_API_KEY`, `TURSO_*`, `STRIPE_*`, `CONTROL_PLANE_PUBLIC_URL`, `LICENSE_GATE`.
+
+**Recommended stack:** Vercel (serverless) + Turso (DB) + Resend (magic-link email).  
+You do **not** need the Resend CLI for the app — only `RESEND_API_KEY` (and a verified domain in the Resend dashboard).
 
 Optional remote-control knobs on the **hosted** control plane:
 
@@ -27,9 +30,13 @@ Optional remote-control knobs on the **hosted** control plane:
 | `APP_MIN_VERSION` | e.g. `1.0.11` — installs below this get `update_required` and cannot use Pro |
 | `APP_UPDATE_DOWNLOAD_URL` | Override download page (default: `{CONTROL_PLANE_PUBLIC_URL}/download`) |
 
-### Render = control plane only
+### Host = control plane only
 
-Set `CONTROL_PLANE_ONLY=1` on the Render web service. That boots a minimal server (licenses, Stripe webhook, `/download`, `/analytics`) and does **not** serve `/gpt` or WhatsApp APIs. Desktop apps keep chats local and call this host only for entitlement.
+Set `CONTROL_PLANE_ONLY=1`. That boots a minimal server (licenses, Stripe webhook, `/download`, `/analytics`) and does **not** serve `/gpt` or WhatsApp APIs. Desktop apps keep chats local and call this host only for entitlement.
+
+**Vercel:** `npx vercel` from the repo root (uses `api/index.js` + `vercel.json`). Set env vars from `env.vercel.example`, then `npx vercel --prod`. Update GitHub Actions secret `CONTROL_PLANE_URL` to the Vercel URL and cut a new desktop release so installs point at it.
+
+**Render:** still supported — same env vars (`CONTROL_PLANE_ONLY=1` + Turso + Resend).
 
 Protect `/analytics` with HTTP Basic:
 

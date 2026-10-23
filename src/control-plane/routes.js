@@ -31,18 +31,14 @@ import {
 } from './stripe-billing.js';
 import { adminAuthorized, requireAdmin } from './admin-auth.js';
 import { getControlPlaneStore } from './store.js';
+import { isPublicInternetDeploy, publicDeployBaseUrl } from '../deploy-env.js';
 
 export { isLicenseGateEnabled } from './license-gate.js';
 export { adminAuthorized, requireAdmin } from './admin-auth.js';
 
-function isPublicInternetDeploy() {
-  return process.env.RENDER === 'true'
-    || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
-}
-
 function publicBaseUrl(req) {
-  const envUrl = (process.env.CONTROL_PLANE_PUBLIC_URL || process.env.PUBLIC_WEB_URL || process.env.RENDER_EXTERNAL_URL || '').trim();
-  if (envUrl) return envUrl.replace(/\/$/, '');
+  const envUrl = publicDeployBaseUrl();
+  if (envUrl) return envUrl;
   const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
   const host = req.get('x-forwarded-host') || req.get('host');
   return `${proto}://${host}`;

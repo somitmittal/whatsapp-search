@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { isPublicInternetDeploy } from './deploy-env.js';
 import { defaultBindHost } from './web/http-security.js';
 import { resolveWritableDataDir } from './storage/resolve-data-dir.js';
 
@@ -40,9 +41,7 @@ function readPackageVersion() {
  */
 const serverSecret = (process.env.SESSION_SECRET || process.env.JWT_SECRET || '').trim();
 
-const onRender =
-  process.env.RENDER === 'true'
-  || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
+const onRender = isPublicInternetDeploy();
 
 const { dataDir, requestedDir: requestedDataDir, fellBack: dataDirFellBack } = resolveWritableDataDir(
   ROOT,

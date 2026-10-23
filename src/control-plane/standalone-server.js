@@ -1,12 +1,13 @@
 /**
- * Minimal HTTP server: control plane + download/analytics only.
- * No WhatsApp, GPT UI, or chat DB — for Render hosting.
+ * Minimal HTTP app: control plane + download/analytics only.
+ * No WhatsApp, GPT UI, or chat DB — for Render / Vercel hosting.
  */
 import cookieParser from 'cookie-parser';
 import express from 'express';
 import { createServer } from 'http';
 import { resolve } from 'path';
 import config from '../config.js';
+import { publicDeployBaseUrl } from '../deploy-env.js';
 import {
   applySecurityHeaders,
   applyTrustedCors,
@@ -34,12 +35,14 @@ function originPolicy(req) {
       ...extraAllowedOriginsFromEnv(),
       process.env.CONTROL_PLANE_PUBLIC_URL || '',
       process.env.PUBLIC_WEB_URL || '',
+      publicDeployBaseUrl() || '',
     ].filter(Boolean),
     path: req.path || '',
   };
 }
 
-export async function startControlPlaneOnlyServer() {
+/** Build the Express app (no listen) — used by Vercel and by startControlPlaneOnlyServer. */
+export async function createControlPlaneApp() {
   const store = await ensureControlPlaneStore(config.controlPlaneDbPath);
 
   const app = express();
@@ -71,7 +74,7 @@ export async function startControlPlaneOnlyServer() {
       controlPlaneOnly: true,
       desktop: false,
       appVersion: config.appVersion || '',
-      controlPlaneUrl: config.controlPlaneUrl || process.env.RENDER_EXTERNAL_URL || '',
+      controlPlaneUrl: config.controlPlaneUrl || publicDeployBaseUrl() || '',
       licenseGate: isLicenseGateEnabled(),
       trialDays: trialDays(),
       stripeEnabled: Boolean(
@@ -94,10 +97,8 @@ export async function startControlPlaneOnlyServer() {
     }
   });
 
-  // Landing: download page (not GPT).
   app.get('/', (_req, res) => res.redirect(302, '/download'));
 
-  // Explicit deny for product UI paths that exist in public/ on full deploys.
   app.get(['/gpt', '/gpt.html', '/index.html'], (_req, res) => {
     res.status(404).type('text/plain').send('This host is the Searchable control plane only. Use the desktop app.');
   });
@@ -118,12 +119,17 @@ export async function startControlPlaneOnlyServer() {
     });
   });
 
+  return app;
+}
+
+export async function startControlPlaneOnlyServer() {
+  const app = await createControlPlaneApp();
   const server = createServer(app);
   const host = config.webHost || '0.0.0.0';
   const port = config.webPort;
   await new Promise((resolve) => {
     server.listen(port, host, () => {
-      const publicUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${port}`;
+      const publicUrl = publicDeployBaseUrl() || `http://localhost:${port}`;
       console.log('[control-plane] CONTROL_PLANE_ONLY — no GPT/WhatsApp UI');
       console.log(`[control-plane] Listening on ${host}:${port}`);
       console.log(`[control-plane] Public: ${publicUrl}`);

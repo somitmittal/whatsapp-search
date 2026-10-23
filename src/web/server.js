@@ -8,6 +8,7 @@ import { basename, isAbsolute, join, relative, resolve } from 'path';
 import { isJwtAuthEnabled } from '../auth/jwt-util.js';
 import { getSessionIdFromRequest, setSessionCookie, UserSessionService } from '../auth/user-session.js';
 import config from '../config.js';
+import { isPublicInternetDeploy } from '../deploy-env.js';
 import { IMPORT_MAX_UPLOAD_BYTES, MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
 import { decodeExportBuffer, extractChatExportFromZip, extractMediaFromZip, importExportedChat, normalizeImportChatName, slugForImportChatJid } from '../import/chat-import.js';
@@ -250,7 +251,7 @@ export default class WebServer {
   }
 
   _isPublicInternetDeploy() {
-    return process.env.RENDER === 'true' || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
+    return isPublicInternetDeploy();
   }
 
   /** Set HttpOnly cookie `Secure` flag: true in production/HTTPS. */

@@ -81,10 +81,20 @@ export function extraAllowedOriginsFromEnv() {
 }
 
 export function renderPublicOrigin() {
-  const render = String(process.env.RENDER_EXTERNAL_URL || '').trim();
-  if (!render) return null;
+  // Name is historical (Render); also honors Vercel / CONTROL_PLANE_PUBLIC_URL.
+  const raw = (
+    process.env.CONTROL_PLANE_PUBLIC_URL
+    || process.env.RENDER_EXTERNAL_URL
+    || (process.env.VERCEL_URL
+      ? (String(process.env.VERCEL_URL).startsWith('http')
+        ? process.env.VERCEL_URL
+        : `https://${process.env.VERCEL_URL}`)
+      : '')
+    || ''
+  ).trim();
+  if (!raw) return null;
   try {
-    return new URL(render).origin;
+    return new URL(raw).origin;
   } catch {
     return null;
   }

@@ -21,14 +21,15 @@ import {
 } from './llm/defaults.js';
 import { createIndexingSummaryProvider, resolveOllamaIndexingModel } from './search/indexing-profile.js';
 
+import { isPublicInternetDeploy } from './deploy-env.js';
+
 function assertJwtOnPublicHost() {
-  const onPublic =
-    process.env.RENDER === 'true' || Boolean(String(process.env.RENDER_EXTERNAL_URL || '').trim());
+  const onPublic = isPublicInternetDeploy();
   const tok = (config.serverSecret || '').trim();
   if (!onPublic || tok) return;
   console.error(
-    '[FATAL] This instance is exposed on the public internet (Render) but no server secret is set.\n' +
-      'Add SESSION_SECRET (or JWT_SECRET) as a long random string in Render → Environment, then redeploy.\n' +
+    '[FATAL] This instance is exposed on the public internet (Render/Vercel) but no server secret is set.\n' +
+      'Add SESSION_SECRET (or JWT_SECRET) as a long random string in the host → Environment, then redeploy.\n' +
       'This is a server key only (not a token for users) — it enables per-browser sessions and data isolation.',
   );
   process.exit(1);
