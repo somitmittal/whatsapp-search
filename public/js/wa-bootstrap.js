@@ -9,6 +9,7 @@ import { applyLiveSyncVisibility, enableLiveSyncUi, hasIndexedArchive, isWaUiRea
 // One compact badge for the whole background pipeline, in the order the server runs it.
 const SYNC_CHIP_LABELS = {
   syncing: 'Syncing chats…',
+  synced: 'Sync complete ✓',
   indexing: 'Indexing chats…',
   media: 'Indexing media…',
 };

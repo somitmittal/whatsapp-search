@@ -209,7 +209,7 @@ export function updateSidebarForWaState() {
     if (tabsEl) tabsEl.style.display = '';
 
     if (syncBarEl) {
-      syncBarEl.style.display = store._waState === 'SYNCING' ? '' : 'none';
+      syncBarEl.style.display = (store._waState === 'SYNCING' || store._historySyncActive) ? '' : 'none';
     }
   }
 }
@@ -229,9 +229,11 @@ export function adjustSyncingMainPanel() {
   if ($('#wqr-loading')) $('#wqr-loading').style.display = 'none';
 }
 
-export function updateWaUI({ state, message }) {
+export function updateWaUI({ state, message, sync }) {
   store._waStateResolved = true;
   store._waState = state;
+  // History can keep streaming after the UI is promoted to READY — server tells us.
+  store._historySyncActive = Boolean(sync?.syncing) || (state === 'SYNCING');
   const msg = message || '';
 
   if (state === 'READY' || state === 'SYNCING') {
@@ -411,8 +413,35 @@ export function showQr(dataUrl) {
 }
 
 export function updateSyncProgress(data) {
-  setSyncChipPhase('syncing');
   const { completed, total, messages, byChat, progress } = data || {};
+  const done = Boolean(data?.done);
+  // True while history is downloading, even after the UI state flips to READY.
+  store._historySyncActive = !done;
+  if (done) {
+    // "Chats are syncing" must end with a clear completion moment, not just fade away.
+    setSyncChipPhase('synced');
+    const bar = $('#sync-bar');
+    if (bar) { bar.style.width = '100%'; bar.style.animation = ''; }
+    const pctEl = $('#sync-pct');
+    if (pctEl) pctEl.textContent = '100%';
+    const detail = $('#sync-detail');
+    if (detail) detail.textContent = 'Sync complete';
+    const sidebarFill = $('#sidebar-sync-fill');
+    if (sidebarFill) { sidebarFill.style.width = '100%'; sidebarFill.style.animation = ''; }
+    const sidebarText = $('#sidebar-sync-text');
+    if (sidebarText) sidebarText.textContent = 'Sync complete ✓';
+    clearTimeout(store._syncDoneTimer);
+    store._syncDoneTimer = setTimeout(() => {
+      store._historySyncActive = false;
+      store.waSyncByChat = {};
+      updateSidebarForWaState();
+      // Don't clear a later pipeline phase (e.g. "Indexing chats…") that already took over.
+      if (store._syncChipPhase === 'synced') setSyncChipPhase(null);
+      if ($('#sync-progress-panel')) $('#sync-progress-panel').style.display = 'none';
+    }, 5000);
+    return;
+  }
+  setSyncChipPhase('syncing');
   if (byChat && typeof byChat === 'object') {
     store.waSyncByChat = { ...byChat };
     applyWaSyncBars();
@@ -431,6 +460,10 @@ export function updateSyncProgress(data) {
   // Sidebar sync bar
   const sidebarFill = $('#sidebar-sync-fill');
   const sidebarText = $('#sidebar-sync-text');
+  // Keep the bar visible even after the UI state became READY mid-sync
+  // (updateSidebarForWaState hides it for READY; undo that while sync is active).
+  const sidebarBar = $('#sidebar-sync-bar');
+  if (sidebarBar) sidebarBar.style.display = '';
   if (sidebarFill) {
     sidebarFill.style.width = hasTotal ? pct + '%' : '40%';
     sidebarFill.style.animation = hasTotal ? '' : 'sync-pulse 1.5s ease-in-out infinite';

@@ -756,7 +756,19 @@ export default class WebServer {
           runWithTenant(tid, () => this._expenseReconciliationService?.recoverPending?.(tid));
         }
         const stats = this._getCachedTotalStats(tid);
-        this._broadcast({ type: 'wa-status', data: { state, message, stats } }, tid);
+        this._broadcast({
+          type: 'wa-status',
+          data: {
+            state, message, stats,
+            // Keep the client's "chats are syncing" affordances honest: the UI is
+            // promoted to READY after the first history batch, while the initial
+            // history may still stream for minutes. UI state alone is not enough.
+            sync: {
+              syncing: state === 'SYNCING' || this.isTenantWaHistoryBusy(tid),
+              messages: st.syncStats?.totalMessages || 0,
+            },
+          },
+        }, tid);
       },
       onProgress: ({ completed, total, messages, progress = null, done = false }) => {
         st.syncStats = {
