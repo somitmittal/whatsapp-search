@@ -11,8 +11,9 @@
     "dist:mac-arm64": "bash scripts/generate-icon-icns.sh && bash scripts/prepare-node.sh darwin-arm64 && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node && electron-builder --mac --arm64 && npm_config_python=/usr/bin/python3 PYTHON=/usr/bin/python3 npm rebuild better-sqlite3",
     "dist:mac-x64": "bash scripts/generate-icon-icns.sh && bash scripts/prepare-node.sh darwin-x64 && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node && electron-builder --mac --x64 && npm_config_python=/usr/bin/python3 PYTHON=/usr/bin/python3 npm rebuild better-sqlite3",
     "dist:mac": "npm run dist:mac-arm64 && npm run dist:mac-x64",
-    "dist:win": "bash scripts/prepare-node.sh win-x64 && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node.exe && electron-builder --win --x64 && npm rebuild better-sqlite3",
-    "dist:linux": "bash scripts/prepare-node.sh linux-x64 && bash scripts/rebuild-sqlite-for-node.sh build/node/bin/node && electron-builder --linux --x64 && npm rebuild better-sqlite3",
+    "dist:win": "bash scripts/prepare-node.sh win-x64 && bash scripts/rebuild-sqlite-for-node.sh --from-target && electron-builder --win --x64 && npm_config_python=/usr/bin/python3 PYTHON=/usr/bin/python3 npm rebuild better-sqlite3",
+    "dist:linux": "bash scripts/prepare-node.sh linux-x64 && bash scripts/rebuild-sqlite-for-node.sh --from-target && electron-builder --linux --x64 && npm_config_python=/usr/bin/python3 PYTHON=/usr/bin/python3 npm rebuild better-sqlite3",
+    "dist:windows": "npm run dist:win",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit",
     "qa:search": "node scripts/search-qa-agent.mjs"
   },

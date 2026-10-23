@@ -6,6 +6,7 @@ set -euo pipefail
 PLATFORM="${1:?Usage: prepare-node.sh <darwin-arm64|darwin-x64|win-x64|linux-x64>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/build/node/bin"
+META="$ROOT/build/node/target.json"
 VERSION="22.14.0"
 
 case "$PLATFORM" in
@@ -14,11 +15,18 @@ case "$PLATFORM" in
 esac
 
 NODE_NAME=node
-if [ "$PLATFORM" = "win-x64" ]; then
-  NODE_NAME=node.exe
-fi
+NODE_PLATFORM=darwin
+NODE_ARCH=arm64
+case "$PLATFORM" in
+  darwin-arm64) NODE_PLATFORM=darwin; NODE_ARCH=arm64 ;;
+  darwin-x64) NODE_PLATFORM=darwin; NODE_ARCH=x64 ;;
+  linux-x64) NODE_PLATFORM=linux; NODE_ARCH=x64 ;;
+  win-x64) NODE_PLATFORM=win32; NODE_ARCH=x64; NODE_NAME=node.exe ;;
+esac
 
 mkdir -p "$OUT"
+# Drop any previously prepared host/foreign binaries so the package only ships this target.
+rm -f "$OUT/node" "$OUT/node.exe"
 TARBALL="node-v${VERSION}-${PLATFORM}.tar.gz"
 if [ "$PLATFORM" = "win-x64" ]; then
   TARBALL="node-v${VERSION}-${PLATFORM}.zip"
@@ -46,5 +54,44 @@ else
 fi
 
 rm -rf "$STAGING" "$TMP"
+
+if [[ ! -f "$OUT/${NODE_NAME}" ]]; then
+  echo "Expected Node binary missing: $OUT/${NODE_NAME}" >&2
+  exit 1
+fi
+
+# Record target for rebuild-sqlite (needed when the binary cannot run on this host).
+cat > "$META" <<EOF
+{
+  "version": "${VERSION}",
+  "platform": "${NODE_PLATFORM}",
+  "arch": "${NODE_ARCH}",
+  "preparePlatform": "${PLATFORM}",
+  "binary": "bin/${NODE_NAME}"
+}
+EOF
+
 echo "Node binary ready at $OUT/${NODE_NAME}"
-"$OUT/${NODE_NAME}" -v
+
+# Only execute native binaries (never run win32 PE on macOS/Linux).
+HOST_OS="$(uname -s)"
+CAN_RUN=0
+case "$PLATFORM" in
+  win-x64)
+    if [[ "$HOST_OS" == MINGW* || "$HOST_OS" == MSYS* || "$HOST_OS" == CYGWIN* ]]; then
+      CAN_RUN=1
+    fi
+    ;;
+  linux-x64)
+    if [[ "$HOST_OS" == Linux ]]; then CAN_RUN=1; fi
+    ;;
+  darwin-*)
+    if [[ "$HOST_OS" == Darwin ]]; then CAN_RUN=1; fi
+    ;;
+esac
+
+if [[ "$CAN_RUN" -eq 1 ]]; then
+  "$OUT/${NODE_NAME}" -v
+else
+  echo "Skipping runtime check — ${NODE_NAME} cannot execute on this host (${HOST_OS}); target recorded in build/node/target.json"
+fi

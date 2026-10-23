@@ -38,9 +38,12 @@ The workflow `.github/workflows/release-desktop.yml` builds:
 
 ```bash
 npm run dist:mac-arm64   # or dist:mac-x64, dist:mac (both)
-npm run dist:win         # on Windows or CI
-npm run dist:linux       # on Linux or CI
+npm run dist:win         # prefers Windows/CI; Mac can cross-pack if win32 prebuilds exist
+npm run dist:linux       # on Linux or CI (cross-pack from Mac only if linux prebuilds exist)
 ```
+
+`prepare-node.sh` writes `build/node/target.json` so `rebuild-sqlite-for-node.sh --from-target`
+can fetch the correct `better-sqlite3` prebuild without executing a foreign `node.exe` on macOS.
 
 ## Download page
 

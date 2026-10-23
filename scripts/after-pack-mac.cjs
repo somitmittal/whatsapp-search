@@ -51,11 +51,19 @@ function copyPackageFromProject(appNm, pkgId) {
   console.log(`[afterPack] Hoisted ${pkgId} → app/node_modules`);
 }
 
+function targetNodeRunnable(electronPlatformName) {
+  if (electronPlatformName === 'win32') return process.platform === 'win32';
+  if (electronPlatformName === 'linux') return process.platform === 'linux';
+  if (electronPlatformName === 'darwin') return process.platform === 'darwin';
+  return false;
+}
+
 /**
  * Run smoke requires with Module._nodeModulePaths clamped under appDir so resolution
  * cannot escape into the electron-builder working tree (CI false-pass).
+ * @param {{ skipNative?: boolean }} [opts]
  */
-function runIsolatedSmoke(nodeBin, appDir) {
+function runIsolatedSmoke(nodeBin, appDir, opts = {}) {
   const preload = path.join(os.tmpdir(), `searchable-pack-smoke-preload-${process.pid}.cjs`);
   // realpath: macOS /tmp → /private/tmp; without this the clamp drops app/node_modules.
   const appRoot = fs.realpathSync(appDir);
@@ -81,7 +89,7 @@ Module._nodeModulePaths = function (from) {
   );
 
   const script = [
-    "require('better-sqlite3');",
+    opts.skipNative ? '' : "require('better-sqlite3');",
     "require('googleapis');",
     "require('exceljs');",
     "require('qs');",
@@ -89,7 +97,7 @@ Module._nodeModulePaths = function (from) {
     "require('call-bind-apply-helpers');",
     "require('es-abstract-get/GetMethod');",
     "console.log('packaged dependency smoke ok');",
-  ].join('');
+  ].filter(Boolean).join('');
 
   try {
     execFileSync(nodeBin, ['-r', preload, '-e', script], {
@@ -107,17 +115,40 @@ Module._nodeModulePaths = function (from) {
   }
 }
 
+function assertBetterSqlitePresent(appNm) {
+  const candidates = [
+    path.join(appNm, 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'),
+    path.join(appNm, 'better-sqlite3', 'lib', 'binding'),
+  ];
+  const found = candidates.some((p) => fs.existsSync(p));
+  if (!found) {
+    throw new Error('[afterPack] better-sqlite3 native binding missing from packaged app');
+  }
+}
+
 function verifyBundledApp(context) {
   const resources = resourcesDir(context);
   const nodeName = context.electronPlatformName === 'win32' ? 'node.exe' : 'node';
-  const nodeBin = path.join(resources, 'node', 'bin', nodeName);
+  const bundledNode = path.join(resources, 'node', 'bin', nodeName);
   const appDir = path.join(resources, 'app');
   const appNm = path.join(appDir, 'node_modules');
+  const canRunTarget = targetNodeRunnable(context.electronPlatformName);
+  // Cross-pack (e.g. win32 on macOS): use host Node for JS graph; skip loading .node addons.
+  const smokeNode = canRunTarget ? bundledNode : process.execPath;
+  const skipNative = !canRunTarget;
 
-  console.log(`[afterPack] Verify bundled Node modules with ${nodeBin}`);
+  if (!fs.existsSync(bundledNode)) {
+    throw new Error(`[afterPack] Bundled Node missing: ${bundledNode}`);
+  }
+  assertBetterSqlitePresent(appNm);
+
+  console.log(
+    `[afterPack] Verify bundled Node modules with ${smokeNode}`
+    + (skipNative ? ' (cross-pack JS smoke; native checked by file presence)' : ''),
+  );
 
   for (let round = 0; round < MAX_HOIST_ROUNDS; round += 1) {
-    const result = runIsolatedSmoke(nodeBin, appDir);
+    const result = runIsolatedSmoke(smokeNode, appDir, { skipNative });
     if (result.ok) {
       process.stdout.write('packaged dependency smoke ok\n');
       return;
