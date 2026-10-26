@@ -617,6 +617,53 @@ html[data-theme="dark"] .chat-composer button.composer-mic:hover { background: #
 .gpt-mic:hover { color: #00a884; border-color: #00a884; }
 .gpt-mic.recording, .gpt-mic.transcribing { color: #e5484d; border-color: currentColor; animation: gpt-mic-pulse 1.1s ease-in-out infinite; }
 .gpt-mic.transcribing { animation: none; opacity: 0.6; }
+
+/* ── Saved memory (ChatGPT-style) — shared with /css/app.css ────────── */
+.memory-widget { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.memory-widget .memory-toggle-row label {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13.5px; color: var(--fg); cursor: pointer;
+}
+.memory-widget .memory-toggle-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: #00a884; }
+.memory-widget .memory-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+.memory-widget .memory-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px 7px 10px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 13px; color: var(--fg);
+}
+.memory-widget .memory-item-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-widget .memory-item-del {
+  border: none; background: transparent; color: var(--fg-3, #667781); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 50%; font-family: inherit;
+}
+.memory-widget .memory-item-del:hover { background: var(--panel); color: var(--danger, #d33); }
+.memory-widget .memory-empty { margin: 0; font-size: 12.5px; color: var(--fg-3, #667781); }
+.memory-widget .memory-add-row { display: flex; gap: 8px; }
+.memory-widget .memory-add-row input {
+  flex: 1; min-width: 0; padding: 8px 12px; font-size: 13px; font-family: inherit;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  color: var(--fg); outline: none;
+}
+.memory-widget .memory-add-row input:focus { border-color: #00a884; }
+.memory-widget .memory-add-row button {
+  border: none; border-radius: 8px; background: #00a884; color: #fff;
+  font-weight: 700; font-size: 13px; padding: 8px 14px; cursor: pointer; font-family: inherit;
+}
+.memory-widget .memory-add-row [hidden] { display: none !important; }
+#memory-saved-chip {
+  position: fixed; left: 50%; bottom: 112px; transform: translateX(-50%) translateY(12px);
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 16px; border-radius: 999px;
+  background: #111b21; color: #e9edef; font-size: 13px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  opacity: 0; pointer-events: none; z-index: 300;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  max-width: min(520px, 90vw);
+}
+#memory-saved-chip svg { color: #00d984; flex-shrink: 0; }
+#memory-saved-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#memory-saved-chip.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
 @keyframes gpt-mic-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* Forward overlay inside the GPT page (WhatsApp Web style, matching /css/app.css) */

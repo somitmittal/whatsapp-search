@@ -1,5 +1,6 @@
 import { GROUNDING_PROMPT_RULES } from '../search/grounding.js';
 import { getSmbProfileFromDb, synthesisSystemAddon } from '../smb/profiles.js';
+import { memoryPromptBlock } from './user-memory.js';
 import { GPT_LIMITS, estimateTokens } from './limits.js';
 import {
   detectTimeRange,
@@ -13,6 +14,7 @@ import { TOOL_SPECS } from './tools.js';
 export function buildSystemPrompt({ db, businessContext = false, now = new Date() }) {
   const smb = businessContext ? synthesisSystemAddon(getSmbProfileFromDb(db)) : '';
   const businessName = businessContext ? String(db.getSetting?.('smb_business_name') || '').trim() : '';
+  const memory = memoryPromptBlock(db, now);
   const today = now.toLocaleDateString('en-CA');
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
   const tools = TOOL_SPECS.map((t) => `- ${t.name} ${t.args} — ${t.about}`).join('\n');
@@ -20,6 +22,7 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
     'You are WhatsApp GPT: a sharp assistant over the user\'s own WhatsApp archive.',
     `Today is ${weekday} ${today}. Messages from the user appear with sender "You".`,
     smb ? `${smb}${businessName ? `\nBusiness name: ${businessName}.` : ''}` : '',
+    memory,
     GROUNDING_PROMPT_RULES,
     [
       'CONTEXT: WhatsApp messages are given as lines "[m123] date · sender: text" grouped under "## Chat name".',

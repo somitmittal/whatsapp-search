@@ -4,6 +4,7 @@ import { loadActionItemsForChat, refreshOpenChatMessages } from './chat-view.js'
 import { applyMessageReceipt, applyUnreadUpdates, handleSummaryProgress, mergeSyncChatsPreview, refreshDash } from './dashboard.js';
 import { loadExpenseRuns } from './expenses.js';
 import { syncIndexChatMenuItem } from './menus.js';
+import { showMemorySavedChip } from './memory.js';
 import { applyIncomingReactionToDom, applyMessageDeletedToDom, applyMessageEditedToDom, applyMessageRevokedToDom } from './messages-render.js';
 import { renderChatsFromState, scheduleRefreshDash } from './sidebar.js';
 import { $ } from './util.js';
@@ -75,6 +76,9 @@ function connectWS() {
       else if (msg.type === 'message-edited' && msg.data) { applyMessageEditedToDom(msg.data); }
       else if (msg.type === 'message-media-ready' && msg.data?.chatJid === store.activeChat) {
         void refreshOpenChatMessages();
+      }
+      else if (msg.type === 'memory-saved') {
+        showMemorySavedChip(msg.data?.entry?.text || '');
       }
     } catch {}
   };

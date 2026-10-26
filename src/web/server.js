@@ -208,6 +208,8 @@ export default class WebServer {
       getProvider: () => searchEngine?._provider || null,
       embeddings: embeddingIndexService || null,
       expenseService: expenseReconciliationService || null,
+      // "Memory updated" badge for other open tabs/clients.
+      onMemorySaved: (payload, tenantId) => this._broadcast({ type: 'memory-saved', data: payload }, tenantId),
     });
     this._smbInbox = new SmbInboxService(db);
     this._appointmentBoard = new AppointmentBoardService(db);
@@ -1760,6 +1762,46 @@ export default class WebServer {
       }
     });
 
+    /** Saved memory: list / add / delete / toggle (ChatGPT-style "Memory updated"). */
+    this._app.get('/api/gpt/memory', (req, res) => {
+      try {
+        return res.json(this._gpt.listUserMemory());
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/gpt/memory', (req, res) => {
+      try {
+        const out = this._gpt.addUserMemory(String(req.body?.text || ''));
+        if (!out.added) {
+          const reason = !String(req.body?.text || '').trim() ? 'text required' : 'already saved';
+          return res.status(400).json({ error: reason, memories: out.memories });
+        }
+        return res.json({ ok: true, entry: out.entry, memories: out.memories });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.delete('/api/gpt/memory/:id', (req, res) => {
+      try {
+        const deleted = this._gpt.deleteUserMemory(req.params.id);
+        if (!deleted) return res.status(404).json({ error: 'Memory not found' });
+        return res.json({ ok: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.put('/api/gpt/memory/enabled', (req, res) => {
+      try {
+        return res.json(this._gpt.setUserMemoryEnabled(!!req.body?.enabled));
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
     this._app.get('/api/gpt/conversations/:id', (req, res) => {
       try {
         const data = this._gpt.getConversation(req.params.id);
@@ -1883,7 +1925,7 @@ export default class WebServer {
       const emit = (event) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`); };
 
       try {
-        const result = await this._gpt.handleTurn({
+        const { memoryPromise, ...chatResult } = await this._gpt.handleTurn({
           conversationId: req.body?.conversationId ? String(req.body.conversationId) : null,
           createConversationIfMissing: req.body?.createConversationIfMissing === true,
           message,
@@ -1897,9 +1939,17 @@ export default class WebServer {
         void Promise.resolve(this._controlPlane.logProductEvent({
           event: 'gpt_chat',
           installId: String(req.get('x-install-id') || '').trim() || null,
-          props: { plan: entitlement.plan, kind: result.expenseDiff ? 'expense' : 'chat' },
+          props: { plan: entitlement.plan, kind: chatResult.expenseDiff ? 'expense' : 'chat' },
         })).catch(() => {});
-        emit({ type: 'done', ...result });
+        emit({ type: 'done', ...chatResult });
+        // Keep the SSE stream open briefly so the background "Memory updated"
+        // extraction can land in the same response instead of after res.end().
+        if (memoryPromise) {
+          await Promise.race([
+            memoryPromise.catch(() => {}),
+            new Promise((r) => setTimeout(r, 45000)),
+          ]);
+        }
       } catch (err) {
         if (err?.name !== 'AbortedError') {
           console.error('GPT chat error:', err.message);

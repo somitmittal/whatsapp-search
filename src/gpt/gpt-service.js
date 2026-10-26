@@ -8,6 +8,15 @@ import { createToolbox } from './tools.js';
 import { GPT_LIMITS, estimateTokens } from './limits.js';
 import { listModelCatalog, providerForSelection, setProviderKey } from './model-registry.js';
 import {
+  addMemory,
+  deleteMemory,
+  extractMemoryFromExchange,
+  isMemoryEnabled,
+  listMemory as listUserMemory,
+  setMemoryEnabled,
+  shouldConsiderMemory,
+} from './user-memory.js';
+import {
   listManagedSkills,
   normalizeSkillIdentity,
   skillFromUserRow,
@@ -67,10 +76,14 @@ function ensureScopePin(db, conversationId, scopeChatJid, scopeChatName, memoryP
  * persistence, and background memory compaction of older turns.
  */
 export default class GptService {
-  constructor({ db, getProvider, embeddings = null, expenseService = null, resolveProvider = providerForSelection }) {
+  constructor({
+    db, getProvider, embeddings = null, expenseService = null, resolveProvider = providerForSelection,
+    onMemorySaved = null,
+  }) {
     this.db = db;
     this.getProvider = getProvider;
     this._resolveProvider = resolveProvider;
+    this._onMemorySaved = onMemorySaved;
     this.directory = new ChatDirectory(db);
     this.context = new ContextEngine({ db, embeddings, directory: this.directory });
     this.expenseService = expenseService;
@@ -100,6 +113,24 @@ export default class GptService {
 
   listModels() {
     return listModelCatalog(this.db);
+  }
+
+  /** Saved ("Memory updated") entries. */
+  listUserMemory() {
+    return listUserMemory(this.db);
+  }
+
+  addUserMemory(text) {
+    return addMemory(this.db, text);
+  }
+
+  deleteUserMemory(id) {
+    return deleteMemory(this.db, id);
+  }
+
+  setUserMemoryEnabled(enabled) {
+    setMemoryEnabled(this.db, enabled);
+    return { enabled: !!enabled };
   }
 
   setProviderKey(provider, apiKey) {
@@ -308,6 +339,7 @@ export default class GptService {
     if (skillRun?.id) this.db.updateSkillRun(skillRun.id, { messageId: assistant.id });
 
     this._scheduleCompaction(conversation.id, provider);
+    const memoryPromise = this._scheduleUserMemory(provider, { userText: text, answerText: result.answer, emit });
     const fresh = this.getConversation(conversation.id);
     return {
       conversationId: conversation.id,
@@ -318,6 +350,7 @@ export default class GptService {
       sources: result.sources,
       expenseDiff,
       model: { provider: provider.name, model: provider.model },
+      memoryPromise,
     };
     } catch (err) {
       this._saveInterruptedTurn(conversation.id, {
@@ -460,6 +493,36 @@ export default class GptService {
       }
     }
     return { skillRun: updated };
+  }
+
+  /**
+   * ChatGPT-style auto-memory: after a completed turn, decide in the background
+   * whether the exchange revealed something durable about the user worth
+   * saving (never blocks or alters the answer itself).
+   */
+  _scheduleUserMemory(provider, { userText, answerText, emit = null }) {
+    if (!isMemoryEnabled(this.db)) return null;
+    if (!shouldConsiderMemory(userText, answerText)) return null;
+    const tenant = getCurrentTenantId();
+    // Resolves once the background decision/save is done so the SSE stream can
+    // stay open long enough to deliver {type:'memory-updated'} before closing.
+    return new Promise((resolve) => {
+      setImmediate(() => runWithTenant(tenant, async () => {
+        try {
+          const fact = await extractMemoryFromExchange(provider, { userText, answerText });
+          if (!fact) return;
+          const res = addMemory(this.db, fact);
+          if (res.added) {
+            try { emit?.({ type: 'memory-updated', text: res.entry.text }); } catch { /* stream closed */ }
+            try { this._onMemorySaved?.({ added: true, entry: res.entry, memories: res.memories }, tenant); } catch { /* */ }
+          }
+        } catch (err) {
+          console.warn('[GPT] user memory:', err?.message || err);
+        } finally {
+          resolve();
+        }
+      }));
+    });
   }
 
   /** Folds turns that no longer fit the history budget into the rolling memory, off the hot path. */

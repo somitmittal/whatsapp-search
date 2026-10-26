@@ -2,6 +2,7 @@ import { store } from './store.js';
 import { loadSmbProfile, loadWabaConfig } from './business.js';
 import { HINTS, MODELS } from './constants.js';
 import { refreshDash } from './dashboard.js';
+import { mountMemoryWidget } from './memory.js';
 import { checkHardwareRecommendation, confirmOllamaDownload, hideAiSetupBanner, ollamaLocalHas, refreshAiSetupBanner, startPullPolling } from './ollama-setup.js';
 import { $, esc } from './util.js';
 
@@ -55,6 +56,7 @@ function applyKeyEnvHints(settings, keyHints) {
 
 export async function loadSettings() {
   try {
+    mountMemoryWidget($('#memory-widget'));
     const { settings, keyHints } = await fetch('/api/settings').then(r => r.json());
     store.settingsKeyState.hasLlm = !!settings.hasLlmApiKey;
     store.settingsKeyState.hasSummary = !!settings.hasSummaryApiKey;

@@ -17,6 +17,7 @@ import { displayChatTitle } from '/js/format.js';
 import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js/message-actions.js';
+import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
 import { initMenus, promptDeleteChat, showSidebarContextMenu } from '/js/menus.js';
 import { buildChatMessagesHtml, closeReactionEmojiPickers, postWaReaction, toggleReactionEmojiPicker } from '/js/messages-render.js';
 import { initOverlays, openOverlay, setSettingsTab as setOverlaySettingsTab } from '/js/overlays.js';
@@ -794,6 +795,7 @@ function openSettings(open = true, tab = null) {
     closeThreadSearch();
     applyTheme(currentTheme());
     setSettingsTab(tab || state.settingsTab || 'general');
+    mountMemoryWidget($('#memory-widget'));
   }
 }
 
@@ -1889,6 +1891,8 @@ async function send(textOverride = null) {
         } else if (ev.type === 'delta') {
           live.text += ev.text || '';
           paintLive(live);
+        } else if (ev.type === 'memory-updated' && ev.text) {
+          showMemorySavedChip(ev.text);
         } else if (ev.type === 'reset') {
           live.text = '';
           paintLive(live);
