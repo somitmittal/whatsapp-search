@@ -1,5 +1,6 @@
 import { store } from './store.js';
-import { sidebarAvatarLetter } from './avatars.js';
+import { chatAvatarHtml, sidebarAvatarLetter } from './avatars.js';
+import { messageTimestampToDate } from './format.js';
 import { applyMessageDeletedToDom, applyMessageRevokedToDom } from './messages-render.js';
 import { closeOverlay, openOverlay } from './overlays.js';
 import { scheduleRefreshDash } from './sidebar.js';
@@ -58,10 +59,31 @@ function forwardableChats() {
     if (jid.endsWith('@imported') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter') || jid.endsWith('@bot')) continue;
     if (jid === 'status@broadcast') continue;
     seen.add(jid);
-    out.push({ chatJid: jid, chatName: c.chatName || jid });
+    out.push({
+      chatJid: jid,
+      chatName: c.chatName || jid,
+      preview: c.lastMessagePreview || '',
+      ts: Number(c.lastMessageTs) || 0,
+      hasAvatar: !!c.hasAvatar,
+      avatarRev: c.avatarRev || 0,
+    });
   }
-  out.sort((a, b) => String(a.chatName).localeCompare(String(b.chatName), undefined, { sensitivity: 'base' }));
+  // WhatsApp forwards list: most recently active chat first.
+  out.sort((a, b) => b.ts - a.ts || String(a.chatName).localeCompare(String(b.chatName), undefined, { sensitivity: 'base' }));
   return out;
+}
+
+/** WhatsApp-style timestamp: today → clock time, this week → weekday, else date. */
+function forwardListTime(ts) {
+  if (!ts) return '';
+  const d = messageTimestampToDate(ts);
+  const now = new Date();
+  const dayDiff = (now - d) / 86_400_000;
+  if (dayDiff < 1 && d.getDate() === now.getDate()) {
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  if (dayDiff < 7) return d.toLocaleDateString([], { weekday: 'short' });
+  return d.toLocaleDateString([], { day: '2-digit', month: '2-digit', year: '2-digit' });
 }
 
 export function openForwardOverlay({ chatJid, messageId, preview }) {
@@ -101,10 +123,16 @@ function renderForwardChats(query) {
     const letter = sidebarAvatarLetter(name);
     const sel = store.forwardSelected.has(c.chatJid) ? ' selected' : '';
     return `<button type="button" class="fwd-chat${sel}" data-jid="${escAttr(c.chatJid)}" role="listitem">
-        <span class="fwd-chat-avatar">${esc(letter)}</span>
+      <span class="fwd-avatar">${chatAvatarHtml(c.chatJid, letter, c.hasAvatar, c.avatarRev)}</span>
+      <span class="fwd-main">
         <span class="fwd-chat-name">${esc(name)}</span>
+        <span class="fwd-chat-preview">${esc(c.preview)}</span>
+      </span>
+      <span class="fwd-side">
+        <span class="fwd-time">${esc(forwardListTime(c.ts))}</span>
         <span class="fwd-check" aria-hidden="true"></span>
-      </button>`;
+      </span>
+    </button>`;
   }).join('');
   list.querySelectorAll('.fwd-chat').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -121,8 +149,17 @@ function renderForwardChats(query) {
       btn.classList.toggle('selected', store.forwardSelected.has(jid));
       const sendBtn = $('#forward-send');
       if (sendBtn) sendBtn.disabled = store.forwardSelected.size === 0;
+      updateForwardSendBadge();
     });
   });
+}
+
+/** Circular green send button shows the selection like WhatsApp's arrow badge. */
+function updateForwardSendBadge() {
+  const sendBtn = $('#forward-send');
+  if (!sendBtn) return;
+  const n = store.forwardSelected?.size || 0;
+  sendBtn.title = n === 1 ? 'Forward' : `Forward to ${n} chats`;
 }
 
 export function initMessageActions() {

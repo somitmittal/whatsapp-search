@@ -144,7 +144,8 @@ export function registerControlPlaneRoutes(app, opts = {}) {
   });
 
   app.get('/analytics', requireAdmin, (_req, res) => {
-    res.sendFile(resolve(config.publicDir, 'analytics.html'));
+    // `dotfiles: 'allow'` lets dev worktrees under `.worktrees/…` serve pages.
+    res.sendFile(resolve(config.publicDir, 'analytics.html'), { dotfiles: 'allow' });
   });
 
   app.post('/api/control/auth/request-link', async (req, res) => {

@@ -127,7 +127,9 @@ export function applySecurityHeaders(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  // `microphone=(self)` — the WhatsApp voice-note composer and Ask AI dictation
+  // need same-origin mic access; camera stays locked down.
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=(), payment=()');
   res.setHeader('X-DNS-Prefetch-Control', 'off');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   if (req.path === '/' || req.path.endsWith('.html') || !req.path.includes('.')) {

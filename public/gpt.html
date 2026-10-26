@@ -228,20 +228,8 @@
       </section>
 
       <div class="gpt-wa-composer" id="gpt-wa-composer" hidden>
-        <div id="reply-to-bar" class="reply-to-bar" style="display:none;" aria-live="polite">
-          <div class="reply-to-inner">
-            <span class="reply-to-label">Replying to</span>
-            <span id="reply-to-preview" class="reply-to-preview"></span>
-            <button type="button" class="reply-to-clear" id="reply-to-clear" aria-label="Cancel reply">×</button>
-          </div>
-        </div>
-        <div id="edit-to-bar" class="edit-to-bar" style="display:none;" aria-live="polite">
-          <div class="edit-to-inner">
-            <span class="edit-to-label">Editing</span>
-            <span id="edit-to-preview" class="edit-to-preview"></span>
-            <button type="button" class="reply-to-clear" id="edit-to-clear" aria-label="Cancel edit">×</button>
-          </div>
-        </div>
+        <div id="reply-to-bar" class="reply-to-bar" style="display:none;" aria-live="polite"></div>
+        <div id="edit-to-bar" class="edit-to-bar" style="display:none;" aria-live="polite"></div>
         <div id="file-send-progress" class="file-send-progress" role="status" aria-live="polite" hidden>
           <span class="file-send-status"></span><progress class="file-send-meter" max="100" value="0"></progress>
         </div>
@@ -253,6 +241,7 @@
           <input id="msg-file-input" type="file" hidden />
           <button id="msg-attach" class="composer-attach" type="button" title="Attach file" aria-label="Attach file">＋</button>
           <input id="msg-text" type="text" placeholder="Type a message…" autocomplete="off" />
+          <button id="msg-mic" class="composer-mic" type="button" title="Record voice message" aria-label="Record voice message"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V20H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-2.08A7 7 0 0 0 19 11z"/></svg></button>
           <button id="msg-send" type="button">Send</button>
         </div>
         <p class="gpt-wa-composer-hint" id="gpt-wa-composer-hint" hidden>Link WhatsApp to send messages in this chat.</p>
@@ -278,6 +267,9 @@
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
             <span class="gpt-hint">Enter to send · Shift+Enter for a new line</span>
+            <button type="button" class="gpt-mic" id="gpt-mic" title="Voice input" aria-label="Voice input">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V20H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-2.08A7 7 0 0 0 19 11z"/></svg>
+            </button>
             <button type="button" class="gpt-send" id="gpt-send" aria-label="Send" title="Send">
               <svg class="i-send" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3.4 20.4l17.45-7.48a1 1 0 000-1.84L3.4 3.6a.993.993 0 00-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"/></svg>
               <svg class="i-stop" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
@@ -291,6 +283,32 @@
 
 <!-- Classic settings / expense overlays (shared IDs with /js/settings.js) -->
 <div id="gpt-classic-overlays" class="gpt-classic-overlays">
+    <!-- Forward message — pick one or more chats -->
+    <div class="overlay-panel" id="overlay-forward">
+      <div class="overlay-header">
+        <button class="overlay-close" id="close-forward" type="button" aria-label="Close">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <div class="overlay-header-text">
+          <h2>Forward message to…</h2>
+          <p class="overlay-header-sub" id="forward-preview-sub">Select chats to forward to</p>
+        </div>
+      </div>
+      <div class="overlay-body">
+        <div class="search-wrap" style="margin-bottom:10px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="forward-filter" placeholder="Search chats…" />
+        </div>
+        <div id="forward-chats" class="gpt-forward-list" role="list" aria-label="Forward targets"></div>
+        <div class="fwd-footer" style="display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:12px;">
+          <button type="button" class="btn btn-secondary" id="forward-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="forward-send" disabled aria-label="Forward">
+            Forward
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14.7 5.3a1 1 0 0 0-1.4 1.4L16.58 10H8a6 6 0 0 0-6 6 1 1 0 1 0 2 0 4 4 0 0 1 4-4h8.59l-3.3 3.3a1 1 0 1 0 1.42 1.4l5-5a1 1 0 0 0 0-1.4z"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
     <div class="overlay-panel" id="overlay-expenses">
       <div class="overlay-header">
         <div class="overlay-header-text">

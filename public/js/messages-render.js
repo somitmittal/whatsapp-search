@@ -361,11 +361,16 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     const canEdit = liveOk && out && !isDeleted && !!(m.text && String(m.text).trim()) && !m.mediaType;
     const canDelete = !!mid && !isDeleted;
     let actionBtns = '';
+    // Media context for the WhatsApp-style reply quote (label + thumbnail).
+    // Thumb only for renderable media with a local file; sender only for incoming.
+    const replyMetaAttrs = (m.mediaType ? ` data-media-type="${escAttr(m.mediaType)}"` : '')
+      + (mediaUrl && ['image', 'video', 'sticker'].includes(m.mediaType) ? ` data-media-thumb="${escAttr(mediaUrl)}"` : '')
+      + (!out && m.sender ? ` data-sender="${escAttr(m.sender)}"` : '');
     if (canReply) {
-      actionBtns += `<button type="button" class="wa-tb wa-tb-reply" data-wa-reply="1" data-reply-preview="${escAttr(previewTxt)}" title="Reply">↩︎</button>`;
+      actionBtns += `<button type="button" class="wa-tb wa-tb-reply" data-wa-reply="1" data-reply-preview="${escAttr(previewTxt)}"${replyMetaAttrs} title="Reply">↩︎</button>`;
     }
     if (canForward) {
-      actionBtns += `<button type="button" class="wa-tb wa-tb-forward" data-wa-forward="1" data-forward-preview="${escAttr(previewTxt)}" title="Forward">↪</button>`;
+      actionBtns += `<button type="button" class="wa-tb wa-tb-forward" data-wa-forward="1" data-forward-preview="${escAttr(previewTxt)}"${replyMetaAttrs} title="Forward">↪</button>`;
     }
     if (canEdit) {
       actionBtns += `<button type="button" class="wa-tb wa-tb-edit" data-wa-edit="1" data-edit-preview="${escAttr(String(m.text || '').slice(0, 2000))}" title="Edit">✎</button>`;

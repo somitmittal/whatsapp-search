@@ -2,8 +2,9 @@ import { store } from './store.js';
 import { refreshOpenChatMessages } from './chat-view.js';
 import { applyMessageEditedToDom } from './messages-render.js';
 import { scheduleRefreshDash } from './sidebar.js';
-import { $ } from './util.js';
+import { $, esc, escAttr } from './util.js';
 import { wantsLiveSyncUi } from './wa-connection.js';
+import { cancelVoiceUi, initVoiceNoteUI, refreshComposerMic } from './voice-note.js';
 
 export function shouldHideComposerForJid(jid) {
   if (!jid) return true;
@@ -21,6 +22,7 @@ export function updateComposerVisibility() {
   const canSend = canSendMessageToJid(store.activeChat);
   if (composer) composer.style.display = canSend ? '' : 'none';
   if (!canSend) { clearReplyTarget(); clearEditTarget(); }
+  refreshComposerMic();
   const newMsgBtn = document.getElementById('btn-new-message');
   if (newMsgBtn) {
     const show = wantsLiveSyncUi() && (store._waState === 'READY' || store._waState === 'SYNCING');
@@ -28,43 +30,109 @@ export function updateComposerVisibility() {
   }
 }
 
+const WA_MEDIA_LABELS = {
+  image: '📷 Photo',
+  video: '🎥 Video',
+  audio: '🎙️ Voice message',
+  ptt: '🎙️ Voice message',
+  sticker: 'Sticker',
+  document: '📄 Document',
+  location: '📍 Location',
+  vcard: '👤 Contact card',
+};
+
+/** Boolean-ish kick-off label for the quote line ("Photo", "Voice message", …). */
+export function mediaQuoteLabel(mediaType) {
+  return WA_MEDIA_LABELS[String(mediaType || '').trim()] || '';
+}
+
+function quoteCardHtml({ kicker, sender, text, thumb, closeTitle, closeLabel }) {
+  const head = sender || kicker;
+  const body = kicker && sender ? `${kicker}${text ? ` · ${text}` : ''}` : text;
+  return `
+    <div class="wa-quote">
+      <span class="wa-quote-bar" aria-hidden="true"></span>
+      <img class="wa-quote-thumb" ${thumb ? `src="${escAttr(thumb)}"` : 'hidden'} alt="" />
+      <div class="wa-quote-body">
+        <span class="wa-quote-head">${esc(head)}</span>
+        <span class="wa-quote-text">${esc(body || '')}</span>
+      </div>
+      <button type="button" class="wa-quote-close" data-quote-close aria-label="${escAttr(closeLabel)}" title="${escAttr(closeTitle)}">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>`;
+}
+
+/** Message text for the quote: prefer the caption/body, fall back to the media label. */
+function quoteBodyFor({ mediaType, preview }) {
+  const label = mediaQuoteLabel(mediaType);
+  const t = String(preview || '').trim();
+  const isBracket = /^\[[^\]]{1,24}\]$/.test(t); // renderer's "[image]" placeholder
+  if (label && (!t || isBracket)) return label;
+  return t || (label ? label : '(message)');
+}
+
 export function clearReplyTarget() {
+  cancelVoiceUi();
   store.replyTarget = null;
   const bar = $('#reply-to-bar');
-  if (bar) bar.style.display = 'none';
-  const prev = $('#reply-to-preview');
-  if (prev) prev.textContent = '';
+  if (bar) { bar.style.display = 'none'; bar.innerHTML = ''; }
+  refreshComposerMic();
 }
 
 export function clearEditTarget() {
+  cancelVoiceUi();
   store.editTarget = null;
   const bar = $('#edit-to-bar');
-  if (bar) bar.style.display = 'none';
-  const prev = $('#edit-to-preview');
-  if (prev) prev.textContent = '';
+  if (bar) { bar.style.display = 'none'; bar.innerHTML = ''; }
   const btn = document.getElementById('msg-send');
   if (btn) btn.textContent = 'Send';
   const input = document.getElementById('msg-text');
   if (input) input.placeholder = 'Type a message…';
+  refreshComposerMic();
 }
 
-export function setReplyTarget(messageId, preview) {
+/**
+ * Quote a message into the composer (WhatsApp style: accent bar, sender, media
+ * label/thumbnail, circular ✕). `meta` comes from the toolbar button attributes.
+ */
+export function setReplyTarget(messageId, preview, meta = {}) {
   clearEditTarget();
-  store.replyTarget = { messageId: String(messageId || ''), preview: String(preview || '').slice(0, 200) };
+  cancelVoiceUi();
+  store.replyTarget = { messageId: String(messageId || ''), preview: String(preview || '').slice(0, 400) };
   const bar = $('#reply-to-bar');
-  const prev = $('#reply-to-preview');
-  if (prev) prev.textContent = store.replyTarget.preview || '(message)';
-  if (bar) bar.style.display = '';
+  if (bar) {
+    bar.style.display = '';
+    bar.innerHTML = quoteCardHtml({
+      sender: meta.fromMe ? 'You' : (String(meta.sender || '').trim() || 'Contact'),
+      kicker: String(meta.mediaType || '').trim() ? mediaQuoteLabel(meta.mediaType) : '',
+      text: String(preview || '').trim(),
+      thumb: String(meta.thumb || ''),
+      closeTitle: 'Cancel reply',
+      closeLabel: 'Cancel reply',
+    });
+  }
+  refreshComposerMic();
   document.getElementById('msg-text')?.focus?.();
 }
 
 export function setEditTarget(messageId, preview) {
   clearReplyTarget();
+  cancelVoiceUi();
   store.editTarget = { messageId: String(messageId || ''), preview: String(preview || '').slice(0, 200) };
   const bar = $('#edit-to-bar');
-  const prev = $('#edit-to-preview');
-  if (prev) prev.textContent = store.editTarget.preview || '(message)';
-  if (bar) bar.style.display = '';
+  if (bar) {
+    bar.style.display = '';
+    bar.innerHTML = quoteCardHtml({
+      sender: 'Editing',
+      kicker: '',
+      text: String(preview || '').slice(0, 200),
+      thumb: '',
+      closeTitle: 'Cancel edit',
+      closeLabel: 'Cancel edit',
+    });
+  }
+  refreshComposerMic();
   const btn = document.getElementById('msg-send');
   if (btn) btn.textContent = 'Save';
   const input = document.getElementById('msg-text');
@@ -74,6 +142,22 @@ export function setEditTarget(messageId, preview) {
     input.focus?.();
     try { input.setSelectionRange(input.value.length, input.value.length); } catch { /* */ }
   }
+}
+
+/** Quote ✕ buttons live inside re-rendered cards → delegate on the stable bar. */
+function bindQuoteClear() {
+  $('#reply-to-bar')?.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-quote-close]')) return;
+    e.stopPropagation();
+    clearReplyTarget();
+  });
+  $('#edit-to-bar')?.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-quote-close]')) return;
+    e.stopPropagation();
+    clearEditTarget();
+    const input = document.getElementById('msg-text');
+    if (input) input.value = '';
+  });
 }
 
 function refreshActiveChatAfterSend(jid, delayMs = 0) {
@@ -238,6 +322,7 @@ export async function sendCurrentMessage() {
 }
 
 export function initComposer() {
+  initVoiceNoteUI();
   document.getElementById('msg-send')?.addEventListener('click', sendCurrentMessage);
 
   const fileInput = document.getElementById('msg-file-input');
@@ -308,11 +393,5 @@ export function initComposer() {
     if (e.key === 'Enter') { e.preventDefault(); sendCurrentMessage(); }
   });
 
-  $('#reply-to-clear')?.addEventListener('click', clearReplyTarget);
-
-  $('#edit-to-clear')?.addEventListener('click', () => {
-    clearEditTarget();
-    const input = document.getElementById('msg-text');
-    if (input) input.value = '';
-  });
+  bindQuoteClear();
 }

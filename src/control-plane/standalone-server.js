@@ -85,7 +85,7 @@ export async function createControlPlaneApp() {
   });
 
   app.get('/download', (_req, res) => {
-    res.sendFile(resolve(config.publicDir, 'download.html'));
+    res.sendFile(resolve(config.publicDir, 'download.html'), { dotfiles: 'allow' });
   });
 
   app.get('/api/releases/latest', async (_req, res) => {

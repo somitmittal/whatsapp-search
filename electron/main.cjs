@@ -293,7 +293,18 @@ app.enableSandbox();
 
 app.whenReady().then(async () => {
   try {
-    session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => {
+    // Allow the page's own microphone (voice notes + Ask AI dictation); deny the rest.
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+      if (permission === 'media') {
+        try {
+          const u = new URL(details?.requestingUrl || '');
+          callback(u.origin === `http://127.0.0.1:${serverPort}`);
+          return;
+        } catch {
+          callback(false);
+          return;
+        }
+      }
       callback(false);
     });
     session.defaultSession.setPermissionCheckHandler(() => false);

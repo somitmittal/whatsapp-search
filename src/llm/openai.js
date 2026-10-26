@@ -1,3 +1,5 @@
+import { audioFileExt } from '../whatsapp/voice-content.js';
+
 const BASE_URL = 'https://api.openai.com/v1';
 const TIMEOUT_MS = 60_000;
 
@@ -65,8 +67,43 @@ export default class OpenAIProvider {
     return data?.choices?.[0]?.message?.content?.trim() || '';
   }
 
-  async transcribeAudio(_audioBase64, _mimeType) {
-    return '[Audio transcription not supported via OpenAI chat API — use Whisper endpoint separately]';
+  /**
+   * OpenAI `/audio/transcriptions` (Whisper / gpt-series ASR). Voice notes and
+   * dictation clips up to the provider's typical 25 MB cap.
+   */
+  async transcribeAudio(audioBase64, mimeType = 'audio/ogg') {
+    if (!this._apiKey) return '';
+    let buf;
+    try {
+      buf = Buffer.from(audioBase64, 'base64');
+    } catch {
+      return '';
+    }
+    if (buf.length < 32) return '';
+
+    const form = new FormData();
+    form.append('file', new Blob([new Uint8Array(buf)], { type: mimeType || 'audio/ogg' }), `audio.${audioFileExt(mimeType)}`);
+    form.append('model', 'whisper-1');
+    form.append('response_format', 'json');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60_000);
+    try {
+      const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this._apiKey}` },
+        body: form,
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`OpenAI ASR ${res.status}: ${text.slice(0, 300)}`);
+      }
+      const data = await res.json();
+      return String(data?.text || '').trim();
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async _fetch(path, method, body, timeout) {

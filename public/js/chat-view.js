@@ -539,7 +539,12 @@ export function initChatView() {
       if (!block?.dataset?.messageId) return;
       e.stopPropagation();
       const pr = rep.getAttribute('data-reply-preview') || '';
-      setReplyTarget(block.dataset.messageId, pr);
+      setReplyTarget(block.dataset.messageId, pr, {
+        sender: rep.getAttribute('data-sender') || '',
+        fromMe: block.dataset.fromMe === '1',
+        mediaType: rep.getAttribute('data-media-type') || '',
+        thumb: rep.getAttribute('data-media-thumb') || '',
+      });
       return;
     }
     const reactEl = e.target.closest('[data-wa-react]');

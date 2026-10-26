@@ -16,7 +16,7 @@ import { initFetchShim } from '/js/fetch-shim.js';
 import { displayChatTitle } from '/js/format.js';
 import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
-import { initMessageActions, promptDeleteMessage } from '/js/message-actions.js';
+import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js/message-actions.js';
 import { initMenus, promptDeleteChat, showSidebarContextMenu } from '/js/menus.js';
 import { buildChatMessagesHtml, closeReactionEmojiPickers, postWaReaction, toggleReactionEmojiPicker } from '/js/messages-render.js';
 import { initOverlays, openOverlay, setSettingsTab as setOverlaySettingsTab } from '/js/overlays.js';
@@ -2393,7 +2393,12 @@ function wire() {
       const block = e.target.closest('.msg-block');
       if (!block?.dataset?.messageId) return;
       e.stopPropagation();
-      setReplyTarget(block.dataset.messageId, rep.getAttribute('data-reply-preview') || '');
+      setReplyTarget(block.dataset.messageId, rep.getAttribute('data-reply-preview') || '', {
+        sender: rep.getAttribute('data-sender') || '',
+        fromMe: block.dataset.fromMe === '1',
+        mediaType: rep.getAttribute('data-media-type') || '',
+        thumb: rep.getAttribute('data-media-thumb') || '',
+      });
       return;
     }
     const reactEl = e.target.closest('[data-wa-react]');
@@ -2422,7 +2427,17 @@ function wire() {
     const fwd = e.target.closest('[data-wa-forward]');
     if (fwd) {
       e.stopPropagation();
-      alert('Forward is available in the classic UI for now.');
+      const block = fwd.closest('.msg-block');
+      if (!block?.dataset?.messageId) return;
+      if (store._waState !== 'READY' && store._waState !== 'SYNCING') {
+        alert('Link WhatsApp first to forward messages.');
+        return;
+      }
+      openForwardOverlay({
+        chatJid: block.dataset.storageJid || store.activeChat,
+        messageId: block.dataset.messageId,
+        preview: fwd.getAttribute('data-forward-preview') || '',
+      });
       return;
     }
     const editBtn = e.target.closest('[data-wa-edit]');

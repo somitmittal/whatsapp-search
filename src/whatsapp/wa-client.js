@@ -35,6 +35,7 @@ import { RECENT_DAYS_CATCHUP_DAYS, fullHistoryBackoffSec, shouldSyncHistoryMessa
 import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { isImportedChatJid, isWhatsAppLowPriorityFeed, shouldPreserveRawChatJid, sidebarTabForJid } from './jid-filters.js';
 import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
+import { audioSendContent } from './voice-content.js';
 import {
     extractRenderableTextFromInner,
     isControlOnlyContentType,
@@ -450,7 +451,7 @@ export default class WaClient {
     }));
   }
 
-  async sendFile(chatJid, buffer, { fileName = 'file', mimetype = 'application/octet-stream', caption = '' } = {}) {
+  async sendFile(chatJid, buffer, { fileName = 'file', mimetype = 'application/octet-stream', caption = '', ptt = false } = {}) {
     if (!this._sock) throw new Error('WhatsApp not connected');
     if (!chatJid) throw new Error('chatJid required');
     if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new Error('File is empty');
@@ -460,8 +461,11 @@ export default class WaClient {
     let content;
     if (mime.startsWith('image/')) content = { image: buffer, mimetype: mime, caption: text };
     else if (mime.startsWith('video/')) content = { video: buffer, mimetype: mime, caption: text };
-    else if (mime.startsWith('audio/')) content = { audio: buffer, mimetype: mime, ptt: false };
-    else content = { document: buffer, fileName: name, mimetype: mime, caption: text };
+    else if (mime.startsWith('audio/')) {
+      const built = audioSendContent(buffer, { mimeType: mime, ptt });
+      if (built.error) throw new Error(built.error);
+      content = built.content;
+    } else content = { document: buffer, fileName: name, mimetype: mime, caption: text };
     return this._noteSuccessfulSend(await this._sock.sendMessage(chatJid, content));
   }
 

@@ -11,6 +11,8 @@ import config from '../config.js';
 import { isPublicInternetDeploy } from '../deploy-env.js';
 import { IMPORT_MAX_UPLOAD_BYTES, MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
+import { findTranscriptionProvider, isUsableTranscription } from '../llm/transcription.js';
+import { resolveProviderKey } from '../gpt/model-registry.js';
 import { decodeExportBuffer, extractChatExportFromZip, extractMediaFromZip, importExportedChat, normalizeImportChatName, slugForImportChatJid } from '../import/chat-import.js';
 import {
     effectiveSearchApiKey,
@@ -31,6 +33,7 @@ import {
   shouldShowGroupCatchup,
 } from '../whatsapp/unread-tracker.js';
 import { isSafeAvatarFileName, jidsNeedingAvatars } from '../whatsapp/chat-avatars.js';
+import { MAX_AUDIO_BYTES, isAudioMime } from '../whatsapp/voice-content.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
@@ -1261,7 +1264,7 @@ export default class WebServer {
     this._app.get('/api/health', (_req, res) => res.status(200).json({ ok: true }));
 
     this._app.get('/download', (_req, res) => {
-      res.sendFile(resolve(config.publicDir, 'download.html'));
+      res.sendFile(resolve(config.publicDir, 'download.html'), { dotfiles: 'allow' });
     });
 
     this._app.get('/api/releases/latest', async (_req, res) => {
@@ -1435,7 +1438,9 @@ export default class WebServer {
         const versioned = String(req.query.v ?? '') === String(info.avatarRev);
         res.setHeader('Cache-Control', versioned ? 'private, max-age=31536000, immutable' : 'private, no-cache');
         res.type(contentTypeForMediaFile(file));
-        return res.sendFile(file, (err) => {
+        // `dotfiles: 'allow'` — dev worktrees live under `.worktrees/…`, and
+        // `send` otherwise 404s any absolute path containing a dot segment.
+        return res.sendFile(file, { dotfiles: 'allow' }, (err) => {
           if (err && !res.headersSent) res.status(404).end();
         });
       } catch {
@@ -1520,7 +1525,7 @@ export default class WebServer {
         if (wantDownload) {
           res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
         }
-        return res.sendFile(safe);
+        return res.sendFile(safe, { dotfiles: 'allow' });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1904,7 +1909,7 @@ export default class WebServer {
       return res.end();
     });
 
-    this._app.get('/gpt', (_req, res) => res.sendFile(resolve(config.publicDir, 'gpt.html')));
+    this._app.get('/gpt', (_req, res) => res.sendFile(resolve(config.publicDir, 'gpt.html'), { dotfiles: 'allow' }));
 
     this._app.get('/api/search/conversations', (req, res) => {
       try {
@@ -2327,10 +2332,50 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           fileName: req.file.originalname,
           mimetype: req.file.mimetype,
           caption: req.body?.caption,
+          // `ptt=1` marks audio as a WhatsApp voice note (push-to-talk).
+          ptt: String(req.body?.ptt || '') === '1',
         });
         return res.json({ ok: true, messageId: sent?.key?.id || null });
       } catch (err) {
         return res.status(500).json({ error: err.message || 'File send failed' });
+      }
+    });
+
+    /**
+     * Speech → text for voice input (Ask AI dictation). Multipart field "file".
+     * Uses the first configured provider with real ASR (Gemini inline audio,
+     * Groq Whisper, OpenAI Whisper) — keys come from tenant settings/env.
+     */
+    this._app.post('/api/gpt/transcribe', preserveTenantAcrossUpload(upload.single('file')), async (req, res) => {
+      try {
+        if (!req.file?.buffer?.length) return res.status(400).json({ error: 'No audio uploaded' });
+        if (!isAudioMime(req.file.mimetype)) {
+          return res.status(400).json({ error: 'Not an audio recording' });
+        }
+        if (req.file.buffer.length > MAX_AUDIO_BYTES) {
+          return res.status(413).json({ error: 'Recording too large' });
+        }
+        const audioB64 = req.file.buffer.toString('base64');
+        const mimeType = String(req.file.mimetype || 'audio/mp4');
+        const found = await findTranscriptionProvider(async (id) => {
+          const key = resolveProviderKey(this.db, id);
+          if (!key) return null;
+          return createProvider(id, key);
+        });
+        if (!found) {
+          return res.status(503).json({
+            error: 'Voice input needs Gemini, Groq or OpenAI — add an API key from the model picker (⚙).',
+          });
+        }
+        const text = await found.provider.transcribeAudio(audioB64, mimeType);
+        if (!isUsableTranscription(text)) {
+          return res.status(503).json({
+            error: `${found.id} could not transcribe this recording.`,
+          });
+        }
+        return res.json({ ok: true, text: String(text).trim(), provider: found.id });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || String(err) });
       }
     });
 
@@ -3532,7 +3577,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     });
 
     // Legacy WhatsApp mirror UI (optional). Primary entry is /gpt.
-    this._app.get('/chats', (_req, res) => res.sendFile(resolve(config.publicDir, 'index.html')));
+    this._app.get('/chats', (_req, res) => res.sendFile(resolve(config.publicDir, 'index.html'), { dotfiles: 'allow' }));
 
     // Multer (and other) errors must stay JSON — the import UI calls res.json().
     this._app.use((err, _req, res, next) => {
