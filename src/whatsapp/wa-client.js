@@ -31,7 +31,7 @@ import {
 import { buildContactPayloadFromInner } from './contact-card.js';
 import { normalizeGroupCreateInput } from './group-create.js';
 import { groupSubjectUpdates } from './group-subjects.js';
-import { RECENT_DAYS_CATCHUP_DAYS, fullHistoryBackoffSec, shouldSyncHistoryMessage } from './history-sync-policy.js';
+import { filterRowsByRetention, fullHistoryBackoffSec, shouldSyncHistoryMessage } from './history-sync-policy.js';
 import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { isImportedChatJid, isWhatsAppLowPriorityFeed, shouldPreserveRawChatJid, sidebarTabForJid } from './jid-filters.js';
 import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
@@ -1306,13 +1306,16 @@ export default class WaClient {
       }
 
       if (rows.length) {
-        const cutoff = Math.floor(Date.now() / 1000) - RECENT_DAYS_CATCHUP_DAYS * 24 * 60 * 60;
-        const recent = rows.filter((r) => (Number(r.timestamp) || 0) >= cutoff);
-        if (recent.length) {
-          this._ingestHistoryRowsChunked(recent);
-          console.log(`[WA] History batch queued: ${recent.length} recent msgs (skipped ${rows.length - recent.length} older than ${RECENT_DAYS_CATCHUP_DAYS}d)`);
+        // `waHistoryKeepDays` <= 0 (default) stores the entire archive the phone sends —
+        // this dump is the only bulk source of months-old messages. A positive value
+        // sheds rows older than N days instead (load-shedding for very large accounts).
+        const { keep: kept, skipped } = filterRowsByRetention(rows, { keepDays: config.waHistoryKeepDays });
+        if (kept.length) {
+          this._ingestHistoryRowsChunked(kept);
+          console.log(`[WA] History batch queued: ${kept.length} msgs`
+            + (skipped ? ` (skipped ${skipped} older than ${config.waHistoryKeepDays}d)` : ''));
         } else {
-          console.log(`[WA] History batch had ${rows.length} msgs, none in the last ${RECENT_DAYS_CATCHUP_DAYS} days`);
+          console.log(`[WA] History batch had ${rows.length} msgs, all outside the ${config.waHistoryKeepDays}d retention window`);
         }
       }
 

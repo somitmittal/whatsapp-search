@@ -119,6 +119,14 @@ const config = {
     if (v === '1' || v === 'true' || v === 'yes') return true;
     return false;
   })(),
+  /**
+   * How much of the phone's `messaging-history.set` dump to store, in days.
+   * Default `0` keeps the whole archive the phone sends — that dump is the only
+   * bulk source of older messages, so dropping old rows here is what made history
+   * searches stop at ~7 days. Set `WA_HISTORY_KEEP_DAYS` to a positive number to
+   * shed older rows instead (load-shedding for very large accounts).
+   */
+  waHistoryKeepDays: Math.max(0, parseInt(process.env.WA_HISTORY_KEEP_DAYS || '0', 10) || 0),
   /** Rows per SQLite batch during `messaging-history.set` (smaller = less event-loop blocking / fewer disconnects). */
   waHistoryChunkSize: Math.max(50, parseInt(process.env.WA_HISTORY_CHUNK_SIZE || '350', 10) || 350),
   /** Idle ms after the last history batch before marking sync complete (Baileys often pauses 5–30s between batches). */

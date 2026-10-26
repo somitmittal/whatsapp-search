@@ -46,6 +46,30 @@ export function shouldSyncHistoryMessage(_historyMsg, {
 }
 
 /**
+ * Retention filter for `messaging-history.set` rows. The phone's history dump is the
+ * only bulk source of older messages, so `keepDays <= 0` (default) keeps every row;
+ * a positive value sheds rows older than N days (load-shedding for huge accounts).
+ * Rows carry a Unix-seconds `timestamp`.
+ */
+export function filterRowsByRetention(rows, {
+  keepDays = 0,
+  nowSec = Math.floor(Date.now() / 1000),
+} = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const keep = Math.max(0, Math.floor(Number(keepDays) || 0));
+  if (!keep) return { keep: list, skipped: 0 };
+  const cutoffSec = nowSec - keep * 24 * 60 * 60;
+  const kept = [];
+  let skipped = 0;
+  for (const row of list) {
+    const ts = Number(row?.timestamp) || 0;
+    if (ts >= cutoffSec) kept.push(row);
+    else skipped += 1;
+  }
+  return { keep: kept, skipped };
+}
+
+/**
  * One phone-side history session is enough. Skip if we recently asked, or if
  * almost every chat already has a recent local message.
  */
