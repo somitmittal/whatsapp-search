@@ -7,7 +7,7 @@ PLATFORM="${1:?Usage: prepare-node.sh <darwin-arm64|darwin-x64|win-x64|linux-x64
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/build/node/bin"
 META="$ROOT/build/node/target.json"
-VERSION="22.14.0"
+VERSION="22.23.4"
 
 case "$PLATFORM" in
   darwin-arm64|darwin-x64|linux-x64|win-x64) ;;

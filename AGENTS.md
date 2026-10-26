@@ -31,7 +31,7 @@ same time. Follow these rules on every task, without being asked.
 
 ## Repo quick facts
 
-- Node >= 20 <23, ESM (`"type": "module"`).
+- Node >= 22.23.4 <23 (security baseline; see engines), ESM (`"type": "module"`).
 - Local server: `npm start` → http://localhost:3000 (dev data in `data/`).
 - Packaged desktop app writes to
   `~/Library/Application Support/Searchable/data`.
