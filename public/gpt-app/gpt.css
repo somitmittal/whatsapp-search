@@ -521,6 +521,8 @@ html[data-theme="dark"] .wa-tb-forward,
 html[data-theme="dark"] .wa-tb-edit { color: #aebac1; }
 html[data-theme="dark"] .rx-chip { background: rgba(255,255,255,0.08); color: #e9edef; }
 html[data-theme="dark"] .rx-chip .rx-n { color: #8696a0; }
+html[data-theme="dark"] .wa-reaction-picker { background: #233138; border-color: #2a3942; }
+html[data-theme="dark"] .wa-picker-quick { border-bottom-color: #2a3942; }
 
 /* ─ WhatsApp chat composer inside the GPT app (light, matches /css/app.css) ─ */
 .gpt-wa-composer .reply-to-bar,

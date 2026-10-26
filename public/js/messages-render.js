@@ -5,6 +5,16 @@ import { mediaDownloadUrl, mediaUrlForMessage, messageMediaDownloadAnchor } from
 import { $, esc, escAttr, hash } from './util.js';
 
 let imageViewerEl = null;
+/** WhatsApp Web icon paths for the message menu (mirror of WA's own icons). */
+const WA_ICONS = {
+  chevron: '<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true"><path d="M12 15.5 6.6 10.1 8 8.7l4 4 4-4 1.4 1.4z"/></svg>',
+  reply: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M10 8.5V13a1 1 0 0 1-1.7.71l-4.6-4.6a1 1 0 0 1 0-1.41l4.6-4.6A1 1 0 0 1 10 3.8V5.5c5.6.3 9.7 3.7 10.9 9.1.4 1.7.2 3-.2 4.3-.2.6-1 .7-1.4.2-2.4-3.4-5.4-5.6-9.3-6.3z"/></svg>',
+  forward: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M14 8.5V13a1 1 0 0 0 1.7.71l4.6-4.6a1 1 0 0 0 0-1.41l-4.6-4.6A1 1 0 0 0 14 3.8V5.5C8.4 5.8 4.3 9.2 3.1 14.6c-.4 1.7-.2 3 .2 4.3.2.6 1 .7 1.4.2 2.4-3.4 5.4-5.6 9.3-6.3z"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M14.1 6.3 17.7 9.9 9 18.6l-3.4.7a.7.7 0 0 1-.8-.8l.7-3.4 8.6-8.8zm1.4-1.4a1.6 1.6 0 0 0-2.3 0l-8.8 9a1.6 1.6 0 0 0-.43.8l-.77 3.9a1.7 1.7 0 0 0 2 2l3.9-.77c.3-.1.6-.24.8-.43l9-8.8a1.6 1.6 0 0 0 0-2.3l-3.4-3.4z"/></svg>',
+  delete: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M9.5 4h5a1 1 0 0 1 1 1v.5H19a1 1 0 1 1 0 2h-.6l-.7 10.6A2.5 2.5 0 0 1 15.2 20.5H8.8a2.5 2.5 0 0 1-2.5-2.4L5.6 7.5H5a1 1 0 1 1 0-2h3.5V5a1 1 0 0 1 1-1zm.5 2h4v-.5h-4V6zm-3.3 1.5.6 10.75c.03.55.48.75 1 .75h6.4c.52 0 .97-.2 1-.75l.6-10.75H6.7zM10 9.5a.75.75 0 0 1 .75.75v6a.75.75 0 1 1-1.5 0v-6A.75.75 0 0 1 10 9.5zm4 0a.75.75 0 0 1 .75.75v6a.75.75 0 1 1-1.5 0v-6A.75.75 0 0 1 14 9.5z"/></svg>',
+  react: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM1.5 12C1.5 6.2 6.2 1.5 12 1.5S22.5 6.2 22.5 12 17.8 22.5 12 22.5 1.5 17.8 1.5 12zM8.4 7.6a4 4 0 0 1 2.9 1.1 1 1 0 1 1-1.3 1.4 2 2 0 0 0-2.9 0L5.7 8.7a4 4 0 0 1 2.7-1.1zm7.2 0a4 4 0 0 1 2.7 1.1l-1.4 1.4a2 2 0 0 0-2.9 0 1 1 0 1 1-1.3-1.4 4 4 0 0 1 2.9-1.1z"/><path d="M12 13.2c2.2 0 4 1.4 4 3.1 0 .9-.5 1.7-1.2 2.2a1 1 0 0 1-.8.1 6.6 6.6 0 0 0-4 0 1 1 0 0 1-.8-.1c-.7-.5-1.2-1.3-1.2-2.2 0-1.7 1.8-3.1 4-3.1z"/></svg>',
+};
+const WA_REACTION_QUICK = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 const MORE_REACTION_EMOJIS = [
   '😀','😃','😄','😁','😆','😅','😂','🤣','🥲','😊','😇','🙂','🙃','😉','😍','🥰',
   '😘','😗','😋','😛','🤪','😎','🤩','🥳','😏','😔','😟','😢','😭','😤','😡','🤔',
@@ -20,10 +30,18 @@ export function toggleReactionEmojiPicker(button) {
   if (!picker) return;
   const shouldOpen = picker.hidden;
   closeReactionEmojiPickers();
+  closeMessageMenus();
   if (shouldOpen && !picker.dataset.ready) {
-    picker.innerHTML = MORE_REACTION_EMOJIS.map((emoji) =>
-      `<button type="button" class="wa-tb" data-wa-react="${escAttr(emoji)}" title="React ${escAttr(emoji)}" aria-label="React ${escAttr(emoji)}">${esc(emoji)}</button>`,
-    ).join('');
+    // WhatsApp's react sheet: six quick reactions first, then the full grid.
+    picker.innerHTML = `<div class="wa-picker-quick">`
+      + WA_REACTION_QUICK.map((emoji) =>
+        `<button type="button" class="wa-tb" data-wa-react="${escAttr(emoji)}" title="React ${escAttr(emoji)}" aria-label="React ${escAttr(emoji)}">${esc(emoji)}</button>`).join('')
+      + `<button type="button" class="wa-tb wa-tb-remove-reaction" data-wa-react="" title="Remove your reaction" aria-label="Remove your reaction">-</button>`
+      + `</div>`
+      + `<div class="wa-picker-grid">`
+      + MORE_REACTION_EMOJIS.map((emoji) =>
+        `<button type="button" class="wa-tb" data-wa-react="${escAttr(emoji)}" title="React ${escAttr(emoji)}" aria-label="React ${escAttr(emoji)}">${esc(emoji)}</button>`).join('')
+      + `</div>`;
     picker.dataset.ready = '1';
   }
   picker.hidden = !shouldOpen;
@@ -33,8 +51,33 @@ export function closeReactionEmojiPickers() {
   document.querySelectorAll('.wa-reaction-picker:not([hidden])').forEach((picker) => { picker.hidden = true; });
 }
 
+/** The WhatsApp-style ▾ dropdown (Reply / React / Forward / Edit / Delete). */
+export function toggleMessageMenu(button) {
+  const menu = button?.closest('.bubble-toolbar')?.querySelector('.wa-msg-menu');
+  if (!menu) return;
+  const shouldOpen = menu.hidden;
+  closeReactionEmojiPickers();
+  closeMessageMenus();
+  menu.hidden = !shouldOpen;
+}
+
+export function closeMessageMenus() {
+  document.querySelectorAll('.wa-msg-menu:not([hidden])').forEach((menu) => { menu.hidden = true; });
+}
+
 document.addEventListener('click', (event) => {
-  if (!event.target?.closest?.('.bubble-toolbar')) closeReactionEmojiPickers();
+  if (event.target?.closest?.('.wa-msg-menu')) closeMessageMenus();
+  if (!event.target?.closest?.('.bubble-toolbar')) {
+    closeReactionEmojiPickers();
+    closeMessageMenus();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    closeReactionEmojiPickers();
+    closeMessageMenus();
+  }
 });
 
 function closeChatImageViewer() {
@@ -360,37 +403,36 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     const canForward = (store._waState === 'READY' || store._waState === 'SYNCING') && !isDeleted && !jid.endsWith('@imported');
     const canEdit = liveOk && out && !isDeleted && !!(m.text && String(m.text).trim()) && !m.mediaType;
     const canDelete = !!mid && !isDeleted;
-    let actionBtns = '';
+    let menu = '';
     // Media context for the WhatsApp-style reply quote (label + thumbnail).
     // Thumb only for renderable media with a local file; sender only for incoming.
     const replyMetaAttrs = (m.mediaType ? ` data-media-type="${escAttr(m.mediaType)}"` : '')
       + (mediaUrl && ['image', 'video', 'sticker'].includes(m.mediaType) ? ` data-media-thumb="${escAttr(mediaUrl)}"` : '')
       + (!out && m.sender ? ` data-sender="${escAttr(m.sender)}"` : '');
+    // WhatsApp-style message menu rows (▾ chevron on hover opens this menu).
+    const menuRow = (cls, attrs, icon, label) =>
+      `<button type="button" class="wa-menu-item ${cls}" role="menuitem" ${attrs}>${icon}<span>${label}</span></button>`;
     if (canReply) {
-      actionBtns += `<button type="button" class="wa-tb wa-tb-reply" data-wa-reply="1" data-reply-preview="${escAttr(previewTxt)}"${replyMetaAttrs} title="Reply">↩︎</button>`;
+      menu += menuRow('mi-reply', `data-wa-reply="1" data-reply-preview="${escAttr(previewTxt)}"${replyMetaAttrs}`, WA_ICONS.reply, 'Reply');
     }
+    if (liveOk) {
+      menu += menuRow('mi-react', 'data-wa-emoji-picker-toggle="1"', WA_ICONS.react, 'React');
+    }
+    menu += menuRow('mi-ai', `data-wa-ai-search="1" data-ai-preview="${escAttr(previewTxt)}"`, aiSvg, 'AI search');
     if (canForward) {
-      actionBtns += `<button type="button" class="wa-tb wa-tb-forward" data-wa-forward="1" data-forward-preview="${escAttr(previewTxt)}"${replyMetaAttrs} title="Forward">↪</button>`;
+      menu += menuRow('mi-forward', `data-wa-forward="1" data-forward-preview="${escAttr(previewTxt)}"${replyMetaAttrs}`, WA_ICONS.forward, 'Forward');
     }
     if (canEdit) {
-      actionBtns += `<button type="button" class="wa-tb wa-tb-edit" data-wa-edit="1" data-edit-preview="${escAttr(String(m.text || '').slice(0, 2000))}" title="Edit">✎</button>`;
+      menu += menuRow('mi-edit', `data-wa-edit="1" data-edit-preview="${escAttr(String(m.text || '').slice(0, 2000))}"`, WA_ICONS.edit, 'Edit');
     }
     if (canDelete) {
-      actionBtns += `<button type="button" class="wa-tb wa-tb-delete" data-wa-delete="1" data-from-me="${out ? '1' : '0'}" title="Delete">🗑</button>`;
+      menu += menuRow('mi-delete', `data-wa-delete="1" data-from-me="${out ? '1' : '0'}"`, WA_ICONS.delete, 'Delete');
     }
     const toolbar = mid && !isDeleted ? `<div class="bubble-toolbar">
           <div class="bubble-toolbar-reacts">
-          <button type="button" class="wa-tb wa-tb-ai" data-wa-ai-search="1" data-ai-preview="${escAttr(previewTxt)}" title="AI Search using this message as context" aria-label="AI Search using this message">${aiSvg}</button>
-          ${liveOk ? `
-          <button type="button" class="wa-tb" data-wa-react="👍" title="React 👍">👍</button>
-          <button type="button" class="wa-tb" data-wa-react="❤️" title="React ❤️">❤️</button>
-          <button type="button" class="wa-tb" data-wa-react="😂" title="React 😂">😂</button>
-          <button type="button" class="wa-tb" data-wa-react="😮" title="React 😮">😮</button>
-          <button type="button" class="wa-tb" data-wa-react="😢" title="React 😢">😢</button>
-          <button type="button" class="wa-tb wa-tb-emoji-picker" data-wa-emoji-picker-toggle="1" title="More emojis" aria-label="More emojis">☻</button>
-          <button type="button" class="wa-tb wa-tb-remove-reaction" data-wa-react="" title="Remove your reaction" aria-label="Remove your reaction">×</button>` : ''}
-          ${actionBtns}
+          <button type="button" class="wa-tb wa-msg-menu-toggle" data-wa-menu-toggle="1" title="Message options" aria-label="Message options" aria-haspopup="menu">${WA_ICONS.chevron}</button>
           </div>
+          <div class="wa-msg-menu" hidden role="menu" aria-label="Message options">${menu}</div>
           ${liveOk ? '<div class="wa-reaction-picker" hidden aria-label="Choose a reaction"></div>' : ''}
         </div>` : '';
     html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxHtml}</div>`;

@@ -18,6 +18,7 @@ import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js/message-actions.js';
 import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
+import { toggleMessageMenu } from '/js/messages-render.js';
 import { initMenus, promptDeleteChat, showSidebarContextMenu } from '/js/menus.js';
 import { buildChatMessagesHtml, closeReactionEmojiPickers, postWaReaction, toggleReactionEmojiPicker } from '/js/messages-render.js';
 import { initOverlays, openOverlay, setSettingsTab as setOverlaySettingsTab } from '/js/overlays.js';
@@ -2380,6 +2381,12 @@ function wire() {
   els.askAi?.addEventListener('click', () => askAiAboutActiveChat());
 
   els.waView?.addEventListener('click', async (e) => {
+    const menuBtn = e.target.closest('[data-wa-menu-toggle]');
+    if (menuBtn) {
+      e.stopPropagation();
+      toggleMessageMenu(menuBtn);
+      return;
+    }
     const aiBtn = e.target.closest('[data-wa-ai-search]');
     if (aiBtn) {
       const block = e.target.closest('.msg-block');

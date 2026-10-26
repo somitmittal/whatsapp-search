@@ -7,7 +7,7 @@ import { displayChatTitle, formatChatBubbleDateTime, formatDate, isResolvedChatN
 import { mediaDownloadUrl } from './media.js';
 import { activeChatHasLocalMessages } from './menus.js';
 import { openForwardOverlay, promptDeleteMessage } from './message-actions.js';
-import { buildChatMessagesHtml, closeReactionEmojiPickers, mediaIndexStateHtml, postWaReaction, renderMessages, toggleReactionEmojiPicker } from './messages-render.js';
+import { buildChatMessagesHtml, closeReactionEmojiPickers, mediaIndexStateHtml, postWaReaction, renderMessages, toggleMessageMenu, toggleReactionEmojiPicker } from './messages-render.js';
 import { closeAllOverlays, setMobileChatOpen, switchPanel } from './overlays.js';
 import { clearSearch, openSearchAssistant } from './search.js';
 import { renderChatsFromState, setSidebarListTab, sidebarTabOf } from './sidebar.js';
@@ -521,6 +521,12 @@ export function initChatView() {
   }, { passive: true });
 
   $('#cv-messages')?.addEventListener('click', async (e) => {
+    const menuBtn = e.target.closest('[data-wa-menu-toggle]');
+    if (menuBtn) {
+      e.stopPropagation();
+      toggleMessageMenu(menuBtn);
+      return;
+    }
     const aiBtn = e.target.closest('[data-wa-ai-search]');
     if (aiBtn) {
       const block = e.target.closest('.msg-block');
