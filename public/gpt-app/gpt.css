@@ -572,16 +572,11 @@ html[data-theme="dark"] .wa-picker-quick { border-bottom-color: #2a3942; }
 }
 .gpt-wa-composer .chat-composer button.composer-attach:hover,
 .gpt-wa-composer .chat-composer button.composer-mic:hover { background: #e8edef; }
-.gpt-wa-composer .voice-rec-bar {
   display: flex; align-items: center; gap: 10px; padding: 10px 14px;
   background: #f0f2f5; border-top: 1px solid var(--line); font-size: 13px;
 }
-.gpt-wa-composer .voice-rec-time { font-variant-numeric: tabular-nums; color: var(--fg); font-weight: 700; }
-.gpt-wa-composer .voice-rec-hint { flex: 1; color: var(--fg-3, #667781); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gpt-wa-composer .voice-rec-bar button {
   border: none; border-radius: 999px; font-weight: 700; cursor: pointer; min-height: 36px; padding: 8px 14px; font-family: inherit;
 }
-.gpt-wa-composer .voice-rec-bar [hidden] { display: none !important; }
 .gpt-wa-composer .file-attachment-chip {
   padding: 4px 14px; font-size: 12.5px;
 }
@@ -600,11 +595,6 @@ html[data-theme="dark"] .wa-quote { background: rgba(255,255,255,0.07); }
 html[data-theme="dark"] .wa-quote-text { color: #aebac1; }
 html[data-theme="dark"] .wa-quote-close { color: #aebac1; }
 html[data-theme="dark"] .wa-quote-close:hover { background: #2a3942; color: #e9edef; }
-html[data-theme="dark"] .voice-rec-bar { background: #1f2c33; border-top-color: #2a3942; }
-html[data-theme="dark"] .voice-rec-time { color: #e9edef; }
-html[data-theme="dark"] .voice-rec-hint { color: #8696a0; }
-html[data-theme="dark"] .voice-rec-bar #msg-voice-cancel { color: #aebac1; border-color: #2a3942; }
-html[data-theme="dark"] .voice-rec-bar #msg-voice-cancel:hover { background: #2a3942; }
 html[data-theme="dark"] .chat-composer button.composer-mic { color: #8696a0; border-color: #2a3942; }
 html[data-theme="dark"] .chat-composer button.composer-mic:hover { background: #2a3942; color: #00a884; }
 
