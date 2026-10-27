@@ -1,10 +1,11 @@
 import { store } from './store.js';
+import { initVoiceNoteUI, refreshComposerMic, cancelVoiceUi } from './voice-note.js';
 import { refreshOpenChatMessages } from './chat-view.js';
 import { applyMessageEditedToDom } from './messages-render.js';
 import { scheduleRefreshDash } from './sidebar.js';
 import { $, esc, escAttr } from './util.js';
 import { wantsLiveSyncUi } from './wa-connection.js';
-import { cancelVoiceUi, initVoiceNoteUI, refreshComposerMic } from './voice-note.js';
+import { $ } from './util.js';
 
 export function shouldHideComposerForJid(jid) {
   if (!jid) return true;
@@ -77,7 +78,7 @@ export function clearReplyTarget() {
   store.replyTarget = null;
   const bar = $('#reply-to-bar');
   if (bar) { bar.style.display = 'none'; bar.innerHTML = ''; }
-  refreshComposerMic();
+  // removed with voice-note UI
 }
 
 export function clearEditTarget() {
@@ -89,7 +90,7 @@ export function clearEditTarget() {
   if (btn) btn.textContent = 'Send';
   const input = document.getElementById('msg-text');
   if (input) input.placeholder = 'Type a message…';
-  refreshComposerMic();
+  // removed with voice-note UI
 }
 
 /**
@@ -112,7 +113,7 @@ export function setReplyTarget(messageId, preview, meta = {}) {
       closeLabel: 'Cancel reply',
     });
   }
-  refreshComposerMic();
+  // removed with voice-note UI
   document.getElementById('msg-text')?.focus?.();
 }
 
@@ -132,7 +133,7 @@ export function setEditTarget(messageId, preview) {
       closeLabel: 'Cancel edit',
     });
   }
-  refreshComposerMic();
+  // removed with voice-note UI
   const btn = document.getElementById('msg-send');
   if (btn) btn.textContent = 'Save';
   const input = document.getElementById('msg-text');
@@ -322,7 +323,7 @@ export async function sendCurrentMessage() {
 }
 
 export function initComposer() {
-  initVoiceNoteUI();
+  // removed with voice-note UI
   document.getElementById('msg-send')?.addEventListener('click', sendCurrentMessage);
 
   const fileInput = document.getElementById('msg-file-input');
@@ -395,3 +396,4 @@ export function initComposer() {
 
   bindQuoteClear();
 }
+  initVoiceNoteUI();
