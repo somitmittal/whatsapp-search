@@ -1,4 +1,5 @@
 import { store } from './store.js';
+import { initVoiceNoteUI, refreshComposerMic, cancelVoiceUi } from './voice-note.js';
 import { refreshOpenChatMessages } from './chat-view.js';
 import { applyMessageEditedToDom } from './messages-render.js';
 import { scheduleRefreshDash } from './sidebar.js';
@@ -22,7 +23,7 @@ export function updateComposerVisibility() {
   const canSend = canSendMessageToJid(store.activeChat);
   if (composer) composer.style.display = canSend ? '' : 'none';
   if (!canSend) { clearReplyTarget(); clearEditTarget(); }
-  // refreshComposerMic removed with voice-note UI
+  refreshComposerMic();
   const newMsgBtn = document.getElementById('btn-new-message');
   if (newMsgBtn) {
     const show = wantsLiveSyncUi() && (store._waState === 'READY' || store._waState === 'SYNCING');
@@ -395,3 +396,4 @@ export function initComposer() {
 
   bindQuoteClear();
 }
+  initVoiceNoteUI();
