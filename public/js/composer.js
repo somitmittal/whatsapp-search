@@ -5,7 +5,6 @@ import { applyMessageEditedToDom } from './messages-render.js';
 import { scheduleRefreshDash } from './sidebar.js';
 import { $, esc, escAttr } from './util.js';
 import { wantsLiveSyncUi } from './wa-connection.js';
-import { $ } from './util.js';
 
 export function shouldHideComposerForJid(jid) {
   if (!jid) return true;
