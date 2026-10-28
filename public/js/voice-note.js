@@ -93,15 +93,29 @@ function stopRecording() {
   if (!entry) return null;
   clearInterval(entry.timer);
   active = null;
-  try { entry.stream.getTracks().forEach((t) => t.stop()); } catch { /* */ }
-  let blob = null;
-  try {
-    blob = entry.recorder.state !== 'inactive' && entry.chunks.length
-      ? new Blob(entry.chunks, { type: entry.mime })
-      : null;
-  } catch { blob = null; }
-  try { entry.onStopUi?.(); } catch { /* */ }
-  return { blob, mime: entry.mime, startedAt: entry.startedAt, kind: entry.kind };
+  const { recorder, stream, chunks, mime, startedAt, kind } = entry;
+  // MediaRecorder only flushes its buffer on stop(); the final `dataavailable`
+  // fires asynchronously, so we must stop() and wait before building the Blob.
+  const done = new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      try { resolve(chunks.length ? new Blob(chunks, { type: mime }) : null); } catch { resolve(null); }
+    };
+    recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+    recorder.onstop = finish;
+    try {
+      if (recorder.state === 'inactive') finish();
+      else recorder.stop();
+    } catch { finish(); }
+    setTimeout(finish, 1500); // safety net if neither event fires
+  });
+  return done.then((blob) => {
+    try { stream.getTracks().forEach((t) => t.stop()); } catch { /* */ }
+    try { entry.onStopUi?.(); } catch { /* */ }
+    return { blob, mime, startedAt, kind };
+  });
 }
 
 function cancelRecording() {
@@ -200,8 +214,8 @@ function wireVoiceNoteComposer() {
   });
 
   pill.querySelector('button[aria-label="Cancel"]')?.addEventListener('click', cancelRecording);
-  pill.querySelector('button[aria-label="Send voice"]')?.addEventListener('click', () => {
-    const stopped = stopRecording();
+  pill.querySelector('button[aria-label="Send voice"]')?.addEventListener('click', async () => {
+    const stopped = await stopRecording();
     if (stopped?.blob) void sendVoiceNote(stopped.blob, stopped.mime);
     else exitRecording();
   });
@@ -255,7 +269,7 @@ function wireAskAiDictation() {
   mic.addEventListener('click', async () => {
     if (active && active.kind === 'dictate') {
       // Click again to stop and transcribe; a second stop is a no-op.
-      const stopped = stopRecording();
+      const stopped = await stopRecording();
       mic.classList.remove('recording');
       if (stopped?.blob) await transcribeAndInsert(stopped.blob, stopped.mime);
       return;
