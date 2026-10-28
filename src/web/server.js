@@ -34,6 +34,7 @@ import {
 } from '../whatsapp/unread-tracker.js';
 import { isSafeAvatarFileName, jidsNeedingAvatars } from '../whatsapp/chat-avatars.js';
 import { MAX_AUDIO_BYTES, isAudioMime } from '../whatsapp/voice-content.js';
+import { playableAudioFor } from './audio-transcode.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
@@ -1500,7 +1501,7 @@ export default class WebServer {
       }
     });
 
-    this._app.get('/api/message-media', (req, res) => {
+    this._app.get('/api/message-media', async (req, res) => {
       try {
         const messageId = String(req.query.messageId || '').trim();
         if (!messageId) return res.status(400).json({ error: 'messageId is required' });
@@ -1518,16 +1519,21 @@ export default class WebServer {
         const fname = attachmentFilenameFromMessage(safe, messageId, nameHint);
         const ext = (fname.split('.').pop() || '').toLowerCase();
         const typeFromName = contentTypeForMediaFile(`.${ext}`);
+        // WhatsApp voice notes are Ogg Opus, which Safari cannot decode. Serve an
+        // AAC/m4a transcode (cached) so playback works in every browser.
+        const playable = await playableAudioFor(safe);
+        const servePath = playable.path;
         res.setHeader(
           'Content-Type',
-          typeFromName !== 'application/octet-stream' ? typeFromName : contentTypeForMediaFile(safe),
+          playable.contentType
+            || (typeFromName !== 'application/octet-stream' ? typeFromName : contentTypeForMediaFile(safe)),
         );
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Cache-Control', 'private, max-age=3600');
         if (wantDownload) {
           res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
         }
-        return res.sendFile(safe, { dotfiles: 'allow' });
+        return res.sendFile(servePath, { dotfiles: 'allow' });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
