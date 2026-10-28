@@ -1996,4 +1996,10 @@
     }
   }
   .voice-pill { display:inline-flex;gap:6px;padding:6px 12px;border-radius:999px;background:#111b21;color:#fff;font-size:13px;position:fixed;bottom:72px;left:50%;transform:translateX(-50%);z-index:20;box-shadow:0 4px 12px rgba(0,0,0,.2);pointer-events:auto; }
-.voice-pill[hidden]{display:none!important}.voice-pill-time{font-variant-numeric:tabular-nums;font-weight:600}
+.voice-pill[hidden]{display:none!important}
+.voice-pill-time{font-variant-numeric:tabular-nums;font-weight:600}
+.voice-pill-status{font-weight:600;opacity:.9}
+.voice-pill-dot{width:8px;height:8px;border-radius:50%;background:#f15c6d;flex:0 0 8px;animation:vp-blink 1s ease-in-out infinite}
+.voice-pill button{border:0;background:rgba(255,255,255,.14);color:#fff;border-radius:999px;padding:4px 10px;font-size:12px;font-weight:600;cursor:pointer}
+.voice-pill button:hover{background:rgba(255,255,255,.24)}
+@keyframes vp-blink{0%,100%{opacity:1}50%{opacity:.35}}
