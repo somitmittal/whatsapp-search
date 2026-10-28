@@ -1,6 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import {
   HISTORY_SYNC_TYPE_FULL,
+  filterRowsByRetention,
   fullHistoryBackoffSec,
   shouldRequestRecentDaysCatchUp,
   shouldSyncHistoryMessage,
@@ -74,5 +75,47 @@ describe('shouldRequestRecentDaysCatchUp', () => {
       nowSec: 1_000_000,
       cooldownSec: 3600,
     })).toBe(true);
+  });
+});
+
+describe('filterRowsByRetention', () => {
+  const nowSec = 1_000_000;
+  const row = (ts) => ({ timestamp: ts });
+
+  test('default keeps the entire archive so older messages are stored', () => {
+    const rows = [row(nowSec), row(nowSec - 40 * 24 * 60 * 60), row(nowSec - 365 * 24 * 60 * 60)];
+    const { keep, skipped } = filterRowsByRetention(rows, { keepDays: 0, nowSec });
+    expect(keep).toHaveLength(3);
+    expect(skipped).toBe(0);
+  });
+
+  test('a positive window sheds only rows older than N days', () => {
+    const rows = [
+      row(nowSec - 1 * 60),
+      row(nowSec - 7 * 24 * 60 * 60),      // exactly on the edge — kept
+      row(nowSec - 8 * 24 * 60 * 60 + 1),  // just inside 8d window — kept
+      row(nowSec - 9 * 24 * 60 * 60),      // outside — shed
+    ];
+    const { keep, skipped } = filterRowsByRetention(rows, { keepDays: 8, nowSec });
+    expect(keep).toHaveLength(3);
+    expect(skipped).toBe(1);
+  });
+
+  test('tolerates malformed rows and non-array input', () => {
+    expect(filterRowsByRetention(null, { keepDays: 7, nowSec })).toEqual({ keep: [], skipped: 0 });
+    const { keep, skipped } = filterRowsByRetention(
+      [row(nowSec), { timestamp: undefined }, { timestamp: 'junk' }],
+      { keepDays: 7, nowSec },
+    );
+    expect(keep).toHaveLength(1);
+    expect(skipped).toBe(2);
+  });
+
+  test('negative or fractional keepDays clamps like the config parse does', () => {
+    const rows = [row(nowSec - 400 * 24 * 60 * 60), row(nowSec)];
+    const { keep } = filterRowsByRetention(rows, { keepDays: -3, nowSec });
+    expect(keep).toHaveLength(2);
+    const frac = filterRowsByRetention([row(nowSec - 22 * 3600)], { keepDays: 1.5, nowSec });
+    expect(frac.keep).toHaveLength(1);
   });
 });

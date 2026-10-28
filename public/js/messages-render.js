@@ -366,7 +366,31 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     } else if (mediaUrl && m.mediaType === 'video') {
       body = `<span class="media-wrap"><video class="msg-media-vid" src="${escAttr(mediaUrl)}" controls playsinline preload="metadata"></video>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
     } else if (mediaUrl && m.mediaType === 'audio') {
-      body = `<span class="media-wrap"><audio class="msg-media-audio" src="${escAttr(mediaUrl)}" controls preload="metadata"></audio>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
+      // WhatsApp-style voice note: compact pill with circular play button,
+      // pseudo-waveform bars, and duration — instead of the raw browser
+      // <audio controls> bar, which looked like a generic left-aligned control.
+      const barCount = 28;
+      const bars = Array.from({ length: barCount }, (_, i) => {
+        // Deterministic pseudo-waveform derived from the message id so the
+        // shape is stable across re-renders.
+        const seed = hash(`${mid}:${i}`) || (i * 37 + 7);
+        const h = 4 + (seed % 13); // 4..16px
+        return `<span class="vn-bar" style="height:${h}px"></span>`;
+      }).join('');
+      body = `<span class="media-wrap">
+        <span class="wa-voice-note" data-mid="${escAttr(mid)}">
+          <button type="button" class="vn-play" aria-label="Play voice note" data-state="paused">
+            <svg class="vn-icon-play" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            <svg class="vn-icon-pause" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+          </button>
+          <span class="vn-track">${bars}</span>
+          <span class="vn-time">0:00</span>
+        </span>
+        <audio class="vn-audio" src="${escAttr(mediaUrl)}" preload="metadata"></audio>
+        ${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}
+        ${cap ? `<span class="media-cap">${cap}</span>` : ''}
+        ${mediaIndexStateHtml(m)}${mediaDl}
+      </span>`;
     } else if (mediaUrl && m.mediaType === 'document') {
       const joint = `${m.mediaCaption || ''} ${m.text || ''}`.toLowerCase();
       const isPdf = joint.includes('.pdf');
@@ -473,3 +497,49 @@ export function renderMessages(msgs, jid, focusMessageId = null) {
     c.scrollTop = c.scrollHeight;
   }
 }
+// --- WhatsApp-style voice note playback (delegated) ---
+function _vnFmt(s) {
+  if (!isFinite(s) || s < 0) return '0:00';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return m + ':' + String(sec).padStart(2, '0');
+}
+function _vnNote(audio) { return audio ? audio.closest('.wa-voice-note') : null; }
+function _vnUpdate(note, audio) {
+  if (!note || !audio) return;
+  const bars = note.querySelectorAll('.vn-bar');
+  const dur = isFinite(audio.duration) ? audio.duration : 0;
+  const pct = dur > 0 ? (audio.currentTime / dur) : 0;
+  const filled = Math.round(pct * bars.length);
+  bars.forEach((b, i) => b.classList.toggle('vn-bar--filled', i < filled));
+  const t = note.querySelector('.vn-time');
+  if (t) t.textContent = audio.paused ? _vnFmt(dur) : _vnFmt(audio.currentTime);
+  const btn = note.querySelector('.vn-play');
+  if (btn) {
+    const play = btn.querySelector('.vn-icon-play');
+    const pause = btn.querySelector('.vn-icon-pause');
+    if (play) play.style.display = audio.paused ? '' : 'none';
+    if (pause) pause.style.display = audio.paused ? 'none' : '';
+  }
+}
+document.addEventListener('click', (ev) => {
+  const btn = ev.target && ev.target.closest ? ev.target.closest('.vn-play') : null;
+  if (!btn) return;
+  const note = btn.closest('.wa-voice-note');
+  const audio = note ? note.querySelector('.vn-audio') : null;
+  if (!audio) return;
+  ev.preventDefault();
+  if (audio.paused) { audio.play().catch(() => {}); } else { audio.pause(); }
+}, true);
+['timeupdate', 'loadedmetadata', 'durationchange', 'play', 'pause', 'ended'].forEach((evt) => {
+  document.addEventListener(evt, (ev) => {
+    const audio = ev.target;
+    if (!audio || !audio.classList || !audio.classList.contains('vn-audio')) return;
+    const note = _vnNote(audio);
+    if (evt === 'ended') {
+      audio.currentTime = 0;
+      audio.pause();
+    }
+    _vnUpdate(note, audio);
+  }, true);
+});
