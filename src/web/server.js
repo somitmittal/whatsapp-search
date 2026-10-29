@@ -1518,10 +1518,19 @@ export default class WebServer {
         const nameHint = [row.mediaCaption, row.text].filter(Boolean).join(' ');
         const fname = attachmentFilenameFromMessage(safe, messageId, nameHint);
         const ext = (fname.split('.').pop() || '').toLowerCase();
-        const typeFromName = contentTypeForMediaFile(`.${ext}`);
-        // WhatsApp voice notes are Ogg Opus, which Safari cannot decode. Serve an
-        // AAC/m4a transcode (cached) so playback works in every browser.
-        const playable = await playableAudioFor(safe);
+        let typeFromName = contentTypeForMediaFile(`.${ext}`);
+        // WhatsApp AAC voice notes often land on disk as `.mp4` (audio in an MP4
+        // container). The extension alone yields video/mp4, which — with
+        // X-Content-Type-Options: nosniff — browsers may refuse in an <audio>
+        // element. The DB row knows it is a voice note; trust that.
+        if (typeFromName === 'video/mp4'
+          && (row.mediaType === 'audio' || row.mediaType === 'ptt')) {
+          typeFromName = 'audio/mp4';
+        }
+        // Only voice notes (DB audio/ptt rows) get playable copies — genuine
+        // documents/videos/images must pass through untouched.
+        const isVoiceNote = row.mediaType === 'audio' || row.mediaType === 'ptt';
+        const playable = isVoiceNote ? await playableAudioFor(safe) : { path: safe, contentType: null };
         const servePath = playable.path;
         res.setHeader(
           'Content-Type',
