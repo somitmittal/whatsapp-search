@@ -978,8 +978,14 @@ export default class WaClient {
     }
     let version = [2, 3000, 1015901307];
     try {
-      const v = await fetchLatestBaileysVersion();
-      version = v.version;
+      // Bounded fetch: this HTTPS call has no timeout inside Baileys, and DNS/TCP
+      // stalls would hang startup before the socket is ever created (log stuck at
+      // the WA_SYNC separator with no "Baileys — WA version" line). 8s cap, then
+      // fall back to the bundled version — a stale version still connects fine.
+      version = await Promise.race([
+        fetchLatestBaileysVersion().then((v) => v.version),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('version fetch timeout')), 8000)),
+      ]).catch(() => version);
     } catch {}
     console.log(`[WA] Baileys — WA version ${version.join('.')}`);
     this._setState('LOADING', 'Connecting to WhatsApp…');
