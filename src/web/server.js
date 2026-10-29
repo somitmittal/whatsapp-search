@@ -3732,6 +3732,19 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const publicUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${config.webPort}`;
         console.log(`\nListening on ${config.webHost}:${config.webPort}`);
         console.log(`Web UI: ${publicUrl}\n`);
+        // Auto-start the WhatsApp connection for the default tenant when saved
+        // credentials exist. Previously the client only connected once a browser
+        // page called /api/wa/connect — with no UI open, startup looked hung at
+        // the "WA_SYNC_FULL_HISTORY" separator forever.
+        try {
+          const wa = this._ensureTenantWaClient(config.defaultTenantId);
+          if (wa?.hasSavedCreds) {
+            console.log('[WA] Saved credentials found — auto-connecting on startup');
+            wa.start().catch((err) => console.error('[WA] Auto-start error:', err.message));
+          }
+        } catch (err) {
+          console.warn('[WA] Auto-start skipped:', err.message);
+        }
         resolve();
       });
     });
