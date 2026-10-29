@@ -1,8 +1,12 @@
 /**
- * WhatsApp voice notes are Ogg Opus. Safari (the macOS default browser) cannot
- * decode Ogg at all — only Chrome/Firefox can. To make voice notes playable on
- * every browser, transcode Ogg/Opus → AAC/m4a on first serve and cache the
- * result next to the original file. Non-Ogg audio is passed straight through.
+ * WhatsApp voice notes come in browser-hostile wraps:
+ *  - Ogg Opus (`.ogg`/`.oga`/`.opus`): Safari cannot decode Ogg at all.
+ *  - Opus in an MP4 container (`.mp4`/`.m4a` from some client variants):
+ *    Safari has no Opus decoder and Chromium's opus-in-mp4 support is patchy.
+ * To make voice notes playable everywhere, transcode any of these to
+ * AAC/m4a on first serve and cache the result next to the original file.
+ * (Genuine documents/other attachments are untouched — the route only asks
+ * for playable copies of DB audio/ptt rows.)
  */
 import { execFile } from 'child_process';
 import { existsSync, statSync } from 'fs';
@@ -14,15 +18,16 @@ const execFileAsync = promisify(execFile);
 /** Suffix for the cached, browser-playable copy. */
 const PLAY_SUFFIX = '.play.m4a';
 
-const OGG_AUDIO = new Set(['ogg', 'oga', 'opus']);
+/** On-disk extensions whose audio needs an AAC copy for universal playback. */
+const NEEDS_PLAYABLE_COPY = new Set(['ogg', 'oga', 'opus', 'mp4', 'm4a']);
 
 function ffmpegBin() {
   return process.env.FFMPEG_PATH || 'ffmpeg';
 }
 
-export function isOggAudioPath(filePath) {
+export function needsPlayableAudioCopy(filePath) {
   const ext = (String(filePath).split('.').pop() || '').toLowerCase();
-  return OGG_AUDIO.has(ext);
+  return NEEDS_PLAYABLE_COPY.has(ext);
 }
 
 /**
@@ -36,7 +41,7 @@ export function isOggAudioPath(filePath) {
  * @returns {Promise<{ path: string, contentType: string|null }>}
  */
 export async function playableAudioFor(absPath) {
-  if (!isOggAudioPath(absPath)) return { path: absPath, contentType: null };
+  if (!needsPlayableAudioCopy(absPath)) return { path: absPath, contentType: null };
   const target = join(dirname(absPath), `${basenameNoExt(absPath)}${PLAY_SUFFIX}`);
   try {
     if (existsSync(target) && statSync(target).size > 0) {
