@@ -1540,7 +1540,16 @@ export default class WebServer {
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Cache-Control', 'private, max-age=3600');
         if (wantDownload) {
-          res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+          // Phones pick the handler from the filename extension, so it must match
+          // the bytes actually served — a transcode of `<id>.mp4`/`<id>.ogg` is an
+          // `.m4a`, and a mismatched name makes iOS/Android refuse to open it.
+          let dlName = fname;
+          if (servePath !== safe) {
+            const serveExt = (servePath.split('.').pop() || ext || 'bin').toLowerCase();
+            const dot = fname.lastIndexOf('.');
+            dlName = dot > 0 ? `${fname.slice(0, dot)}.${serveExt}` : `${fname}.${serveExt}`;
+          }
+          res.setHeader('Content-Disposition', `attachment; filename="${dlName}"`);
         }
         return res.sendFile(servePath, { dotfiles: 'allow' });
       } catch (err) {
