@@ -456,13 +456,19 @@
 
   .msg-media-img {
     max-width: min(280px, 72vw);
+    width: auto;
+    height: auto;
     border-radius: 8px;
     display: block;
+    object-fit: contain;
   }
   .msg-media-vid {
     max-width: min(320px, 85vw);
     max-height: 360px;
+    width: auto;
+    height: auto;
     border-radius: 8px;
+    object-fit: contain;
   }
   .msg-media-audio { width: min(260px, 80vw); margin-top: 4px; }
   .msg-media-pdf {
@@ -488,7 +494,25 @@
   .media-index-state.unsupported { background: rgba(234,179,8,0.16); color: #8a6100; }
   .media-index-state.failed { background: rgba(234,67,53,0.12); color: #b3261e; }
   .media-index-state.indexed { background: rgba(0,168,132,0.12); color: var(--green-dark); }
-  .media-wrap { display: block; max-width: 100%; }
+  /* Shrink-wrap media bubbles to the image — avoid empty green/white gutter. */
+  .msg-block:has(.msg-media-img),
+  .msg-block:has(.msg-media-vid),
+  .msg-block:has(.msg-media-pdf) {
+    width: fit-content;
+    max-width: min(72%, 340px);
+  }
+  .msg-block:has(.msg-media-img) .bubble,
+  .msg-block:has(.msg-media-vid) .bubble,
+  .msg-block:has(.msg-media-pdf) .bubble {
+    width: fit-content;
+    max-width: 100%;
+  }
+  .media-wrap {
+    display: flex;
+    flex-direction: column;
+    width: fit-content;
+    max-width: 100%;
+  }
   .media-cap { display: block; margin-top: 6px; font-size: 13px; color: inherit; opacity: 0.95; overflow-wrap: anywhere; word-break: break-word; }
 
   .chat-list { flex: 1; overflow-y: auto; scrollbar-width: thin; background: #fafbfc; }

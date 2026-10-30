@@ -135,8 +135,35 @@ html[data-theme="dark"] .wa-menu-item svg { color: #aebac1; }
 .rx-chip .rx-n { font-size: 11px; color: var(--wa-text2); font-weight: 600; }
 
 .msg-deleted-label { font-size: 13px; color: #667781; font-style: italic; }
-.media-wrap { display: block; }
-.msg-media-img, .msg-media-vid { max-width: min(280px, 100%); border-radius: 6px; display: block; }
+/* Shrink-wrap image/video bubbles — otherwise the green/white bubble stretches to
+   msg-block's 72% width while the media stays ≤280px (huge empty gutter). */
+.msg-block:has(.msg-media-img),
+.msg-block:has(.msg-media-vid),
+.msg-block:has(.msg-media-pdf) {
+  width: fit-content;
+  max-width: min(72%, 340px);
+}
+.msg-block:has(.msg-media-img) .bubble,
+.msg-block:has(.msg-media-vid) .bubble,
+.msg-block:has(.msg-media-pdf) .bubble {
+  width: fit-content;
+  max-width: 100%;
+}
+.media-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: fit-content;
+  max-width: 100%;
+}
+.msg-media-img, .msg-media-vid {
+  max-width: min(280px, 72vw);
+  width: auto;
+  height: auto;
+  border-radius: 6px;
+  display: block;
+  object-fit: contain;
+}
 .msg-media-img { cursor: zoom-in; }
 .chat-image-viewer[hidden] { display: none !important; }
 .chat-image-viewer {
