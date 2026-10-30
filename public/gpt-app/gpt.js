@@ -2124,12 +2124,15 @@ function wire() {
     }
   });
   els.priorityLoad?.addEventListener('click', async () => {
-    if (!state.activeChatJid) return;
+    if (!state.activeChatJid || els.priorityLoad.classList.contains('is-busy')) return;
+    els.priorityLoad.classList.add('is-busy');
     try {
-      await priorityLoadChat(state.activeChatJid);
+      await priorityLoadChat(state.activeChatJid, { alertResult: false });
       await loadChats();
     } catch (e) {
-      alert(e.message || 'Could not prioritize this chat');
+      alert(e.message || 'Could not refresh this chat');
+    } finally {
+      els.priorityLoad.classList.remove('is-busy');
     }
   });
   els.deleteChat?.addEventListener('click', () => {
