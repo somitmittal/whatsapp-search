@@ -381,6 +381,7 @@
   }
 
   function track(cfg, event, properties) {
+    if (!cfg?.licenseGate) return;
     const url = apiUrl(cfg, '/api/control/events');
     fetch(url, {
       method: 'POST',
@@ -397,6 +398,17 @@
   async function initAccountGate(cfg) {
     persistUtm();
     getInstallId();
+    // License / signup flow off — leave AI/GPT ungated (desktop default for now).
+    if (!cfg?.licenseGate) {
+      lastStatus = {
+        entitlement: { allowed: true, plan: 'open', status: 'disabled_gate', reason: null },
+        gateEnabled: false,
+      };
+      if (typeof window.__searchableOnAccountChanged === 'function') {
+        window.__searchableOnAccountChanged({ status: lastStatus });
+      }
+      return { status: lastStatus, installId: getInstallId(), authHeaders };
+    }
     track(cfg, 'app_opened', { desktop: !!(cfg && cfg.desktop) });
     let status = null;
     try {
@@ -416,11 +428,22 @@
   }
 
   async function refreshAccount(cfg) {
-    const status = await fetchLicenseStatus(cfg || window.__searchableAppConfig || {});
+    const conf = cfg || window.__searchableAppConfig || {};
+    if (!conf.licenseGate) {
+      lastStatus = {
+        entitlement: { allowed: true, plan: 'open', status: 'disabled_gate', reason: null },
+        gateEnabled: false,
+      };
+      if (typeof window.__searchableOnAccountChanged === 'function') {
+        window.__searchableOnAccountChanged({ status: lastStatus });
+      }
+      return lastStatus;
+    }
+    const status = await fetchLicenseStatus(conf);
     if (status?.entitlement?.reason === 'trial_expired') {
       clearSession({ keepEmail: true });
     }
-    armTrialExpiry(cfg || window.__searchableAppConfig || {}, status);
+    armTrialExpiry(conf, status);
     if (typeof window.__searchableOnAccountChanged === 'function') {
       window.__searchableOnAccountChanged({ status });
     }

@@ -102,11 +102,18 @@ function buildServerEnv() {
   const dataDir = path.join(userData, 'data');
   mkdirSync(dataDir, { recursive: true });
   const cpDefaults = loadControlPlaneDefaults();
-  const controlPlaneUrl = (
-    process.env.CONTROL_PLANE_URL
-    || cpDefaults.controlPlaneUrl
-    || ''
-  ).trim().replace(/\/$/, '');
+  // Control-plane accounts/billing paused for desktop for now. Re-enable with
+  // DESKTOP_ENABLE_CONTROL_PLANE=1 (then CONTROL_PLANE_URL / LICENSE_GATE apply again).
+  const controlPlaneEnabled = ['1', 'true', 'yes'].includes(
+    String(process.env.DESKTOP_ENABLE_CONTROL_PLANE || '').trim().toLowerCase(),
+  );
+  const controlPlaneUrl = controlPlaneEnabled
+    ? (
+      process.env.CONTROL_PLANE_URL
+      || cpDefaults.controlPlaneUrl
+      || ''
+    ).trim().replace(/\/$/, '')
+    : '';
   // Session secret also authorizes the loopback sync-quota hook (see setPhoneSyncPaused).
   const sessionSecret = process.env.SESSION_SECRET || getOrCreateSessionSecret(userData);
   serverSessionSecret = sessionSecret;
@@ -128,21 +135,21 @@ function buildServerEnv() {
     // Unload idle model quickly — avoids RAM spikes when app is in background
     OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || '60',
     OLLAMA_NUM_PARALLEL: process.env.OLLAMA_NUM_PARALLEL || '2',
-    // Hosted control plane for accounts/billing. Baked at release via control-plane.defaults.json.
     CONTROL_PLANE_URL: controlPlaneUrl,
-    CONTROL_PLANE_PUBLIC_URL: (
-      process.env.CONTROL_PLANE_PUBLIC_URL || controlPlaneUrl || ''
-    ).trim().replace(/\/$/, ''),
-    // Gate GPT/AI only when a hosted control plane URL is configured (or LICENSE_GATE is
-    // set explicitly). Empty URL + gate=1 blocks WhatsApp GPT with account_required and
-    // no remote signup — the broken v1.0.13 desktop default.
-    LICENSE_GATE: (() => {
-      if (process.env.LICENSE_GATE != null && String(process.env.LICENSE_GATE).trim() !== '') {
-        return String(process.env.LICENSE_GATE).trim();
-      }
-      if (controlPlaneUrl) return String(cpDefaults.licenseGate || '1');
-      return '0';
-    })(),
+    CONTROL_PLANE_PUBLIC_URL: controlPlaneEnabled
+      ? (
+        process.env.CONTROL_PLANE_PUBLIC_URL || controlPlaneUrl || ''
+      ).trim().replace(/\/$/, '')
+      : '',
+    LICENSE_GATE: controlPlaneEnabled
+      ? (() => {
+        if (process.env.LICENSE_GATE != null && String(process.env.LICENSE_GATE).trim() !== '') {
+          return String(process.env.LICENSE_GATE).trim();
+        }
+        if (controlPlaneUrl) return String(cpDefaults.licenseGate || '1');
+        return '0';
+      })()
+      : '0',
   };
 }
 

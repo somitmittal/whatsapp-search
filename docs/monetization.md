@@ -59,15 +59,15 @@ Render’s free filesystem is wiped on deploy. Prefer **Turso** (hosted SQLite):
 
 Without Turso, the control plane uses local SQLite (`CONTROL_PLANE_DB` / `DATA_DIR`) which is ephemeral unless you attach a paid Render disk.
 
-### Desktop builds (important)
+### Desktop builds (paused for now)
 
-Desktop releases must bake the hosted URL, or each install uses a **local** `control_plane.db` and Stripe/admin lock never apply.
+Desktop apps ship with the license / account gate **off**. Electron clears `CONTROL_PLANE_URL` and sets `LICENSE_GATE=0` unless you opt in with `DESKTOP_ENABLE_CONTROL_PLANE=1`.
 
-1. Set GitHub Actions secret **`CONTROL_PLANE_URL`** to your Render public URL (same as `CONTROL_PLANE_PUBLIC_URL`).
-2. Release workflow runs `scripts/write-control-plane-defaults.sh` before `electron-builder`, writing `electron/control-plane.defaults.json`.
-3. Electron reads that file into `CONTROL_PLANE_URL` / `LICENSE_GATE=1` for the child server.
+To re-enable later:
 
-Local packaging without the secret leaves `controlPlaneUrl` empty (local-only gate).
+1. Set GitHub Actions secret **`CONTROL_PLANE_URL`** to the hosted control-plane URL.
+2. Set release workflow env to `LICENSE_GATE=1` and pass `CONTROL_PLANE_URL`.
+3. Run with `DESKTOP_ENABLE_CONTROL_PLANE=1` (or bake that into Electron again).
 
 ## Remote lock (admin)
 
