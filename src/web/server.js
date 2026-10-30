@@ -33,6 +33,7 @@ import {
   shouldShowGroupCatchup,
 } from '../whatsapp/unread-tracker.js';
 import { isSafeAvatarFileName, jidsNeedingAvatars } from '../whatsapp/chat-avatars.js';
+import { MEDIA_UNAVAILABLE_PATH, isMediaUnavailablePath } from '../whatsapp/media-constants.js';
 import { MAX_AUDIO_BYTES, isAudioMime } from '../whatsapp/voice-content.js';
 import { playableAudioFor } from './audio-transcode.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
@@ -92,12 +93,13 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: IMP
 function sanitizeClientMessage(m) {
   if (!m || typeof m !== 'object') return m;
   const o = { ...m };
-  const hadPath = !!(o.mediaPath && String(o.mediaPath).trim());
-  if (o.mediaPath) {
-    o.hasMediaFile = true;
-    delete o.mediaPath;
-  }
-  o.mediaPending = !!(o.mediaType && !hadPath);
+  const rawPath = String(o.mediaPath || '').trim();
+  const unavailable = isMediaUnavailablePath(rawPath);
+  const hadPath = !!(rawPath && !unavailable);
+  if (hadPath) o.hasMediaFile = true;
+  if (unavailable) o.mediaUnavailable = true;
+  delete o.mediaPath;
+  o.mediaPending = !!(o.mediaType && !hadPath && !unavailable);
   if (o.timestamp != null) o.timestamp = normalizeUnixSeconds(o.timestamp);
   if (o.mediaIndexStatus) o.mediaIndexStatus = String(o.mediaIndexStatus);
   return o;
@@ -1630,6 +1632,19 @@ export default class WebServer {
           mediaQueued = Number(wa.prioritizeChatMedia(chatJid)?.queuedForChat || 0);
         }
 
+        // Old chats: "Loading…" rows with no active download will never resolve.
+        // Mark them unavailable so refresh stops spinning (WhatsApp no longer has the file).
+        // Applies to imported chats too (missing local media files).
+        let mediaMarkedUnavailable = 0;
+        if (typeof this.db.markOrphanedPendingMediaUnavailable === 'function') {
+          const stillPending = new Set(
+            !imported && typeof wa?.pendingMediaMessageIdsForChat === 'function'
+              ? wa.pendingMediaMessageIdsForChat(chatJid)
+              : [],
+          );
+          mediaMarkedUnavailable = this.db.markOrphanedPendingMediaUnavailable(chatJid, stillPending);
+        }
+
         let history = { requested: false };
         if (!imported && wa && typeof wa.fetchOlderHistoryFromPhone === 'function' && st.waState === 'READY') {
           const guard = wa.canFetchPhoneHistory?.(chatJid);
@@ -1665,6 +1680,7 @@ export default class WebServer {
           chatJid,
           imported,
           mediaQueued,
+          mediaMarkedUnavailable,
           history,
         });
       } catch (err) {

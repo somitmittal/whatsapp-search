@@ -114,6 +114,9 @@ export async function priorityLoadChat(jid, { count = 50, alertResult = true } =
     const bits = ['This chat is now first for AI indexing.'];
     if (j.mediaQueued > 0) bits.push(`${j.mediaQueued} media item(s) moved to the front of the download queue.`);
     else if (!j.imported) bits.push('Media for this chat will download before other chats.');
+    if (j.mediaMarkedUnavailable > 0) {
+      bits.push(`${j.mediaMarkedUnavailable} expired media marked unavailable.`);
+    }
     if (j.history?.requested) bits.push('Asked your phone for older messages — keep WhatsApp online.');
     else if (j.imported) bits.push('Imported chat — refreshed from local storage.');
     alert(bits.join(' '));

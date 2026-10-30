@@ -2160,10 +2160,11 @@ function wire() {
       await syncWaState();
       const bits = [];
       if (result?.mediaQueued > 0) bits.push(`${result.mediaQueued} media queued`);
+      if (result?.mediaMarkedUnavailable > 0) bits.push(`${result.mediaMarkedUnavailable} unavailable`);
       if (result?.history?.requested) bits.push('asked phone for older messages');
       else if (result?.history?.code === 'SYNC_IN_FLIGHT') bits.push('history sync already running');
       else if (result?.imported) bits.push('refreshed imported chat');
-      else bits.push('prioritized this chat');
+      else if (!bits.length) bits.push('prioritized this chat');
       flashRefreshButton(els.priorityLoad, bits.join(' · '));
     } catch (e) {
       els.priorityLoad.classList.remove('is-busy');

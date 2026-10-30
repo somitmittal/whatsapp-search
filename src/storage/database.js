@@ -1662,6 +1662,38 @@ export default class Database {
     return r.changes ?? 0;
   }
 
+  /**
+   * Rows with a media type but no file, excluding ids still queued for download.
+   * Used when the user refreshes a chat so stuck "Loading…" badges become "unavailable".
+   */
+  markOrphanedPendingMediaUnavailable(chatJid, keepMessageIds = []) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return 0;
+    const t = getCurrentTenantId();
+    const keep = new Set([...(keepMessageIds || [])].map((id) => String(id)));
+    const rows = this._db.prepare(`
+      SELECT message_id AS messageId FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+        AND media_type IS NOT NULL AND trim(media_type) != ''
+        AND (media_path IS NULL OR trim(media_path) = '')
+    `).all(t, jid);
+    if (!rows.length) return 0;
+    const upd = this._db.prepare(
+      'UPDATE messages SET media_path = ? WHERE tenant_id = ? AND message_id = ?',
+    );
+    let n = 0;
+    const txn = this._db.transaction(() => {
+      for (const row of rows) {
+        const id = String(row.messageId || '');
+        if (!id || keep.has(id)) continue;
+        upd.run('__unavailable__', t, id);
+        n += 1;
+      }
+    });
+    txn();
+    return n;
+  }
+
   updateMessageMedia(messageId, mediaType, mediaPath) {
     if (!messageId || !mediaPath) return 0;
     const r = this._db.prepare(

@@ -402,6 +402,8 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
         const dlHref = mediaDownloadUrl(mid) || mediaUrl;
         body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(dlHref)}" download>${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
       }
+    } else if (m.mediaUnavailable && m.mediaType) {
+      body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-unavailable">${esc(m.mediaType)} unavailable${cap ? ' · ' + cap : ''}</span></span>`;
     } else if (m.mediaPending && m.mediaType) {
       body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-pending">Loading ${esc(m.mediaType)}…${cap ? ' ' + cap : ''}</span></span>`;
     } else if (m.mediaType && (!m.text || String(m.text).startsWith('['))) {
