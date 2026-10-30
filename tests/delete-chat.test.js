@@ -47,6 +47,8 @@ describe('deleteChat for imported archives', () => {
         businessDate: '2026-01-01',
       });
 
+      db.upsertChatRoster([{ chatJid: jid, chatName: 'Delete Me', lastMessageTs: 1_700_000_100 }]);
+
       expect(db.deleteChat(jid)).toBe(1);
 
       const left = db._db.prepare(
@@ -59,6 +61,24 @@ describe('deleteChat for imported archives', () => {
       expect(db._db.prepare(
         'SELECT COUNT(*) AS c FROM expense_reconciliation_runs WHERE tenant_id = ? AND chat_jid = ?',
       ).get(LEGACY_TENANT_ID, jid).c).toBe(0);
+      expect(db._db.prepare(
+        'SELECT COUNT(*) AS c FROM chat_roster WHERE tenant_id = ? AND chat_jid = ?',
+      ).get(LEGACY_TENANT_ID, jid).c).toBe(0);
+    });
+  });
+
+  test('deleting a message-less imported roster row removes it from the sidebar', async () => {
+    await runWithTenant(LEGACY_TENANT_ID, async () => {
+      const jid = 'import__chat@imported';
+      db.upsertChatRoster([{ chatJid: jid, chatName: 'import__chat@imported', lastMessageTs: 1_700_000_200 }]);
+      expect(db.getChatStats().some((c) => c.chatJid === jid)).toBe(true);
+
+      expect(db.deleteChat(jid)).toBe(0);
+
+      expect(db._db.prepare(
+        'SELECT COUNT(*) AS c FROM chat_roster WHERE tenant_id = ? AND chat_jid = ?',
+      ).get(LEGACY_TENANT_ID, jid).c).toBe(0);
+      expect(db.getChatStats().some((c) => c.chatJid === jid)).toBe(false);
     });
   });
 });

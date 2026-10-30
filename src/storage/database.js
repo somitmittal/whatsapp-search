@@ -3557,6 +3557,11 @@ export default class Database {
       'DELETE FROM chat_unread WHERE tenant_id = ? AND chat_jid = ?',
       'DELETE FROM index_opt_in WHERE tenant_id = ? AND chat_jid = ?',
       'DELETE FROM expense_reconciliation_runs WHERE tenant_id = ? AND chat_jid = ?',
+      // Sidebar lists empty chats from roster — must clear or deletes "come back" on refresh.
+      'DELETE FROM chat_roster WHERE tenant_id = ? AND chat_jid = ?',
+      'DELETE FROM chat_last_seen WHERE tenant_id = ? AND chat_jid = ?',
+      'DELETE FROM chat_avatars WHERE tenant_id = ? AND chat_jid = ?',
+      'DELETE FROM chat_catchup WHERE tenant_id = ? AND chat_jid = ?',
     ];
     for (const sql of optional) {
       try { this._db.prepare(sql).run(t, chatJid); } catch { /* older schemas */ }
