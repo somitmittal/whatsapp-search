@@ -18,6 +18,8 @@ const { SYSTEM_SKILLS } = await import('../src/skills/system-skills.js');
 const {
   chatQueryFromRest,
   dateHintFromRest,
+  formatExpenseDayLabel,
+  otherExpenseDateChoices,
   resolveExpenseChat,
   resolveExpenseSheet,
 } = await import('../src/skills/expense-inputs.js');
@@ -118,10 +120,11 @@ describe('expense skill inputs', () => {
     expect(picked.answer).toMatch(/not a (group|site chat)/i);
   });
 
-  test('asks which sheet when the chat has more than one', () => {
+  test('asks which date when several days have sheets', () => {
     const picked = resolveExpenseSheet({ rest: '', chat, sheets });
     expect(picked.status).toBe('needs_input');
-    expect(picked.choices).toHaveLength(2);
+    expect(picked.answer).toMatch(/Which date/i);
+    expect(picked.choices.map((c) => c.label)).toEqual(['17 Oct', '16 Oct']);
   });
 
   test('a day in the command selects the sheet from that day', () => {
@@ -165,7 +168,7 @@ describe('expense skill inputs', () => {
     expect(picked.messageId).toBe('pdf-12');
   });
 
-  test('undated picker lists PDFs across days instead of burying them under photos', () => {
+  test('undated flow asks for a date, not a file list', () => {
     const mixed = [
       { chatJid: SITE, messageId: 'img-new', fileName: 'PHOTO-new.jpg', timestamp: SHEET_TS },
       { chatJid: SITE, messageId: 'pdf-14', fileName: 'Phone pay - 14.10.26.pdf', timestamp: SHEET_TS - 100 },
@@ -174,15 +177,41 @@ describe('expense skill inputs', () => {
     ];
     const picked = resolveExpenseSheet({ rest: '', chat, sheets: mixed, now: NOW });
     expect(picked.status).toBe('needs_input');
+    expect(picked.answer).toMatch(/Which date/i);
+    expect(picked.choices.map((c) => c.label)).toEqual(['17 Oct', '15 Oct', '13 Oct']);
+  });
+
+  test('a dated day with several files asks which file to reconcile', () => {
+    const daySheets = [
+      {
+        chatJid: SITE,
+        messageId: 'pdf-a',
+        fileName: 'Phone pay - 14.10.26.pdf',
+        timestamp: Math.floor(new Date(2026, 9, 14, 20, 0, 0).getTime() / 1000),
+      },
+      {
+        chatJid: SITE,
+        messageId: 'pdf-b',
+        fileName: 'expenses-alt.pdf',
+        timestamp: Math.floor(new Date(2026, 9, 14, 18, 0, 0).getTime() / 1000),
+      },
+    ];
+    const picked = resolveExpenseSheet({
+      rest: '2026-10-14',
+      chat: { chatJid: SITE, chatName: 'Phonpay' },
+      sheets: daySheets,
+      now: NOW,
+    });
+    expect(picked.status).toBe('needs_input');
+    expect(picked.answer).toMatch(/Which file/i);
     expect(picked.choices.map((c) => c.label)).toEqual([
-      'Phone pay - 14.10.26.pdf (2026-10-17)',
-      'Phone pay - 12.10.26.pdf (2026-10-15)',
-      'Phone pay - 10.10.26.pdf (2026-10-13)',
+      'Phone pay - 14.10.26.pdf',
+      'expenses-alt.pdf',
     ]);
   });
 
-  test('a filename selects that sheet', () => {
-    const picked = resolveExpenseSheet({ rest: '16-oct.xlsx', chat, sheets, now: NOW });
+  test('a filename with a day selects that sheet', () => {
+    const picked = resolveExpenseSheet({ rest: '2026-10-16 16-oct.xlsx', chat, sheets, now: NOW });
     expect(chatQueryFromRest('Site A 16-oct.xlsx')).toBe('Site A');
     expect(picked.messageId).toBe('old');
   });
@@ -194,7 +223,7 @@ describe('expense skill inputs', () => {
     ];
     const picked = resolveExpenseSheet({ rest: '', chat, sheets: pdfSheets, now: NOW });
     expect(picked.status).toBe('needs_input');
-    expect(picked.choices[0].label).toMatch(/Phone pay - 14\.10\.26\.pdf/);
+    expect(picked.choices[0].label).toBe('17 Oct');
     expect(picked.choices[0].message).toMatch(/2026-10-17/);
     const byDay = resolveExpenseSheet({
       rest: 'Phonpay 2026-10-17 Phone pay - 14.10.26.pdf',
@@ -204,6 +233,23 @@ describe('expense skill inputs', () => {
     });
     expect(byDay.status).toBe('ready');
     expect(byDay.messageId).toBe('p1');
+  });
+
+  test('follow-up choices suggest nearby other dates', () => {
+    expect(formatExpenseDayLabel('2026-10-12')).toBe('12 Oct');
+    const pdfSheets = [
+      { chatJid: SITE, messageId: 'p1', fileName: 'a.pdf', timestamp: SHEET_TS },
+      { chatJid: SITE, messageId: 'p2', fileName: 'b.pdf', timestamp: SHEET_TS - 86400 },
+      { chatJid: SITE, messageId: 'p3', fileName: 'c.pdf', timestamp: SHEET_TS - 2 * 86400 },
+    ];
+    const choices = otherExpenseDateChoices({
+      sheets: pdfSheets,
+      currentDate: '2026-10-17',
+      chat,
+      limit: 3,
+    });
+    expect(choices.map((c) => c.label)).toEqual(['16 Oct', '15 Oct']);
+    expect(choices[0].message).toContain('2026-10-16');
   });
 
   test('sheetFileName reads Phone pay PDF names from WhatsApp attachment text', () => {
@@ -455,7 +501,7 @@ describe('skill runner', () => {
     expect(outcome.skillRun.status).toBe('dry_run');
   });
 
-  test('does not reconcile when several sheets match', async () => {
+  test('does not reconcile when several dates have sheets — asks for a date first', async () => {
     let called = false;
     const runner = createSkillRunner({
       db: memoryDb([
@@ -468,7 +514,40 @@ describe('skill runner', () => {
     const outcome = await runner.run({ text: '/expense-reconciliation Site A' });
     expect(called).toBe(false);
     expect(outcome.skillRun.status).toBe('needs_input');
+    expect(outcome.answer).toMatch(/Which date/i);
     expect(outcome.choices).toHaveLength(2);
+  });
+
+  test('after a dry run, offers other dates as follow-ups', async () => {
+    const runner = createSkillRunner({
+      db: memoryDb([
+        sheetRow,
+        { ...sheetRow, messageId: 'sheet-2', text: 'other.xlsx', mediaPath: '/tmp/other.xlsx', timestamp: SHEET_TS - 86400 },
+      ]),
+      directory: { resolve: () => ({ chatJid: SITE, chatName: 'Site A' }), name: () => 'Site A' },
+      expenseService: {
+        async runForChat() {
+          return {
+            id: 11,
+            status: 'completed',
+            chatJid: SITE,
+            chatName: 'Site A',
+            businessDate: '2026-10-17',
+            sourceFileName: 'expenses.xlsx',
+            reportPath: '/tmp/report.xlsx',
+            entries: [],
+            discrepancies: [],
+            totals: {},
+          };
+        },
+      },
+    });
+    const outcome = await runner.run({
+      text: '/accountant/expense-reconciliation Site A 2026-10-17',
+    });
+    expect(outcome.skillRun.status).toBe('dry_run');
+    expect(outcome.answer).toMatch(/another date/i);
+    expect(outcome.choices.some((c) => c.label === '16 Oct')).toBe(true);
   });
 });
 

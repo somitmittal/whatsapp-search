@@ -11,7 +11,11 @@ import {
   skillKey,
   skillsInNamespace,
 } from './catalog.js';
-import { resolveExpenseChat, resolveExpenseSheet } from './expense-inputs.js';
+import {
+  otherExpenseDateChoices,
+  resolveExpenseChat,
+  resolveExpenseSheet,
+} from './expense-inputs.js';
 import { parseSkillInvocation, skillCommand } from './parse-invocation.js';
 
 /** Attachment / media extensions we show in the sheet picker (docs + photo sheets). */
@@ -217,12 +221,15 @@ export function createSkillRunner({ db, directory, expenseService }) {
         resolveChat: (query) => directory?.resolve?.(query) || null,
         command,
       });
+      const chatSheets = chatPick.status === 'needs_input'
+        ? []
+        : sheetsForChat(db, chatPick.chat.chatJid);
       const inputs = chatPick.status === 'needs_input'
         ? chatPick
         : resolveExpenseSheet({
           rest: invocation.rest,
           chat: chatPick.chat,
-          sheets: sheetsForChat(db, chatPick.chat.chatJid),
+          sheets: chatSheets,
           command,
         });
 
@@ -312,17 +319,32 @@ export function createSkillRunner({ db, directory, expenseService }) {
       const saved = record(skill, {
         conversationId,
         status: 'dry_run',
-        inputs: { chatJid: inputs.chat.chatJid, messageId: inputs.messageId, fileName: inputs.fileName },
+        inputs: {
+          chatJid: inputs.chat.chatJid,
+          messageId: inputs.messageId,
+          fileName: inputs.fileName,
+          dateHint: inputs.dateHint || null,
+        },
         coverage,
         toolCalls,
         expenseRunId: expenseRun.id,
       });
       const { answer, expenseDiff } = summarizeExpenseRun(expenseRun);
       const line = coverageLine(coverage, expenseRun.chatName || inputs.chat.chatName);
+      const otherDates = otherExpenseDateChoices({
+        sheets: chatSheets,
+        currentDate: inputs.dateHint || null,
+        chat: inputs.chat,
+        command,
+        limit: 5,
+      });
+      const followUp = otherDates.length
+        ? 'Would you like to check another date as well?'
+        : null;
       return {
-        answer: [answer, line, 'Dry run — nothing was sent to WhatsApp.'].filter(Boolean).join('\n\n'),
+        answer: [answer, line, 'Dry run — nothing was sent to WhatsApp.', followUp].filter(Boolean).join('\n\n'),
         steps: toolCalls.map((call) => call.detail ? `${call.tool}: ${call.detail}` : call.tool),
-        choices: [],
+        choices: otherDates,
         skillRun: skillRunView(saved, { canSend: true }),
         expenseDiff,
       };

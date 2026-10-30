@@ -200,17 +200,92 @@ export function resolveExpenseChat({
   return ask(`Which site chat? @mention the group or send \`${command}\` with its name.`);
 }
 
-/**
- * Which sheet in an already-chosen chat. One match is used. Several matches are listed
- * and not guessed, including when the user did not name a file or a day.
- * `sheets` must already be newest-first.
- */
 /** Optional `#messageId` token from a prior picker chip — uniquely selects one sheet. */
 export function messageIdHintFromRest(rest) {
   const m = String(rest || '').match(/#([^\s#]+)/);
   return m ? m[1].trim() : null;
 }
 
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** Human label for an ISO day — `2026-10-12` → `12 Oct`. */
+export function formatExpenseDayLabel(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return String(iso || '');
+  const month = SHORT_MONTHS[Number(m[2]) - 1];
+  if (!month) return String(iso);
+  return `${Number(m[3])} ${month}`;
+}
+
+/**
+ * Distinct calendar days that have a reconcile sheet (docs preferred), newest first.
+ * `sheets` must already be newest-first.
+ */
+export function listExpenseSheetDates(sheets = []) {
+  const preferred = preferSheetsForPicker(sheets);
+  const seen = new Set();
+  const dates = [];
+  for (const sheet of preferred) {
+    const day = dayBoundsFromTimestamp(sheet.timestamp).date;
+    if (!day || seen.has(day)) continue;
+    seen.add(day);
+    dates.push(day);
+  }
+  return dates;
+}
+
+function sheetsForChatList(sheets, chatJid) {
+  return (sheets || []).filter((sheet) => !sheet.chatJid || sheet.chatJid === chatJid);
+}
+
+function dateChoice(command, chat, day) {
+  return {
+    label: formatExpenseDayLabel(day),
+    message: `${command} ${chat.chatName || ''} ${day}`.replace(/\s+/g, ' ').trim(),
+  };
+}
+
+/** Ask which day to reconcile when the command has no date yet. */
+export function askExpenseDate({
+  chat,
+  sheets = [],
+  command = '/accountant/expense-reconciliation',
+} = {}) {
+  const dates = listExpenseSheetDates(sheetsForChatList(sheets, chat?.chatJid));
+  if (!dates.length) {
+    return ask(`No expense sheet in ${chat?.chatName || 'that chat'} yet. Post an Excel, CSV, or Phone-pay PDF, then run \`${command}\` again.`);
+  }
+  return ask(
+    `Which date should I check in ${chat?.chatName || 'that chat'}?`,
+    dates.slice(0, 10).map((day) => dateChoice(command, chat, day)),
+  );
+}
+
+/**
+ * After a dry-run, offer other days that still have sheets.
+ * Prefer nearby days first (next/prev), then remaining newest-first.
+ */
+export function otherExpenseDateChoices({
+  sheets = [],
+  currentDate = null,
+  chat,
+  command = '/accountant/expense-reconciliation',
+  limit = 5,
+} = {}) {
+  const dates = listExpenseSheetDates(sheetsForChatList(sheets, chat?.chatJid))
+    .filter((day) => day !== currentDate);
+  if (!dates.length || !chat) return [];
+  const ranked = [...dates].sort((a, b) => {
+    if (!currentDate) return 0;
+    return Math.abs(Date.parse(a) - Date.parse(currentDate)) - Math.abs(Date.parse(b) - Date.parse(currentDate));
+  });
+  return ranked.slice(0, limit).map((day) => dateChoice(command, chat, day));
+}
+
+/**
+ * Guided expense inputs: date → file for that date → ready to reconcile.
+ * `sheets` must already be newest-first.
+ */
 export function resolveExpenseSheet({
   rest = '',
   chat,
@@ -221,10 +296,27 @@ export function resolveExpenseSheet({
   const dateHint = dateHintFromRest(rest, now);
   const fileHint = fileHintFromRest(rest);
   const messageIdHint = messageIdHintFromRest(rest);
-  let candidates = sheets.filter((sheet) => !sheet.chatJid || sheet.chatJid === chat.chatJid);
+  let candidates = sheetsForChatList(sheets, chat.chatJid);
+
+  // Step 1 — ask for a date before listing files (unless a chip already pinned a message).
+  if (!dateHint && !messageIdHint) {
+    const dates = listExpenseSheetDates(candidates);
+    if (!dates.length) {
+      return ask(`No expense sheet in ${chat.chatName || 'that chat'} yet. Post an Excel, CSV, or Phone-pay PDF, then run \`${command}\` again.`);
+    }
+    if (dates.length > 1) return askExpenseDate({ chat, sheets: candidates, command });
+    // Only one day in the archive — skip the date question and continue with it.
+    candidates = candidates.filter((sheet) => dayBoundsFromTimestamp(sheet.timestamp).date === dates[0]);
+  }
+
   if (messageIdHint) {
     candidates = candidates.filter((sheet) => sheet.messageId === messageIdHint);
   }
+  const effectiveDate = dateHint || (
+    candidates.length
+      ? dayBoundsFromTimestamp(candidates[0].timestamp).date
+      : null
+  );
   if (dateHint) {
     candidates = candidates.filter((sheet) => dayBoundsFromTimestamp(sheet.timestamp).date === dateHint);
   }
@@ -235,21 +327,27 @@ export function resolveExpenseSheet({
       return name === needle || name.includes(needle) || needle.includes(name);
     });
   }
-  // Prefer PDFs/Excel over PhonePe payment photos so a day with one sheet + many
-  // screenshots auto-picks the sheet, and undated pickers list older PDFs.
+
+  // Prefer PDFs/Excel over PhonePe payment photos for the file step.
   const forPicker = preferSheetsForPicker(candidates, { fileHint });
   if (forPicker.length === 1) {
     const sheet = forPicker[0];
-    return { status: 'ready', chat, messageId: sheet.messageId, fileName: sheet.fileName, dateHint };
+    return {
+      status: 'ready',
+      chat,
+      messageId: sheet.messageId,
+      fileName: sheet.fileName,
+      dateHint: effectiveDate || dayBoundsFromTimestamp(sheet.timestamp).date,
+    };
   }
   if (forPicker.length > 1) {
+    const dayLabel = effectiveDate ? formatExpenseDayLabel(effectiveDate) : 'that day';
     return ask(
-      `More than one sheet in ${chat.chatName || 'that chat'} matches. Send one of these:`,
+      `Which file should I reconcile for ${dayLabel} in ${chat.chatName || 'that chat'}?`,
       forPicker.slice(0, 8).map((sheet) => {
         const day = dayBoundsFromTimestamp(sheet.timestamp).date;
-        // Include day + message id so a click uniquely selects even when names collide.
         return {
-          label: `${sheet.fileName} (${day})`,
+          label: sheet.fileName,
           message: `${command} ${chat.chatName || ''} ${day} ${sheet.fileName} #${sheet.messageId}`
             .replace(/\s+/g, ' ')
             .trim(),
@@ -257,7 +355,7 @@ export function resolveExpenseSheet({
       }),
     );
   }
-  const when = dateHint ? ` on ${dateHint}` : '';
+  const when = effectiveDate ? ` on ${formatExpenseDayLabel(effectiveDate)}` : '';
   const named = fileHint ? ` named ${fileHint}` : '';
   return ask(`No expense sheet${named} in ${chat.chatName || 'that chat'}${when}. Post the Excel or CSV in the group, then run \`${command}\` again.`);
 }
