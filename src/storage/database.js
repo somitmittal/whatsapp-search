@@ -538,15 +538,19 @@ export default class Database {
    */
   _purgeControlFrameMessages() {
     try {
-      if (this.getState('control_frame_messages_purged')) return;
-      const placeholders = legacyControlFramePlaceholders();
+      // Bump when the placeholder list grows so existing junk rows (e.g. `[Message]`,
+      // `[Album]`) are cleared after an upgrade — the v1 flag alone would skip them.
+      const purgeKey = 'control_frame_messages_purged_v2';
+      if (this.getState(purgeKey)) return;
+      const placeholders = [...new Set(legacyControlFramePlaceholders())];
       const slots = placeholders.map(() => '?').join(',');
       const n = this._db.prepare(`
         DELETE FROM messages
         WHERE media_type IS NULL AND text IN (${slots})
       `).run(...placeholders).changes;
+      this.setState(purgeKey, '1');
       this.setState('control_frame_messages_purged', '1');
-      if (n > 0) console.log(`[DB] Removed ${n} WhatsApp control-frame message row(s)`);
+      if (n > 0) console.log(`[DB] Removed ${n} WhatsApp control-frame / opaque placeholder row(s)`);
     } catch (e) {
       console.warn('[DB] control-frame purge:', e.message);
     }

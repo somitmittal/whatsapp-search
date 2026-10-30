@@ -47,6 +47,7 @@ import { audioSendContent } from './voice-content.js';
 import {
     extractRenderableTextFromInner,
     isControlOnlyContentType,
+    peelNestedMessage,
     placeholderForContentType,
 } from './message-content.js';
 import {
@@ -141,14 +142,16 @@ function extractTextFromInner(m) {
   return t;
 }
 
-function extractText(msg) {
-  if (!msg?.message) return '';
-  const inner = extractMessageContent(msg.message) || msg.message;
-  return extractTextFromInner(inner);
+/** Peel device-sent / bot-forward / ephemeral wrappers, then Baileys' extract. */
+function resolveInnerContent(rawMessage) {
+  if (!rawMessage) return null;
+  const peeled = peelNestedMessage(rawMessage);
+  return extractMessageContent(peeled) || peeled;
 }
 
-function placeholderForUntracked(inner) {
-  return placeholderForContentType(getContentType(inner));
+function extractText(msg) {
+  if (!msg?.message) return '';
+  return extractTextFromInner(resolveInnerContent(msg.message));
 }
 
 function normalizeNameForCompare(s) {
@@ -1246,7 +1249,7 @@ export default class WaClient {
           || update.message?.protocolMessage?.editedMessage
           || null;
         const contentInner = editedInner
-          || (update.message ? (extractMessageContent(update.message) || update.message) : null);
+          || (update.message ? resolveInnerContent(update.message) : null);
         if (contentInner) {
           const text = extractTextFromInner(contentInner);
           if (text) {
@@ -2290,6 +2293,7 @@ export default class WaClient {
       const mime =
         m.imageMessage?.mimetype ||
         m.videoMessage?.mimetype ||
+        m.ptvMessage?.mimetype ||
         m.audioMessage?.mimetype ||
         m.stickerMessage?.mimetype ||
         m.documentMessage?.mimetype ||
@@ -2433,9 +2437,11 @@ export default class WaClient {
       const jid = msg.key.remoteJid;
       if (!jid || !msg.message) return null;
 
-      const inner = extractMessageContent(msg.message) || msg.message;
+      const inner = resolveInnerContent(msg.message);
+      if (!inner) return null;
       // Protocol/key-exchange frames have no readable body — storing them showed "[protocol]".
-      if (isControlOnlyContentType(getContentType(inner))) return null;
+      const contentType = getContentType(inner);
+      if (isControlOnlyContentType(contentType)) return null;
       let rxPayload = null;
       if (Array.isArray(msg.reactions)) {
         const rxList = msg.reactions;
@@ -2451,7 +2457,7 @@ export default class WaClient {
             })),
         };
       }
-      let text = extractText(msg);
+      let text = extractTextFromInner(inner);
       const contactBundle = buildContactPayloadFromInner(inner);
       if (contactBundle?.summaryText) {
         text = contactBundle.summaryText;
@@ -2461,16 +2467,27 @@ export default class WaClient {
       const hasMedia = !!(
         inner.imageMessage ||
         inner.videoMessage ||
+        inner.ptvMessage ||
         inner.audioMessage ||
         inner.documentMessage ||
         inner.stickerMessage
       );
       if (!text && !hasMedia && !contactPayload) {
-        text = placeholderForUntracked(inner);
+        // Bare `{ call: … }` has no *Message key; still a real missed-call event.
+        if (inner.call) text = '[Call]';
+        else {
+          text = placeholderForContentType(contentType);
+          // Unknown empty frames used to become the junk bubble "[Message]" — drop them.
+          if (!text) return null;
+        }
       }
 
       const mediaType = hasMedia
-        ? (inner.imageMessage ? 'image' : inner.videoMessage ? 'video' : inner.audioMessage ? 'audio' : inner.documentMessage ? 'document' : 'sticker')
+        ? (inner.imageMessage ? 'image'
+          : (inner.videoMessage || inner.ptvMessage) ? 'video'
+            : inner.audioMessage ? 'audio'
+              : inner.documentMessage ? 'document'
+                : 'sticker')
         : null;
 
       const senderJid  = msg.key.participant || (msg.key.fromMe ? this._ownerJid : jid);
@@ -2508,6 +2525,7 @@ export default class WaClient {
         mediaCaption:
           inner.imageMessage?.caption ||
           inner.videoMessage?.caption ||
+          inner.ptvMessage?.caption ||
           inner.documentMessage?.caption ||
           (inner.documentMessage?.fileName ? String(inner.documentMessage.fileName).trim() : null) ||
           null,

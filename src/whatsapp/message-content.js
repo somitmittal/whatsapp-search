@@ -10,6 +10,9 @@
  * Frames that exist purely to drive the protocol (key exchange, revokes, disappearing-message
  * settings, encrypted side-channel payloads). None of them have a user-visible body, and the
  * ones that do carry meaning — reactions, poll votes — are ingested through their own pipelines.
+ *
+ * `albumMessage` is also dropped: WhatsApp sends the photos/videos as separate child messages,
+ * so keeping a lone `[Album]` bubble only adds noise.
  */
 export const CONTROL_ONLY_CONTENT_TYPES = new Set([
   'protocolMessage',
@@ -28,7 +31,38 @@ export const CONTROL_ONLY_CONTENT_TYPES = new Set([
   'secretEncryptedMessage',
   'associatedChildMessage',
   'botInvokeMessage',
+  'albumMessage',
 ]);
+
+/**
+ * Nested `*.message` wrappers Baileys' `normalizeMessageContent` does not always peel.
+ * Without these, the outer key becomes a useless label like `[Bot Forwarded]` / `[Message]`.
+ */
+export const EXTRA_NESTED_MESSAGE_KEYS = [
+  'deviceSentMessage',
+  'botForwardedMessage',
+  'groupMentionedMessage',
+  'lottieStickerMessage',
+  'statusMentionMessage',
+  'groupStatusMentionMessage',
+  'eventCoverImage',
+  'pollCreationMessageV4',
+  'statusAddYours',
+  'limitSharingMessage',
+  'botTaskMessage',
+  'questionMessage',
+  'questionReplyMessage',
+  // Baileys peels these too; including them keeps a single peel loop complete.
+  'ephemeralMessage',
+  'viewOnceMessage',
+  'viewOnceMessageV2',
+  'viewOnceMessageV2Extension',
+  'documentWithCaptionMessage',
+  'editedMessage',
+  'associatedChildMessage',
+  'groupStatusMessage',
+  'groupStatusMessageV2',
+];
 
 /**
  * Content we keep because the event itself is meaningful to the reader, even though there is
@@ -48,10 +82,52 @@ const READABLE_LABELS = new Map([
   ['requestPaymentMessage', 'Payment request'],
   ['requestPhoneNumberMessage', 'Phone number request'],
   ['eventMessage', 'Event'],
-  ['albumMessage', 'Album'],
   ['stickerPackMessage', 'Sticker pack'],
   ['pollResultSnapshotMessage', 'Poll results'],
+  ['pollResultSnapshotMessageV3', 'Poll results'],
+  ['pollCreationMessage', 'Poll'],
+  ['pollCreationMessageV2', 'Poll'],
+  ['pollCreationMessageV3', 'Poll'],
+  ['pollCreationMessageV5', 'Poll'],
+  ['liveLocationMessage', 'Live location'],
+  ['locationMessage', 'Location'],
+  ['ptvMessage', 'Video note'],
 ]);
+
+/** Placeholder bodies that should never have been stored; purged on startup. */
+export const OPAQUE_CONTENT_PLACEHOLDERS = [
+  '[Message]',
+  '[Album]',
+  '[Bot Forwarded]',
+  '[Poll Creation Message V3]',
+  '[Poll Creation Message V2]',
+  '[Poll Creation Message V5]',
+  '[Device Sent]',
+  '[Group Mentioned]',
+  '[Lottie Sticker]',
+];
+
+/**
+ * Walk nested FutureProof / device-sent wrappers until the inner payload is reached.
+ * Safe to call before or after Baileys `extractMessageContent`.
+ */
+export function peelNestedMessage(content) {
+  let cur = content;
+  for (let i = 0; i < 8; i++) {
+    if (!cur || typeof cur !== 'object') return cur;
+    let next = null;
+    for (const k of EXTRA_NESTED_MESSAGE_KEYS) {
+      const wrap = cur[k];
+      if (wrap && typeof wrap === 'object' && wrap.message) {
+        next = wrap.message;
+        break;
+      }
+    }
+    if (!next) break;
+    cur = next;
+  }
+  return cur;
+}
 
 export function isControlOnlyContentType(contentType) {
   return CONTROL_ONLY_CONTENT_TYPES.has(String(contentType || ''));
@@ -60,14 +136,15 @@ export function isControlOnlyContentType(contentType) {
 /**
  * Human-readable stand-in for content with no extractable text, e.g. `[Call]`.
  * The proto key `callLogMesssage` is misspelled upstream, hence the tolerant suffix strip.
+ * Empty / unknown frames return null — callers must drop those rows instead of storing `[Message]`.
  */
 export function placeholderForContentType(contentType) {
   const ct = String(contentType || '');
-  if (!ct) return '[Message]';
+  if (!ct) return null;
   const known = READABLE_LABELS.get(ct);
   if (known) return `[${known}]`;
   const words = ct.replace(/Mess+age$/i, '').replace(/([A-Z])/g, ' $1').trim();
-  if (!words) return '[Message]';
+  if (!words) return null;
   return `[${words.charAt(0).toUpperCase()}${words.slice(1)}]`;
 }
 
@@ -103,7 +180,7 @@ function textFromHydratedFourRow(h) {
 
 /**
  * Pull user-visible copy from template / interactive / HSM shapes Baileys does not flatten.
- * Call on the inner message (after `extractMessageContent` when available).
+ * Call on the inner message (after peeling wrappers / `extractMessageContent`).
  */
 export function extractRenderableTextFromInner(m) {
   if (!m || typeof m !== 'object') return '';
@@ -113,6 +190,7 @@ export function extractRenderableTextFromInner(m) {
     m.extendedTextMessage?.text ||
     m.imageMessage?.caption ||
     m.videoMessage?.caption ||
+    m.ptvMessage?.caption ||
     m.documentMessage?.caption ||
     m.buttonsResponseMessage?.selectedDisplayText ||
     m.listResponseMessage?.singleSelectReply?.selectedRowId ||
@@ -121,6 +199,9 @@ export function extractRenderableTextFromInner(m) {
     m.locationMessage?.name ||
     m.contactMessage?.displayName ||
     m.pollCreationMessage?.name ||
+    m.pollCreationMessageV2?.name ||
+    m.pollCreationMessageV3?.name ||
+    m.pollCreationMessageV5?.name ||
     m.buttonsMessage?.contentText ||
     m.listMessage?.description ||
     ''
@@ -162,7 +243,10 @@ export function extractRenderableTextFromInner(m) {
  * old formatting rather than restating it, so the two can never drift apart.
  */
 export function legacyControlFramePlaceholders() {
-  return [...CONTROL_ONLY_CONTENT_TYPES].map(
-    (ct) => `[${ct.replace(/Message$/, '').replace(/([A-Z])/g, ' $1').trim()}]`,
-  );
+  return [
+    ...[...CONTROL_ONLY_CONTENT_TYPES].map(
+      (ct) => `[${ct.replace(/Message$/, '').replace(/([A-Z])/g, ' $1').trim()}]`,
+    ),
+    ...OPAQUE_CONTENT_PLACEHOLDERS,
+  ];
 }
