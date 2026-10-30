@@ -279,9 +279,30 @@ function connectSyncSocket() {
       void syncWaState();
     } else if (msg.type === 'wa-unread') {
       applyUnreadUpdates(msg.data?.updates);
+    } else if (msg.type === 'new-messages') {
+      // Keep the sidebar and open transcript current after sync / priority-load.
+      void loadChats();
+      const touchJid = msg.data?.chatJid;
+      if (!touchJid || touchJid === state.activeChatJid) void reloadActiveWaMessages();
+    } else if (msg.type === 'message-media-ready') {
+      const jid = msg.data?.chatJid;
+      if (jid && jid === state.activeChatJid) void reloadActiveWaMessages();
+    } else if (msg.type === 'chat-names-refreshed') {
+      void loadChats();
     }
   };
   ws.onclose = () => { setTimeout(connectSyncSocket, 3000); };
+}
+
+function flashRefreshButton(btn, note) {
+  if (!btn) return;
+  const prev = btn.getAttribute('title') || '';
+  if (note) btn.setAttribute('title', note);
+  btn.classList.add('is-busy');
+  setTimeout(() => {
+    btn.classList.remove('is-busy');
+    if (note) btn.setAttribute('title', prev);
+  }, 1600);
 }
 
 async function syncWaState() {
@@ -2118,21 +2139,35 @@ function wire() {
     els.refreshChats.classList.add('is-busy');
     try {
       await loadChats();
+      await syncWaState();
       if (state.activeChatJid) await reloadActiveWaMessages();
-    } finally {
+      flashRefreshButton(els.refreshChats, 'Chat list updated');
+    } catch (e) {
       els.refreshChats.classList.remove('is-busy');
+      alert(e.message || 'Could not refresh chats');
     }
   });
   els.priorityLoad?.addEventListener('click', async () => {
     if (!state.activeChatJid || els.priorityLoad.classList.contains('is-busy')) return;
     els.priorityLoad.classList.add('is-busy');
     try {
-      await priorityLoadChat(state.activeChatJid, { alertResult: false });
+      const jid = state.activeChatJid;
+      const result = await priorityLoadChat(jid, { alertResult: false });
+      // Drop cached transcript so we paint whatever priority-load just pulled in.
+      state.chatMessages.delete(jid);
+      await reloadActiveWaMessages();
       await loadChats();
+      await syncWaState();
+      const bits = [];
+      if (result?.mediaQueued > 0) bits.push(`${result.mediaQueued} media queued`);
+      if (result?.history?.requested) bits.push('asked phone for older messages');
+      else if (result?.history?.code === 'SYNC_IN_FLIGHT') bits.push('history sync already running');
+      else if (result?.imported) bits.push('refreshed imported chat');
+      else bits.push('prioritized this chat');
+      flashRefreshButton(els.priorityLoad, bits.join(' · '));
     } catch (e) {
-      alert(e.message || 'Could not refresh this chat');
-    } finally {
       els.priorityLoad.classList.remove('is-busy');
+      alert(e.message || 'Could not refresh this chat');
     }
   });
   els.deleteChat?.addEventListener('click', () => {

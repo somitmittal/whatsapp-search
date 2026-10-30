@@ -106,9 +106,9 @@ export async function priorityLoadChat(jid, { count = 50, alertResult = true } =
   // Prefer opening/refreshing the prioritized chat so the user sees new media/messages.
   if (store.activeChat !== jid) {
     if (typeof store.onOpenChatContext === 'function') store.onOpenChatContext(jid);
-    else void openChat(jid);
+    else await openChat(jid);
   } else {
-    refreshOpenChatMessages();
+    await refreshOpenChatMessages();
   }
   if (alertResult) {
     const bits = ['This chat is now first for AI indexing.'];
