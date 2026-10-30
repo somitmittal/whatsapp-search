@@ -1178,7 +1178,12 @@ export default class WaClient {
         // Save searchable text immediately. Media is intentionally queued behind the
         // initial history insert so network/file work cannot hold up live messages.
         rows.push(row);
-        this._queueMediaDownload(msg, row);
+        // Auto-download only live `notify` traffic (and recent `append` catch-up).
+        // Bulk history keeps stubs in SQLite; opening a chat must not start a media storm —
+        // user Retry / “Load messages & media” re-queues explicitly.
+        if (this._shouldAutoDownloadMedia(type, row)) {
+          this._queueMediaDownload(msg, row);
+        }
       }
       if (rows.length) {
         this._enqueueBatch(rows);
@@ -1341,7 +1346,8 @@ export default class WaClient {
         const row = this._msgToRow(msg);
         if (!row) continue;
         rows.push(row);
-        this._queueMediaDownload(msg, row);
+        // History dump: persist download stubs only. Do not pull media until the user
+        // opens Retry / Load messages & media for that chat (avoids open→download storms).
       }
 
       if (rows.length) {
@@ -1846,7 +1852,7 @@ export default class WaClient {
         const row = this._msgToRow(normalized);
         if (!row) continue;
         rows.push(row);
-        this._queueMediaDownload(normalized, row);
+        // Embedded history messages — stubs only; no auto media download.
       }
     }
     if (!rows.length) return;
@@ -2342,6 +2348,20 @@ export default class WaClient {
     return !!messageId && this._queuedMediaIds.has(String(messageId));
   }
 
+  /**
+   * Live `notify` always; recent `append` catch-up only. Never treat bulk history as auto-download.
+   * @param {string} upsertType Baileys messages.upsert `type`
+   * @param {{ timestamp?: number }} row
+   */
+  _shouldAutoDownloadMedia(upsertType, row) {
+    if (upsertType === 'notify') return true;
+    if (upsertType !== 'append') return false;
+    const ts = Number(row?.timestamp) || 0;
+    if (!ts) return false;
+    const cutoff = Math.floor(Date.now() / 1000) - (config.liveRecentWindowDays * 24 * 60 * 60);
+    return ts >= cutoff;
+  }
+
   _queueMediaDownload(msg, row) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return;
     if (isTerminalMediaPath(row.mediaPath)) return;
@@ -2357,20 +2377,18 @@ export default class WaClient {
   }
 
   /**
-   * Media is the final ingestion queue. Rank by the chat's latest activity first, then by
-   * message recency, with the configured recent-chat window as an explicit first tier.
-   */
-  /**
-   * Prefer media downloads for this chat (user opened / tapped "Load messages & media").
-   * Starts draining that chat even while history sync is still running.
+   * Prefer media downloads for this chat (explicit “Load messages & media” / Retry).
+   * Opening a chat alone must not call this — that caused surprise bulk downloads.
    * @param {string} chatJid
+   * @param {{ messageId?: string|null }} [opts] when set, only re-queue that one message
    * @returns {{ ok: boolean, queuedForChat: number }}
    */
-  prioritizeChatMedia(chatJid) {
+  prioritizeChatMedia(chatJid, { messageId = null } = {}) {
     const jid = String(chatJid || '').trim();
+    const mid = messageId != null ? String(messageId).trim() : '';
     this._priorityMediaChatJid = jid || null;
     // Refresh: re-queue failed / interrupted downloads from their persisted stubs.
-    if (jid) this._requeuePersistedPendingMedia(jid);
+    if (jid) this._requeuePersistedPendingMedia(jid, mid || null);
     this._sortDeferredMediaQueue();
     this._drainMediaQueue().catch(() => {});
     const queuedForChat = jid
@@ -2382,8 +2400,9 @@ export default class WaClient {
   /**
    * Load Baileys media stubs persisted in SQLite and put them back on the download queue.
    * @param {string | null} chatJid null = every chat (post-sync)
+   * @param {string | null} [messageId] when set, only that message
    */
-  _requeuePersistedPendingMedia(chatJid) {
+  _requeuePersistedPendingMedia(chatJid, messageId = null) {
     if (typeof this._onLoadPendingMediaStubs !== 'function') return 0;
     let items = [];
     try {
@@ -2392,13 +2411,21 @@ export default class WaClient {
       console.warn('[WA] load pending media stubs:', e?.message || e);
       return 0;
     }
+    const wantMid = messageId != null ? String(messageId).trim() : '';
     let n = 0;
     for (const item of items) {
       if (!item?.msg?.key || !item?.row?.messageId) continue;
+      if (wantMid && String(item.row.messageId) !== wantMid) continue;
       this._queueMediaDownload(item.msg, item.row);
       n += 1;
     }
-    if (n) console.log(`[WA] Re-queued ${n} pending media download(s)${chatJid ? ` for ${chatJid}` : ''}`);
+    if (n) {
+      console.log(
+        `[WA] Re-queued ${n} pending media download(s)`
+        + (chatJid ? ` for ${chatJid}` : '')
+        + (wantMid ? ` (message ${wantMid})` : ''),
+      );
+    }
     return n;
   }
 

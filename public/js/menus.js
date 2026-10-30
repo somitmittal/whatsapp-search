@@ -153,13 +153,22 @@ export async function deleteChatByJid(jid) {
  * Prioritize local media + AI indexing for one chat (classic + GPT).
  * Does not ping the phone unless `requestHistory: true` (use Load older for that).
  */
-export async function priorityLoadChat(jid, { count = 100, alertResult = true, requestHistory = false } = {}) {
+export async function priorityLoadChat(jid, {
+  count = 100,
+  alertResult = true,
+  requestHistory = false,
+  messageId = null,
+} = {}) {
   if (!jid) throw new Error('No chat selected');
   const r = await fetch(`/api/chats/${encodeURIComponent(jid)}/priority-load`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify({ count, requestHistory: !!requestHistory }),
+    body: JSON.stringify({
+      count,
+      requestHistory: !!requestHistory,
+      ...(messageId ? { messageId: String(messageId) } : {}),
+    }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || 'Request failed');

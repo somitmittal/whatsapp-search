@@ -2266,7 +2266,11 @@ function wire() {
       mediaRetry.disabled = true;
       mediaRetry.textContent = 'Retrying…';
       try {
-        await priorityLoadChat(state.activeChatJid, { alertResult: false });
+        const mid = mediaRetry.getAttribute('data-message-id')
+          || mediaRetry.closest('.msg-block')?.dataset?.messageId
+          || null;
+        // One message only — full-chat media pull is menu → “Load messages & media”.
+        await priorityLoadChat(state.activeChatJid, { alertResult: false, messageId: mid });
       } catch (err) {
         mediaRetry.disabled = false;
         mediaRetry.textContent = 'Retry';

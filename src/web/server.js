@@ -1711,9 +1711,12 @@ export default class WebServer {
         this._mediaIndexService?.notePriorityChange?.();
         this._embeddingIndexService?.notePriorityChange?.();
 
+        const messageId = String(req.body?.messageId || '').trim() || null;
         let mediaQueued = 0;
         if (wa && typeof wa.prioritizeChatMedia === 'function' && !imported) {
-          mediaQueued = Number(wa.prioritizeChatMedia(chatJid)?.queuedForChat || 0);
+          mediaQueued = Number(
+            wa.prioritizeChatMedia(chatJid, { messageId })?.queuedForChat || 0,
+          );
         }
 
         // Quiet by default: Refresh / media-retry only reshuffle local queues.

@@ -410,7 +410,7 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     } else if (m.mediaPending && m.mediaType && m.mediaQueued) {
       body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-pending">Loading ${esc(m.mediaType)}…${cap ? ' ' + cap : ''}</span></span>`;
     } else if (m.mediaPending && m.mediaType) {
-      body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-not-downloaded">${esc(m.mediaType)} not downloaded <button type="button" class="media-retry" data-wa-media-retry>Retry</button>${cap ? ' · ' + cap : ''}</span></span>`;
+      body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-not-downloaded">${esc(m.mediaType)} not downloaded <button type="button" class="media-retry" data-wa-media-retry${mid ? ` data-message-id="${escAttr(mid)}"` : ''}>Retry</button>${cap ? ' · ' + cap : ''}</span></span>`;
     } else if (m.mediaType && (!m.text || String(m.text).startsWith('['))) {
       body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge">[${esc(m.mediaType)}]${cap ? ' ' + cap : ''}</span></span>`;
     } else {

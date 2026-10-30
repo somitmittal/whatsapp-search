@@ -537,7 +537,11 @@ export function initChatView() {
       try {
         // menus.js imports this module, so load it lazily to keep the cycle out of eval order.
         const { priorityLoadChat } = await import('./menus.js');
-        await priorityLoadChat(store.activeChat, { alertResult: false });
+        const mid = mediaRetry.getAttribute('data-message-id')
+          || mediaRetry.closest('.msg-block')?.dataset?.messageId
+          || null;
+        // One message only — full-chat media pull is menu → “Load messages & media”.
+        await priorityLoadChat(store.activeChat, { alertResult: false, messageId: mid });
       } catch (err) {
         mediaRetry.disabled = false;
         mediaRetry.textContent = 'Retry';
