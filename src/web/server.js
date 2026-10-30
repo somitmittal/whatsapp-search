@@ -1627,14 +1627,28 @@ export default class WebServer {
         this._mediaIndexService?.notePriorityChange?.();
         this._embeddingIndexService?.notePriorityChange?.();
 
+        // Recent window from the same cutoff used for media drain priority — do not treat
+        // those rows as permanently gone just because the in-memory retry cache was wiped
+        // on restart (that was marking today's images "unavailable" on refresh).
+        const recentCutoffTs = Math.floor(Date.now() / 1000)
+          - (Number(config.liveRecentWindowDays) || 5) * 24 * 60 * 60;
+
+        let mediaRetryCleared = 0;
+        if (!imported && typeof this.db.clearUnavailableMediaNewerThan === 'function') {
+          mediaRetryCleared = this.db.clearUnavailableMediaNewerThan(chatJid, recentCutoffTs);
+        }
+
         let mediaQueued = 0;
         if (wa && typeof wa.prioritizeChatMedia === 'function' && !imported) {
           mediaQueued = Number(wa.prioritizeChatMedia(chatJid)?.queuedForChat || 0);
         }
 
-        // Old chats: "Loading…" rows with no active download will never resolve.
-        // Mark them unavailable so refresh stops spinning (WhatsApp no longer has the file).
-        // Applies to imported chats too (missing local media files).
+        const pendingMedia = typeof this.db.countPendingMediaForChat === 'function'
+          ? this.db.countPendingMediaForChat(chatJid)
+          : 0;
+
+        // Archive-only: mark stuck Loading outside the recent window (or all missing
+        // files on imported chats). Recent pending stays Loading so phone rehydrate can retry.
         let mediaMarkedUnavailable = 0;
         if (typeof this.db.markOrphanedPendingMediaUnavailable === 'function') {
           const stillPending = new Set(
@@ -1642,18 +1656,30 @@ export default class WebServer {
               ? wa.pendingMediaMessageIdsForChat(chatJid)
               : [],
           );
-          mediaMarkedUnavailable = this.db.markOrphanedPendingMediaUnavailable(chatJid, stillPending);
+          mediaMarkedUnavailable = this.db.markOrphanedPendingMediaUnavailable(
+            chatJid,
+            stillPending,
+            imported ? {} : { olderThanTs: recentCutoffTs },
+          );
         }
 
         let history = { requested: false };
         if (!imported && wa && typeof wa.fetchOlderHistoryFromPhone === 'function' && st.waState === 'READY') {
           const guard = wa.canFetchPhoneHistory?.(chatJid);
           if (!guard || guard.ok) {
-            const anchorRow = this.db.getOldestMessageAnchor(chatJid);
+            // Prefer newest anchor when media is still pending: re-delivers the recent
+            // window with download stubs. Oldest anchor only extends the archive.
+            const anchorRow = pendingMedia > 0
+              ? (this.db.getNewestMessageAnchor(chatJid) || this.db.getOldestMessageAnchor(chatJid))
+              : this.db.getOldestMessageAnchor(chatJid);
             if (anchorRow?.messageId) {
               try {
                 const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid, ...anchorRow }, count);
-                history = { requested: true, requestId: requestId ?? null };
+                history = {
+                  requested: true,
+                  requestId: requestId ?? null,
+                  purpose: pendingMedia > 0 ? 'media_rehydrate' : 'older_archive',
+                };
               } catch (err) {
                 history = { requested: false, error: err.message || String(err) };
               }
@@ -1680,7 +1706,9 @@ export default class WebServer {
           chatJid,
           imported,
           mediaQueued,
+          mediaRetryCleared,
           mediaMarkedUnavailable,
+          pendingMedia,
           history,
         });
       } catch (err) {

@@ -1663,20 +1663,64 @@ export default class Database {
   }
 
   /**
-   * Rows with a media type but no file, excluding ids still queued for download.
-   * Used when the user refreshes a chat so stuck "Loading…" badges become "unavailable".
+   * Count media rows for a chat that still need a local file (pending download).
    */
-  markOrphanedPendingMediaUnavailable(chatJid, keepMessageIds = []) {
+  countPendingMediaForChat(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return 0;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT COUNT(*) AS n FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+        AND media_type IS NOT NULL AND trim(media_type) != ''
+        AND (media_path IS NULL OR trim(media_path) = '')
+    `).get(t, jid);
+    return Number(row?.n) || 0;
+  }
+
+  /**
+   * Clear the unavailable sentinel for recent media so a refresh can retry downloads.
+   * @param {string} chatJid
+   * @param {number} newerThanTs unix seconds — only rows at/after this timestamp
+   */
+  clearUnavailableMediaNewerThan(chatJid, newerThanTs) {
+    const jid = String(chatJid || '').trim();
+    const cutoff = Number(newerThanTs);
+    if (!jid || !Number.isFinite(cutoff)) return 0;
+    const t = getCurrentTenantId();
+    const r = this._db.prepare(`
+      UPDATE messages SET media_path = NULL
+      WHERE tenant_id = ? AND chat_jid = ?
+        AND media_path = '__unavailable__'
+        AND timestamp >= ?
+    `).run(t, jid, cutoff);
+    return r.changes ?? 0;
+  }
+
+  /**
+   * Rows with a media type but no file, excluding ids still queued for download.
+   * Optional `olderThanTs` limits this to archive rows so recent media stays retryable.
+   */
+  markOrphanedPendingMediaUnavailable(chatJid, keepMessageIds = [], { olderThanTs = null } = {}) {
     const jid = String(chatJid || '').trim();
     if (!jid) return 0;
     const t = getCurrentTenantId();
     const keep = new Set([...(keepMessageIds || [])].map((id) => String(id)));
-    const rows = this._db.prepare(`
-      SELECT message_id AS messageId FROM messages
-      WHERE tenant_id = ? AND chat_jid = ?
-        AND media_type IS NOT NULL AND trim(media_type) != ''
-        AND (media_path IS NULL OR trim(media_path) = '')
-    `).all(t, jid);
+    const cutoff = olderThanTs == null ? null : Number(olderThanTs);
+    const rows = cutoff != null && Number.isFinite(cutoff)
+      ? this._db.prepare(`
+          SELECT message_id AS messageId FROM messages
+          WHERE tenant_id = ? AND chat_jid = ?
+            AND media_type IS NOT NULL AND trim(media_type) != ''
+            AND (media_path IS NULL OR trim(media_path) = '')
+            AND timestamp < ?
+        `).all(t, jid, cutoff)
+      : this._db.prepare(`
+          SELECT message_id AS messageId FROM messages
+          WHERE tenant_id = ? AND chat_jid = ?
+            AND media_type IS NOT NULL AND trim(media_type) != ''
+            AND (media_path IS NULL OR trim(media_path) = '')
+        `).all(t, jid);
     if (!rows.length) return 0;
     const upd = this._db.prepare(
       'UPDATE messages SET media_path = ? WHERE tenant_id = ? AND message_id = ?',

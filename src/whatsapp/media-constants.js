@@ -5,7 +5,13 @@ export function isMediaUnavailablePath(path) {
   return String(path || '').trim() === MEDIA_UNAVAILABLE_PATH;
 }
 
+/**
+ * Only treat WhatsApp responses that mean the blob is gone as permanent.
+ * GENERAL_ERROR / stream failures are often transient and must stay retryable.
+ */
 export function isPermanentMediaFailure(err) {
   const m = String(err?.message || err || '');
-  return /NOT_FOUND|Media re-upload failed|no media present|Status code: 404|ENOTFOUND/i.test(m);
+  if (/Status code: 404|no media present/i.test(m)) return true;
+  if (/NOT_FOUND/i.test(m)) return true;
+  return false;
 }
