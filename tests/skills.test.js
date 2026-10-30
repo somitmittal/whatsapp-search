@@ -19,6 +19,7 @@ const {
   chatQueryFromRest,
   dateHintFromRest,
   formatExpenseDayLabel,
+  naturalExpenseSkillCommand,
   otherExpenseDateChoices,
   resolveExpenseChat,
   resolveExpenseSheet,
@@ -138,9 +139,21 @@ describe('expense skill inputs', () => {
     expect(dateHintFromRest('12 oct', NOW)).toBe('2026-10-12');
     expect(dateHintFromRest('12th October', NOW)).toBe('2026-10-12');
     expect(dateHintFromRest('Oct 12', NOW)).toBe('2026-10-12');
+    expect(dateHintFromRest('10th Oct', NOW)).toBe('2026-10-10');
     expect(dateHintFromRest('12.10.26', NOW)).toBe('2026-10-12');
     expect(dateHintFromRest('12/10/2026', NOW)).toBe('2026-10-12');
     expect(chatQueryFromRest('Phonpay 12 oct')).toBe('Phonpay');
+  });
+
+  test('maps natural language expense requests onto the slash skill with the date', () => {
+    expect(naturalExpenseSkillCommand('Please do expense reconciliation for 10th Oct')).toBe(
+      '/accountant/expense-reconciliation 10th Oct',
+    );
+    expect(naturalExpenseSkillCommand('run expense reconciliation Phonpay yesterday')).toBe(
+      '/accountant/expense-reconciliation Phonpay yesterday',
+    );
+    expect(naturalExpenseSkillCommand('what is expense reconciliation?')).toBeNull();
+    expect(naturalExpenseSkillCommand('/accountant/expense-reconciliation 10th Oct')).toBeNull();
   });
 
   test('natural date picks the Phone-pay PDF and ignores payment photos', () => {
@@ -651,6 +664,36 @@ describe('skill runs in the database', () => {
       expect(result.model).toBeNull();
       const assistant = result.messages.find((m) => m.role === 'assistant');
       expect(assistant.payload.skillRun.status).toBe('needs_input');
+    });
+  });
+
+  test('natural "expense reconciliation for 10th Oct" runs the skill with that date', async () => {
+    let ran = null;
+    const gpt = new GptService({
+      db,
+      getProvider: () => { throw new Error('provider should not be asked'); },
+      expenseService: null,
+    });
+    gpt.skills.run = async ({ text }) => {
+      ran = text;
+      return {
+        answer: `dry-run for ${text}`,
+        steps: ['expense'],
+        choices: [],
+        skillRun: { id: 'nl-date', status: 'dry_run', canSend: false },
+        expenseDiff: { businessDate: '2026-10-10', chatName: 'Phonpay' },
+      };
+    };
+    await runWithTenant(TENANT, async () => {
+      const result = await gpt.handleTurn({
+        message: 'Please do expense reconciliation for 10th Oct',
+        scopeChatJid: SITE,
+      });
+      expect(ran).toBe('/accountant/expense-reconciliation 10th Oct');
+      expect(result.model).toBeNull();
+      expect(result.expenseDiff.businessDate).toBe('2026-10-10');
+      expect(result.messages.filter((m) => m.role === 'user').at(-1).content)
+        .toBe('Please do expense reconciliation for 10th Oct');
     });
   });
 

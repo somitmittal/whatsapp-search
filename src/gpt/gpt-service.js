@@ -24,6 +24,7 @@ import {
 } from '../skills/catalog.js';
 import { createSkillRunner } from '../skills/skill-runner.js';
 import { parseSkillInvocation } from '../skills/parse-invocation.js';
+import { naturalExpenseSkillCommand } from '../skills/expense-inputs.js';
 import { SYSTEM_SKILLS } from '../skills/system-skills.js';
 
 function titleFrom(text) {
@@ -215,6 +216,14 @@ export default class GptService {
         conversationId, createConversationIfMissing, message: text, scopeChatJid, mentions, model, emit,
       });
     }
+    // "Please do expense reconciliation for 10th Oct" → same skill path as the slash command.
+    const naturalSkill = naturalExpenseSkillCommand(text);
+    if (naturalSkill) {
+      return this._handleSkillTurn({
+        conversationId, createConversationIfMissing, message: text, skillText: naturalSkill,
+        scopeChatJid, mentions, model, emit,
+      });
+    }
     // `model` undefined → keep the thread's choice; null → back to Auto; object → explicit pick.
     const existingModel = conversationId ? this.db.getConversationModel(conversationId) : null;
     const selection = model === undefined ? existingModel : model;
@@ -369,8 +378,12 @@ export default class GptService {
    * Slash command. Resolved from the skill catalog before any model call, then executed
    * as a dry run. Sending the report is a separate confirm.
    */
-  async _handleSkillTurn({ conversationId = null, createConversationIfMissing = false, message, scopeChatJid = null, mentions = [], model = undefined, emit = null }) {
+  async _handleSkillTurn({
+    conversationId = null, createConversationIfMissing = false, message, skillText = null,
+    scopeChatJid = null, mentions = [], model = undefined, emit = null,
+  }) {
     const text = String(message || '').trim();
+    const runText = String(skillText || text).trim();
     const progress = [];
     const status = (line) => {
       if (line) progress.push(line);
@@ -402,13 +415,18 @@ export default class GptService {
 
     this.db.addSearchMessage({
       id: randomUUID(), conversationId: conversation.id, role: 'user', content: text,
-      payload: { scopeChatJid: effectiveScopeChatJid, mentions: resolvedMentions, skill: true },
+      payload: {
+        scopeChatJid: effectiveScopeChatJid,
+        mentions: resolvedMentions,
+        skill: true,
+        ...(skillText && skillText !== text ? { skillText } : {}),
+      },
     });
 
     let outcome;
     try {
       outcome = await this.skills.run({
-        text,
+        text: runText,
         mentions: turnPins,
         scopeChatJid: turnPins[0]?.chatJid || effectiveScopeChatJid || null,
         scopeChatName: turnPins[0]?.chatName || scopeChatName || null,

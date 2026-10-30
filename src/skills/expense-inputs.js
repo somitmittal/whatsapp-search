@@ -117,6 +117,33 @@ export function chatQueryFromRest(rest) {
     .trim();
 }
 
+/**
+ * Map clear natural-language expense requests onto the slash skill so dates like
+ * "10th Oct" take the same path as `/accountant/expense-reconciliation 10th Oct`.
+ * Returns null for ordinary chat (including "what is expense reconciliation?").
+ */
+export function naturalExpenseSkillCommand(text, {
+  command = '/accountant/expense-reconciliation',
+} = {}) {
+  const raw = String(text || '').trim();
+  if (!raw || raw.startsWith('/')) return null;
+  const namesExpense = /\b(?:the\s+)?expense\s+reconcil(?:iation|e)?\b/i.test(raw)
+    || /\breconcil(?:e|iation)\s+(?:the\s+)?expenses?\b/i.test(raw);
+  if (!namesExpense) return null;
+  const imperative = /\b(?:please|pls|do|run|start|perform|check|compare|can\s+you|could\s+you|would\s+you|kindly)\b/i.test(raw);
+  if (!imperative) return null;
+
+  let rest = raw
+    .replace(/^(?:please|pls|can you|could you|would you|kindly)[,:]?\s+/i, '')
+    .replace(/^(?:do|run|start|perform|check|compare)\s+/i, '')
+    .replace(/\b(?:the\s+)?expense\s+reconcil(?:iation|e)?\b/gi, ' ')
+    .replace(/\breconcil(?:e|iation)\s+(?:the\s+)?expenses?\b/gi, ' ')
+    .replace(/^\s*(?:for|on)\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return rest ? `${command} ${rest}` : command;
+}
+
 function isDocumentSheet(sheet) {
   return /\.(xlsx|xlsm|csv|tsv|txt|pdf|docx)$/i.test(String(sheet?.fileName || ''));
 }

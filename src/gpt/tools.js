@@ -31,8 +31,8 @@ export const TOOL_SPECS = [
   },
   {
     name: 'reconcile',
-    args: '{"chat"?: name}',
-    about: "dry-run expense reconciliation for a site group (Excel/CSV in that chat). Pass chat for one site; omit chat when several chats are @mentioned this turn to reconcile each of them.",
+    args: '{"chat"?: name, "date"?: "YYYY-MM-DD or 10 Oct", "file"?: name}',
+    about: "dry-run expense reconciliation for a site group (Excel/CSV/Phone-pay PDF in that chat). Pass date when the user named a day (e.g. 10th Oct). Pass chat for one site; omit chat when several chats are @mentioned this turn to reconcile each of them.",
   },
 ];
 
@@ -141,9 +141,11 @@ export function createToolbox({ db, embeddings, directory, runSkill = null }) {
 
       const runOne = async (siteLabel) => {
         const rest = String(siteLabel || '').trim();
+        const date = String(args.date || '').trim();
+        const file = String(args.file || '').trim();
         const resolved = rest ? chatOrNull(rest) : null;
-        const text = rest ? `${EXPENSE_COMMAND} ${rest}` : EXPENSE_COMMAND;
-        ctx.status?.(`Reconciling${rest ? ` ${rest}` : ''}…`);
+        const text = [EXPENSE_COMMAND, rest, date, file].filter(Boolean).join(' ');
+        ctx.status?.(`Reconciling${rest ? ` ${rest}` : ''}${date ? ` (${date})` : ''}…`);
         const outcome = await runSkill({
           text,
           // Pin exactly this site so multi-@mention turns do not ask "which site?".

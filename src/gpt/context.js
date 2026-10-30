@@ -38,6 +38,7 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
       'For expense reconciliation, retries ("try again"), or other sites, CALL reconcile.',
       'When several chats are @mentioned this turn, CALL reconcile once with no chat arg (it runs each mentioned site).',
       'When only one site is needed, CALL reconcile with that chat name.',
+      'If the user named a day (e.g. 10th Oct, yesterday), pass it as date in reconcile args so the skill picks that day\'s sheet.',
       'Do not invent reconciliation numbers — always CALL reconcile (or use a labelled comparison already in context for that same site).',
       tools,
       '',
