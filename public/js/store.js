@@ -3,6 +3,8 @@ export const store = {
   ws: undefined,
   chatData: [],
   activeChat: null,
+  /** LID + PN aliases for the open 1:1 chat so live WS ticks still refresh the transcript. */
+  activeChatLinkedJids: [],
   connected: false,
   searchActive: false,
   /** Active AI search conversation id for follow-ups. */

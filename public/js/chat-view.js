@@ -14,6 +14,20 @@ import { renderChatsFromState, setSidebarListTab, sidebarTabOf } from './sidebar
 import { $, $$, esc, escAttr } from './util.js';
 
 // ── Open chat ──────────────────────────────────────────────────────
+/** Resolve LID ↔ phone JID aliases so live WS ticks refresh the open transcript. */
+export async function refreshActiveChatLinkedJids(jid) {
+  store.activeChatLinkedJids = jid ? [jid] : [];
+  if (!jid || String(jid).endsWith('@imported') || String(jid).endsWith('@g.us')) return;
+  try {
+    const res = await fetch(`/api/wa/linked-jids?chatJid=${encodeURIComponent(jid)}`, {
+      credentials: 'same-origin',
+    });
+    const data = res.ok ? await res.json() : null;
+    const list = Array.isArray(data?.jids) ? data.jids.filter(Boolean) : [];
+    if (store.activeChat === jid && list.length) store.activeChatLinkedJids = list;
+  } catch { /* keep [jid] */ }
+}
+
 /** Technical chat metadata (JID, owner, participant counts) stays hidden — name is enough. */
 function renderCvContact(_d, _jid) {
   const el = $('#cv-contact');
@@ -182,6 +196,8 @@ export async function openChat(jid, focusMessageId = null) {
   clearReplyTarget();
   clearEditTarget();
   store.activeChat = jid;
+  store.activeChatLinkedJids = jid ? [jid] : [];
+  void refreshActiveChatLinkedJids(jid);
   store.cvTab = 'chat';
   store.attachmentsPayload = null;
   const tabsEl = $('#cv-tabs');
@@ -474,9 +490,10 @@ export function initChatView() {
     $('#btn-mobile-chat-back').addEventListener('click', () => {
     clearReplyTarget();
     clearEditTarget();
-    store.activeChat = null;
-    store.activeFocusMessageId = null;
-    store.cvTab = 'chat';
+  store.activeChat = null;
+  store.activeChatLinkedJids = [];
+  store.activeFocusMessageId = null;
+  store.cvTab = 'chat';
     store.attachmentsPayload = null;
     const te = $('#cv-tabs');
     if (te) te.style.display = 'none';

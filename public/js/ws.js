@@ -11,9 +11,18 @@ import { $, eventTouchesChat } from './util.js';
 import { showQr, updateSyncProgress, updateWaUI } from './wa-connection.js';
 
 let _openChatRefreshTimer = null;
-function scheduleRefreshOpenChat() {
+/** Live ticks refresh immediately; media-ready / bursty events coalesce briefly. */
+function scheduleRefreshOpenChat({ coalesceMs = 0 } = {}) {
   clearTimeout(_openChatRefreshTimer);
-  _openChatRefreshTimer = setTimeout(() => { void refreshOpenChatMessages(); }, 220);
+  if (!coalesceMs) {
+    void refreshOpenChatMessages();
+    return;
+  }
+  _openChatRefreshTimer = setTimeout(() => { void refreshOpenChatMessages(); }, coalesceMs);
+}
+
+function openChatTouched(data) {
+  return eventTouchesChat(data, store.activeChat, store.activeChatLinkedJids);
 }
 
 // ── WebSocket ──────────────────────────────────────────────────────
@@ -30,12 +39,12 @@ function connectWS() {
       }
       else if (msg.type === 'new-messages') {
         scheduleRefreshDash(msg.data?.chatTouches);
-        if (eventTouchesChat(msg.data, store.activeChat)) scheduleRefreshOpenChat();
+        if (openChatTouched(msg.data)) scheduleRefreshOpenChat();
         if (store._waState === 'READY') { /* keep welcome hidden */ }
       }
-      else if (msg.type === 'chat-action-items' && msg.data?.chatJid === store.activeChat) {
+      else if (msg.type === 'chat-action-items' && openChatTouched(msg.data)) {
         void loadActionItemsForChat(store.activeChat);
-        scheduleRefreshOpenChat();
+        scheduleRefreshOpenChat({ coalesceMs: 120 });
       }
       else if (msg.type === 'expense-reconciliation' && $('#overlay-expenses')?.classList.contains('open')) {
         void loadExpenseRuns();
@@ -80,8 +89,8 @@ function connectWS() {
       else if (msg.type === 'message-revoked' && msg.data) { applyMessageRevokedToDom(msg.data); }
       else if (msg.type === 'message-deleted' && msg.data) { applyMessageDeletedToDom(msg.data); }
       else if (msg.type === 'message-edited' && msg.data) { applyMessageEditedToDom(msg.data); }
-      else if (msg.type === 'message-media-ready' && eventTouchesChat(msg.data, store.activeChat)) {
-        scheduleRefreshOpenChat();
+      else if (msg.type === 'message-media-ready' && openChatTouched(msg.data)) {
+        scheduleRefreshOpenChat({ coalesceMs: 120 });
       }
       else if (msg.type === 'memory-saved') {
         showMemorySavedChip(msg.data?.entry?.text || '');

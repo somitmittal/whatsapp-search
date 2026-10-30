@@ -132,6 +132,29 @@ function summarizeChatTouchesFromRows(rows) {
   return [...map.values()];
 }
 
+/**
+ * Duplicate each touch under LID + phone aliases so the open chat refreshes even when
+ * the UI selected @s.whatsapp.net and Baileys delivered on @lid (or the reverse).
+ */
+async function expandChatTouchesWithLinkedJids(wa, touches) {
+  const list = Array.isArray(touches) ? touches : [];
+  if (!list.length || typeof wa?.getLinked1on1Jids !== 'function') return list;
+  const out = [];
+  const seen = new Set();
+  for (const t of list) {
+    let jids = [t.chatJid];
+    try {
+      jids = await wa.getLinked1on1Jids(t.chatJid);
+    } catch { /* keep primary */ }
+    for (const jid of jids || []) {
+      if (!jid || seen.has(jid)) continue;
+      seen.add(jid);
+      out.push({ ...t, chatJid: jid });
+    }
+  }
+  return out.length ? out : list;
+}
+
 function sanitizeMessageList(list, isMediaQueued = null) {
   if (!Array.isArray(list)) return list;
   return list.map((m) => sanitizeClientMessage(m, isMediaQueued));
@@ -861,14 +884,29 @@ export default class WebServer {
           // Always push a live tick so the sidebar/open chat refresh even when
           // Baileys re-delivers a message we already stored (INSERT OR IGNORE).
           if ((rows || []).length) {
-            this._broadcast({
-              type: 'new-messages',
-              data: {
-                count: inserted,
-                stats: this._getCachedTotalStats(tid, { force: true }),
-                chatTouches: summarizeChatTouchesFromRows(rows),
-              },
-            }, tid);
+            const baseTouches = summarizeChatTouchesFromRows(rows);
+            const stNow = this._getTenantState(tid);
+            const waNow = stNow?.waClient;
+            void (async () => {
+              const chatTouches = await expandChatTouchesWithLinkedJids(waNow, baseTouches);
+              this._broadcast({
+                type: 'new-messages',
+                data: {
+                  count: inserted,
+                  stats: this._getCachedTotalStats(tid, { force: true }),
+                  chatTouches,
+                },
+              }, tid);
+            })().catch(() => {
+              this._broadcast({
+                type: 'new-messages',
+                data: {
+                  count: inserted,
+                  stats: this._getCachedTotalStats(tid, { force: true }),
+                  chatTouches: baseTouches,
+                },
+              }, tid);
+            });
           }
           if (inserted > 0 && !historyBusy) {
             this._mediaIndexService?.scheduleProcess?.();
@@ -2269,6 +2307,23 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       const qr = this._currentQr(st);
       if (!qr) return res.status(404).json({ error: 'No QR available' });
       res.json({ qr });
+    });
+
+    /** LID ↔ phone aliases for one 1:1 chat (live message ticks use either form). */
+    this._app.get('/api/wa/linked-jids', async (req, res) => {
+      const chatJid = String(req.query.chatJid || '').trim();
+      if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+      try {
+        const st = this._getTenantState(getCurrentTenantId());
+        const wa = st?.waClient;
+        if (wa && typeof wa.getLinked1on1Jids === 'function') {
+          const jids = await wa.getLinked1on1Jids(chatJid);
+          return res.json({ jids: [...new Set((jids || []).filter(Boolean))] });
+        }
+        return res.json({ jids: [chatJid] });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || String(err) });
+      }
     });
 
     this._app.get('/api/wa/chat-details', async (req, res) => {

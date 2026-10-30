@@ -18,6 +18,7 @@ import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js/message-actions.js';
 import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
+import { refreshActiveChatLinkedJids } from '/js/chat-view.js';
 import { initMenus, priorityLoadChat, showSidebarContextMenu } from '/js/menus.js';
 import {
   buildChatMessagesHtml,
@@ -197,6 +198,7 @@ function syncWaComposerUi() {
   if (els.askAi) els.askAi.hidden = !inChat;
   if (els.chatMenuWrap) els.chatMenuWrap.hidden = !inChat;
   store.activeChat = state.activeChatJid || null;
+  if (!inChat) store.activeChatLinkedJids = [];
   updateComposerVisibility();
   const canSend = canSendMessageToJid(store.activeChat);
   if (els.waComposerHint) els.waComposerHint.hidden = !inChat || canSend;
@@ -288,9 +290,9 @@ function connectSyncSocket() {
     } else if (msg.type === 'new-messages') {
       // Keep the sidebar current; only re-paint the open transcript when this chat moved.
       void loadChats();
-      if (eventTouchesChat(msg.data, state.activeChatJid)) scheduleReloadActiveWaMessages();
+      if (openChatTouched(msg.data)) scheduleReloadActiveWaMessages();
     } else if (msg.type === 'message-media-ready') {
-      if (eventTouchesChat(msg.data, state.activeChatJid)) scheduleReloadActiveWaMessages();
+      if (openChatTouched(msg.data)) scheduleReloadActiveWaMessages({ coalesceMs: 120 });
     } else if (msg.type === 'chat-names-refreshed') {
       void loadChats();
     }
@@ -299,9 +301,17 @@ function connectSyncSocket() {
 }
 
 let _waReloadTimer = null;
-function scheduleReloadActiveWaMessages() {
+function scheduleReloadActiveWaMessages({ coalesceMs = 0 } = {}) {
   clearTimeout(_waReloadTimer);
-  _waReloadTimer = setTimeout(() => { void reloadActiveWaMessages(); }, 220);
+  if (!coalesceMs) {
+    void reloadActiveWaMessages();
+    return;
+  }
+  _waReloadTimer = setTimeout(() => { void reloadActiveWaMessages(); }, coalesceMs);
+}
+
+function openChatTouched(data) {
+  return eventTouchesChat(data, state.activeChatJid, store.activeChatLinkedJids);
 }
 
 function flashRefreshButton(btn, note) {
@@ -1070,6 +1080,8 @@ async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
   ensureTab({ kind: 'chat', jid, name: title });
   state.activeChatJid = jid;
   store.activeChat = jid;
+  store.activeChatLinkedJids = [jid];
+  void refreshActiveChatLinkedJids(jid);
   state.conversationId = null;
   state.scopeChatJid = null;
   clearReplyTarget();
