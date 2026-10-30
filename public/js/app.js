@@ -24,6 +24,7 @@ import { initSettings } from './settings.js';
 import { initSkillsSettings } from './skills-settings.js';
 import { initOllamaSetup } from './ollama-setup.js';
 import { initOnboarding } from './onboarding.js';
+import { initDesktopUpdates } from './desktop-updates.js';
 
 initFetchShim();
 initConstants();
@@ -50,6 +51,7 @@ initSettings();
 initSkillsSettings();
 initOllamaSetup();
 initOnboarding();
+initDesktopUpdates();
 
 const deepLink = new URLSearchParams(location.search);
 if (deepLink.get('chat')) {

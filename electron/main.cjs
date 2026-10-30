@@ -2,7 +2,16 @@
  * Electron main process — bundles WhatsApp Search as a native Mac app.
  * Spawns the Node server as a child using a real Node binary (system or bundled).
  */
-const { app, BrowserWindow, shell, dialog, session, powerMonitor, powerSaveBlocker } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  shell,
+  dialog,
+  session,
+  powerMonitor,
+  powerSaveBlocker,
+  ipcMain,
+} = require('electron');
 const { spawn, execFileSync } = require('child_process');
 const crypto = require('crypto');
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('fs');
@@ -340,11 +349,57 @@ app.whenReady().then(async () => {
   }
 });
 
+/** @type {import('electron-updater').AppUpdater | null} */
+let autoUpdaterRef = null;
+/** @type {object | null} */
+let updateDownloadedInfo = null;
+
+function broadcastUpdater(payload) {
+  const body = { ...payload, currentVersion: app.getVersion() };
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { win.webContents.send('desktop:updater', body); } catch { /* ignore */ }
+  }
+}
+
 /**
  * In-app updates from GitHub Releases (same repo as desktop artifacts).
  * Requires zip (mac) / nsis (win) / AppImage (linux) + latest*.yml on the release.
  */
 function setupAutoUpdater() {
+  ipcMain.handle('desktop:get-version', () => app.getVersion());
+  ipcMain.handle('desktop:open-releases', async () => {
+    await shell.openExternal('https://github.com/somitmittal/whatsapp-search/releases/latest');
+    return { ok: true };
+  });
+  ipcMain.handle('desktop:check-for-updates', async () => {
+    if (!app.isPackaged) {
+      return { ok: false, error: 'Updates only run in the installed desktop app (not npm start / browser).' };
+    }
+    if (!autoUpdaterRef) {
+      return { ok: false, error: 'Updater is not available in this build.' };
+    }
+    try {
+      broadcastUpdater({ status: 'checking' });
+      const result = await autoUpdaterRef.checkForUpdates();
+      return { ok: true, updateInfo: result?.updateInfo || null };
+    } catch (err) {
+      const message = err?.message || String(err);
+      broadcastUpdater({ status: 'error', message });
+      return { ok: false, error: message };
+    }
+  });
+  ipcMain.handle('desktop:install-update', async () => {
+    if (!autoUpdaterRef || !updateDownloadedInfo) {
+      return { ok: false, error: 'No update downloaded yet. Check for updates first.' };
+    }
+    setImmediate(() => {
+      try { autoUpdaterRef.quitAndInstall(false, true); } catch (err) {
+        console.warn('[Desktop] quitAndInstall:', err?.message || err);
+      }
+    });
+    return { ok: true };
+  });
+
   if (!app.isPackaged) return;
   let autoUpdater;
   try {
@@ -353,37 +408,54 @@ function setupAutoUpdater() {
     console.warn('[Desktop] electron-updater missing:', err.message);
     return;
   }
+  autoUpdaterRef = autoUpdater;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on('error', (err) => {
-    console.warn('[Desktop] updater:', err?.message || err);
+    const message = err?.message || String(err);
+    console.warn('[Desktop] updater:', message);
+    broadcastUpdater({ status: 'error', message });
+  });
+  autoUpdater.on('checking-for-update', () => {
+    broadcastUpdater({ status: 'checking' });
   });
   autoUpdater.on('update-available', (info) => {
     console.log('[Desktop] update available:', info?.version);
+    broadcastUpdater({ status: 'available', version: info?.version });
+  });
+  autoUpdater.on('update-not-available', () => {
+    broadcastUpdater({ status: 'up-to-date', version: app.getVersion() });
+  });
+  autoUpdater.on('download-progress', (p) => {
+    broadcastUpdater({ status: 'downloading', percent: p?.percent });
   });
   autoUpdater.on('update-downloaded', (info) => {
+    updateDownloadedInfo = info || {};
     const version = info?.version || 'a new version';
-    const show = () => {
-      const win = BrowserWindow.getFocusedWindow() || mainWindow;
-      dialog.showMessageBox(win || undefined, {
-        type: 'info',
-        title: 'Update ready',
-        message: `Searchable ${version} downloaded.`,
-        detail: 'Restart to install. Your local chat data stays on this computer.',
-        buttons: ['Restart now', 'Later'],
-        defaultId: 0,
-        cancelId: 1,
-      }).then(({ response }) => {
-        if (response === 0) autoUpdater.quitAndInstall(false, true);
-      }).catch(() => {});
-    };
-    show();
+    broadcastUpdater({ status: 'downloaded', version });
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    dialog.showMessageBox(win || undefined, {
+      type: 'info',
+      title: 'Update ready',
+      message: `Searchable ${version} downloaded.`,
+      detail: 'Restart to install. Your local chat data stays on this computer.',
+      buttons: ['Restart now', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall(false, true);
+    }).catch(() => {});
   });
-  setTimeout(() => {
+
+  const runCheck = () => {
     autoUpdater.checkForUpdates().catch((err) => {
       console.warn('[Desktop] checkForUpdates:', err?.message || err);
+      broadcastUpdater({ status: 'error', message: err?.message || String(err) });
     });
-  }, 12_000);
+  };
+  setTimeout(runCheck, 12_000);
+  // Recheck a few times a day while the app stays open.
+  setInterval(runCheck, 4 * 60 * 60 * 1000);
 }
 
 app.on('before-quit', () => {

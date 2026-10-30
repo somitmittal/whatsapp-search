@@ -36,6 +36,7 @@ import { autoSelectSidebarTab, renderSidebarTabCounts, setSidebarListTab, sideba
 import { store } from '/js/store.js';
 import { esc, escAttr, eventTouchesChat } from '/js/util.js';
 import { initWaBootstrap } from '/js/wa-bootstrap.js';
+import { initDesktopUpdates } from '/js/desktop-updates.js';
 import { accountPlanSummary, shouldAutoLogout } from '/js/trial-status.js';
 import { isWaUiReady, updateWaUI } from '/js/wa-connection.js';
 
@@ -51,6 +52,7 @@ initExpenses();
 initGmail();
 initImport();
 initWaBootstrap();
+initDesktopUpdates();
 
 const $ = (sel) => document.querySelector(sel);
 const els = {

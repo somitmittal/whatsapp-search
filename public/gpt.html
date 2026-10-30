@@ -101,6 +101,16 @@
             <p class="muted">Like ChatGPT: durable facts you share (business, preferences, devices, ongoing work) are saved and used in every answer. Local to this device.</p>
             <div class="memory-widget" id="memory-widget"></div>
           </div>
+          <div class="gpt-settings-block" data-desktop-updates>
+            <h4>Updates</h4>
+            <p class="muted" data-update-version></p>
+            <p class="muted" data-update-status>Updates download automatically when a new release is published.</p>
+            <div class="gpt-theme-row" style="gap:8px;flex-wrap:wrap;">
+              <button type="button" class="gpt-settings-action primary" data-update-check>Check for updates</button>
+              <button type="button" class="gpt-settings-action" data-update-install hidden>Restart &amp; install</button>
+              <button type="button" class="gpt-settings-action" data-update-releases>Open releases</button>
+            </div>
+          </div>
         </section>
 
         <section class="gpt-settings-panel" data-settings-panel="account" hidden>

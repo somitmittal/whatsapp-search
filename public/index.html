@@ -698,6 +698,16 @@
         </div>
 
         <div class="settings-tab-panel" data-settings-panel="data" role="tabpanel">
+        <div class="setting-group" data-desktop-updates>
+          <h3>Updates</h3>
+          <p data-update-version style="font-size:12px;color:var(--text2);"></p>
+          <p data-update-status style="font-size:13px;color:var(--text2);margin:6px 0 10px;">Updates download automatically when a new release is published.</p>
+          <div class="setting-row" style="gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary" data-update-check>Check for updates</button>
+            <button type="button" class="btn btn-secondary" data-update-install hidden>Restart &amp; install</button>
+            <button type="button" class="btn btn-secondary" data-update-releases>Open releases</button>
+          </div>
+        </div>
         <div class="setting-group">
           <h3>Data</h3>
           <p>All data stored locally in SQLite.</p>
