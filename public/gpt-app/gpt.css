@@ -453,13 +453,17 @@ button { font: inherit; color: inherit; }
   margin: 0; padding: 12px 16px; font-size: 13px; color: var(--fg-3); text-align: center;
 }
 .gpt-chats-head-actions { display: flex; align-items: center; gap: 2px; }
-.gpt-ask-ai {
+.gpt-ask-ai,
+.gpt-priority-load {
   border: 1px solid var(--line); background: var(--panel-2); color: var(--fg);
   border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
   cursor: pointer; flex-shrink: 0;
 }
-.gpt-ask-ai:hover { border-color: var(--accent); color: var(--accent-2); }
-.gpt-ask-ai[hidden] { display: none !important; }
+.gpt-ask-ai:hover,
+.gpt-priority-load:hover { border-color: var(--accent); color: var(--accent-2); }
+.gpt-ask-ai[hidden],
+.gpt-priority-load[hidden] { display: none !important; }
+#gpt-btn-refresh-chats.is-busy { opacity: 0.55; pointer-events: none; }
 .gpt-delete-chat {
   border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
   background: var(--panel-2); color: var(--danger);

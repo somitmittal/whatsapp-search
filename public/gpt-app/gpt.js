@@ -19,7 +19,7 @@ import { initImport } from '/js/import.js';
 import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js/message-actions.js';
 import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
 import { toggleMessageMenu } from '/js/messages-render.js';
-import { initMenus, promptDeleteChat, showSidebarContextMenu } from '/js/menus.js';
+import { initMenus, priorityLoadChat, promptDeleteChat, showSidebarContextMenu } from '/js/menus.js';
 import { buildChatMessagesHtml, closeReactionEmojiPickers, postWaReaction, toggleReactionEmojiPicker } from '/js/messages-render.js';
 import { initOverlays, openOverlay } from '/js/overlays.js';
 import { initSettings, loadSettings } from '/js/settings.js';
@@ -64,6 +64,8 @@ const els = {
   waComposer: $('#gpt-wa-composer'),
   waComposerHint: $('#gpt-wa-composer-hint'),
   askAi: $('#gpt-ask-ai'),
+  priorityLoad: $('#gpt-btn-priority-load'),
+  refreshChats: $('#gpt-btn-refresh-chats'),
   deleteChat: $('#gpt-delete-chat'),
   suggest: $('#gpt-suggest'),
   input: $('#gpt-input'),
@@ -184,6 +186,7 @@ function syncWaComposerUi() {
   const inChat = !!state.activeChatJid;
   if (els.waComposer) els.waComposer.hidden = !inChat;
   if (els.askAi) els.askAi.hidden = !inChat;
+  if (els.priorityLoad) els.priorityLoad.hidden = !inChat;
   if (els.deleteChat) {
     els.deleteChat.hidden = !(inChat && String(state.activeChatJid || '').endsWith('@imported'));
   }
@@ -2110,6 +2113,25 @@ function wire() {
   $('#gpt-chats-open').addEventListener('click', () => els.app.classList.remove('chats-hidden'));
   window.__openGptSettings = (tab) => openSettings(true, tab || null);
   $('#gpt-btn-import')?.addEventListener('click', openImportChats);
+  els.refreshChats?.addEventListener('click', async () => {
+    if (!els.refreshChats || els.refreshChats.classList.contains('is-busy')) return;
+    els.refreshChats.classList.add('is-busy');
+    try {
+      await loadChats();
+      if (state.activeChatJid) await reloadActiveWaMessages();
+    } finally {
+      els.refreshChats.classList.remove('is-busy');
+    }
+  });
+  els.priorityLoad?.addEventListener('click', async () => {
+    if (!state.activeChatJid) return;
+    try {
+      await priorityLoadChat(state.activeChatJid);
+      await loadChats();
+    } catch (e) {
+      alert(e.message || 'Could not prioritize this chat');
+    }
+  });
   els.deleteChat?.addEventListener('click', () => {
     if (state.activeChatJid) promptDeleteChat(state.activeChatJid);
   });

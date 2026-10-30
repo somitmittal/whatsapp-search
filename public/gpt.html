@@ -251,6 +251,9 @@
       <div class="gpt-chats-head">
         <h1>Chats</h1>
         <div class="gpt-chats-head-actions">
+          <button type="button" class="gpt-icon" id="gpt-btn-refresh-chats" title="Refresh chat list" aria-label="Refresh chat list">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+          </button>
           <button type="button" class="gpt-import-chats-btn" id="gpt-btn-import" title="Import chats (.zip / .txt)" aria-label="Import chats">Import chats</button>
           <button type="button" class="gpt-icon gpt-chats-toggle" id="gpt-chats-toggle" title="Hide chats" aria-label="Hide chats">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
@@ -284,6 +287,7 @@
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
         </button>
         <div class="gpt-title" id="gpt-title">New chat</div>
+        <button type="button" class="gpt-priority-load" id="gpt-btn-priority-load" hidden title="Refresh this chat and download its media before other chats">Load messages &amp; media</button>
         <button type="button" class="gpt-ask-ai" id="gpt-ask-ai" hidden title="Ask AI about this chat">Ask AI</button>
         <button type="button" class="gpt-delete-chat" id="gpt-delete-chat" hidden title="Delete imported chat">Delete</button>
       </header>
@@ -418,6 +422,10 @@
   <div class="menu-item" id="ctx-open-chat">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
     Open chat
+  </div>
+  <div class="menu-item" id="ctx-priority-load" title="Refresh this chat and download its media before other chats">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+    Load messages &amp; media now
   </div>
   <div class="menu-item danger" id="ctx-delete-chat">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
