@@ -460,19 +460,33 @@ button { font: inherit; color: inherit; }
 }
 .gpt-ask-ai:hover { border-color: var(--accent); color: var(--accent-2); }
 .gpt-ask-ai[hidden] { display: none !important; }
-#gpt-btn-priority-load[hidden],
-#gpt-btn-fetch-older[hidden] { display: none !important; }
-#gpt-btn-refresh-chats.is-busy,
-#gpt-btn-priority-load.is-busy,
-#gpt-btn-fetch-older.is-busy { opacity: 0.55; pointer-events: none; }
-.gpt-delete-chat {
-  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
-  background: var(--panel-2); color: var(--danger);
-  border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
-  cursor: pointer; flex-shrink: 0;
+#gpt-btn-refresh-chats.is-busy { opacity: 0.55; pointer-events: none; }
+.gpt-chat-menu-wrap {
+  position: relative; flex-shrink: 0; display: flex; align-items: center;
 }
-.gpt-delete-chat:hover { background: color-mix(in srgb, var(--danger) 12%, var(--panel)); }
-.gpt-delete-chat[hidden] { display: none !important; }
+.gpt-chat-menu-wrap[hidden] { display: none !important; }
+.gpt-chat-menu-wrap .chat-menu-dropdown {
+  display: none; position: absolute; top: calc(100% + 4px); right: 0;
+  min-width: 240px; z-index: 40; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 4px; color: var(--fg);
+}
+.gpt-chat-menu-wrap .chat-menu-dropdown.open { display: block; }
+.gpt-chat-menu-wrap .menu-item {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+  border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--fg);
+}
+.gpt-chat-menu-wrap .menu-item:hover { background: var(--panel-2); }
+.gpt-chat-menu-wrap .menu-item svg {
+  width: 16px; height: 16px; flex-shrink: 0; color: var(--fg-3);
+}
+.gpt-chat-menu-wrap .menu-item.danger,
+.gpt-chat-menu-wrap .menu-item.danger svg { color: var(--danger); }
+.gpt-chat-menu-wrap .menu-item.disabled {
+  opacity: 0.55; cursor: not-allowed;
+}
+.gpt-chat-menu-wrap .menu-item.disabled:hover { background: transparent; }
+.gpt-chat-menu-wrap .menu-item[hidden] { display: none !important; }
 
 #sidebar-ctx-menu {
   display: none; position: fixed; z-index: 200; min-width: 160px;

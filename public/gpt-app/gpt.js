@@ -18,14 +18,7 @@ import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js/message-actions.js';
 import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
-import {
-  activeChatHasLocalMessages,
-  initMenus,
-  priorityLoadChat,
-  promptDeleteChat,
-  requestOlderHistoryFromPhone,
-  showSidebarContextMenu,
-} from '/js/menus.js';
+import { initMenus, priorityLoadChat, showSidebarContextMenu } from '/js/menus.js';
 import {
   buildChatMessagesHtml,
   captureChatScrollAnchor,
@@ -79,10 +72,8 @@ const els = {
   waComposer: $('#gpt-wa-composer'),
   waComposerHint: $('#gpt-wa-composer-hint'),
   askAi: $('#gpt-ask-ai'),
-  priorityLoad: $('#gpt-btn-priority-load'),
-  fetchOlder: $('#gpt-btn-fetch-older'),
+  chatMenuWrap: $('#gpt-chat-menu-wrap'),
   refreshChats: $('#gpt-btn-refresh-chats'),
-  deleteChat: $('#gpt-delete-chat'),
   suggest: $('#gpt-suggest'),
   input: $('#gpt-input'),
   send: $('#gpt-send'),
@@ -202,14 +193,7 @@ function syncWaComposerUi() {
   const inChat = !!state.activeChatJid;
   if (els.waComposer) els.waComposer.hidden = !inChat;
   if (els.askAi) els.askAi.hidden = !inChat;
-  if (els.priorityLoad) els.priorityLoad.hidden = !inChat;
-  if (els.fetchOlder) {
-    const imported = String(state.activeChatJid || '').endsWith('@imported');
-    els.fetchOlder.hidden = !inChat || imported;
-  }
-  if (els.deleteChat) {
-    els.deleteChat.hidden = !(inChat && String(state.activeChatJid || '').endsWith('@imported'));
-  }
+  if (els.chatMenuWrap) els.chatMenuWrap.hidden = !inChat;
   store.activeChat = state.activeChatJid || null;
   updateComposerVisibility();
   const canSend = canSendMessageToJid(store.activeChat);
@@ -2177,55 +2161,6 @@ function wire() {
       els.refreshChats.classList.remove('is-busy');
       alert(e.message || 'Could not refresh chats');
     }
-  });
-  els.priorityLoad?.addEventListener('click', async () => {
-    if (!state.activeChatJid || els.priorityLoad.classList.contains('is-busy')) return;
-    els.priorityLoad.classList.add('is-busy');
-    try {
-      const jid = state.activeChatJid;
-      const result = await priorityLoadChat(jid, { alertResult: false });
-      // Drop cached transcript so we paint whatever priority-load just pulled in.
-      state.chatMessages.delete(jid);
-      await reloadActiveWaMessages();
-      await loadChats();
-      await syncWaState();
-      const bits = [];
-      if (result?.mediaQueued > 0) bits.push(`${result.mediaQueued} media queued`);
-      if (result?.history?.requested) {
-        bits.push(result.history.purpose === 'media_rehydrate'
-          ? 'asked phone to resend recent media'
-          : 'asked phone for older messages');
-      } else if (result?.history?.code === 'SYNC_IN_FLIGHT') bits.push('history sync already running');
-      else if (result?.imported) bits.push('refreshed imported chat');
-      else if (!bits.length) bits.push('refreshed locally (phone quiet)');
-      flashRefreshButton(els.priorityLoad, bits.join(' · '));
-    } catch (e) {
-      els.priorityLoad.classList.remove('is-busy');
-      alert(e.message || 'Could not refresh this chat');
-    }
-  });
-  els.fetchOlder?.addEventListener('click', async () => {
-    if (!state.activeChatJid || els.fetchOlder.classList.contains('is-busy')) return;
-    if (!activeChatHasLocalMessages()) {
-      alert('Needs at least one stored message in this chat before WhatsApp can sync backwards. Import an export if the chat is empty.');
-      return;
-    }
-    els.fetchOlder.classList.add('is-busy');
-    try {
-      await requestOlderHistoryFromPhone(state.activeChatJid);
-      flashRefreshButton(els.fetchOlder, 'asked phone for older messages');
-      // Give the on-demand batch a moment, then re-paint.
-      setTimeout(() => {
-        state.chatMessages.delete(state.activeChatJid);
-        void reloadActiveWaMessages();
-      }, 2500);
-    } catch (e) {
-      els.fetchOlder.classList.remove('is-busy');
-      alert(e.message || 'Could not request older messages');
-    }
-  });
-  els.deleteChat?.addEventListener('click', () => {
-    if (state.activeChatJid) promptDeleteChat(state.activeChatJid);
   });
   document.querySelectorAll('#gpt-chats-pane [data-sidebar-tab]').forEach((btn) => {
     btn.addEventListener('click', () => setSidebarListTab(btn.getAttribute('data-sidebar-tab')));

@@ -68,6 +68,14 @@ export async function requestOlderHistoryFromPhone(jid, { count = 100 } = {}) {
   return { ok: true, requestId: j.requestId ?? null };
 }
 
+function setMenuItemLabel(item, label) {
+  if (!item) return;
+  const svg = item.querySelector('svg');
+  item.textContent = '';
+  if (svg) item.appendChild(svg);
+  item.appendChild(document.createTextNode(label));
+}
+
 export function syncIndexChatMenuItem() {
   const item = $('#menu-index-chat');
   if (!item) return;
@@ -77,14 +85,26 @@ export function syncIndexChatMenuItem() {
   item.classList.toggle('disabled', !hasMessages);
   if (!hasMessages) {
     item.title = 'Needs at least one stored message before it can be indexed';
-    item.textContent = 'Index for AI search';
+    setMenuItemLabel(item, 'Index for AI search');
   } else if (opted) {
     item.title = 'Turn off AI indexing for this chat';
-    item.textContent = 'Stop AI indexing';
+    setMenuItemLabel(item, 'Stop AI indexing');
   } else {
     item.title = 'Index this chat for AI search (off by default)';
-    item.textContent = 'Index for AI search';
+    setMenuItemLabel(item, 'Index for AI search');
   }
+}
+
+function syncCtxIndexChatItem(jid) {
+  const item = $('#ctx-index-chat');
+  if (!item) return;
+  const ch = store.chatData.find((c) => c.chatJid === jid);
+  const hasMessages = (ch?.messageCount || 0) > 0;
+  const opted = !!ch?.indexOptedIn;
+  item.classList.toggle('disabled', !hasMessages);
+  if (!hasMessages) setMenuItemLabel(item, 'Index for AI search');
+  else if (opted) setMenuItemLabel(item, 'Stop AI indexing');
+  else setMenuItemLabel(item, 'Index for AI search');
 }
 
 export function showSidebarContextMenu(e, jid) {
@@ -93,9 +113,10 @@ export function showSidebarContextMenu(e, jid) {
   const menu = $('#sidebar-ctx-menu');
   const fetchOlder = $('#ctx-fetch-older-history');
   if (fetchOlder) fetchOlder.hidden = String(jid || '').endsWith('@imported');
+  syncCtxIndexChatItem(jid);
   menu.style.display = 'block';
-  menu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px';
-  menu.style.top = Math.min(e.clientY, window.innerHeight - 140) + 'px';
+  menu.style.left = Math.min(e.clientX, window.innerWidth - 200) + 'px';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - 180) + 'px';
 }
 
 function closeSidebarContextMenu() {
@@ -211,6 +232,7 @@ export function initMenus() {
         'Older messages requested from your phone (up to ~100). Keep WhatsApp online — a batch may arrive over the next minute. '
         + 'Requests are paced so your phone is not notified constantly; for years of history, import a chat export.',
       );
+      setTimeout(() => { void refreshOpenChatMessages(); }, 2500);
     } catch (e) {
       alert(e.message || 'Could not request older messages');
     }
@@ -226,8 +248,22 @@ export function initMenus() {
         'Older messages requested from your phone (up to ~100). Keep WhatsApp online — a batch may arrive over the next minute. '
         + 'Requests are paced so your phone is not notified constantly; for years of history, import a chat export.',
       );
+      if (store.activeChat === jid) setTimeout(() => { void refreshOpenChatMessages(); }, 2500);
     } catch (e) {
       alert(e.message || 'Could not request older messages');
+    }
+  });
+
+  $('#ctx-index-chat')?.addEventListener('click', async () => {
+    const jid = store._ctxMenuJid;
+    closeSidebarContextMenu();
+    if (!jid || $('#ctx-index-chat')?.classList.contains('disabled')) return;
+    const ch = store.chatData.find((c) => c.chatJid === jid);
+    if (!ch || !(ch.messageCount > 0)) return;
+    try {
+      await setChatIndexEnabled(jid, !ch.indexOptedIn);
+    } catch (e) {
+      alert(e.message || 'Could not update AI indexing');
     }
   });
 
