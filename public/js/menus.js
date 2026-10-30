@@ -27,11 +27,45 @@ const FETCH_OLDER_NEEDS_ANCHOR = 'Needs one message in this chat to sync backwar
 function syncFetchOlderMenuItem() {
   const item = $('#menu-fetch-older-history');
   if (!item) return;
-  const usable = activeChatHasLocalMessages();
+  const jid = store.activeChat || '';
+  const imported = String(jid).endsWith('@imported');
+  const usable = !imported && activeChatHasLocalMessages();
+  item.hidden = imported || !jid;
   item.classList.toggle('disabled', !usable);
-  item.title = usable
-    ? 'Uses WhatsApp on-demand sync — phone must be online'
-    : FETCH_OLDER_NEEDS_ANCHOR;
+  item.title = imported
+    ? 'Imported chats already include their full export — nothing to pull from the phone'
+    : usable
+      ? 'Asks your phone for ~100 older messages (paced to limit sync notifications)'
+      : FETCH_OLDER_NEEDS_ANCHOR;
+}
+
+/**
+ * Explicit phone history pull for the given chat (classic menu + GPT header/context).
+ * @returns {Promise<{ ok: true, requestId?: string|null }>}
+ */
+export async function requestOlderHistoryFromPhone(jid, { count = 100 } = {}) {
+  if (!jid) throw new Error('No chat selected');
+  if (String(jid).endsWith('@imported')) {
+    throw new Error('Imported chats already include their export — use Refresh instead.');
+  }
+  const ch = store.chatData.find((c) => c.chatJid === jid);
+  const hasLocal = (store.activeChat === jid && store.chatMessagesOffset > 0)
+    || (ch?.messageCount || 0) > 0;
+  if (!hasLocal) {
+    throw new Error(
+      FETCH_OLDER_NEEDS_ANCHOR
+      + ' Export the chat from your phone and import the file if it is still empty.',
+    );
+  }
+  const r = await fetch('/api/wa/fetch-older-history', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ chatJid: jid, count }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Request failed');
+  return { ok: true, requestId: j.requestId ?? null };
 }
 
 export function syncIndexChatMenuItem() {
@@ -57,9 +91,11 @@ export function showSidebarContextMenu(e, jid) {
   e.preventDefault();
   store._ctxMenuJid = jid;
   const menu = $('#sidebar-ctx-menu');
+  const fetchOlder = $('#ctx-fetch-older-history');
+  if (fetchOlder) fetchOlder.hidden = String(jid || '').endsWith('@imported');
   menu.style.display = 'block';
   menu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px';
-  menu.style.top = Math.min(e.clientY, window.innerHeight - 100) + 'px';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - 140) + 'px';
 }
 
 function closeSidebarContextMenu() {
@@ -168,23 +204,24 @@ export function initMenus() {
 
   $('#menu-fetch-older-history')?.addEventListener('click', async () => {
     closeChatMenu();
-    if (!store.activeChat) return;
-    if (!activeChatHasLocalMessages()) {
-      alert(FETCH_OLDER_NEEDS_ANCHOR
-        + '\n\nWhatsApp can only send history older than a message you already have, so there '
-        + 'is no starting point for a chat that is still empty. To pull in past conversations, '
-        + 'export the chat from your phone and import the file instead.');
-      return;
-    }
+    if (!store.activeChat || $('#menu-fetch-older-history')?.classList.contains('disabled')) return;
     try {
-      const r = await fetch('/api/wa/fetch-older-history', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ chatJid: store.activeChat, count: 100 }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j.error || 'Request failed');
+      await requestOlderHistoryFromPhone(store.activeChat);
+      alert(
+        'Older messages requested from your phone (up to ~100). Keep WhatsApp online — a batch may arrive over the next minute. '
+        + 'Requests are paced so your phone is not notified constantly; for years of history, import a chat export.',
+      );
+    } catch (e) {
+      alert(e.message || 'Could not request older messages');
+    }
+  });
+
+  $('#ctx-fetch-older-history')?.addEventListener('click', async () => {
+    const jid = store._ctxMenuJid;
+    closeSidebarContextMenu();
+    if (!jid) return;
+    try {
+      await requestOlderHistoryFromPhone(jid);
       alert(
         'Older messages requested from your phone (up to ~100). Keep WhatsApp online — a batch may arrive over the next minute. '
         + 'Requests are paced so your phone is not notified constantly; for years of history, import a chat export.',

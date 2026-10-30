@@ -460,9 +460,11 @@ button { font: inherit; color: inherit; }
 }
 .gpt-ask-ai:hover { border-color: var(--accent); color: var(--accent-2); }
 .gpt-ask-ai[hidden] { display: none !important; }
-#gpt-btn-priority-load[hidden] { display: none !important; }
+#gpt-btn-priority-load[hidden],
+#gpt-btn-fetch-older[hidden] { display: none !important; }
 #gpt-btn-refresh-chats.is-busy,
-#gpt-btn-priority-load.is-busy { opacity: 0.55; pointer-events: none; }
+#gpt-btn-priority-load.is-busy,
+#gpt-btn-fetch-older.is-busy { opacity: 0.55; pointer-events: none; }
 .gpt-delete-chat {
   border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
   background: var(--panel-2); color: var(--danger);

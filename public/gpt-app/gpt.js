@@ -18,7 +18,14 @@ import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js/message-actions.js';
 import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
-import { initMenus, priorityLoadChat, promptDeleteChat, showSidebarContextMenu } from '/js/menus.js';
+import {
+  activeChatHasLocalMessages,
+  initMenus,
+  priorityLoadChat,
+  promptDeleteChat,
+  requestOlderHistoryFromPhone,
+  showSidebarContextMenu,
+} from '/js/menus.js';
 import {
   buildChatMessagesHtml,
   captureChatScrollAnchor,
@@ -73,6 +80,7 @@ const els = {
   waComposerHint: $('#gpt-wa-composer-hint'),
   askAi: $('#gpt-ask-ai'),
   priorityLoad: $('#gpt-btn-priority-load'),
+  fetchOlder: $('#gpt-btn-fetch-older'),
   refreshChats: $('#gpt-btn-refresh-chats'),
   deleteChat: $('#gpt-delete-chat'),
   suggest: $('#gpt-suggest'),
@@ -195,6 +203,10 @@ function syncWaComposerUi() {
   if (els.waComposer) els.waComposer.hidden = !inChat;
   if (els.askAi) els.askAi.hidden = !inChat;
   if (els.priorityLoad) els.priorityLoad.hidden = !inChat;
+  if (els.fetchOlder) {
+    const imported = String(state.activeChatJid || '').endsWith('@imported');
+    els.fetchOlder.hidden = !inChat || imported;
+  }
   if (els.deleteChat) {
     els.deleteChat.hidden = !(inChat && String(state.activeChatJid || '').endsWith('@imported'));
   }
@@ -2190,6 +2202,26 @@ function wire() {
     } catch (e) {
       els.priorityLoad.classList.remove('is-busy');
       alert(e.message || 'Could not refresh this chat');
+    }
+  });
+  els.fetchOlder?.addEventListener('click', async () => {
+    if (!state.activeChatJid || els.fetchOlder.classList.contains('is-busy')) return;
+    if (!activeChatHasLocalMessages()) {
+      alert('Needs at least one stored message in this chat before WhatsApp can sync backwards. Import an export if the chat is empty.');
+      return;
+    }
+    els.fetchOlder.classList.add('is-busy');
+    try {
+      await requestOlderHistoryFromPhone(state.activeChatJid);
+      flashRefreshButton(els.fetchOlder, 'asked phone for older messages');
+      // Give the on-demand batch a moment, then re-paint.
+      setTimeout(() => {
+        state.chatMessages.delete(state.activeChatJid);
+        void reloadActiveWaMessages();
+      }, 2500);
+    } catch (e) {
+      els.fetchOlder.classList.remove('is-busy');
+      alert(e.message || 'Could not request older messages');
     }
   });
   els.deleteChat?.addEventListener('click', () => {
