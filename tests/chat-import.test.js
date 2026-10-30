@@ -5,6 +5,8 @@ import {
   detectImportDateOrder,
   slugForImportChatJid,
   normalizeImportChatName,
+  resolveImportChatTitle,
+  titleFromZipEntryName,
   extractTextFromZip,
   decodeExportBuffer,
 } from '../src/import/chat-import.js';
@@ -184,6 +186,34 @@ describe('normalizeImportChatName', () => {
   test('uses zip transcript basename and strips WhatsApp Chat with', () => {
     expect(normalizeImportChatName('WhatsApp Chat with Bob/WhatsApp Chat with Bob.txt')).toBe('Bob');
     expect(normalizeImportChatName('folder/WhatsApp Chat - Site 1.txt')).toBe('WhatsApp Chat - Site 1');
+  });
+});
+
+describe('resolveImportChatTitle', () => {
+  test('prefers the uploaded zip filename over inner _chat.txt', () => {
+    expect(resolveImportChatTitle({
+      uploadName: 'WhatsApp Chat - Phonpay.zip',
+      entryName: '_chat.txt',
+    })).toBe('WhatsApp Chat - Phonpay');
+    expect(resolveImportChatTitle({
+      uploadName: 'WhatsApp Chat - Phonpay.zip WhatsApp Chat - Phonpay.zip',
+      entryName: 'WhatsApp Chat - Phonpay/_chat.txt',
+    })).toBe('WhatsApp Chat - Phonpay');
+  });
+
+  test('uses the zip folder name when the upload name is weak', () => {
+    expect(titleFromZipEntryName('WhatsApp Chat with Bob/_chat.txt')).toBe('Bob');
+    expect(resolveImportChatTitle({
+      uploadName: 'download.zip',
+      entryName: 'WhatsApp Chat with Bob/_chat.txt',
+    })).toBe('Bob');
+  });
+
+  test('does not keep bare _chat as the sidebar title when a zip name exists', () => {
+    expect(resolveImportChatTitle({
+      uploadName: 'Site A expenses.zip',
+      entryName: '_chat.txt',
+    })).toBe('Site A expenses');
   });
 });
 

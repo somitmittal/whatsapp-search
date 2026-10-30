@@ -13,7 +13,7 @@ import { IMPORT_MAX_UPLOAD_BYTES, MAX_MESSAGES_PAGE } from '../constants/api-lim
 import { syncWhatsAppExportsFromGmail } from '../gmail/gmail-sync.js';
 import { findTranscriptionProvider, isUsableTranscription } from '../llm/transcription.js';
 import { resolveProviderKey } from '../gpt/model-registry.js';
-import { decodeExportBuffer, extractChatExportFromZip, extractMediaFromZip, importExportedChat, normalizeImportChatName, slugForImportChatJid } from '../import/chat-import.js';
+import { decodeExportBuffer, extractChatExportFromZip, extractMediaFromZip, importExportedChat, resolveImportChatTitle, slugForImportChatJid } from '../import/chat-import.js';
 import {
     effectiveSearchApiKey,
     effectiveSummaryApiKey,
@@ -3644,17 +3644,17 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
           let textContent;
           let mediaMap;
-          let chatName = normalizeImportChatName(fileName);
+          let chatName = resolveImportChatTitle({ uploadName: fileName });
 
           if (isZip) {
             const extracted = extractChatExportFromZip(file.buffer);
             textContent = extracted?.text || null;
             if (!textContent) { results.push({ chatName, error: 'No chat .txt found in zip' }); continue; }
-            // Prefer the transcript filename inside the zip — upload names are often mangled
-            // (e.g. "WhatsApp Chat - Foo.zip WhatsApp Chat - Foo.zip").
-            if (extracted.entryName) {
-              chatName = normalizeImportChatName(extracted.entryName) || chatName;
-            }
+            // Zip filename wins. Inner `_chat.txt` is WhatsApp's transcript name, not the chat title.
+            chatName = resolveImportChatTitle({
+              uploadName: fileName,
+              entryName: extracted.entryName || '',
+            });
             const slug = slugForImportChatJid(chatName);
             const chatJid = `import_${slug}@imported`;
             mediaMap = extractMediaFromZip(file.buffer, chatJid);

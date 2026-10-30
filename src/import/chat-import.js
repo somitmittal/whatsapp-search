@@ -396,6 +396,48 @@ export function normalizeImportChatName(raw) {
   return name || 'chat';
 }
 
+/** True for placeholder titles that should lose to a better zip/upload name. */
+export function isWeakImportChatTitle(name) {
+  const n = String(name || '').trim().toLowerCase();
+  return !n
+    || n === 'chat'
+    || n === '_chat'
+    || n === 'download'
+    || n === 'file'
+    || n === 'import'
+    || n === 'export'
+    || n === 'whatsapp chat'
+    || n === 'whatsapp';
+}
+
+/**
+ * Title from a zip transcript path. Prefer the parent folder when WhatsApp uses
+ * `_chat.txt` inside `WhatsApp Chat - Phonpay/_chat.txt`.
+ */
+export function titleFromZipEntryName(entryName) {
+  const raw = String(entryName || '').replace(/\\/g, '/').trim();
+  if (!raw) return '';
+  const parts = raw.split('/').filter(Boolean);
+  const base = parts[parts.length - 1] || '';
+  if (/^_?chat\.txt$/i.test(base) && parts.length >= 2) {
+    return normalizeImportChatName(parts[parts.length - 2]);
+  }
+  return normalizeImportChatName(raw);
+}
+
+/**
+ * Prefer the uploaded zip/txt filename for the sidebar title. Only fall back to
+ * the inner transcript path when the upload name is weak (e.g. download.zip) and
+ * the entry path has a real chat folder / WhatsApp Chat title.
+ */
+export function resolveImportChatTitle({ uploadName = '', entryName = '' } = {}) {
+  const fromUpload = normalizeImportChatName(uploadName);
+  const fromEntry = titleFromZipEntryName(entryName);
+  if (!isWeakImportChatTitle(fromUpload)) return fromUpload;
+  if (!isWeakImportChatTitle(fromEntry)) return fromEntry;
+  return fromUpload || fromEntry || 'chat';
+}
+
 /** Safe local part for synthetic import JID (WhatsApp-style @domain). */
 export function slugForImportChatJid(name) {
   const s = normalizeImportChatName(name)
