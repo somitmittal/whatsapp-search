@@ -21,6 +21,7 @@ import { initComposer } from './composer.js';
 import { initBusiness } from './business.js';
 import { initImport } from './import.js';
 import { initSettings } from './settings.js';
+import { initSkillsSettings } from './skills-settings.js';
 import { initOllamaSetup } from './ollama-setup.js';
 import { initOnboarding } from './onboarding.js';
 
@@ -46,6 +47,7 @@ initComposer();
 initBusiness();
 initImport();
 initSettings();
+initSkillsSettings();
 initOllamaSetup();
 initOnboarding();
 

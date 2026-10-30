@@ -124,10 +124,13 @@ export function initWaBootstrap() {
     updateWaUI({ state: 'DISCONNECTED', message: 'Logged out' });
   });
 
-  document.getElementById('sidebar-import-btn')?.addEventListener('click', () => openOverlay('import'));
+  document.getElementById('sidebar-import-btn')?.addEventListener('click', () => {
+    openOverlay('import');
+    setTimeout(() => document.getElementById('file-input')?.click(), 0);
+  });
 
   document.getElementById('btn-enable-live-sync')?.addEventListener('click', () => {
-    if (confirm('Enable live WhatsApp QR sync? Your phone will link as a companion device. You can keep using imports anytime.')) {
+    if (confirm('Enable live WhatsApp QR sync? Your phone will link as a companion device. You can keep using Import chats anytime.')) {
       enableLiveSyncUi();
       openOverlay('settings');
     }

@@ -1,8 +1,8 @@
 import { store } from './store.js';
 import { openNewGroupOverlay, openNewMessageOverlay } from './contacts.js';
-import { refreshGmailImportUi } from './gmail.js';
 import { closeAllMenus, closeMenu } from './menus.js';
 import { loadSettings } from './settings.js';
+import { loadManagedSkills } from './skills-settings.js';
 import { $, $$ } from './util.js';
 import { canShowChatUI, hasIndexedArchive, isWaUiReady, wantsLiveSyncUi } from './wa-connection.js';
 
@@ -17,7 +17,6 @@ export function openOverlay(name) {
   if (!el) return;
   el.classList.add('open');
   syncAppOverlayFront();
-  if (name === 'import') void refreshGmailImportUi();
   if (name === 'settings') {
     const saved = localStorage.getItem('wa_settings_tab');
     if (saved) setSettingsTab(saved, false);
@@ -53,7 +52,7 @@ export function setSettingsTab(tabId, persist = true) {
   root.querySelectorAll('[data-settings-panel]').forEach((panel) => {
     panel.classList.toggle('active', panel.getAttribute('data-settings-panel') === id);
   });
-  if (id === 'backup') void refreshGmailImportUi();
+  if (id === 'skills') void loadManagedSkills();
   if (persist) {
     try { localStorage.setItem('wa_settings_tab', id); } catch { /* ignore */ }
   }
@@ -125,7 +124,10 @@ export function setMobileChatOpen(open) {
 }
 
 export function initOverlays() {
-  $('#btn-import')?.addEventListener('click', () => openOverlay('import'));
+  $('#btn-import')?.addEventListener('click', () => {
+    openOverlay('import');
+    setTimeout(() => document.getElementById('file-input')?.click(), 0);
+  });
   $('#btn-new-message')?.addEventListener('click', () => openNewMessageOverlay());
   $('#close-new-message')?.addEventListener('click', () => closeOverlay('new-message'));
   $('#close-new-group')?.addEventListener('click', () => closeOverlay('new-group'));
@@ -140,10 +142,7 @@ export function initOverlays() {
 
   $('#btn-restore-backup')?.addEventListener('click', () => {
     openOverlay('import');
-    setTimeout(() => {
-      const sec = document.getElementById('gmail-import-section');
-      if (sec && typeof sec.scrollIntoView === 'function') sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 50);
+    setTimeout(() => document.getElementById('file-input')?.click(), 0);
   });
 
   $('#btn-link-whatsapp')?.addEventListener('click', async () => {

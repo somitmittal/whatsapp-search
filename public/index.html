@@ -8,6 +8,8 @@
   <title>WhatsApp Search</title>
   <link rel="stylesheet" href="/css/app.css">
   <link rel="stylesheet" href="/css/expense-sheet.css">
+  <link rel="stylesheet" href="/css/settings-overlay.css">
+  <link rel="stylesheet" href="/css/settings-overlay.css">
 </head>
 <body>
 <div class="confirm-overlay" id="tab-lock-overlay">
@@ -43,9 +45,7 @@
         <button class="icon-btn live-sync-ui" id="btn-new-message" title="New chat" aria-label="New chat" style="display:none;">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg>
         </button>
-        <button class="icon-btn" id="btn-import" title="Add chats — upload export files or sync from Gmail" aria-label="Add chats">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
+        <button class="btn btn-secondary" id="btn-import" type="button" title="Import chats (.zip / .txt)" aria-label="Import chats" style="padding:6px 10px;font-size:13px;white-space:nowrap;">Import chats</button>
         <button class="icon-btn" id="btn-menu" title="Menu">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
         </button>
@@ -90,10 +90,10 @@
       <div id="sidebar-import-prompt" style="display:none;">
         <div style="font-weight:600;font-size:15px;color:var(--text);margin-bottom:6px;">Import your chats</div>
         <div style="font-size:13px;color:var(--text2);line-height:1.4;margin-bottom:18px;">
-          Export a chat on your phone (.zip) and upload with <strong>+</strong> above.
+          Export a chat on your phone (.zip / .txt) and use <strong>Import chats</strong> above.
         </div>
         <button type="button" id="sidebar-import-btn" class="btn btn-primary" style="padding:8px 24px;font-size:13px;border-radius:20px;background:#00a884;border:none;color:#fff;cursor:pointer;margin-bottom:14px;">
-          Import chat export
+          Import chats
         </button>
       </div>
       <div id="sidebar-wa-prompt" class="live-sync-ui">
@@ -235,12 +235,12 @@
             <path fill-rule="evenodd" clip-rule="evenodd" d="M229.565 160.229c32.647-16.884 55.022-50.77 55.022-90.229C284.587 31.59 253.107 0 213.87 0c-30.759 0-57.14 19.337-67.108 46.525C136.794 19.337 110.413 0 79.653 0 40.417 0 8.937 31.59 8.937 70c0 39.46 22.375 73.345 55.022 90.229L151.5 172l78.065-11.771z" fill="#d4dbe0"/>
           </svg>
           <h2>WhatsApp Search</h2>
-          <p id="welcome-default-lead">Select a chat from the left, then tap the purple sparkle to ask AI.<br>Click <strong>+</strong> to import more chat exports.</p>
+          <p id="welcome-default-lead">Select a chat from the left, then tap the purple sparkle to ask AI.<br>Use <strong>Import chats</strong> to upload WhatsApp exports.</p>
           <p id="welcome-ai-model-note" style="font-size:12px;color:var(--text2);margin-top:10px;max-width:520px;line-height:1.5;">AI Search needs a local model downloaded once (never automatic). Use the green banner above or Settings → AI — until then, Ask AI will not work.</p>
           <p style="font-size:12px;color:var(--text2);margin-top:14px;max-width:520px;line-height:1.5;">Live WhatsApp link syncs a <strong>limited window</strong> of recent history (often months — controlled by WhatsApp). For a full long archive, export chats on your phone and import the .zip here. In an open chat, use ⋮ → <strong>Load older messages from phone</strong> to pull older batches when your phone is online.</p>
           <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px;">
             <button class="btn btn-primary" id="btn-restore-backup" type="button" style="min-width:220px;">
-              Restore from WhatsApp Backup
+              Import chats
             </button>
             <button class="btn btn-secondary" id="btn-link-whatsapp" type="button" style="min-width:220px;display:none;">
               Link WhatsApp (Live Sync)
@@ -445,37 +445,18 @@
       </div>
     </div>
 
-    <!-- Import overlay (+ button) — Gmail first, then file upload -->
+    <!-- Import chats — file upload -->
     <div class="overlay-panel" id="overlay-import">
       <div class="overlay-header">
         <button class="overlay-close" id="close-import">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <div class="overlay-header-text">
-          <h2>Add chats</h2>
-          <p class="overlay-header-sub">Restore from any WhatsApp export (.zip / .txt) — Gmail is optional</p>
+          <h2>Import chats</h2>
+          <p class="overlay-header-sub">Upload WhatsApp exports (.zip / .txt)</p>
         </div>
       </div>
       <div class="overlay-body">
-        <p style="font-size:13px;color:var(--text2);margin:0 0 14px 0;line-height:1.45;">
-          Restore from <strong>exported</strong> chats (<code>.zip</code> / <code>.txt</code>) saved anywhere on your device (Downloads / Drive / Files, etc.).
-          Gmail is just a convenience if you emailed the export to yourself. Encrypted phone backups (crypt14 / Drive backups) are not supported.
-        </p>
-        <div class="import-guide" id="gmail-import-section" style="border:1px solid rgba(0,168,132,0.35);">
-          <h3>Optional: From Gmail (if you emailed the export)</h3>
-          <p style="font-size:13px;color:var(--text);margin:0 0 8px 0;">
-            Tap <strong>Load WhatsApp Backup</strong> to sign in with Google and choose an account. We only request <strong>Gmail read-only</strong> access to find
-            <code>WhatsApp Chat …</code> export attachments you emailed to yourself and import them.
-          </p>
-          <p id="gmail-import-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;"></p>
-          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
-            <button class="btn btn-primary" type="button" id="gmail-btn-load">Load WhatsApp Backup</button>
-            <button class="btn btn-secondary" type="button" id="gmail-btn-disconnect" style="display:none;">Disconnect</button>
-          </div>
-          <ol style="margin:0;padding-left:18px;font-size:12px;color:var(--text2);"><li>On your phone: <strong>Export chat</strong> &rarr; email the <strong>.zip</strong> or <strong>.txt</strong> to yourself.</li><li>Here: tap <strong>Load WhatsApp Backup</strong> and pick your Google account.</li></ol>
-          <p class="warn-text" style="margin-top:10px;">&#9888; Requires server setup for Google OAuth (<code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code>).</p>
-        </div>
-        <h3 style="font-size:14px;font-weight:600;margin:18px 0 10px 0;color:var(--text);">Or upload files</h3>
         <div class="drop-zone" id="drop-zone">
           <div style="font-size:36px;opacity:0.4;">&#128194;</div>
           <h3>Drop files here or click to browse</h3>
@@ -494,14 +475,6 @@
           </div>
         </div>
         <div id="import-result" class="import-result"><h4 id="imp-title"></h4><p id="imp-text"></p></div>
-        <div class="import-guide">
-          <h3>&#128241; Export from WhatsApp</h3>
-          <ol><li>Open a chat &rarr; tap <strong>&#8942;</strong> &rarr; <strong>More</strong> &rarr; <strong>Export chat</strong></li><li>Choose <strong>Without media</strong> or <strong>Include media</strong></li><li>Save the .zip &rarr; drag it here</li></ol>
-        </div>
-        <div class="import-guide">
-          <h3>&#128268; Chrome Extension</h3>
-          <ol><li>Open <code>chrome://extensions</code> &rarr; <strong>Developer mode</strong></li><li><strong>Load unpacked</strong> &rarr; select <code>extension/</code></li><li>Open <a href="https://web.whatsapp.com" target="_blank">web.whatsapp.com</a></li></ol>
-        </div>
       </div>
     </div>
 
@@ -517,6 +490,7 @@
         <div class="settings-tabs" role="tablist" aria-label="Settings sections">
           <button type="button" class="settings-tab active" data-settings-tab="ai" role="tab" aria-selected="true">AI</button>
           <button type="button" class="settings-tab" data-settings-tab="business" role="tab" aria-selected="false">Business</button>
+          <button type="button" class="settings-tab" data-settings-tab="skills" role="tab" aria-selected="false">Skills</button>
           <button type="button" class="settings-tab" data-settings-tab="whatsapp" role="tab" aria-selected="false">WhatsApp</button>
           <button type="button" class="settings-tab" data-settings-tab="data" role="tab" aria-selected="false">Data</button>
         </div>
@@ -639,41 +613,87 @@
         </div>
         </div>
 
-        <div class="settings-tab-panel" data-settings-panel="whatsapp" role="tabpanel">
-        <div id="wa-live-sync-settings" class="setting-group live-sync-ui" style="display:none;">
-          <h3>WhatsApp Connection <span style="font-weight:400;font-size:12px;color:var(--text2);">(optional — live sync)</span></h3>
-          <p>Link your phone as a WhatsApp Web device. For the MVP, import chat exports with <strong>+</strong> — live sync is optional.</p>
-          <div class="setting-row" style="margin-bottom:8px;">
-            <span class="health-dot" id="wa-dot"></span>
-            <span id="wa-status-text">Initialising…</span>
-            <button class="btn btn-secondary" id="wa-logout-btn" style="display:none;margin-left:auto;">Logout</button>
-          </div>
-          <!-- QR code panel — shown only when QR_READY -->
-          <div id="wa-qr-panel" style="display:none;text-align:center;padding:16px 0;">
-            <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Open WhatsApp → Linked Devices → Link a Device</p>
-            <img id="wa-qr-img" src="" alt="QR Code" style="width:240px;height:240px;border:1px solid var(--border);border-radius:8px;" />
-            <p style="font-size:11px;color:var(--text2);margin-top:8px;">QR refreshes automatically every ~20 seconds</p>
-          </div>
-          <div id="wa-ready-panel" style="display:none;padding:8px 0;">
-            <div style="display:flex;align-items:center;gap:8px;color:#00a884;font-weight:600;">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span id="wa-ready-msg">Connected</span>
+        <div class="settings-tab-panel" data-settings-panel="skills" role="tabpanel">
+          <p class="skills-settings-intro">Slash skills (type <code>/</code> in the composer). Customize builtins or add your own — invoke as <code>/namespace/slug</code>.</p>
+          <div class="gpt-skills-layout">
+            <div class="gpt-skills-list-pane">
+              <div class="gpt-skills-list-toolbar">
+                <input type="search" id="gpt-skills-filter" placeholder="Search skills…" autocomplete="off">
+                <button type="button" class="btn btn-secondary" id="gpt-skill-new">New Skill</button>
+              </div>
+              <div class="gpt-skills-list" id="gpt-skills-list" role="listbox" aria-label="Skills"></div>
             </div>
-            <p style="font-size:12px;color:var(--text2);margin-top:6px;">Messages sync automatically. History is loaded on first connect.</p>
-            <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
-              <button class="btn btn-secondary" id="wa-refresh-names" type="button">Refresh contact names</button>
-              <span id="wa-refresh-names-status" style="font-size:12px;color:var(--text2);"></span>
-            </div>
+            <form class="gpt-skill-editor" id="gpt-skill-editor" hidden>
+              <div class="gpt-skill-editor-head">
+                <h4 id="gpt-skill-editor-title">Skill</h4>
+                <span class="gpt-skill-badge" id="gpt-skill-badge" hidden></span>
+              </div>
+              <label class="gpt-field">
+                <span>Name</span>
+                <input type="text" id="gpt-skill-name" required maxlength="80" placeholder="Expense reconciliation">
+              </label>
+              <div class="gpt-field-row">
+                <label class="gpt-field">
+                  <span>Namespace</span>
+                  <input type="text" id="gpt-skill-namespace" required maxlength="40" placeholder="accountant" pattern="[a-z0-9][a-z0-9_-]*">
+                </label>
+                <label class="gpt-field">
+                  <span>Slug</span>
+                  <input type="text" id="gpt-skill-slug" required maxlength="40" placeholder="expense-reconciliation" pattern="[a-z0-9][a-z0-9_-]*">
+                </label>
+              </div>
+              <p class="gpt-skill-path">Invoke as <code id="gpt-skill-path-preview">/namespace/slug</code></p>
+              <label class="gpt-field">
+                <span>Description</span>
+                <input type="text" id="gpt-skill-description" maxlength="240" placeholder="Shown in the / skill picker">
+              </label>
+              <label class="gpt-field gpt-field-grow">
+                <span>Instructions</span>
+                <textarea id="gpt-skill-body" rows="12" placeholder="What this skill should do when invoked…"></textarea>
+              </label>
+              <div class="gpt-skill-editor-actions">
+                <button type="submit" class="btn btn-primary" id="gpt-skill-save">Save</button>
+                <button type="button" class="btn btn-secondary danger" id="gpt-skill-delete" hidden>Delete</button>
+                <span class="gpt-skill-status" id="gpt-skill-status" aria-live="polite"></span>
+              </div>
+            </form>
+            <div class="gpt-skill-empty" id="gpt-skill-empty">Select a skill or create a new one.</div>
           </div>
         </div>
+
+        <div class="settings-tab-panel" data-settings-panel="whatsapp" role="tabpanel">
         <div class="setting-group">
-          <h3>Advanced</h3>
-          <p id="live-sync-blurb" style="font-size:13px;color:var(--text2);">Live WhatsApp QR sync is optional. Import exports with <strong>+</strong> for the full archive.</p>
+          <h3>WhatsApp Connection <span style="font-weight:400;font-size:12px;color:var(--text2);">(optional — live sync)</span></h3>
+          <p style="font-size:13px;color:var(--text2);">Link your phone as a WhatsApp Web device for live messages. For history, use <strong>Import chats</strong> with exported <code>.zip</code> / <code>.txt</code> files.</p>
+          <p id="live-sync-blurb" style="font-size:13px;color:var(--text2);margin-bottom:10px;"></p>
           <div id="live-sync-pill" class="live-sync-pill" hidden>
             <span class="live-sync-pill-dot"></span>
             <span id="live-sync-pill-text">QR sync enabled</span>
           </div>
           <button type="button" class="btn btn-secondary" id="btn-enable-live-sync" style="margin-top:8px;">Enable live WhatsApp sync (QR)…</button>
+          <div id="wa-live-sync-settings" class="live-sync-ui" style="display:none;margin-top:14px;">
+            <div class="setting-row" style="margin-bottom:8px;">
+              <span class="health-dot" id="wa-dot"></span>
+              <span id="wa-status-text">Initialising…</span>
+              <button class="btn btn-secondary" id="wa-logout-btn" style="display:none;margin-left:auto;">Logout</button>
+            </div>
+            <div id="wa-qr-panel" style="display:none;text-align:center;padding:16px 0;">
+              <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Open WhatsApp → Linked Devices → Link a Device</p>
+              <img id="wa-qr-img" src="" alt="QR Code" style="width:240px;height:240px;border:1px solid var(--border);border-radius:8px;" />
+              <p style="font-size:11px;color:var(--text2);margin-top:8px;">QR refreshes automatically every ~20 seconds</p>
+            </div>
+            <div id="wa-ready-panel" style="display:none;padding:8px 0;">
+              <div style="display:flex;align-items:center;gap:8px;color:#00a884;font-weight:600;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span id="wa-ready-msg">Connected</span>
+              </div>
+              <p style="font-size:12px;color:var(--text2);margin-top:6px;">Messages sync automatically. History is loaded on first connect.</p>
+              <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" id="wa-refresh-names" type="button">Refresh contact names</button>
+                <span id="wa-refresh-names-status" style="font-size:12px;color:var(--text2);"></span>
+              </div>
+            </div>
+          </div>
         </div>
         </div>
 

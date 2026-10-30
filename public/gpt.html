@@ -68,7 +68,6 @@
         <nav class="gpt-settings-tabs" aria-label="Settings sections">
           <button type="button" class="gpt-settings-tab on" data-settings-tab="general">General</button>
           <button type="button" class="gpt-settings-tab" data-settings-tab="account">Account</button>
-          <button type="button" class="gpt-settings-tab" data-settings-tab="skills">Skills</button>
         </nav>
       </aside>
       <div class="gpt-settings-main">
@@ -121,56 +120,6 @@
           </div>
         </section>
 
-        <section class="gpt-settings-panel" data-settings-panel="skills" hidden>
-          <header class="gpt-settings-panel-head">
-            <h3>Skills</h3>
-            <p class="muted">Slash skills (type <code>/</code> in the composer). Customize builtins or add your own.</p>
-          </header>
-          <div class="gpt-skills-layout">
-            <div class="gpt-skills-list-pane">
-              <div class="gpt-skills-list-toolbar">
-                <input type="search" id="gpt-skills-filter" placeholder="Search skills…" autocomplete="off">
-                <button type="button" class="gpt-settings-action" id="gpt-skill-new">New Skill</button>
-              </div>
-              <div class="gpt-skills-list" id="gpt-skills-list" role="listbox" aria-label="Skills"></div>
-            </div>
-            <form class="gpt-skill-editor" id="gpt-skill-editor" hidden>
-              <div class="gpt-skill-editor-head">
-                <h4 id="gpt-skill-editor-title">Skill</h4>
-                <span class="gpt-skill-badge" id="gpt-skill-badge" hidden></span>
-              </div>
-              <label class="gpt-field">
-                <span>Name</span>
-                <input type="text" id="gpt-skill-name" required maxlength="80" placeholder="Expense reconciliation">
-              </label>
-              <div class="gpt-field-row">
-                <label class="gpt-field">
-                  <span>Namespace</span>
-                  <input type="text" id="gpt-skill-namespace" required maxlength="40" placeholder="accountant" pattern="[a-z0-9][a-z0-9_-]*">
-                </label>
-                <label class="gpt-field">
-                  <span>Slug</span>
-                  <input type="text" id="gpt-skill-slug" required maxlength="40" placeholder="expense-reconciliation" pattern="[a-z0-9][a-z0-9_-]*">
-                </label>
-              </div>
-              <p class="gpt-skill-path muted">Invoke as <code id="gpt-skill-path-preview">/namespace/slug</code></p>
-              <label class="gpt-field">
-                <span>Description</span>
-                <input type="text" id="gpt-skill-description" maxlength="240" placeholder="Shown in the / skill picker">
-              </label>
-              <label class="gpt-field gpt-field-grow">
-                <span>Instructions</span>
-                <textarea id="gpt-skill-body" rows="12" placeholder="What this skill should do when invoked…"></textarea>
-              </label>
-              <div class="gpt-skill-editor-actions">
-                <button type="submit" class="gpt-settings-action primary" id="gpt-skill-save">Save</button>
-                <button type="button" class="gpt-settings-action danger" id="gpt-skill-delete" hidden>Delete</button>
-                <span class="gpt-skill-status muted" id="gpt-skill-status" aria-live="polite"></span>
-              </div>
-            </form>
-            <div class="gpt-skill-empty muted" id="gpt-skill-empty">Select a skill or create a new one.</div>
-          </div>
-        </section>
       </div>
     </div>
   </div>
@@ -180,9 +129,7 @@
       <div class="gpt-chats-head">
         <h1>Chats</h1>
         <div class="gpt-chats-head-actions">
-          <button type="button" class="gpt-icon" id="gpt-btn-import" title="Import WhatsApp backup" aria-label="Import chats">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-          </button>
+          <button type="button" class="gpt-import-chats-btn" id="gpt-btn-import" title="Import chats (.zip / .txt)" aria-label="Import chats">Import chats</button>
           <button type="button" class="gpt-icon" id="gpt-sidebar-settings" title="Settings" aria-label="Settings">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9c.3.7.9 1.2 1.6 1.3H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
           </button>
@@ -286,8 +233,40 @@
   </div>
 </div>
 
-<!-- Classic settings / expense overlays (shared IDs with /js/settings.js) -->
+<!-- Classic settings / import overlays (shared IDs with /js/settings.js) -->
 <div id="gpt-classic-overlays" class="gpt-classic-overlays">
+    <!-- Import chats — file upload only -->
+    <div class="overlay-panel" id="overlay-import">
+      <div class="overlay-header">
+        <div class="overlay-header-text">
+          <h2>Import chats</h2>
+          <p class="overlay-header-sub">Upload WhatsApp exports (.zip / .txt)</p>
+        </div>
+        <button class="overlay-close" id="close-import" type="button" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="overlay-body">
+        <div class="drop-zone" id="drop-zone">
+          <div class="drop-zone-icon">📁</div>
+          <h3>Drop files here or click to browse</h3>
+          <p>Accepts .zip or .txt · Select multiple files</p>
+          <input type="file" id="file-input" accept=".zip,.txt" multiple />
+        </div>
+        <div id="import-loading" class="search-loading"><div class="spinner"></div><span>Importing...</span></div>
+        <div class="import-progress" id="import-progress">
+          <div class="ip-card">
+            <div class="ip-header">
+              <div class="ip-icon" id="ip-icon">📄</div>
+              <div class="ip-text"><h4 id="ip-title">Importing chat...</h4><span id="ip-subtitle">Please wait</span></div>
+            </div>
+            <div class="ip-bar"><div class="ip-fill" id="ip-fill"></div></div>
+            <div class="ip-phase" id="ip-phase">Uploading...</div>
+          </div>
+        </div>
+        <div id="import-result" class="import-result"><h4 id="imp-title"></h4><p id="imp-text"></p></div>
+      </div>
+    </div>
     <!-- Forward message — pick one or more chats -->
     <div class="overlay-panel" id="overlay-forward">
       <div class="overlay-header">
@@ -327,8 +306,8 @@
       <div class="overlay-body">
         <div class="settings-tabs" role="tablist" aria-label="Settings sections">
           <button type="button" class="settings-tab active" data-settings-tab="business" role="tab" aria-selected="true">Business</button>
+          <button type="button" class="settings-tab" data-settings-tab="skills" role="tab" aria-selected="false">Skills</button>
           <button type="button" class="settings-tab" data-settings-tab="linked-devices" role="tab" aria-selected="false">Linked Devices</button>
-          <button type="button" class="settings-tab" data-settings-tab="backup" role="tab" aria-selected="false">Load Backup</button>
         </div>
         <div class="settings-tab-panels">
         
@@ -358,89 +337,88 @@
         </div>
         </div>
 
-        <div class="settings-tab-panel" data-settings-panel="linked-devices" role="tabpanel">
-        <div id="wa-live-sync-settings" class="setting-group live-sync-ui" style="display:none;">
-          <h3>Linked Devices <span class="setting-h3-muted">(optional — live sync)</span></h3>
-          <p>Link your phone as a WhatsApp Web device. For history, use <strong>Load Backup</strong> — live sync is optional.</p>
-          <div class="setting-row" style="margin-bottom:8px;">
-            <span class="health-dot" id="wa-dot"></span>
-            <span id="wa-status-text">Initialising…</span>
-            <button class="btn btn-secondary" id="wa-logout-btn" style="display:none;margin-left:auto;">Logout</button>
-          </div>
-          <div id="wa-qr-panel" style="display:none;text-align:center;padding:16px 0;">
-            <p class="setting-hint" style="margin-bottom:12px;">Open WhatsApp → Linked Devices → Link a Device</p>
-            <img id="wa-qr-img" src="" alt="QR Code" class="wa-qr-img" />
-            <p class="setting-hint" style="margin-top:8px;">QR refreshes automatically every ~20 seconds</p>
-          </div>
-          <div id="wa-ready-panel" style="display:none;padding:8px 0;">
-            <div class="wa-ready-row">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span id="wa-ready-msg">Connected</span>
+        <div class="settings-tab-panel" data-settings-panel="skills" role="tabpanel">
+          <p class="skills-settings-intro">Slash skills (type <code>/</code> in the composer). Customize builtins or add your own — invoke as <code>/namespace/slug</code>.</p>
+          <div class="gpt-skills-layout">
+            <div class="gpt-skills-list-pane">
+              <div class="gpt-skills-list-toolbar">
+                <input type="search" id="gpt-skills-filter" placeholder="Search skills…" autocomplete="off">
+                <button type="button" class="btn btn-secondary" id="gpt-skill-new">New Skill</button>
+              </div>
+              <div class="gpt-skills-list" id="gpt-skills-list" role="listbox" aria-label="Skills"></div>
             </div>
-            <p class="setting-hint" style="margin-top:6px;">Messages sync automatically. History is loaded on first connect.</p>
-            <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
-              <button class="btn btn-secondary" id="wa-refresh-names" type="button">Refresh contact names</button>
-              <span id="wa-refresh-names-status" class="setting-status"></span>
-            </div>
+            <form class="gpt-skill-editor" id="gpt-skill-editor" hidden>
+              <div class="gpt-skill-editor-head">
+                <h4 id="gpt-skill-editor-title">Skill</h4>
+                <span class="gpt-skill-badge" id="gpt-skill-badge" hidden></span>
+              </div>
+              <label class="gpt-field">
+                <span>Name</span>
+                <input type="text" id="gpt-skill-name" required maxlength="80" placeholder="Expense reconciliation">
+              </label>
+              <div class="gpt-field-row">
+                <label class="gpt-field">
+                  <span>Namespace</span>
+                  <input type="text" id="gpt-skill-namespace" required maxlength="40" placeholder="accountant" pattern="[a-z0-9][a-z0-9_-]*">
+                </label>
+                <label class="gpt-field">
+                  <span>Slug</span>
+                  <input type="text" id="gpt-skill-slug" required maxlength="40" placeholder="expense-reconciliation" pattern="[a-z0-9][a-z0-9_-]*">
+                </label>
+              </div>
+              <p class="gpt-skill-path">Invoke as <code id="gpt-skill-path-preview">/namespace/slug</code></p>
+              <label class="gpt-field">
+                <span>Description</span>
+                <input type="text" id="gpt-skill-description" maxlength="240" placeholder="Shown in the / skill picker">
+              </label>
+              <label class="gpt-field gpt-field-grow">
+                <span>Instructions</span>
+                <textarea id="gpt-skill-body" rows="12" placeholder="What this skill should do when invoked…"></textarea>
+              </label>
+              <div class="gpt-skill-editor-actions">
+                <button type="submit" class="btn btn-primary" id="gpt-skill-save">Save</button>
+                <button type="button" class="btn btn-secondary danger" id="gpt-skill-delete" hidden>Delete</button>
+                <span class="gpt-skill-status" id="gpt-skill-status" aria-live="polite"></span>
+              </div>
+            </form>
+            <div class="gpt-skill-empty" id="gpt-skill-empty">Select a skill or create a new one.</div>
           </div>
         </div>
+
+        <div class="settings-tab-panel" data-settings-panel="linked-devices" role="tabpanel">
         <div class="setting-group">
-          <h3>Advanced</h3>
-          <p id="live-sync-blurb">Live WhatsApp QR sync is optional. Use <strong>Load Backup</strong> for the full archive.</p>
+          <h3>Linked Devices <span class="setting-h3-muted">(optional — live sync)</span></h3>
+          <p>Link your phone as a WhatsApp Web device for live messages. For history, use <strong>Import chats</strong> with exported <code>.zip</code> / <code>.txt</code> files.</p>
+          <p id="live-sync-blurb" class="setting-hint" style="margin-bottom:10px;"></p>
           <div id="live-sync-pill" class="live-sync-pill" hidden>
             <span class="live-sync-pill-dot"></span>
             <span id="live-sync-pill-text">QR sync enabled</span>
           </div>
           <button type="button" class="btn btn-secondary" id="btn-enable-live-sync" style="margin-top:8px;">Enable live WhatsApp sync (QR)…</button>
-        </div>
-        </div>
-
-        <div class="settings-tab-panel" data-settings-panel="backup" role="tabpanel">
-          <div class="setting-group">
-            <h3>Load WhatsApp backup</h3>
-            <p>Restore from exported chats (<code>.zip</code> / <code>.txt</code>). Encrypted phone backups (crypt14 / Drive backups) are not supported.</p>
-            <div class="import-guide" id="gmail-import-section">
-              <h3>Optional: From Gmail</h3>
-              <p>Tap <strong>Load WhatsApp Backup</strong> to sign in with Google. We only request Gmail read-only access to find <code>WhatsApp Chat …</code> export attachments.</p>
-              <p id="gmail-import-status" class="setting-hint" style="margin-bottom:8px;"></p>
-              <div class="setting-row" style="margin-bottom:8px;">
-                <button class="btn btn-primary" type="button" id="gmail-btn-load">Load WhatsApp Backup</button>
-                <button class="btn btn-secondary" type="button" id="gmail-btn-disconnect" style="display:none;">Disconnect</button>
+          <div id="wa-live-sync-settings" class="live-sync-ui" style="display:none;margin-top:14px;">
+            <div class="setting-row" style="margin-bottom:8px;">
+              <span class="health-dot" id="wa-dot"></span>
+              <span id="wa-status-text">Initialising…</span>
+              <button class="btn btn-secondary" id="wa-logout-btn" style="display:none;margin-left:auto;">Logout</button>
+            </div>
+            <div id="wa-qr-panel" style="display:none;text-align:center;padding:16px 0;">
+              <p class="setting-hint" style="margin-bottom:12px;">Open WhatsApp → Linked Devices → Link a Device</p>
+              <img id="wa-qr-img" src="" alt="QR Code" class="wa-qr-img" />
+              <p class="setting-hint" style="margin-top:8px;">QR refreshes automatically every ~20 seconds</p>
+            </div>
+            <div id="wa-ready-panel" style="display:none;padding:8px 0;">
+              <div class="wa-ready-row">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span id="wa-ready-msg">Connected</span>
               </div>
-              <ol>
-                <li>On your phone: <strong>Export chat</strong> → email the <strong>.zip</strong> or <strong>.txt</strong> to yourself.</li>
-                <li>Here: tap <strong>Load WhatsApp Backup</strong> and pick your Google account.</li>
-              </ol>
-              <p class="warn-text">⚠ Requires server setup for Google OAuth (<code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code>).</p>
-            </div>
-            <h3 class="setting-subhead">Or upload files</h3>
-            <div class="drop-zone" id="drop-zone">
-              <div class="drop-zone-icon">📁</div>
-              <h3>Drop files here or click to browse</h3>
-              <p>Accepts .zip or .txt · Select multiple files</p>
-              <input type="file" id="file-input" accept=".zip,.txt" multiple />
-            </div>
-            <div id="import-loading" class="search-loading"><div class="spinner"></div><span>Importing...</span></div>
-            <div class="import-progress" id="import-progress">
-              <div class="ip-card">
-                <div class="ip-header">
-                  <div class="ip-icon" id="ip-icon">📄</div>
-                  <div class="ip-text"><h4 id="ip-title">Importing chat...</h4><span id="ip-subtitle">Please wait</span></div>
-                </div>
-                <div class="ip-bar"><div class="ip-fill" id="ip-fill"></div></div>
-                <div class="ip-phase" id="ip-phase">Uploading...</div>
+              <p class="setting-hint" style="margin-top:6px;">Messages sync automatically. History is loaded on first connect.</p>
+              <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" id="wa-refresh-names" type="button">Refresh contact names</button>
+                <span id="wa-refresh-names-status" class="setting-status"></span>
               </div>
-            </div>
-            <div id="import-result" class="import-result"><h4 id="imp-title"></h4><p id="imp-text"></p></div>
-            <div class="import-guide">
-              <h3>Export from WhatsApp</h3>
-              <ol>
-                <li>Open a chat → tap <strong>⋮</strong> → <strong>More</strong> → <strong>Export chat</strong></li>
-                <li>Choose <strong>Without media</strong> or <strong>Include media</strong></li>
-                <li>Save the .zip → drop it above</li>
-              </ol>
             </div>
           </div>
+        </div>
         </div>
 
         </div>
