@@ -1,5 +1,21 @@
 import { dayBoundsFromTimestamp } from '../expenses/chat-expense-extractor.js';
 
+const MONTH_INDEX = {
+  jan: 0, january: 0,
+  feb: 1, february: 1,
+  mar: 2, march: 2,
+  apr: 3, april: 3,
+  may: 4,
+  jun: 5, june: 5,
+  jul: 6, july: 6,
+  aug: 7, august: 7,
+  sep: 8, sept: 8, september: 8,
+  oct: 9, october: 9,
+  nov: 10, november: 10,
+  dec: 11, december: 11,
+};
+const MONTH_ALT = Object.keys(MONTH_INDEX).join('|');
+
 function localDate(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -7,14 +23,68 @@ function localDate(date) {
   return `${y}-${m}-${d}`;
 }
 
+function yearFromDigits(raw, fallbackYear) {
+  if (raw == null || String(raw).trim() === '') return fallbackYear;
+  const s = String(raw).trim();
+  if (s.length === 4) return Number(s);
+  const n = Number(s);
+  if (!Number.isFinite(n)) return fallbackYear;
+  return n >= 70 ? 1900 + n : 2000 + n;
+}
+
+function validLocalDay(year, monthIndex, day) {
+  if (!Number.isFinite(year) || monthIndex < 0 || monthIndex > 11 || day < 1 || day > 31) return null;
+  const dt = new Date(year, monthIndex, day);
+  if (dt.getFullYear() !== year || dt.getMonth() !== monthIndex || dt.getDate() !== day) return null;
+  return localDate(dt);
+}
+
 /** Calendar day named in the command, if any. `now` is injectable so tests do not depend on the clock. */
 export function dateHintFromRest(rest, now = new Date()) {
-  const iso = String(rest || '').match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  const text = String(rest || '');
+  const iso = text.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (iso) return iso[1];
-  if (/\btoday\b/i.test(rest)) return localDate(now);
-  if (/\byesterday\b/i.test(rest)) {
+  if (/\btoday\b/i.test(text)) return localDate(now);
+  if (/\byesterday\b/i.test(text)) {
     return localDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
   }
+
+  // "12 oct", "12th October", "12 Oct 2026"
+  const dayMonth = text.match(new RegExp(
+    `\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALT})(?:\\s+(\\d{2,4}))?\\b`,
+    'i',
+  ));
+  if (dayMonth) {
+    const day = Number(dayMonth[1]);
+    const monthIndex = MONTH_INDEX[dayMonth[2].toLowerCase()];
+    const year = yearFromDigits(dayMonth[3], now.getFullYear());
+    const hit = validLocalDay(year, monthIndex, day);
+    if (hit) return hit;
+  }
+
+  // "Oct 12", "October 12, 2026"
+  const monthDay = text.match(new RegExp(
+    `\\b(${MONTH_ALT})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s*(\\d{2,4}))?\\b`,
+    'i',
+  ));
+  if (monthDay) {
+    const monthIndex = MONTH_INDEX[monthDay[1].toLowerCase()];
+    const day = Number(monthDay[2]);
+    const year = yearFromDigits(monthDay[3], now.getFullYear());
+    const hit = validLocalDay(year, monthIndex, day);
+    if (hit) return hit;
+  }
+
+  // Indian-style numeric dates: 12.10.26 / 12/10/2026 / 12-10-26 (day/month/year).
+  const numeric = text.match(/\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b/);
+  if (numeric) {
+    const day = Number(numeric[1]);
+    const monthIndex = Number(numeric[2]) - 1;
+    const year = yearFromDigits(numeric[3], now.getFullYear());
+    const hit = validLocalDay(year, monthIndex, day);
+    if (hit) return hit;
+  }
+
   return null;
 }
 
@@ -40,8 +110,23 @@ export function chatQueryFromRest(rest) {
     .replace(/#[^\s#]+/g, ' ')
     .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
     .replace(/\b(?:today|yesterday)\b/gi, ' ')
+    .replace(new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MONTH_ALT})(?:\\s+\\d{2,4})?\\b`, 'gi'), ' ')
+    .replace(new RegExp(`\\b(?:${MONTH_ALT})\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s*\\d{2,4})?\\b`, 'gi'), ' ')
+    .replace(/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isDocumentSheet(sheet) {
+  return /\.(xlsx|xlsm|csv|tsv|txt|pdf|docx)$/i.test(String(sheet?.fileName || ''));
+}
+
+/** Prefer Phone-pay / Excel sheets over PhonePe payment photos in the picker. */
+export function preferSheetsForPicker(candidates, { fileHint = null } = {}) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  if (fileHint || !list.length) return list;
+  const docs = list.filter(isDocumentSheet);
+  return docs.length ? docs : list;
 }
 
 function isExpenseChatJid(jid) {
@@ -150,14 +235,17 @@ export function resolveExpenseSheet({
       return name === needle || name.includes(needle) || needle.includes(name);
     });
   }
-  if (candidates.length === 1) {
-    const sheet = candidates[0];
+  // Prefer PDFs/Excel over PhonePe payment photos so a day with one sheet + many
+  // screenshots auto-picks the sheet, and undated pickers list older PDFs.
+  const forPicker = preferSheetsForPicker(candidates, { fileHint });
+  if (forPicker.length === 1) {
+    const sheet = forPicker[0];
     return { status: 'ready', chat, messageId: sheet.messageId, fileName: sheet.fileName, dateHint };
   }
-  if (candidates.length > 1) {
+  if (forPicker.length > 1) {
     return ask(
       `More than one sheet in ${chat.chatName || 'that chat'} matches. Send one of these:`,
-      candidates.slice(0, 8).map((sheet) => {
+      forPicker.slice(0, 8).map((sheet) => {
         const day = dayBoundsFromTimestamp(sheet.timestamp).date;
         // Include day + message id so a click uniquely selects even when names collide.
         return {

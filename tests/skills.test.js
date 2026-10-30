@@ -131,6 +131,56 @@ describe('expense skill inputs', () => {
     expect(picked.messageId).toBe('new');
   });
 
+  test('parses natural dates like 12 oct and 12.10.26', () => {
+    expect(dateHintFromRest('12 oct', NOW)).toBe('2026-10-12');
+    expect(dateHintFromRest('12th October', NOW)).toBe('2026-10-12');
+    expect(dateHintFromRest('Oct 12', NOW)).toBe('2026-10-12');
+    expect(dateHintFromRest('12.10.26', NOW)).toBe('2026-10-12');
+    expect(dateHintFromRest('12/10/2026', NOW)).toBe('2026-10-12');
+    expect(chatQueryFromRest('Phonpay 12 oct')).toBe('Phonpay');
+  });
+
+  test('natural date picks the Phone-pay PDF and ignores payment photos', () => {
+    const daySheets = [
+      {
+        chatJid: SITE,
+        messageId: 'pdf-12',
+        fileName: '00010611-Phone pay - 11.10.26 & 12.10.26.pdf',
+        timestamp: Math.floor(new Date(2026, 9, 12, 19, 0, 0).getTime() / 1000),
+      },
+      {
+        chatJid: SITE,
+        messageId: 'img-12',
+        fileName: '00010609-PHOTO-2026-10-12-17-32-07.jpg',
+        timestamp: Math.floor(new Date(2026, 9, 12, 17, 32, 0).getTime() / 1000),
+      },
+    ];
+    const picked = resolveExpenseSheet({
+      rest: 'Phonpay 12 oct',
+      chat: { chatJid: SITE, chatName: 'Phonpay' },
+      sheets: daySheets,
+      now: NOW,
+    });
+    expect(picked.status).toBe('ready');
+    expect(picked.messageId).toBe('pdf-12');
+  });
+
+  test('undated picker lists PDFs across days instead of burying them under photos', () => {
+    const mixed = [
+      { chatJid: SITE, messageId: 'img-new', fileName: 'PHOTO-new.jpg', timestamp: SHEET_TS },
+      { chatJid: SITE, messageId: 'pdf-14', fileName: 'Phone pay - 14.10.26.pdf', timestamp: SHEET_TS - 100 },
+      { chatJid: SITE, messageId: 'pdf-12', fileName: 'Phone pay - 12.10.26.pdf', timestamp: SHEET_TS - 2 * 86400 },
+      { chatJid: SITE, messageId: 'pdf-10', fileName: 'Phone pay - 10.10.26.pdf', timestamp: SHEET_TS - 4 * 86400 },
+    ];
+    const picked = resolveExpenseSheet({ rest: '', chat, sheets: mixed, now: NOW });
+    expect(picked.status).toBe('needs_input');
+    expect(picked.choices.map((c) => c.label)).toEqual([
+      'Phone pay - 14.10.26.pdf (2026-10-17)',
+      'Phone pay - 12.10.26.pdf (2026-10-15)',
+      'Phone pay - 10.10.26.pdf (2026-10-13)',
+    ]);
+  });
+
   test('a filename selects that sheet', () => {
     const picked = resolveExpenseSheet({ rest: '16-oct.xlsx', chat, sheets, now: NOW });
     expect(chatQueryFromRest('Site A 16-oct.xlsx')).toBe('Site A');
