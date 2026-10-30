@@ -20,7 +20,14 @@ import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js
 import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
 import { toggleMessageMenu } from '/js/messages-render.js';
 import { initMenus, priorityLoadChat, promptDeleteChat, showSidebarContextMenu } from '/js/menus.js';
-import { buildChatMessagesHtml, closeReactionEmojiPickers, postWaReaction, toggleReactionEmojiPicker } from '/js/messages-render.js';
+import {
+  buildChatMessagesHtml,
+  captureChatScrollAnchor,
+  closeReactionEmojiPickers,
+  postWaReaction,
+  restoreChatScroll,
+  toggleReactionEmojiPicker,
+} from '/js/messages-render.js';
 import { initOverlays, openOverlay } from '/js/overlays.js';
 import { initSettings, loadSettings } from '/js/settings.js';
 import { initSkillsSettings, loadManagedSkills } from '/js/skills-settings.js';
@@ -360,7 +367,7 @@ function appendOptimisticOutbound(row) {
     receiptStatus: row.receiptStatus || 'server_ack',
   });
   state.chatMessages.set(jid, list);
-  paintWaMessages(jid, list);
+  paintWaMessages(jid, list, { forceScroll: true });
 }
 
 function openFreshAskDraft(jid, title, seed = '') {
@@ -1027,7 +1034,7 @@ async function toggleChatAiIndex(jid, enabled) {
   }
 }
 
-function paintWaMessages(jid, msgs) {
+function paintWaMessages(jid, msgs, { forceScroll = false } = {}) {
   if (!msgs.length) {
     const awaiting = state.chats.find((c) => c.chatJid === jid)?.awaitingSync;
     els.waView.innerHTML = `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">${
@@ -1037,9 +1044,11 @@ function paintWaMessages(jid, msgs) {
     }</div></div>`;
     return;
   }
+  // Live sync / media-ready re-paints must keep scrolled-up readers in place.
+  const anchor = forceScroll ? null : captureChatScrollAnchor(els.waView);
   const sorted = [...msgs].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
   els.waView.innerHTML = buildChatMessagesHtml(sorted, jid, null, null);
-  els.waView.scrollTop = els.waView.scrollHeight;
+  restoreChatScroll(els.waView, anchor, { force: forceScroll });
 }
 
 async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
@@ -1071,7 +1080,7 @@ async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
   if (matchMedia('(max-width: 820px)').matches) els.app.classList.add('chats-hidden');
 
   if (state.chatMessages.has(jid)) {
-    paintWaMessages(jid, state.chatMessages.get(jid));
+    paintWaMessages(jid, state.chatMessages.get(jid), { forceScroll: true });
   } else {
     els.waView.innerHTML = '<div class="gpt-wa-loading">Loading messages…</div>';
   }
@@ -1083,7 +1092,7 @@ async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
     const msgs = res.ok ? await res.json() : [];
     const list = Array.isArray(msgs) ? msgs : [];
     state.chatMessages.set(jid, list);
-    if (state.activeChatJid === jid) paintWaMessages(jid, list);
+    if (state.activeChatJid === jid) paintWaMessages(jid, list, { forceScroll: true });
     fetch(`/api/chats/${encodeURIComponent(jid)}/seen`, {
       method: 'POST', headers: authHeaders(), body: '{}',
     }).catch(() => {});

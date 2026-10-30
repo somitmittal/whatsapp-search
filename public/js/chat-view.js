@@ -245,7 +245,7 @@ export async function openChat(jid, focusMessageId = null) {
     ]);
     const msgs = msgsRes;
     if (store.activeChat !== jid) return;
-    renderMessages(msgs, jid, focusMessageId);
+    renderMessages(msgs, jid, focusMessageId, { forceScroll: !focusMessageId });
     if (!focusMessageId && msgs.length) {
       const sorted = [...msgs].sort((a, b) => {
         const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;

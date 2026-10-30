@@ -471,7 +471,63 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
   return html;
 }
 
-export function renderMessages(msgs, jid, focusMessageId = null) {
+/** Threshold (px) for "still following the live edge" — same idea as GPT nearBottom. */
+const CHAT_NEAR_BOTTOM_PX = 120;
+
+/**
+ * Snapshot scroll intent before a full transcript re-paint.
+ * Live refreshes must not yank readers who scrolled up to read history.
+ */
+export function captureChatScrollAnchor(container) {
+  if (!container) return { mode: 'bottom' };
+  const gap = container.scrollHeight - container.scrollTop - container.clientHeight;
+  if (gap < CHAT_NEAR_BOTTOM_PX) return { mode: 'bottom' };
+  const top = container.scrollTop;
+  const blocks = container.querySelectorAll('.msg-block[data-message-id]');
+  for (const block of blocks) {
+    if (block.offsetTop + block.offsetHeight > top + 8) {
+      return {
+        mode: 'anchor',
+        id: block.getAttribute('data-message-id'),
+        offset: block.offsetTop - top,
+      };
+    }
+  }
+  return { mode: 'top', scrollTop: top };
+}
+
+/** Restore sticky-bottom or a pre-paint message anchor after innerHTML replace. */
+export function restoreChatScroll(container, anchor, { force = false } = {}) {
+  if (!container) return;
+  if (force || !anchor || anchor.mode === 'bottom') {
+    container.scrollTop = container.scrollHeight;
+    return;
+  }
+  if (anchor.mode === 'anchor' && anchor.id) {
+    const want = String(anchor.id);
+    const target = [...container.querySelectorAll('.msg-block[data-message-id]')].find(
+      (el) => el.getAttribute('data-message-id') === want,
+    );
+    if (target) {
+      container.scrollTop = Math.max(0, target.offsetTop - (anchor.offset || 0));
+      return;
+    }
+  }
+  if (anchor.mode === 'top' && typeof anchor.scrollTop === 'number') {
+    container.scrollTop = anchor.scrollTop;
+    return;
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+/**
+ * @param {object[]} msgs
+ * @param {string} jid
+ * @param {string|null} [focusMessageId]
+ * @param {{ forceScroll?: boolean }} [opts] forceScroll=true on initial open / own send;
+ *   live refreshes omit it so scrolled-up readers keep their place.
+ */
+export function renderMessages(msgs, jid, focusMessageId = null, { forceScroll = false } = {}) {
   const c = $('#cv-messages');
   if (!msgs.length) {
     const ch = store.chatData.find((row) => row.chatJid === jid);
@@ -482,6 +538,8 @@ export function renderMessages(msgs, jid, focusMessageId = null) {
     c.innerHTML = `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">${esc(hint)}</div></div>`;
     return;
   }
+  const focusStr = focusMessageId != null ? String(focusMessageId) : '';
+  const anchor = focusStr || forceScroll ? null : captureChatScrollAnchor(c);
   const sorted = [...msgs].sort((a, b) => {
     const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
     const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
@@ -489,7 +547,6 @@ export function renderMessages(msgs, jid, focusMessageId = null) {
   });
   const html = buildChatMessagesHtml(sorted, jid, focusMessageId, null);
   c.innerHTML = html;
-  const focusStr = focusMessageId != null ? String(focusMessageId) : '';
   if (focusStr) {
     const target = [...c.querySelectorAll('.bubble[data-message-id]')].find(
       el => el.getAttribute('data-message-id') === focusStr
@@ -501,7 +558,7 @@ export function renderMessages(msgs, jid, focusMessageId = null) {
       c.scrollTop = c.scrollHeight;
     }
   } else {
-    c.scrollTop = c.scrollHeight;
+    restoreChatScroll(c, anchor, { force: forceScroll });
   }
 }
 // --- WhatsApp-style voice note playback (delegated) ---
