@@ -24,20 +24,20 @@ export function openOverlay(name) {
   }
 }
 
-/** Classic WhatsApp settings live in #overlay-settings. GPT has its own shell with the
- *  same data-settings-* attrs — never query the whole document or the first GPT tab
- *  ("general") blanks every overlay panel. */
+/** Classic WhatsApp settings live in #overlay-settings only.
+ *  GPT uses #gpt-settings (managed in gpt.js) — never fall back to document. */
 function settingsOverlayRoot() {
-  return document.getElementById('overlay-settings') || document;
+  return document.getElementById('overlay-settings');
 }
 
 function defaultSettingsTab() {
-  const first = settingsOverlayRoot().querySelector('[data-settings-tab]');
+  const first = settingsOverlayRoot()?.querySelector('[data-settings-tab]');
   return first?.getAttribute('data-settings-tab') || 'ai';
 }
 
 export function setSettingsTab(tabId, persist = true) {
   const root = settingsOverlayRoot();
+  if (!root) return;
   const available = [...root.querySelectorAll('[data-settings-tab]')].map((b) => b.getAttribute('data-settings-tab'));
   let id = tabId || defaultSettingsTab();
   // GPT renamed the classic WhatsApp tab → linked-devices
@@ -163,7 +163,7 @@ export function initOverlays() {
 
   document.addEventListener('click', () => closeAllMenus());
 
-  settingsOverlayRoot().querySelectorAll('[data-settings-tab]').forEach((btn) => {
+  settingsOverlayRoot()?.querySelectorAll('[data-settings-tab]').forEach((btn) => {
     btn.addEventListener('click', () => setSettingsTab(btn.getAttribute('data-settings-tab')));
   });
 

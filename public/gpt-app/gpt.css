@@ -219,15 +219,20 @@ button { font: inherit; color: inherit; }
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: var(--shadow); overflow: hidden;
 }
+.gpt-settings-dismiss {
+  position: absolute; top: 10px; right: 12px; z-index: 2;
+  font-size: 22px; line-height: 1; width: 32px; height: 32px;
+}
 .gpt-settings-nav {
   display: flex; flex-direction: column; gap: 4px;
   padding: 12px 10px; background: var(--panel-2); border-right: 1px solid var(--line);
 }
 .gpt-settings-nav-head {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center;
   padding: 4px 6px 12px; margin-bottom: 4px;
 }
 .gpt-settings-nav-head h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.gpt-settings-panel-head { padding-right: 36px; }
 .gpt-settings-tabs { display: flex; flex-direction: column; gap: 2px; }
 .gpt-settings-tab {
   text-align: left; border: 0; background: transparent; color: var(--fg-2);

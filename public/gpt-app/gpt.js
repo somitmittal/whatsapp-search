@@ -23,7 +23,7 @@ import { initMenus, promptDeleteChat, showSidebarContextMenu } from '/js/menus.j
 import { buildChatMessagesHtml, closeReactionEmojiPickers, postWaReaction, toggleReactionEmojiPicker } from '/js/messages-render.js';
 import { initOverlays, openOverlay } from '/js/overlays.js';
 import { initSettings, loadSettings } from '/js/settings.js';
-import { initSkillsSettings } from '/js/skills-settings.js';
+import { initSkillsSettings, loadManagedSkills } from '/js/skills-settings.js';
 import { autoSelectSidebarTab, renderSidebarTabCounts, setSidebarListTab, sidebarTabOf } from '/js/sidebar.js';
 import { store } from '/js/store.js';
 import { esc, escAttr } from '/js/util.js';
@@ -801,9 +801,8 @@ function openSettings(open = true, tab = null) {
 function closeSettings() { els.settings.hidden = true; }
 
 function setSettingsTab(tab) {
-  const allowed = new Set(['general', 'account']);
+  const allowed = new Set(['general', 'account', 'skills', 'business', 'linked-devices']);
   state.settingsTab = allowed.has(tab) ? tab : 'general';
-  // Scope to the GPT settings shell — classic overlay settings share the same data attrs.
   els.settings.querySelectorAll('[data-settings-tab]').forEach((btn) => {
     btn.classList.toggle('on', btn.dataset.settingsTab === state.settingsTab);
   });
@@ -811,6 +810,8 @@ function setSettingsTab(tab) {
     panel.hidden = panel.dataset.settingsPanel !== state.settingsTab;
   });
   if (state.settingsTab === 'account') void refreshAccountPanel();
+  if (state.settingsTab === 'skills') void loadManagedSkills();
+  if (state.settingsTab === 'business' || state.settingsTab === 'linked-devices') void loadSettings();
 }
 
 function cfg() {
@@ -2101,10 +2102,7 @@ function wire() {
   };
   $('#gpt-chats-toggle').addEventListener('click', () => els.app.classList.add('chats-hidden'));
   $('#gpt-chats-open').addEventListener('click', () => els.app.classList.remove('chats-hidden'));
-  $('#gpt-sidebar-settings')?.addEventListener('click', () => {
-    openOverlay('settings');
-    void loadSettings();
-  });
+  window.__openGptSettings = (tab) => openSettings(true, tab || null);
   $('#gpt-btn-import')?.addEventListener('click', openImportChats);
   els.deleteChat?.addEventListener('click', () => {
     if (state.activeChatJid) promptDeleteChat(state.activeChatJid);

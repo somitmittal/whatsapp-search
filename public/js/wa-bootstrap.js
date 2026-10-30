@@ -132,7 +132,11 @@ export function initWaBootstrap() {
   document.getElementById('btn-enable-live-sync')?.addEventListener('click', () => {
     if (confirm('Enable live WhatsApp QR sync? Your phone will link as a companion device. You can keep using Import chats anytime.')) {
       enableLiveSyncUi();
-      openOverlay('settings');
+      if (typeof window.__openGptSettings === 'function') {
+        window.__openGptSettings('linked-devices');
+      } else {
+        openOverlay('settings');
+      }
     }
   });
 
