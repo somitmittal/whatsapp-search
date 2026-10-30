@@ -197,6 +197,9 @@ export default class ExpenseReconciliationService {
       if (run.status !== 'completed' || !run.reportPath || !existsSync(run.reportPath)) {
         throw new Error('Report is not ready to send');
       }
+      if (String(run.chatJid || '').endsWith('@imported')) {
+        throw new Error('Imported chats cannot receive WhatsApp messages — download the Excel sheet instead');
+      }
       const waClient = this.getWaClient?.(getCurrentTenantId());
       if (!waClient?.sendDocument) throw new Error('WhatsApp is not connected; the report is ready to download');
       const sent = await waClient.sendDocument(run.chatJid, run.reportPath, {

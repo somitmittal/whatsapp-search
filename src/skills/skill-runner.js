@@ -81,8 +81,15 @@ export function coverageLine(coverage, chatName) {
   return `Read ${n} message${n === 1 ? '' : 's'} in ${chatName || 'the chat'} ${span} (that calendar span).`;
 }
 
+function isImportedChatJid(jid) {
+  return typeof jid === 'string' && jid.endsWith('@imported');
+}
+
 function skillRunView(row, { canSend = false } = {}) {
   if (!row) return null;
+  const chatJid = row.inputs?.chatJid || null;
+  // Imported archives have no live WhatsApp thread — never offer "Send report to the chat".
+  const allowSend = canSend && row.status === 'dry_run' && !isImportedChatJid(chatJid);
   return {
     id: row.id,
     namespace: row.namespace,
@@ -91,7 +98,8 @@ function skillRunView(row, { canSend = false } = {}) {
     version: row.version,
     status: row.status,
     coverage: row.coverage || null,
-    canSend: canSend && row.status === 'dry_run',
+    chatJid,
+    canSend: allowSend,
   };
 }
 

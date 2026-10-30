@@ -482,6 +482,9 @@ export default class GptService {
     if (!run) throw new Error('Skill run not found');
     if (run.status === 'sent') return { skillRun: run, alreadySent: true };
     if (run.status !== 'dry_run' || !run.expenseRunId) throw new Error('This run has no report to send');
+    if (String(run.inputs?.chatJid || '').endsWith('@imported')) {
+      throw new Error('Imported chats cannot receive WhatsApp messages — download the Excel sheet instead');
+    }
     if (!this.expenseService?.sendCompletedReport) throw new Error('Expense reconciliation is not enabled on this install.');
     await this.expenseService.sendCompletedReport(run.expenseRunId);
     const updated = this.db.updateSkillRun(run.id, { status: 'sent' });

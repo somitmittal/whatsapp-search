@@ -1188,10 +1188,13 @@ function skillChoicesHtml(choices = []) {
     `<button type="button" class="chip" data-skill-choice="${escAttr(c.message)}">${esc(c.label)}</button>`).join('')}</div>`;
 }
 
-function skillSendHtml(skillRun) {
+function skillSendHtml(skillRun, expenseDiff = null) {
   if (!skillRun) return '';
   if (skillRun.status === 'sent') return '<p class="gpt-skill-sent">Sent to the WhatsApp chat.</p>';
-  if (!skillRun.canSend) return '';
+  if (!skillRun.canSend || !skillRun.id) return '';
+  // Live WhatsApp only — imported archives have nowhere to post.
+  const jid = skillRun.chatJid || expenseDiff?.chatJid || '';
+  if (String(jid).endsWith('@imported')) return '';
   return `<button type="button" class="gpt-skill-send" data-send-skill-run="${escAttr(skillRun.id)}">Send report to the chat</button>`;
 }
 
@@ -1214,7 +1217,7 @@ function assistantHtml(m) {
     ${interrupted}
     ${p.expenseDiff ? renderExpenseDiff(p.expenseDiff) : ''}
     ${skillChoicesHtml(p.choices)}
-    ${skillSendHtml(p.skillRun)}
+    ${skillSendHtml(p.skillRun, p.expenseDiff)}
     <div class="gpt-msg-foot">${sourceCards(p.sources || [])}${model}</div>
   </div>`;
 }

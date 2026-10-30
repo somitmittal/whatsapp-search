@@ -416,7 +416,7 @@ export default class WaClient {
     const next = receiptAfterSuccessfulRelay(sent.status);
     sent.status = next;
     const chatJid = sent.key.remoteJid ? String(sent.key.remoteJid) : '';
-    const messageId = String(sent.key.id);
+    const messageId = String(sent.key.id || '');
     // Index before the HTTP send handler returns so the open chat can reload and see it.
     // Baileys does not always emit a messages.upsert echo for our own sends.
     try {

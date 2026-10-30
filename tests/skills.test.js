@@ -290,6 +290,38 @@ describe('skill runner', () => {
     expect(saved.kind).toBe('system');
   });
 
+  test('does not offer send-to-chat for imported archives', async () => {
+    const imported = 'import_chat@imported';
+    const importedSheet = { ...sheetRow, chatJid: imported };
+    const runner = createSkillRunner({
+      db: memoryDb([importedSheet]),
+      directory: { resolve: () => ({ chatJid: imported, chatName: '_chat' }), name: () => '_chat' },
+      expenseService: {
+        async runForChat() {
+          return {
+            id: 9,
+            status: 'completed',
+            chatJid: imported,
+            chatName: '_chat',
+            businessDate: '2026-10-14',
+            sourceFileName: 'Phone pay - 14.10.26.pdf',
+            reportPath: '/tmp/report.xlsx',
+            entries: [],
+            discrepancies: [],
+            totals: {},
+          };
+        },
+      },
+    });
+    const outcome = await runner.run({
+      text: '/accountant/expense-reconciliation',
+      mentions: [{ chatJid: imported, chatName: '_chat' }],
+    });
+    expect(outcome.skillRun.status).toBe('dry_run');
+    expect(outcome.skillRun.canSend).toBe(false);
+    expect(outcome.skillRun.chatJid).toBe(imported);
+  });
+
   test('uses the selected model provider for the reconciliation run', async () => {
     const selectedProvider = { name: 'ollama', model: 'llama3.2:3b' };
     const calls = [];
