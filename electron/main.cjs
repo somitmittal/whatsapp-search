@@ -88,13 +88,13 @@ function loadControlPlaneDefaults() {
       const data = JSON.parse(readFileSync(p, 'utf8'));
       return {
         controlPlaneUrl: String(data.controlPlaneUrl || '').trim().replace(/\/$/, ''),
-        licenseGate: String(data.licenseGate ?? '1'),
+        licenseGate: String(data.licenseGate ?? '0'),
       };
     } catch (err) {
       console.warn('[Desktop] control-plane defaults:', err.message);
     }
   }
-  return { controlPlaneUrl: '', licenseGate: '1' };
+  return { controlPlaneUrl: '', licenseGate: '0' };
 }
 
 function buildServerEnv() {
@@ -133,7 +133,16 @@ function buildServerEnv() {
     CONTROL_PLANE_PUBLIC_URL: (
       process.env.CONTROL_PLANE_PUBLIC_URL || controlPlaneUrl || ''
     ).trim().replace(/\/$/, ''),
-    LICENSE_GATE: process.env.LICENSE_GATE || cpDefaults.licenseGate || '1',
+    // Gate GPT/AI only when a hosted control plane URL is configured (or LICENSE_GATE is
+    // set explicitly). Empty URL + gate=1 blocks WhatsApp GPT with account_required and
+    // no remote signup — the broken v1.0.13 desktop default.
+    LICENSE_GATE: (() => {
+      if (process.env.LICENSE_GATE != null && String(process.env.LICENSE_GATE).trim() !== '') {
+        return String(process.env.LICENSE_GATE).trim();
+      }
+      if (controlPlaneUrl) return String(cpDefaults.licenseGate || '1');
+      return '0';
+    })(),
   };
 }
 
