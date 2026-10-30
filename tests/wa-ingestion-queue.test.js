@@ -1,5 +1,8 @@
 import { describe, expect, test } from '@jest/globals';
-import { sortDeferredMediaByChatActivity } from '../src/whatsapp/media-download-priority.js';
+import {
+  sortDeferredMediaByChatActivity,
+  takeNextDeferredMediaItem,
+} from '../src/whatsapp/media-download-priority.js';
 
 describe('deferred WhatsApp media priority', () => {
   test('orders media by recent chat activity, then message recency', () => {
@@ -66,5 +69,27 @@ describe('deferred WhatsApp media priority', () => {
       'focus-old',
       'recent',
     ]);
+  });
+
+  test('while history syncs, only priority-chat media is taken', () => {
+    const queue = [
+      { row: { messageId: 'a', chatJid: 'a@g.us' } },
+      { row: { messageId: 'focus', chatJid: 'focus@g.us' } },
+      { row: { messageId: 'b', chatJid: 'b@g.us' } },
+    ];
+    expect(takeNextDeferredMediaItem(queue, { historyDone: false, priorityChatJid: 'focus@g.us' })?.row?.messageId)
+      .toBe('focus');
+    expect(queue.map(({ row }) => row.messageId)).toEqual(['a', 'b']);
+    expect(takeNextDeferredMediaItem(queue, { historyDone: false, priorityChatJid: 'focus@g.us' })).toBeNull();
+  });
+
+  test('after history completes, media drains FIFO from the front', () => {
+    const queue = [
+      { row: { messageId: 'first', chatJid: 'a@g.us' } },
+      { row: { messageId: 'second', chatJid: 'b@g.us' } },
+    ];
+    expect(takeNextDeferredMediaItem(queue, { historyDone: true })?.row?.messageId).toBe('first');
+    expect(takeNextDeferredMediaItem(queue, { historyDone: true })?.row?.messageId).toBe('second');
+    expect(queue).toHaveLength(0);
   });
 });

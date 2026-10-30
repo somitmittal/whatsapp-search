@@ -36,3 +36,21 @@ export function sortDeferredMediaByChatActivity(queue, recentCutoffTs, priorityC
   });
   return queue;
 }
+
+/**
+ * Pop the next deferred media item. After history completes, drain FIFO (already sorted).
+ * While history is still running, only yield items for an explicit priority chat.
+ *
+ * @param {Array<{row?: {chatJid?: string}}>} queue
+ * @param {{ historyDone?: boolean, priorityChatJid?: string | null }} opts
+ * @returns {{row?: object, msg?: object} | null}
+ */
+export function takeNextDeferredMediaItem(queue, { historyDone = false, priorityChatJid = null } = {}) {
+  if (!Array.isArray(queue) || !queue.length) return null;
+  if (historyDone) return queue.shift() || null;
+  const jid = String(priorityChatJid || '').trim();
+  if (!jid) return null;
+  const idx = queue.findIndex((item) => item?.row?.chatJid === jid);
+  if (idx < 0) return null;
+  return queue.splice(idx, 1)[0];
+}

@@ -131,6 +131,12 @@ const config = {
   waHistoryChunkSize: Math.max(50, parseInt(process.env.WA_HISTORY_CHUNK_SIZE || '350', 10) || 350),
   /** Idle ms after the last history batch before marking sync complete (Baileys often pauses 5–30s between batches). */
   waSyncDoneDelayMs: Math.max(3000, parseInt(process.env.WA_SYNC_DONE_DELAY_MS || '15000', 10) || 15000),
+  /**
+   * Parallel WhatsApp media downloads after (or for a prioritized chat during) history sync.
+   * Default 2 overlaps one download with the previous write/gap; set `WA_MEDIA_DRAIN_CONCURRENCY=1`
+   * to restore fully serial drain.
+   */
+  waMediaDrainConcurrency: Math.max(1, parseInt(process.env.WA_MEDIA_DRAIN_CONCURRENCY || '2', 10) || 2),
   /** Live chats active within this user-selected window form the first post-sync indexing queue. */
   liveRecentWindowDays: 5,
   /**

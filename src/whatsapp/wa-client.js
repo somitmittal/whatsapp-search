@@ -5,6 +5,7 @@
  * No Puppeteer / headless browser → no bot-detection / "Can't link" errors.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { writeFile } from 'fs/promises';
 import { createRequire } from 'module';
 import { extname, join } from 'path';
 import config from '../config.js';
@@ -34,7 +35,7 @@ import { groupSubjectUpdates } from './group-subjects.js';
 import { filterRowsByRetention, fullHistoryBackoffSec, shouldSyncHistoryMessage } from './history-sync-policy.js';
 import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { isImportedChatJid, isWhatsAppLowPriorityFeed, shouldPreserveRawChatJid, sidebarTabForJid } from './jid-filters.js';
-import { sortDeferredMediaByChatActivity } from './media-download-priority.js';
+import { sortDeferredMediaByChatActivity, takeNextDeferredMediaItem } from './media-download-priority.js';
 import { audioSendContent } from './voice-content.js';
 import {
     extractRenderableTextFromInner,
@@ -1258,16 +1259,20 @@ export default class WaClient {
         this._emitSyncProgress();
       }
       try {
+        // Parallelize name hydrate — sequential awaits on large first syncs delayed every
+        // history batch before rows could reach SQLite (live upserts already fire-and-forget LID work).
+        const nameTasks = [];
         for (const c of (chats || [])) {
           const label = c.name;
           if (!label) continue;
-          await this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
+          nameTasks.push(this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber));
         }
         for (const c of (contacts || [])) {
           const label = c.name || c.notify || c.verifiedName;
           if (!label) continue;
-          await this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
+          nameTasks.push(this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber));
         }
+        if (nameTasks.length) await Promise.all(nameTasks);
       } catch (e) {
         console.warn('[WA] history name hydrate:', e.message);
       }
@@ -1283,7 +1288,8 @@ export default class WaClient {
       this._publishChatRoster(chats);
       console.log(`[WA] History event: ${chats?.length || 0} chats, ${messages?.length || 0} msgs`);
 
-      await this._backfillLidPnChatNamesFromMessages(messages || []);
+      // Match live `messages.upsert`: do not block history inserts on LID↔PN name backfill.
+      void this._backfillLidPnChatNamesFromMessages(messages || []);
 
       const historyMsgs = [];
       for (const m of messages || []) historyMsgs.push(m);
@@ -1336,37 +1342,40 @@ export default class WaClient {
       this._captureUnreadCounts(chats);
       this._publishChatRoster(chats);
       this._ingestEmbeddedChatMessages(chats);
-      for (const c of chats || []) {
-        if (!c?.name) continue;
-        await this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
-      }
+      await Promise.all(
+        (chats || [])
+          .filter((c) => c?.name)
+          .map((c) => this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber)),
+      );
     });
     this._sock.ev.on('chats.upsert', async (chats) => {
       this._captureUnreadCounts(chats);
       this._publishChatRoster(chats);
       this._ingestEmbeddedChatMessages(chats);
-      for (const c of chats || []) {
-        if (!c?.name) continue;
-        await this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
-      }
+      await Promise.all(
+        (chats || [])
+          .filter((c) => c?.name)
+          .map((c) => this._applyLabelToLinkedJids(c.name, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber)),
+      );
     });
     this._sock.ev.on('chats.update', async (updates) => {
       this._captureUnreadCounts(updates);
       this._publishChatRoster(updates);
       this._ingestEmbeddedChatMessages(updates);
-      for (const u of updates || []) {
-        if (!u?.name) continue;
-        await this._applyLabelToLinkedJids(u.name, u.id, u.lidJid, u.pnJid, u.lid, u.phoneNumber);
-      }
+      await Promise.all(
+        (updates || [])
+          .filter((u) => u?.name)
+          .map((u) => this._applyLabelToLinkedJids(u.name, u.id, u.lidJid, u.pnJid, u.lid, u.phoneNumber)),
+      );
     });
     this._sock.ev.on('contacts.set', async ({ contacts }) => {
-      for (const c of contacts || []) await this._ingestContact(c);
+      await Promise.all((contacts || []).map((c) => this._ingestContact(c)));
     });
     this._sock.ev.on('contacts.upsert', async (contacts) => {
-      for (const c of contacts || []) await this._ingestContact(c);
+      await Promise.all((contacts || []).map((c) => this._ingestContact(c)));
     });
     this._sock.ev.on('contacts.update', async (contacts) => {
-      for (const c of contacts || []) await this._ingestContact(c);
+      await Promise.all((contacts || []).map((c) => this._ingestContact(c)));
     });
   }
 
@@ -1391,11 +1400,13 @@ export default class WaClient {
     if (!s) return;
     if (looksLikeUrlOrSocialJunk(s) || looksLikeOpaqueNumericId(s)) return;
     const seen = new Set();
+    const tasks = [];
     for (const jid of jids) {
       if (!jid || seen.has(jid)) continue;
       seen.add(jid);
-      await this._applyDisplayName(jid, s);
+      tasks.push(this._applyDisplayName(jid, s));
     }
+    if (tasks.length) await Promise.all(tasks);
   }
 
   /**
@@ -1643,7 +1654,7 @@ export default class WaClient {
     const dir = join(config.dataDir, 'avatars');
     mkdirSync(dir, { recursive: true });
     const relPath = avatarFileName(jid, ext);
-    writeFileSync(join(dir, relPath), buf);
+    await writeFile(join(dir, relPath), buf);
     await this._publishAvatarResult(jid, { missing: false, relPath });
   }
 
@@ -2277,7 +2288,7 @@ export default class WaClient {
       mkdirSync(dir, { recursive: true });
       const filename = `${row.messageId}.${ext}`;
       const fullPath = join(dir, filename);
-      writeFileSync(fullPath, buffer);
+      await writeFile(fullPath, buffer);
       return { ...row, mediaPath: fullPath };
     } catch (e) {
       // Avoid spamming full signed URLs (they're ephemeral and noisy in logs)
@@ -2297,7 +2308,9 @@ export default class WaClient {
       msg: { key: msg.key, message: msg.message },
       row,
     });
-    if (this._historyDone) this._drainMediaQueue().catch(() => {});
+    const priorityMatch = this._priorityMediaChatJid
+      && row.chatJid === this._priorityMediaChatJid;
+    if (this._historyDone || priorityMatch) this._drainMediaQueue().catch(() => {});
   }
 
   /**
@@ -2306,6 +2319,7 @@ export default class WaClient {
    */
   /**
    * Prefer media downloads for this chat (user opened / tapped "Load messages & media").
+   * Starts draining that chat even while history sync is still running.
    * @param {string} chatJid
    * @returns {{ ok: boolean, queuedForChat: number }}
    */
@@ -2313,7 +2327,7 @@ export default class WaClient {
     const jid = String(chatJid || '').trim();
     this._priorityMediaChatJid = jid || null;
     this._sortDeferredMediaQueue();
-    if (this._historyDone) this._drainMediaQueue().catch(() => {});
+    this._drainMediaQueue().catch(() => {});
     const queuedForChat = jid
       ? this._mediaQueue.filter((item) => item?.row?.chatJid === jid).length
       : 0;
@@ -2326,24 +2340,40 @@ export default class WaClient {
     sortDeferredMediaByChatActivity(this._mediaQueue, cutoff, this._priorityMediaChatJid || null);
   }
 
-  async _drainMediaQueue() {
-    if (this._mediaDraining || !this._historyDone) return;
-    this._mediaDraining = true;
-    try {
-      while (this._mediaQueue.length && !this._destroyed) {
-        const { msg, row } = this._mediaQueue.shift();
-        try {
-          const enriched = await this._enrichRowWithMedia(msg, row);
-          if (enriched.mediaPath && this._onMediaPath) {
-            this._onMediaPath(enriched.messageId, enriched.mediaPath);
-          }
-        } finally {
-          if (row.messageId) this._queuedMediaIds.delete(row.messageId);
+  async _mediaDrainWorker() {
+    while (!this._destroyed) {
+      const item = takeNextDeferredMediaItem(this._mediaQueue, {
+        historyDone: this._historyDone,
+        priorityChatJid: this._priorityMediaChatJid,
+      });
+      if (!item) return;
+      const { msg, row } = item;
+      try {
+        const enriched = await this._enrichRowWithMedia(msg, row);
+        if (enriched.mediaPath && this._onMediaPath) {
+          this._onMediaPath(enriched.messageId, enriched.mediaPath);
         }
-        await new Promise((r) => setTimeout(r, WA_DRAIN_GAP_MS));
+      } finally {
+        if (row.messageId) this._queuedMediaIds.delete(row.messageId);
       }
+      await new Promise((r) => setTimeout(r, WA_DRAIN_GAP_MS));
+    }
+  }
+
+  async _drainMediaQueue() {
+    if (this._mediaDraining) return;
+    // Full archive waits until history finishes; a prioritized open chat may drain during sync.
+    if (!this._historyDone && !this._priorityMediaChatJid) return;
+    this._mediaDraining = true;
+    const workers = Math.max(1, config.waMediaDrainConcurrency || 1);
+    try {
+      await Promise.all(Array.from({ length: workers }, () => this._mediaDrainWorker()));
     } finally {
       this._mediaDraining = false;
+      // History may have completed mid-drain while we were priority-only; pick up the rest.
+      if (this._historyDone && this._mediaQueue.length && !this._destroyed) {
+        this._drainMediaQueue().catch(() => {});
+      }
     }
   }
 
