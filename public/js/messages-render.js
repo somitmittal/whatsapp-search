@@ -402,10 +402,15 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
         const dlHref = mediaDownloadUrl(mid) || mediaUrl;
         body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(dlHref)}" download>${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
       }
-    } else if (m.mediaUnavailable && m.mediaType) {
-      body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-unavailable">${esc(m.mediaType)} unavailable${cap ? ' · ' + cap : ''}</span></span>`;
-    } else if (m.mediaPending && m.mediaType) {
+    } else if ((m.mediaUnavailable || m.mediaTooLarge) && m.mediaType) {
+      const why = m.mediaTooLarge ? 'too large to download — open on your phone' : 'no longer available on WhatsApp';
+      body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-unavailable">${esc(m.mediaType)} ${why}${cap ? ' · ' + cap : ''}</span></span>`;
+    } else if (m.mediaPending && m.mediaType && String(m.chatJid || jid).endsWith('@imported')) {
+      body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-unavailable">${esc(m.mediaType)} not included in the export${cap ? ' · ' + cap : ''}</span></span>`;
+    } else if (m.mediaPending && m.mediaType && m.mediaQueued) {
       body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-pending">Loading ${esc(m.mediaType)}…${cap ? ' ' + cap : ''}</span></span>`;
+    } else if (m.mediaPending && m.mediaType) {
+      body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-not-downloaded">${esc(m.mediaType)} not downloaded <button type="button" class="media-retry" data-wa-media-retry>Retry</button>${cap ? ' · ' + cap : ''}</span></span>`;
     } else if (m.mediaType && (!m.text || String(m.text).startsWith('['))) {
       body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge">[${esc(m.mediaType)}]${cap ? ' ' + cap : ''}</span></span>`;
     } else {

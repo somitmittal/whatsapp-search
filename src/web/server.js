@@ -33,7 +33,7 @@ import {
   shouldShowGroupCatchup,
 } from '../whatsapp/unread-tracker.js';
 import { isSafeAvatarFileName, jidsNeedingAvatars } from '../whatsapp/chat-avatars.js';
-import { MEDIA_UNAVAILABLE_PATH, isMediaUnavailablePath } from '../whatsapp/media-constants.js';
+import { isMediaTooLargePath, isMediaUnavailablePath, isTerminalMediaPath } from '../whatsapp/media-constants.js';
 import { parseMediaDownloadStub } from '../whatsapp/media-download-stub.js';
 import { MAX_AUDIO_BYTES, isAudioMime } from '../whatsapp/voice-content.js';
 import { playableAudioFor } from './audio-transcode.js';
@@ -90,17 +90,25 @@ const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: IMPORT_MAX_UPLOAD_BYTES } });
 
-/** Never expose raw filesystem paths to the browser — only `hasMediaFile` + `/api/message-media`. */
-function sanitizeClientMessage(m) {
+/**
+ * Never expose raw filesystem paths to the browser — only `hasMediaFile` + `/api/message-media`.
+ * `mediaQueued` separates a real in-flight download ("Loading") from a stalled one ("Retry").
+ */
+function sanitizeClientMessage(m, isMediaQueued = null) {
   if (!m || typeof m !== 'object') return m;
   const o = { ...m };
   const rawPath = String(o.mediaPath || '').trim();
-  const unavailable = isMediaUnavailablePath(rawPath);
-  const hadPath = !!(rawPath && !unavailable);
+  const terminal = isTerminalMediaPath(rawPath);
+  const hadPath = !!(rawPath && !terminal);
   if (hadPath) o.hasMediaFile = true;
-  if (unavailable) o.mediaUnavailable = true;
+  if (isMediaUnavailablePath(rawPath)) o.mediaUnavailable = true;
+  if (isMediaTooLargePath(rawPath)) o.mediaTooLarge = true;
   delete o.mediaPath;
-  o.mediaPending = !!(o.mediaType && !hadPath && !unavailable);
+  delete o.mediaDownloadJson;
+  o.mediaPending = !!(o.mediaType && !hadPath && !terminal);
+  if (o.mediaPending && typeof isMediaQueued === 'function') {
+    o.mediaQueued = !!isMediaQueued(o.messageId);
+  }
   if (o.timestamp != null) o.timestamp = normalizeUnixSeconds(o.timestamp);
   if (o.mediaIndexStatus) o.mediaIndexStatus = String(o.mediaIndexStatus);
   return o;
@@ -124,9 +132,9 @@ function summarizeChatTouchesFromRows(rows) {
   return [...map.values()];
 }
 
-function sanitizeMessageList(list) {
+function sanitizeMessageList(list, isMediaQueued = null) {
   if (!Array.isArray(list)) return list;
-  return list.map(sanitizeClientMessage);
+  return list.map((m) => sanitizeClientMessage(m, isMediaQueued));
 }
 
 function assertPathUnderMediaRoot(absFilePath) {
@@ -895,16 +903,8 @@ export default class WebServer {
       },
       onLoadPendingMediaStubs: (chatJid) => {
         return runWithTenant(tid, () => {
-          const recentCutoffTs = Math.floor(Date.now() / 1000)
-            - (Number(config.liveRecentWindowDays) || 5) * 24 * 60 * 60;
-          const rows = this.db.listPendingMediaWithDownloadStub({
-            chatJid: chatJid || null,
-            // Chat refresh: all stubs for that chat. Post-sync: recent window only.
-            newerThanTs: chatJid ? null : recentCutoffTs,
-            limit: chatJid ? 500 : 400,
-          });
           const out = [];
-          for (const r of rows || []) {
+          for (const r of this.db.listPendingMediaWithDownloadStub(chatJid || null) || []) {
             const stub = parseMediaDownloadStub(r.mediaDownloadJson);
             if (!stub) continue;
             out.push({
@@ -924,9 +924,14 @@ export default class WebServer {
           return out;
         });
       },
-      onPersistMediaStub: (messageId, mediaDownloadJson) => {
+      onMediaNeedsDownload: (messageId) => runWithTenant(tid, () => this.db.mediaNeedsDownload(messageId)),
+      onMediaSettled: (messageId) => {
         runWithTenant(tid, () => {
-          this.db.upsertMediaDownloadJsonIfPending(messageId, mediaDownloadJson);
+          const chatJid = this.db.getMessageChatJid(messageId);
+          this._broadcast(
+            { type: 'message-media-ready', data: { messageId: String(messageId), chatJid } },
+            tid,
+          );
         });
       },
       onReaction: (payload) => {
@@ -1506,9 +1511,9 @@ export default class WebServer {
       const offset = parseInt(req.query.offset, 10) || 0;
       const focusMessageId = typeof req.query.focusMessageId === 'string' ? req.query.focusMessageId.trim() : '';
       let jids = [chatJid];
+      const wa = this._getTenantState(getCurrentTenantId())?.waClient;
+      const isQueued = typeof wa?.isMediaQueued === 'function' ? (id) => wa.isMediaQueued(id) : null;
       try {
-        const st = this._getTenantState(getCurrentTenantId());
-        const wa = st?.waClient;
         if (wa && typeof wa.getLinked1on1Jids === 'function') {
           jids = await wa.getLinked1on1Jids(chatJid);
         }
@@ -1519,14 +1524,14 @@ export default class WebServer {
       try {
         if (focusMessageId) {
           if (unique.length <= 1) {
-            return res.json(sanitizeMessageList(this.db.getMessagesAroundMessageId(chatJid, focusMessageId, limit)));
+            return res.json(sanitizeMessageList(this.db.getMessagesAroundMessageId(chatJid, focusMessageId, limit), isQueued));
           }
-          return res.json(sanitizeMessageList(this.db.getMessagesAroundMessageIdForJids(unique, focusMessageId, limit)));
+          return res.json(sanitizeMessageList(this.db.getMessagesAroundMessageIdForJids(unique, focusMessageId, limit), isQueued));
         }
         if (unique.length <= 1) {
-          return res.json(sanitizeMessageList(this.db.getMessagesPaginated(chatJid, limit, offset)));
+          return res.json(sanitizeMessageList(this.db.getMessagesPaginated(chatJid, limit, offset), isQueued));
         }
-        return res.json(sanitizeMessageList(this.db.getMessagesPaginatedForJids(unique, limit, offset)));
+        return res.json(sanitizeMessageList(this.db.getMessagesPaginatedForJids(unique, limit, offset), isQueued));
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1664,58 +1669,27 @@ export default class WebServer {
         this._mediaIndexService?.notePriorityChange?.();
         this._embeddingIndexService?.notePriorityChange?.();
 
-        // Recent window from the same cutoff used for media drain priority — do not treat
-        // those rows as permanently gone just because the in-memory retry cache was wiped
-        // on restart (that was marking today's images "unavailable" on refresh).
-        const recentCutoffTs = Math.floor(Date.now() / 1000)
-          - (Number(config.liveRecentWindowDays) || 5) * 24 * 60 * 60;
-
-        let mediaRetryCleared = 0;
-        if (!imported && typeof this.db.clearUnavailableMediaNewerThan === 'function') {
-          mediaRetryCleared = this.db.clearUnavailableMediaNewerThan(chatJid, recentCutoffTs);
-        }
-
         let mediaQueued = 0;
         if (wa && typeof wa.prioritizeChatMedia === 'function' && !imported) {
           mediaQueued = Number(wa.prioritizeChatMedia(chatJid)?.queuedForChat || 0);
         }
 
-        const pendingMedia = typeof this.db.countPendingMediaForChat === 'function'
-          ? this.db.countPendingMediaForChat(chatJid)
-          : 0;
-
-        // Archive-only: mark stuck Loading outside the recent window (or all missing
-        // files on imported chats). Recent pending stays Loading so phone rehydrate can retry.
-        let mediaMarkedUnavailable = 0;
-        if (typeof this.db.markOrphanedPendingMediaUnavailable === 'function') {
-          const stillPending = new Set(
-            !imported && typeof wa?.pendingMediaMessageIdsForChat === 'function'
-              ? wa.pendingMediaMessageIdsForChat(chatJid)
-              : [],
-          );
-          mediaMarkedUnavailable = this.db.markOrphanedPendingMediaUnavailable(
-            chatJid,
-            stillPending,
-            imported ? {} : { olderThanTs: recentCutoffTs },
-          );
-        }
-
+        // Rows stored before stubs were persisted can only be retried if the phone
+        // re-sends the message, so anchor just after the newest one; otherwise extend
+        // the archive from the oldest message as before.
         let history = { requested: false };
         if (!imported && wa && typeof wa.fetchOlderHistoryFromPhone === 'function' && st.waState === 'READY') {
           const guard = wa.canFetchPhoneHistory?.(chatJid);
           if (!guard || guard.ok) {
-            // Prefer newest anchor when media is still pending: re-delivers the recent
-            // window with download stubs. Oldest anchor only extends the archive.
-            const anchorRow = pendingMedia > 0
-              ? (this.db.getNewestMessageAnchor(chatJid) || this.db.getOldestMessageAnchor(chatJid))
-              : this.db.getOldestMessageAnchor(chatJid);
+            const mediaAnchor = this.db.getHistoryAnchorForStublessPendingMedia(chatJid);
+            const anchorRow = mediaAnchor || this.db.getOldestMessageAnchor(chatJid);
             if (anchorRow?.messageId) {
               try {
                 const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid, ...anchorRow }, count);
                 history = {
                   requested: true,
                   requestId: requestId ?? null,
-                  purpose: pendingMedia > 0 ? 'media_rehydrate' : 'older_archive',
+                  purpose: mediaAnchor ? 'media_rehydrate' : 'older_archive',
                 };
               } catch (err) {
                 history = { requested: false, error: err.message || String(err) };
@@ -1743,9 +1717,6 @@ export default class WebServer {
           chatJid,
           imported,
           mediaQueued,
-          mediaRetryCleared,
-          mediaMarkedUnavailable,
-          pendingMedia,
           history,
         });
       } catch (err) {

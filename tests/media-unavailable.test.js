@@ -6,7 +6,12 @@ import { join } from 'node:path';
 const scratch = mkdtempSync(join(tmpdir(), 'wa-media-unavail-'));
 process.env.DATA_DIR = scratch;
 
-const { MEDIA_UNAVAILABLE_PATH, isMediaUnavailablePath, isPermanentMediaFailure } = await import('../src/whatsapp/media-constants.js');
+const {
+  MEDIA_TOO_LARGE_PATH,
+  MEDIA_UNAVAILABLE_PATH,
+  isPermanentMediaFailure,
+  isTerminalMediaPath,
+} = await import('../src/whatsapp/media-constants.js');
 const { default: Database } = await import('../src/storage/database.js');
 const { LEGACY_TENANT_ID } = await import('../src/storage/tenant-constants.js');
 const { runWithTenant } = await import('../src/storage/tenant-context.js');
@@ -18,119 +23,92 @@ afterAll(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-describe('media unavailable helpers', () => {
-  test('detects permanent WhatsApp failures narrowly', () => {
+const media = (messageId, chatJid, timestamp, extra = {}) => ({
+  messageId,
+  chatJid,
+  chatName: 'Chat',
+  sender: 'A',
+  text: '[image]',
+  mediaType: 'image',
+  mediaPath: null,
+  timestamp,
+  ...extra,
+});
+const text = (messageId, chatJid, timestamp) => ({
+  messageId, chatJid, chatName: 'Chat', sender: 'A', text: 'hi', timestamp,
+});
+const pathOf = (id) => db._db.prepare('SELECT media_path AS p FROM messages WHERE message_id = ?').get(id).p;
+
+describe('media terminal states', () => {
+  test('only WhatsApp "gone" answers are permanent', () => {
     expect(isPermanentMediaFailure(new Error('Media re-upload failed by device (NOT_FOUND)'))).toBe(true);
     expect(isPermanentMediaFailure(new Error('Status code: 404'))).toBe(true);
     expect(isPermanentMediaFailure(new Error('Media re-upload failed by device (GENERAL_ERROR)'))).toBe(false);
     expect(isPermanentMediaFailure(new Error('Failed to fetch stream'))).toBe(false);
-    expect(isMediaUnavailablePath(MEDIA_UNAVAILABLE_PATH)).toBe(true);
   });
 
-  test('marks orphaned pending media unavailable except ids still downloading', async () => {
+  test('sentinels are terminal, real paths and empty are not', () => {
+    expect(isTerminalMediaPath(MEDIA_UNAVAILABLE_PATH)).toBe(true);
+    expect(isTerminalMediaPath(MEDIA_TOO_LARGE_PATH)).toBe(true);
+    expect(isTerminalMediaPath('/tmp/a.jpg')).toBe(false);
+    expect(isTerminalMediaPath(null)).toBe(false);
+  });
+});
+
+describe('persisted download stubs', () => {
+  test('stub stored on insert, upserted on re-delivery, cleared once the file lands', async () => {
     await runWithTenant(LEGACY_TENANT_ID, async () => {
-      const jid = 'oldchat@g.us';
+      const jid = 'stub@g.us';
+      db.insertMessageBatch([media('s1', jid, 100, { mediaDownloadJson: '{"a":1}' }), media('s2', jid, 101)]);
+      expect(db.listPendingMediaWithDownloadStub(jid).map((r) => r.messageId)).toEqual(['s1']);
+
+      // On-demand history re-delivers s2 with its proto: INSERT OR IGNORE, stub still saved.
+      db.insertMessageBatch([media('s2', jid, 101, { mediaDownloadJson: '{"b":2}' })]);
+      expect(db.listPendingMediaWithDownloadStub(jid).map((r) => r.messageId)).toEqual(['s2', 's1']);
+
+      db.updateMessageMediaPath('s1', '/tmp/s1.jpg');
+      expect(pathOf('s1')).toBe('/tmp/s1.jpg');
+      expect(db.listPendingMediaWithDownloadStub(jid).map((r) => r.messageId)).toEqual(['s2']);
+      expect(db.mediaNeedsDownload('s1')).toBe(false);
+      expect(db.mediaNeedsDownload('s2')).toBe(true);
+      expect(db.mediaNeedsDownload('not-inserted-yet')).toBe(true);
+    });
+  });
+});
+
+describe('on-demand history anchor for stub-less pending media', () => {
+  test('anchors on the first message after the newest stub-less pending row', async () => {
+    await runWithTenant(LEGACY_TENANT_ID, async () => {
+      const jid = 'anchor@g.us';
       db.insertMessageBatch([
-        {
-          messageId: 'img_stuck',
-          chatJid: jid,
-          chatName: 'Old',
-          sender: 'A',
-          text: '[image]',
-          mediaType: 'image',
-          mediaPath: null,
-          timestamp: 1_700_000_000,
-        },
-        {
-          messageId: 'img_queued',
-          chatJid: jid,
-          chatName: 'Old',
-          sender: 'A',
-          text: '[image]',
-          mediaType: 'image',
-          mediaPath: null,
-          timestamp: 1_700_000_001,
-        },
-        {
-          messageId: 'img_ok',
-          chatJid: jid,
-          chatName: 'Old',
-          sender: 'A',
-          text: '[image]',
-          mediaType: 'image',
-          mediaPath: '/tmp/ok.jpg',
-          timestamp: 1_700_000_002,
-        },
+        media('a_old', jid, 200),
+        text('t1', jid, 201),
+        media('a_new', jid, 202),
+        media('a_stub', jid, 203, { mediaDownloadJson: '{"c":3}' }),
+        text('t2', jid, 204),
       ]);
-
-      const n = db.markOrphanedPendingMediaUnavailable(jid, ['img_queued']);
-      expect(n).toBe(1);
-
-      const stuck = db._db.prepare(
-        'SELECT media_path AS p FROM messages WHERE message_id = ?',
-      ).get('img_stuck');
-      const queued = db._db.prepare(
-        'SELECT media_path AS p FROM messages WHERE message_id = ?',
-      ).get('img_queued');
-      const ok = db._db.prepare(
-        'SELECT media_path AS p FROM messages WHERE message_id = ?',
-      ).get('img_ok');
-      expect(stuck.p).toBe(MEDIA_UNAVAILABLE_PATH);
-      expect(queued.p).toBeNull();
-      expect(ok.p).toBe('/tmp/ok.jpg');
+      // a_new has no stub; history is fetched *before* the anchor, so the anchor is the row after it.
+      expect(db.getHistoryAnchorForStublessPendingMedia(jid)).toMatchObject({ messageId: 'a_stub', timestamp: 203 });
     });
   });
 
-  test('age-gated orphan mark leaves recent pending alone; clearUnavailable retries recent', async () => {
+  test('null when every pending row has a stub or a final state', async () => {
     await runWithTenant(LEGACY_TENANT_ID, async () => {
-      const jid = 'recentchat@g.us';
-      const now = Math.floor(Date.now() / 1000);
+      const jid = 'anchor2@g.us';
       db.insertMessageBatch([
-        {
-          messageId: 'img_old',
-          chatJid: jid,
-          chatName: 'R',
-          sender: 'A',
-          text: '[image]',
-          mediaType: 'image',
-          mediaPath: null,
-          timestamp: now - 10 * 86400,
-        },
-        {
-          messageId: 'img_recent',
-          chatJid: jid,
-          chatName: 'R',
-          sender: 'A',
-          text: '[image]',
-          mediaType: 'image',
-          mediaPath: null,
-          timestamp: now - 3600,
-        },
-        {
-          messageId: 'img_recent_bad',
-          chatJid: jid,
-          chatName: 'R',
-          sender: 'A',
-          text: '[image]',
-          mediaType: 'image',
-          mediaPath: MEDIA_UNAVAILABLE_PATH,
-          timestamp: now - 7200,
-        },
+        media('b1', jid, 300, { mediaDownloadJson: '{"d":4}' }),
+        media('b2', jid, 301, { mediaPath: MEDIA_UNAVAILABLE_PATH }),
+        text('t3', jid, 302),
       ]);
+      expect(db.getHistoryAnchorForStublessPendingMedia(jid)).toBeNull();
+    });
+  });
 
-      const cutoff = now - 5 * 86400;
-      expect(db.countPendingMediaForChat(jid)).toBe(2);
-      expect(db.markOrphanedPendingMediaUnavailable(jid, [], { olderThanTs: cutoff })).toBe(1);
-      expect(db._db.prepare('SELECT media_path AS p FROM messages WHERE message_id=?').get('img_old').p)
-        .toBe(MEDIA_UNAVAILABLE_PATH);
-      expect(db._db.prepare('SELECT media_path AS p FROM messages WHERE message_id=?').get('img_recent').p)
-        .toBeNull();
-
-      expect(db.clearUnavailableMediaNewerThan(jid, cutoff)).toBe(1);
-      expect(db._db.prepare('SELECT media_path AS p FROM messages WHERE message_id=?').get('img_recent_bad').p)
-        .toBeNull();
-      expect(db._db.prepare('SELECT media_path AS p FROM messages WHERE message_id=?').get('img_old').p)
-        .toBe(MEDIA_UNAVAILABLE_PATH);
+  test('null when the stub-less pending row is the newest message', async () => {
+    await runWithTenant(LEGACY_TENANT_ID, async () => {
+      const jid = 'anchor3@g.us';
+      db.insertMessageBatch([text('t4', jid, 400), media('c1', jid, 401)]);
+      expect(db.getHistoryAnchorForStublessPendingMedia(jid)).toBeNull();
     });
   });
 });

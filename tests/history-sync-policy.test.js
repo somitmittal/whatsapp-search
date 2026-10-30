@@ -5,6 +5,7 @@ import {
   fullHistoryBackoffSec,
   shouldRequestRecentDaysCatchUp,
   shouldSyncHistoryMessage,
+  HISTORY_SYNC_TYPE_ON_DEMAND,
 } from '../src/whatsapp/history-sync-policy.js';
 
 describe('shouldSyncHistoryMessage', () => {
@@ -19,8 +20,12 @@ describe('shouldSyncHistoryMessage', () => {
     expect(shouldSyncHistoryMessage({ syncType: 3 }, opts)).toBe(false);
     expect(shouldSyncHistoryMessage({ syncType: 'RECENT' }, opts)).toBe(false);
     expect(shouldSyncHistoryMessage({ syncType: HISTORY_SYNC_TYPE_FULL }, opts)).toBe(false);
-    expect(shouldSyncHistoryMessage({ syncType: 6 }, opts)).toBe(false);
     expect(shouldSyncHistoryMessage({}, opts)).toBe(false);
+  });
+
+  test('still accepts ON_DEMAND replies to our own fetchMessageHistory after the first sync', () => {
+    const opts = { initialHistorySyncDone: true };
+    expect(shouldSyncHistoryMessage({ syncType: HISTORY_SYNC_TYPE_ON_DEMAND }, opts)).toBe(true);
   });
 
   test('an explicit full-history override still accepts sync', () => {

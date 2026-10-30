@@ -37,8 +37,10 @@ import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { isImportedChatJid, isWhatsAppLowPriorityFeed, shouldPreserveRawChatJid, sidebarTabForJid } from './jid-filters.js';
 import { sortDeferredMediaByChatActivity, takeNextDeferredMediaItem } from './media-download-priority.js';
 import {
+  MEDIA_TOO_LARGE_PATH,
   MEDIA_UNAVAILABLE_PATH,
   isPermanentMediaFailure,
+  isTerminalMediaPath,
 } from './media-constants.js';
 import { buildMediaDownloadStub } from './media-download-stub.js';
 import { audioSendContent } from './voice-content.js';
@@ -90,8 +92,6 @@ const WA_DRAIN_GAP_MS = 120;
 
 const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
 const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
-/** Cap in-memory WA message stubs kept for refresh/retry after a failed download. */
-const MEDIA_RETRY_CACHE_MAX = 4000;
 
 function safeJidDir(jid) {
   return String(jid || 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '_');
@@ -189,7 +189,7 @@ export default class WaClient {
     authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete,
     onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction,
     onResolvedDisplayName, onUnreadCounts, onMessageRevoked, onMessageEdited,
-    onChatAvatar, onMessageReceipt, onLoadPendingMediaStubs, onPersistMediaStub,
+    onChatAvatar, onMessageReceipt, onLoadPendingMediaStubs, onMediaNeedsDownload, onMediaSettled,
   }) {
     this._authDir = authDir || join(config.dataDir, '.baileys_auth');
     this._configFile = configFile || join(config.dataDir, 'wa-config.json');
@@ -204,7 +204,8 @@ export default class WaClient {
     this._onDisconnected = onDisconnected;
     this._onMediaPath   = onMediaPath;
     this._onLoadPendingMediaStubs = onLoadPendingMediaStubs;
-    this._onPersistMediaStub = onPersistMediaStub;
+    this._onMediaNeedsDownload = onMediaNeedsDownload;
+    this._onMediaSettled = onMediaSettled;
     this._onReaction    = onReaction;
     this._onResolvedDisplayName = onResolvedDisplayName;
     this._onUnreadCounts = onUnreadCounts;
@@ -249,8 +250,6 @@ export default class WaClient {
     /** When set, deferred media for this chat drains before other chats. */
     this._priorityMediaChatJid = null;
     this._queuedMediaIds = new Set();
-    /** messageId → { msg, row } for refresh retry after a failed / interrupted download. */
-    this._mediaRetryCache = new Map();
     this._mediaDraining = false;
     /** Sidebar profile / group pictures. Filled newest-first and drained after history sync. */
     this._avatarQueue = [];
@@ -895,7 +894,6 @@ export default class WaClient {
     this._historyRetryTimer = null;
     this._mediaQueue.length = 0;
     this._queuedMediaIds.clear();
-    this._mediaRetryCache.clear();
     try { this._sock?.end?.(new Error('destroy')); } catch {}
     this._sock = null;
     this._setState('DISCONNECTED', 'Stopped');
@@ -2286,7 +2284,7 @@ export default class WaClient {
       }
       if (row.mediaType === 'video' && buffer.length > MAX_VIDEO_BYTES) {
         console.warn(`[WA] skip large video (${buffer.length} bytes)`);
-        return row;
+        return { ...row, mediaPath: MEDIA_TOO_LARGE_PATH };
       }
       const m = msg.message;
       const mime =
@@ -2303,50 +2301,31 @@ export default class WaClient {
       const filename = `${row.messageId}.${ext}`;
       const fullPath = join(dir, filename);
       await writeFile(fullPath, buffer);
-      if (row.messageId) this._mediaRetryCache.delete(row.messageId);
       return { ...row, mediaPath: fullPath };
     } catch (e) {
       // Avoid spamming full signed URLs (they're ephemeral and noisy in logs)
       const msgText = String(e?.message || 'media download failed');
       console.warn(`[WA] media download ${row.messageId}:`, msgText.replace(/https?:\/\/\S+/g, '<url>'));
       if (isPermanentMediaFailure(e)) {
-        if (row.messageId) this._mediaRetryCache.delete(row.messageId);
         return { ...row, mediaPath: MEDIA_UNAVAILABLE_PATH };
       }
       return row;
     }
   }
 
-  _rememberMediaRetry(msg, row) {
-    const id = row?.messageId;
-    if (!id || !msg?.key || !msg?.message) return;
-    const slimMsg = { key: msg.key, message: msg.message };
-    this._mediaRetryCache.set(id, {
-      msg: slimMsg,
-      row: { ...row, mediaPath: null },
-    });
-    while (this._mediaRetryCache.size > MEDIA_RETRY_CACHE_MAX) {
-      const oldest = this._mediaRetryCache.keys().next().value;
-      this._mediaRetryCache.delete(oldest);
-    }
-    // Survive restarts: keep enough of the Baileys media node to re-download later.
-    if (typeof this._onPersistMediaStub === 'function') {
-      const stubJson = buildMediaDownloadStub(slimMsg) || row?.mediaDownloadJson;
-      if (stubJson) {
-        try { this._onPersistMediaStub(id, stubJson); } catch { /* ignore */ }
-      }
-    }
+  /** True while this message's media is waiting in (or being pulled by) the download queue. */
+  isMediaQueued(messageId) {
+    return !!messageId && this._queuedMediaIds.has(String(messageId));
   }
 
   _queueMediaDownload(msg, row) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return;
-    if (row.mediaPath === MEDIA_UNAVAILABLE_PATH) return;
+    if (isTerminalMediaPath(row.mediaPath)) return;
     if (row.messageId && this._queuedMediaIds.has(row.messageId)) return;
     if (row.messageId) this._queuedMediaIds.add(row.messageId);
     // Retain only the fields Baileys needs for media download rather than the full history
     // event object; large first syncs can otherwise keep substantial protocol metadata alive.
     const slim = { msg: { key: msg.key, message: msg.message }, row };
-    this._rememberMediaRetry(slim.msg, row);
     this._mediaQueue.push(slim);
     const priorityMatch = this._priorityMediaChatJid
       && row.chatJid === this._priorityMediaChatJid;
@@ -2366,15 +2345,8 @@ export default class WaClient {
   prioritizeChatMedia(chatJid) {
     const jid = String(chatJid || '').trim();
     this._priorityMediaChatJid = jid || null;
-    // Refresh: re-queue stubs we still hold for this chat (failed/interrupted downloads).
-    if (jid) {
-      for (const item of this._mediaRetryCache.values()) {
-        if (item?.row?.chatJid !== jid) continue;
-        if (item.row.mediaPath === MEDIA_UNAVAILABLE_PATH) continue;
-        this._queueMediaDownload(item.msg, item.row);
-      }
-      this._requeuePersistedPendingMedia(jid);
-    }
+    // Refresh: re-queue failed / interrupted downloads from their persisted stubs.
+    if (jid) this._requeuePersistedPendingMedia(jid);
     this._sortDeferredMediaQueue();
     this._drainMediaQueue().catch(() => {});
     const queuedForChat = jid
@@ -2385,7 +2357,7 @@ export default class WaClient {
 
   /**
    * Load Baileys media stubs persisted in SQLite and put them back on the download queue.
-   * @param {string | null} chatJid null = recent window across chats (post-sync)
+   * @param {string | null} chatJid null = every chat (post-sync)
    */
   _requeuePersistedPendingMedia(chatJid) {
     if (typeof this._onLoadPendingMediaStubs !== 'function') return 0;
@@ -2406,21 +2378,6 @@ export default class WaClient {
     return n;
   }
 
-  /**
-   * Message ids for this chat currently in the download queue.
-   * Retry-cache stubs that could not be re-queued (no sock / already failed) must NOT be
-   * kept here — otherwise priority-load never marks stuck "Loading…" rows unavailable.
-   */
-  pendingMediaMessageIdsForChat(chatJid) {
-    const jid = String(chatJid || '').trim();
-    if (!jid) return [];
-    const ids = [];
-    for (const item of this._mediaQueue) {
-      if (item?.row?.chatJid === jid && item.row.messageId) ids.push(String(item.row.messageId));
-    }
-    return ids;
-  }
-
   _sortDeferredMediaQueue() {
     const cutoff = Math.floor(Date.now() / 1000)
       - (config.liveRecentWindowDays * 24 * 60 * 60);
@@ -2435,14 +2392,20 @@ export default class WaClient {
       });
       if (!item) return;
       const { msg, row } = item;
+      let settledPath = null;
       try {
+        // On-demand history re-delivers messages whose file we may already have.
+        if (this._onMediaNeedsDownload?.(row.messageId) === false) continue;
         const enriched = await this._enrichRowWithMedia(msg, row);
-        if (enriched.mediaPath && this._onMediaPath) {
-          this._onMediaPath(enriched.messageId, enriched.mediaPath);
-        }
+        settledPath = enriched.mediaPath || null;
+        // Same object may still sit in the unflushed insert batch — carry the path into it.
+        if (settledPath) row.mediaPath = settledPath;
       } finally {
         if (row.messageId) this._queuedMediaIds.delete(row.messageId);
       }
+      // Always report the outcome: a failed attempt must flip the UI out of "Loading".
+      if (settledPath) this._onMediaPath?.(row.messageId, settledPath);
+      else this._onMediaSettled?.(row.messageId);
       await new Promise((r) => setTimeout(r, WA_DRAIN_GAP_MS));
     }
   }

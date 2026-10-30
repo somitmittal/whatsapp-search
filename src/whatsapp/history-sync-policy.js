@@ -11,6 +11,8 @@
 
 /** proto.HistorySync.HistorySyncType.FULL */
 export const HISTORY_SYNC_TYPE_FULL = 2;
+/** proto.HistorySync.HistorySyncType.ON_DEMAND — reply to our own `fetchMessageHistory`. */
+export const HISTORY_SYNC_TYPE_ON_DEMAND = 6;
 
 export const RECENT_DAYS_CATCHUP_DAYS = 7;
 export const RECENT_DAYS_CATCHUP_COOLDOWN_SEC = 6 * 3600;
@@ -37,11 +39,14 @@ export function fullHistoryBackoffSec(attempts) {
   return FULL_HISTORY_RETRY_MAX_GAP_SEC;
 }
 
-export function shouldSyncHistoryMessage(_historyMsg, {
+export function shouldSyncHistoryMessage(historyMsg, {
   syncFullHistory = false,
   initialHistorySyncDone = false,
 } = {}) {
   if (syncFullHistory) return true;
+  // On-demand batches only arrive because the user asked (load older / media retry);
+  // dropping them made those requests silently do nothing after the first sync.
+  if (Number(historyMsg?.syncType) === HISTORY_SYNC_TYPE_ON_DEMAND) return true;
   return !initialHistorySyncDone;
 }
 

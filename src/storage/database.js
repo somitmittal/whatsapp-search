@@ -1696,152 +1696,72 @@ export default class Database {
       UPDATE messages SET media_download_json = ?
       WHERE tenant_id = ? AND message_id = ?
         AND media_type IS NOT NULL AND trim(media_type) != ''
-        AND (media_path IS NULL OR trim(media_path) = '' OR media_path = '__unavailable__')
+        AND (media_path IS NULL OR trim(media_path) = '')
     `).run(raw, t, mid);
     return r.changes ?? 0;
   }
 
   /**
-   * Pending media rows that still have a download stub (for restart / refresh re-queue).
-   * @param {{ chatJid?: string, newerThanTs?: number, limit?: number }} [opts]
+   * Pending media rows that have a download stub (restart / refresh re-queue).
+   * @param {string | null} [chatJid] omit for every chat
    */
-  listPendingMediaWithDownloadStub({ chatJid = null, newerThanTs = null, limit = 500 } = {}) {
+  listPendingMediaWithDownloadStub(chatJid = null) {
     const t = getCurrentTenantId();
-    const lim = Math.max(1, Math.min(Number(limit) || 500, 2000));
     const jid = chatJid ? String(chatJid).trim() : '';
-    const cutoff = newerThanTs == null ? null : Number(newerThanTs);
-    if (jid && cutoff != null && Number.isFinite(cutoff)) {
-      return this._db.prepare(`
-        SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
-               sender, media_type AS mediaType, media_caption AS mediaCaption,
-               timestamp, media_download_json AS mediaDownloadJson
-        FROM messages
-        WHERE tenant_id = ? AND chat_jid = ?
-          AND media_type IS NOT NULL AND trim(media_type) != ''
-          AND (media_path IS NULL OR trim(media_path) = '')
-          AND media_download_json IS NOT NULL AND trim(media_download_json) != ''
-          AND timestamp >= ?
-        ORDER BY timestamp DESC
-        LIMIT ?
-      `).all(t, jid, cutoff, lim);
-    }
-    if (jid) {
-      return this._db.prepare(`
-        SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
-               sender, media_type AS mediaType, media_caption AS mediaCaption,
-               timestamp, media_download_json AS mediaDownloadJson
-        FROM messages
-        WHERE tenant_id = ? AND chat_jid = ?
-          AND media_type IS NOT NULL AND trim(media_type) != ''
-          AND (media_path IS NULL OR trim(media_path) = '')
-          AND media_download_json IS NOT NULL AND trim(media_download_json) != ''
-        ORDER BY timestamp DESC
-        LIMIT ?
-      `).all(t, jid, lim);
-    }
-    if (cutoff != null && Number.isFinite(cutoff)) {
-      return this._db.prepare(`
-        SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
-               sender, media_type AS mediaType, media_caption AS mediaCaption,
-               timestamp, media_download_json AS mediaDownloadJson
-        FROM messages
-        WHERE tenant_id = ?
-          AND media_type IS NOT NULL AND trim(media_type) != ''
-          AND (media_path IS NULL OR trim(media_path) = '')
-          AND media_download_json IS NOT NULL AND trim(media_download_json) != ''
-          AND timestamp >= ?
-        ORDER BY timestamp DESC
-        LIMIT ?
-      `).all(t, cutoff, lim);
-    }
-    return this._db.prepare(`
+    const sql = `
       SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
              sender, media_type AS mediaType, media_caption AS mediaCaption,
              timestamp, media_download_json AS mediaDownloadJson
       FROM messages
-      WHERE tenant_id = ?
+      WHERE tenant_id = ? ${jid ? 'AND chat_jid = ?' : ''}
         AND media_type IS NOT NULL AND trim(media_type) != ''
         AND (media_path IS NULL OR trim(media_path) = '')
         AND media_download_json IS NOT NULL AND trim(media_download_json) != ''
       ORDER BY timestamp DESC
-      LIMIT ?
-    `).all(t, lim);
+    `;
+    return jid ? this._db.prepare(sql).all(t, jid) : this._db.prepare(sql).all(t);
+  }
+
+  /** True when the row still lacks a local file / final sentinel. */
+  mediaNeedsDownload(messageId) {
+    const mid = String(messageId || '').trim();
+    if (!mid) return false;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(
+      'SELECT media_path AS mediaPath FROM messages WHERE tenant_id = ? AND message_id = ?',
+    ).get(t, mid);
+    // Not inserted yet (batch still flushing) — let the download proceed.
+    if (!row) return true;
+    return !String(row.mediaPath || '').trim();
   }
 
   /**
-   * Count media rows for a chat that still need a local file (pending download).
+   * Anchor for an on-demand phone history request that re-delivers the newest pending
+   * media row with no stub (`fetchMessageHistory` returns messages *older* than the anchor).
+   * Null when nothing needs resending or the pending row is the chat's newest message.
    */
-  countPendingMediaForChat(chatJid) {
+  getHistoryAnchorForStublessPendingMedia(chatJid) {
     const jid = String(chatJid || '').trim();
-    if (!jid) return 0;
+    if (!jid) return null;
     const t = getCurrentTenantId();
-    const row = this._db.prepare(`
-      SELECT COUNT(*) AS n FROM messages
+    const pending = this._db.prepare(`
+      SELECT timestamp FROM messages
       WHERE tenant_id = ? AND chat_jid = ?
         AND media_type IS NOT NULL AND trim(media_type) != ''
         AND (media_path IS NULL OR trim(media_path) = '')
+        AND (media_download_json IS NULL OR trim(media_download_json) = '')
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
     `).get(t, jid);
-    return Number(row?.n) || 0;
-  }
-
-  /**
-   * Clear the unavailable sentinel for recent media so a refresh can retry downloads.
-   * @param {string} chatJid
-   * @param {number} newerThanTs unix seconds — only rows at/after this timestamp
-   */
-  clearUnavailableMediaNewerThan(chatJid, newerThanTs) {
-    const jid = String(chatJid || '').trim();
-    const cutoff = Number(newerThanTs);
-    if (!jid || !Number.isFinite(cutoff)) return 0;
-    const t = getCurrentTenantId();
-    const r = this._db.prepare(`
-      UPDATE messages SET media_path = NULL
-      WHERE tenant_id = ? AND chat_jid = ?
-        AND media_path = '__unavailable__'
-        AND timestamp >= ?
-    `).run(t, jid, cutoff);
-    return r.changes ?? 0;
-  }
-
-  /**
-   * Rows with a media type but no file, excluding ids still queued for download.
-   * Optional `olderThanTs` limits this to archive rows so recent media stays retryable.
-   */
-  markOrphanedPendingMediaUnavailable(chatJid, keepMessageIds = [], { olderThanTs = null } = {}) {
-    const jid = String(chatJid || '').trim();
-    if (!jid) return 0;
-    const t = getCurrentTenantId();
-    const keep = new Set([...(keepMessageIds || [])].map((id) => String(id)));
-    const cutoff = olderThanTs == null ? null : Number(olderThanTs);
-    const rows = cutoff != null && Number.isFinite(cutoff)
-      ? this._db.prepare(`
-          SELECT message_id AS messageId FROM messages
-          WHERE tenant_id = ? AND chat_jid = ?
-            AND media_type IS NOT NULL AND trim(media_type) != ''
-            AND (media_path IS NULL OR trim(media_path) = '')
-            AND timestamp < ?
-        `).all(t, jid, cutoff)
-      : this._db.prepare(`
-          SELECT message_id AS messageId FROM messages
-          WHERE tenant_id = ? AND chat_jid = ?
-            AND media_type IS NOT NULL AND trim(media_type) != ''
-            AND (media_path IS NULL OR trim(media_path) = '')
-        `).all(t, jid);
-    if (!rows.length) return 0;
-    const upd = this._db.prepare(
-      'UPDATE messages SET media_path = ? WHERE tenant_id = ? AND message_id = ?',
-    );
-    let n = 0;
-    const txn = this._db.transaction(() => {
-      for (const row of rows) {
-        const id = String(row.messageId || '');
-        if (!id || keep.has(id)) continue;
-        upd.run('__unavailable__', t, id);
-        n += 1;
-      }
-    });
-    txn();
-    return n;
+    if (!pending) return null;
+    const row = this._db.prepare(`
+      SELECT message_id AS messageId, timestamp,
+             CASE WHEN sender = 'You' THEN 1 ELSE 0 END AS fromMe
+      FROM messages WHERE tenant_id = ? AND chat_jid = ? AND timestamp > ?
+      ORDER BY timestamp ASC, id ASC
+      LIMIT 1
+    `).get(t, jid, pending.timestamp);
+    return row || null;
   }
 
   updateMessageMedia(messageId, mediaType, mediaPath) {

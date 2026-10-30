@@ -521,6 +521,23 @@ export function initChatView() {
   }, { passive: true });
 
   $('#cv-messages')?.addEventListener('click', async (e) => {
+    const mediaRetry = e.target.closest('[data-wa-media-retry]');
+    if (mediaRetry) {
+      e.stopPropagation();
+      if (!store.activeChat || mediaRetry.disabled) return;
+      mediaRetry.disabled = true;
+      mediaRetry.textContent = 'Retrying…';
+      try {
+        // menus.js imports this module, so load it lazily to keep the cycle out of eval order.
+        const { priorityLoadChat } = await import('./menus.js');
+        await priorityLoadChat(store.activeChat, { alertResult: false });
+      } catch (err) {
+        mediaRetry.disabled = false;
+        mediaRetry.textContent = 'Retry';
+        alert(err.message || 'Could not retry this download');
+      }
+      return;
+    }
     const menuBtn = e.target.closest('[data-wa-menu-toggle]');
     if (menuBtn) {
       e.stopPropagation();

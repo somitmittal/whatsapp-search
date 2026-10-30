@@ -2160,8 +2160,6 @@ function wire() {
       await syncWaState();
       const bits = [];
       if (result?.mediaQueued > 0) bits.push(`${result.mediaQueued} media queued`);
-      if (result?.mediaRetryCleared > 0) bits.push(`${result.mediaRetryCleared} media retrying`);
-      if (result?.mediaMarkedUnavailable > 0) bits.push(`${result.mediaMarkedUnavailable} unavailable`);
       if (result?.history?.requested) {
         bits.push(result.history.purpose === 'media_rehydrate'
           ? 'asked phone to resend recent media'
@@ -2259,6 +2257,21 @@ function wire() {
     if (menuBtn) {
       e.stopPropagation();
       toggleMessageMenu(menuBtn);
+      return;
+    }
+    const mediaRetry = e.target.closest('[data-wa-media-retry]');
+    if (mediaRetry) {
+      e.stopPropagation();
+      if (!state.activeChatJid || mediaRetry.disabled) return;
+      mediaRetry.disabled = true;
+      mediaRetry.textContent = 'Retrying…';
+      try {
+        await priorityLoadChat(state.activeChatJid, { alertResult: false });
+      } catch (err) {
+        mediaRetry.disabled = false;
+        mediaRetry.textContent = 'Retry';
+        alert(err.message || 'Could not retry this download');
+      }
       return;
     }
     const aiBtn = e.target.closest('[data-wa-ai-search]');
