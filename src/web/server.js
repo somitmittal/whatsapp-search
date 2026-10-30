@@ -1652,8 +1652,9 @@ export default class WebServer {
     });
 
     /**
-     * User asked to load this chat now: bump AI index + media downloads, optionally pull
-     * older history from the phone (live chats), then refresh the open transcript.
+     * User asked to load this chat now: bump AI index + media downloads, then refresh
+     * the open transcript. Phone history is opt-in (`requestHistory: true`) — every
+     * `fetchMessageHistory` pings the phone with a sync notification.
      */
     this._app.post('/api/chats/:chatJid/priority-load', async (req, res) => {
       try {
@@ -1663,7 +1664,10 @@ export default class WebServer {
         const st = this._getTenantState(tid);
         const wa = st?.waClient;
         const imported = chatJid.endsWith('@imported');
-        const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || 50));
+        const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || 100));
+        const requestHistory = req.body?.requestHistory === true
+          || req.body?.requestHistory === 1
+          || String(req.body?.requestHistory || '').toLowerCase() === 'true';
 
         this.summaryService.setPriorityChatForTenant(tid, chatJid);
         this._mediaIndexService?.notePriorityChange?.();
@@ -1674,11 +1678,16 @@ export default class WebServer {
           mediaQueued = Number(wa.prioritizeChatMedia(chatJid)?.queuedForChat || 0);
         }
 
-        // Rows stored before stubs were persisted can only be retried if the phone
-        // re-sends the message, so anchor just after the newest one; otherwise extend
-        // the archive from the oldest message as before.
-        let history = { requested: false };
-        if (!imported && wa && typeof wa.fetchOlderHistoryFromPhone === 'function' && st.waState === 'READY') {
+        // Quiet by default: Refresh / media-retry only reshuffle local queues.
+        // Explicit Load older (or requestHistory) is what hits the phone.
+        let history = { requested: false, skipped: requestHistory ? undefined : 'refresh_local_only' };
+        if (
+          requestHistory
+          && !imported
+          && wa
+          && typeof wa.fetchOlderHistoryFromPhone === 'function'
+          && st.waState === 'READY'
+        ) {
           const guard = wa.canFetchPhoneHistory?.(chatJid);
           if (!guard || guard.ok) {
             const mediaAnchor = this.db.getHistoryAnchorForStublessPendingMedia(chatJid);
@@ -2414,8 +2423,8 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       if (st.waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
       const chatJid = String(req.body?.chatJid || '').trim();
       if (!chatJid) return res.status(400).json({ error: 'chatJid required' });
-      const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || 50));
-      // Anti notification-spam: one sync in flight, cooldown per chat, paused during sleep/lock.
+      const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || 100));
+      // Anti notification-spam: in-flight lock, per-chat + global cooldowns, hourly cap, sleep pause.
       const guard = wa.canFetchPhoneHistory?.(chatJid);
       if (guard && !guard.ok) {
         return res.status(guard.http).json({ error: guard.message, code: guard.code });

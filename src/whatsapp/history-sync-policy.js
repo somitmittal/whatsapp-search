@@ -20,6 +20,109 @@ export const STALE_CHAT_MAX_AGE_SEC = 36 * 3600;
 export const MIN_STALE_CHATS_FOR_CATCHUP = 5;
 
 /**
+ * On-demand `fetchMessageHistory` surfaces “syncing with …” on the phone.
+ * Balance: pull larger batches when the user asks, but space requests so a
+ * Refresh / media-retry / scroll loop cannot spam alerts.
+ */
+/** Per-chat gap between phone history pulls. */
+export const PHONE_HISTORY_CHAT_COOLDOWN_MS = 20 * 60 * 1000;
+/** Minimum gap between any two phone history pulls (all chats). */
+export const PHONE_HISTORY_GLOBAL_MIN_GAP_MS = 8 * 60 * 1000;
+/** Hard cap across the whole account in a rolling hour. */
+export const PHONE_HISTORY_MAX_PER_HOUR = 4;
+/** How long a single in-flight pull blocks the next. */
+export const PHONE_HISTORY_INFLIGHT_MS = 90 * 1000;
+/** Prefer max Baileys page size so each approved pull buys more archive. */
+export const PHONE_HISTORY_DEFAULT_COUNT = 100;
+
+/**
+ * Decide whether another phone history pull is allowed right now.
+ * Returns `{ ok: true }` or `{ ok: false, code, http, message, retryAfterMs }`.
+ */
+export function evaluatePhoneHistoryQuota({
+  chatJid,
+  nowMs = Date.now(),
+  paused = false,
+  waReady = true,
+  inflightUntil = 0,
+  lastChatAtMs = 0,
+  lastGlobalAtMs = 0,
+  pullsLastHourMs = [],
+  chatCooldownMs = PHONE_HISTORY_CHAT_COOLDOWN_MS,
+  globalMinGapMs = PHONE_HISTORY_GLOBAL_MIN_GAP_MS,
+  maxPerHour = PHONE_HISTORY_MAX_PER_HOUR,
+} = {}) {
+  if (!waReady) {
+    return {
+      ok: false,
+      code: 'WA_NOT_READY',
+      http: 409,
+      message: 'WhatsApp connection is not ready — try again once it is READY.',
+      retryAfterMs: 0,
+    };
+  }
+  if (paused) {
+    return {
+      ok: false,
+      code: 'SYNC_PAUSED',
+      http: 423,
+      message: 'Sync paused while the device sleeps or is locked — it resumes automatically when you unlock.',
+      retryAfterMs: 0,
+    };
+  }
+  const inflightLeft = Math.max(0, Number(inflightUntil) || 0) - nowMs;
+  if (inflightLeft > 0) {
+    return {
+      ok: false,
+      code: 'SYNC_IN_FLIGHT',
+      http: 429,
+      message: 'A phone history sync is already running. Wait a few seconds for it to finish before asking again.',
+      retryAfterMs: inflightLeft,
+    };
+  }
+  const hourAgo = nowMs - 60 * 60 * 1000;
+  const recent = (Array.isArray(pullsLastHourMs) ? pullsLastHourMs : [])
+    .map((t) => Number(t) || 0)
+    .filter((t) => t > hourAgo);
+  if (recent.length >= maxPerHour) {
+    const oldest = Math.min(...recent);
+    const retryAfterMs = Math.max(0, oldest + 60 * 60 * 1000 - nowMs);
+    return {
+      ok: false,
+      code: 'HOURLY_CAP',
+      http: 429,
+      message: `Phone history is limited to ${maxPerHour} pulls/hour so WhatsApp does not keep notifying your phone. Try again later, or import a chat export for bulk history.`,
+      retryAfterMs,
+    };
+  }
+  const globalLeft = (Number(lastGlobalAtMs) || 0) + globalMinGapMs - nowMs;
+  if (globalLeft > 0) {
+    const wait = globalLeft > 60_000 ? `~${Math.ceil(globalLeft / 60_000)} min` : `~${Math.ceil(globalLeft / 1000)}s`;
+    return {
+      ok: false,
+      code: 'GLOBAL_COOLDOWN',
+      http: 429,
+      message: `Another chat just asked the phone for history. Spacing requests (${wait}) keeps notifications down while still backfilling over time.`,
+      retryAfterMs: globalLeft,
+    };
+  }
+  if (chatJid) {
+    const chatLeft = (Number(lastChatAtMs) || 0) + chatCooldownMs - nowMs;
+    if (chatLeft > 0) {
+      const wait = chatLeft > 60_000 ? `~${Math.ceil(chatLeft / 60_000)} min` : `~${Math.ceil(chatLeft / 1000)}s`;
+      return {
+        ok: false,
+        code: 'CHAT_COOLDOWN',
+        http: 429,
+        message: `Older history for this chat was just requested. Retrying too fast repeats the phone notification — try again in ${wait}.`,
+        retryAfterMs: chatLeft,
+      };
+    }
+  }
+  return { ok: true, retryAfterMs: 0 };
+}
+
+/**
  * An aborted/empty full-history sync keeps `acceptHistoryOnce` true (on purpose, so the
  * archive is not skipped) — but every reconnect then re-requests a phone-side sync and
  * WhatsApp re-alerts "syncing stopped" on the phone.

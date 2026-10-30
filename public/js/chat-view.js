@@ -309,18 +309,8 @@ async function loadOlderChatPage() {
   const jid = store.activeChat;
   if (!jid || store.chatLoadingOlder || store.activeFocusMessageId) return;
   if (!store.chatHasMoreLocal) {
-    // Without a stored message there is no cursor for on-demand sync, so skip the call.
-    if (!store.chatPhoneFetchAttempted && activeChatHasLocalMessages()) {
-      store.chatPhoneFetchAttempted = true;
-      try {
-        await fetch('/api/wa/fetch-older-history', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ chatJid: jid, count: 50 }),
-        });
-      } catch { /* optional phone sync */ }
-    }
+    // Do not auto-call the phone here — each fetchMessageHistory raises a sync
+    // notification. Use chat menu → “Load older from phone” when you want more.
     return;
   }
   store.chatLoadingOlder = true;

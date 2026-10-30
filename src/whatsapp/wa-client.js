@@ -32,7 +32,14 @@ import {
 import { buildContactPayloadFromInner } from './contact-card.js';
 import { normalizeGroupCreateInput } from './group-create.js';
 import { groupSubjectUpdates } from './group-subjects.js';
-import { filterRowsByRetention, fullHistoryBackoffSec, shouldSyncHistoryMessage } from './history-sync-policy.js';
+import {
+  evaluatePhoneHistoryQuota,
+  filterRowsByRetention,
+  fullHistoryBackoffSec,
+  PHONE_HISTORY_DEFAULT_COUNT,
+  PHONE_HISTORY_INFLIGHT_MS,
+  shouldSyncHistoryMessage,
+} from './history-sync-policy.js';
 import { isHistorySyncInFlight } from './ingestion-gate.js';
 import { isImportedChatJid, isWhatsAppLowPriorityFeed, shouldPreserveRawChatJid, sidebarTabForJid } from './jid-filters.js';
 import { sortDeferredMediaByChatActivity, takeNextDeferredMediaItem } from './media-download-priority.js';
@@ -85,9 +92,6 @@ const P        = require('pino');
 
 const BATCH_MS = 2000;
 
-/** Guard window for on-demand phone history pulls (anti "syncing stopped" notif spam). */
-const PHONE_HISTORY_INFLIGHT_MS = 90 * 1000;
-const PHONE_HISTORY_COOLDOWN_MS = 3 * 60 * 1000;
 /** Pause between WhatsApp network calls while draining media and profile pictures. */
 const WA_DRAIN_GAP_MS = 120;
 
@@ -2538,41 +2542,48 @@ export default class WaClient {
   }
 
   /**
-   * User-initiated only (Settings / chat menu). Do not call in a loop — each request
-   * is a phone-side history sync and surfaces “syncing with WhatsApp Search” alerts.
+   * Explicit user action only (Load older / opt-in refresh). Each call is a phone-side
+   * history sync and can surface “syncing with WhatsApp Search” — quota keeps that rare.
    */
-  async fetchOlderHistoryFromPhone(anchor, count = 50) {
+  async fetchOlderHistoryFromPhone(anchor, count = PHONE_HISTORY_DEFAULT_COUNT) {
     if (!this._sock?.fetchMessageHistory) throw new Error('WhatsApp not connected');
     const { chatJid, messageId, timestamp, fromMe } = anchor || {};
     if (!chatJid || !messageId) throw new Error('Missing chat anchor');
     let ts = Number(timestamp);
     if (!Number.isFinite(ts) || ts <= 0) throw new Error('Invalid anchor timestamp');
     if (ts < 1e12) ts *= 1000;
-    // One phone-side sync at a time, a per-chat cooldown, and full stop while the
-    // machine sleeps/locks. Repeated/aborted syncs are what generate the phone's
-    // “syncing stopped” notification spam (see /api/wa/sync-quota).
     const guard = this.canFetchPhoneHistory(chatJid);
     if (!guard.ok) {
       const err = new Error(guard.message);
       err.code = guard.code;
       err.status = guard.http;
+      err.retryAfterMs = guard.retryAfterMs;
       throw err;
     }
     const state = this._ensurePhoneHistoryState();
-    state.inflight = { chatJid, until: Date.now() + PHONE_HISTORY_INFLIGHT_MS };
-    state.lastSyncAt.set(chatJid, Date.now());
+    const now = Date.now();
+    state.inflight = { chatJid, until: now + PHONE_HISTORY_INFLIGHT_MS };
+    state.lastSyncAt.set(chatJid, now);
+    state.lastGlobalAt = now;
+    state.pullsLastHour = [...(state.pullsLastHour || []).filter((t) => t > now - 60 * 60 * 1000), now];
     const key = {
       remoteJid: chatJid,
       id: String(messageId),
       fromMe: Boolean(fromMe),
     };
-    const n = Math.min(100, Math.max(1, Math.floor(Number(count) || 50)));
+    const n = Math.min(100, Math.max(1, Math.floor(Number(count) || PHONE_HISTORY_DEFAULT_COUNT)));
     return this._sock.fetchMessageHistory(n, key, ts);
   }
 
   _ensurePhoneHistoryState() {
     if (!this._phoneHistory) {
-      this._phoneHistory = { paused: false, inflight: null, lastSyncAt: new Map() };
+      this._phoneHistory = {
+        paused: false,
+        inflight: null,
+        lastSyncAt: new Map(),
+        lastGlobalAt: 0,
+        pullsLastHour: [],
+      };
     }
     return this._phoneHistory;
   }
@@ -2580,22 +2591,19 @@ export default class WaClient {
   /** Guard + bookkeeping for phone-side history pulls (shared across builds). */
   canFetchPhoneHistory(chatJid) {
     const state = this._ensurePhoneHistoryState();
-    if (this._state && this._state !== 'READY') return { ok: false, code: 'WA_NOT_READY', http: 409, message: `WhatsApp connection is ${this._state} — try again once it is READY.` };
     const now = Date.now();
-    if (state.paused) {
-      return { ok: false, code: 'SYNC_PAUSED', http: 423, message: 'Sync paused while the device sleeps or is locked — it resumes automatically when you unlock.' };
-    }
-    if (state.inflight && now < state.inflight.until) {
-      return { ok: false, code: 'SYNC_IN_FLIGHT', http: 429, message: 'A phone history sync is already running. Wait a few seconds for it to finish before asking again.' };
-    }
     if (state.inflight && now >= state.inflight.until) state.inflight = null;
-    const last = state.lastSyncAt.get(chatJid) || 0;
-    const waitMs = PHONE_HISTORY_COOLDOWN_MS - (now - last);
-    if (waitMs > 0) {
-      const wait = waitMs > 60_000 ? `~${Math.ceil(waitMs / 60_000)} min` : `~${Math.ceil(waitMs / 1000)}s`;
-      return { ok: false, code: 'CHAT_COOLDOWN', http: 429, message: `Older history for this chat was just requested. Retrying too fast repeats the phone notification — try again in ${wait}.` };
-    }
-    return { ok: true };
+    state.pullsLastHour = (state.pullsLastHour || []).filter((t) => t > now - 60 * 60 * 1000);
+    return evaluatePhoneHistoryQuota({
+      chatJid,
+      nowMs: now,
+      paused: state.paused,
+      waReady: !this._state || this._state === 'READY',
+      inflightUntil: state.inflight?.until || 0,
+      lastChatAtMs: state.lastSyncAt.get(chatJid) || 0,
+      lastGlobalAtMs: state.lastGlobalAt || 0,
+      pullsLastHourMs: state.pullsLastHour,
+    });
   }
 
   /** Called by the desktop shell (Electron powerMonitor) around system sleep/lock. */

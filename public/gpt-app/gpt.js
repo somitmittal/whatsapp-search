@@ -2185,7 +2185,7 @@ function wire() {
           : 'asked phone for older messages');
       } else if (result?.history?.code === 'SYNC_IN_FLIGHT') bits.push('history sync already running');
       else if (result?.imported) bits.push('refreshed imported chat');
-      else if (!bits.length) bits.push('prioritized this chat');
+      else if (!bits.length) bits.push('refreshed locally (phone quiet)');
       flashRefreshButton(els.priorityLoad, bits.join(' · '));
     } catch (e) {
       els.priorityLoad.classList.remove('is-busy');

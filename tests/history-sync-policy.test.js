@@ -1,8 +1,12 @@
 import { describe, expect, test } from '@jest/globals';
 import {
   HISTORY_SYNC_TYPE_FULL,
+  evaluatePhoneHistoryQuota,
   filterRowsByRetention,
   fullHistoryBackoffSec,
+  PHONE_HISTORY_CHAT_COOLDOWN_MS,
+  PHONE_HISTORY_GLOBAL_MIN_GAP_MS,
+  PHONE_HISTORY_MAX_PER_HOUR,
   shouldRequestRecentDaysCatchUp,
   shouldSyncHistoryMessage,
   HISTORY_SYNC_TYPE_ON_DEMAND,
@@ -80,6 +84,56 @@ describe('shouldRequestRecentDaysCatchUp', () => {
       nowSec: 1_000_000,
       cooldownSec: 3600,
     })).toBe(true);
+  });
+});
+
+describe('evaluatePhoneHistoryQuota', () => {
+  const base = {
+    chatJid: 'x@s.whatsapp.net',
+    nowMs: 1_000_000_000,
+    waReady: true,
+    paused: false,
+    inflightUntil: 0,
+    lastChatAtMs: 0,
+    lastGlobalAtMs: 0,
+    pullsLastHourMs: [],
+  };
+
+  test('allows a quiet account to pull history', () => {
+    expect(evaluatePhoneHistoryQuota(base).ok).toBe(true);
+  });
+
+  test('blocks while another pull is in flight', () => {
+    const r = evaluatePhoneHistoryQuota({ ...base, inflightUntil: base.nowMs + 5000 });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('SYNC_IN_FLIGHT');
+  });
+
+  test('enforces per-chat cooldown so Refresh spam cannot re-alert the phone', () => {
+    const r = evaluatePhoneHistoryQuota({
+      ...base,
+      lastChatAtMs: base.nowMs - 60_000,
+      chatCooldownMs: PHONE_HISTORY_CHAT_COOLDOWN_MS,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('CHAT_COOLDOWN');
+  });
+
+  test('enforces a global gap between chats', () => {
+    const r = evaluatePhoneHistoryQuota({
+      ...base,
+      lastGlobalAtMs: base.nowMs - 30_000,
+      globalMinGapMs: PHONE_HISTORY_GLOBAL_MIN_GAP_MS,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('GLOBAL_COOLDOWN');
+  });
+
+  test('caps pulls per rolling hour', () => {
+    const pulls = Array.from({ length: PHONE_HISTORY_MAX_PER_HOUR }, (_, i) => base.nowMs - i * 60_000);
+    const r = evaluatePhoneHistoryQuota({ ...base, pullsLastHourMs: pulls });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('HOURLY_CAP');
   });
 });
 

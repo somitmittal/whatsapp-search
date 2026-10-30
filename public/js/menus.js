@@ -92,14 +92,17 @@ export async function deleteChatByJid(jid) {
   return data;
 }
 
-/** Prioritize message/media sync + AI indexing for one chat (classic + GPT). */
-export async function priorityLoadChat(jid, { count = 50, alertResult = true } = {}) {
+/**
+ * Prioritize local media + AI indexing for one chat (classic + GPT).
+ * Does not ping the phone unless `requestHistory: true` (use Load older for that).
+ */
+export async function priorityLoadChat(jid, { count = 100, alertResult = true, requestHistory = false } = {}) {
   if (!jid) throw new Error('No chat selected');
   const r = await fetch(`/api/chats/${encodeURIComponent(jid)}/priority-load`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify({ count }),
+    body: JSON.stringify({ count, requestHistory: !!requestHistory }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || 'Request failed');
@@ -119,6 +122,7 @@ export async function priorityLoadChat(jid, { count = 50, alertResult = true } =
         ? 'Asked your phone to resend media that never downloaded — keep WhatsApp online.'
         : 'Asked your phone for older messages — keep WhatsApp online.');
     } else if (j.imported) bits.push('Imported chat — refreshed from local storage.');
+    else bits.push('Phone left alone — use “Load older from phone” only when you need more history.');
     alert(bits.join(' '));
   }
   return j;
@@ -177,13 +181,13 @@ export function initMenus() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ chatJid: store.activeChat, count: 50 }),
+        body: JSON.stringify({ chatJid: store.activeChat, count: 100 }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || 'Request failed');
       alert(
-        'Older messages requested from your phone. Keep WhatsApp on your phone online — new batches may arrive over the next minute. '
-        + 'If nothing appears, WhatsApp may have reached the limit for this chat; use chat export for a full backup.',
+        'Older messages requested from your phone (up to ~100). Keep WhatsApp online — a batch may arrive over the next minute. '
+        + 'Requests are paced so your phone is not notified constantly; for years of history, import a chat export.',
       );
     } catch (e) {
       alert(e.message || 'Could not request older messages');
