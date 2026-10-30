@@ -20,9 +20,12 @@ import { chatListPreview, higherReceipt, normalizeReceiptStatus } from '../whats
 import { STATUS_BROADCAST_JID, isImportedChatJid, sidebarTabForJid } from '../whatsapp/jid-filters.js';
 import { isContentPlaceholder, legacyControlFramePlaceholders } from '../whatsapp/message-content.js';
 import {
+  fallbackTitleForOneOnOneJid,
   formatPhoneLocalPart,
   isPlausibleHumanChatTitle,
   looksLikeLidFallbackContactLabel,
+  looksLikeOpaqueNumericId,
+  looksLikeUnusableChatTitle,
   prettyImportedChatTitle,
 } from '../whatsapp/chat-display-name.js';
 import { MAX_MESSAGES_PAGE } from '../constants/api-limits.js';
@@ -2671,19 +2674,30 @@ export default class Database {
         }
       }
 
+      const usablePeer = peerSenderName && !looksLikeUnusableChatTitle(peerSenderName)
+        && !looksLikePhoneOnly(peerSenderName)
+        ? peerSenderName
+        : null;
+      const usableAny = anyChatName && !looksLikeUnusableChatTitle(anyChatName)
+        && !looksLikePhoneOnly(anyChatName)
+        ? anyChatName
+        : null;
+
       let title = isGroup
         ? (displayChatName || anyChatName || chatJid)
         : (displayChatName
           || bestHumanPeerName
-          || ((looksLikePhoneOnly(anyChatName) || looksLikeLidFallbackContactLabel(anyChatName)) ? null : anyChatName)
-          || peerSenderName
-          || anyChatName
-          || chatJid);
+          || usableAny
+          || usablePeer
+          || null);
 
+      if (!isGroup && (!title || looksLikeUnusableChatTitle(title) || looksLikeOpaqueNumericId(title))) {
+        title = fallbackTitleForOneOnOneJid(chatJid) || title || chatJid;
+      }
       if (
         !isGroup
         && (chatJid.endsWith('@s.whatsapp.net') || chatJid.endsWith('@hosted'))
-        && looksLikeLidFallbackContactLabel(title)
+        && (looksLikeLidFallbackContactLabel(title) || looksLikeOpaqueNumericId(title))
       ) {
         title = formatPhoneLocalPart(chatJid.split('@')[0]);
       }

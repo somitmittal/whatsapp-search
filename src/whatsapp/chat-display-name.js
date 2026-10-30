@@ -34,6 +34,28 @@ export function looksLikePhoneDigitsOnly(str) {
   return /^\d{8,20}$/.test(d);
 }
 
+/**
+ * WhatsApp sometimes ships privacy-masked numbers like "+91∙∙∙∙∙∙∙∙01".
+ * Those look "named" to naive checks but must not beat a real contact title.
+ */
+export function looksLikeMaskedPhoneLabel(s) {
+  const t = String(s || '').trim();
+  if (!t) return false;
+  if (!/[∙•·⋅⬤*]/.test(t)) return false;
+  const digits = t.replace(/[^\d]/g, '');
+  return digits.length >= 2 && digits.length <= 15 && /^[+\d\s()∙•·⋅⬤*-]+$/.test(t);
+}
+
+/** Titles that must never win over a phone fallback or a real contact name. */
+export function looksLikeUnusableChatTitle(s) {
+  const t = String(s || '').trim();
+  if (!t) return true;
+  return looksLikeLidFallbackContactLabel(t)
+    || looksLikeOpaqueNumericId(t)
+    || looksLikeMaskedPhoneLabel(t)
+    || looksLikeUrlOrSocialJunk(t);
+}
+
 export function formatPhoneLocalPart(bare) {
   const raw = String(bare || '').trim();
   const d = raw.replace(/\D/g, '');
@@ -89,6 +111,7 @@ export function isPlausibleHumanChatTitle(name, chatJid) {
   const t = name.trim();
   if (t.length < 2) return false;
   if (looksLikeLidFallbackContactLabel(t)) return false;
+  if (looksLikeMaskedPhoneLabel(t)) return false;
   if (looksLikeUrlOrSocialJunk(t)) return false;
   if (looksLikeOpaqueNumericId(t)) return false;
   const local = String(chatJid || '').split('@')[0];
@@ -106,7 +129,7 @@ export function isPlausibleHumanChatTitle(name, chatJid) {
  */
 export function isResolvedHumanChatTitle(name, chatJid) {
   if (!isPlausibleHumanChatTitle(name, chatJid)) return false;
-  return !looksLikePhoneDigitsOnly(name);
+  return !looksLikePhoneDigitsOnly(name) && !looksLikeMaskedPhoneLabel(name);
 }
 
 function titlePreferenceRank(s, chatJid) {
@@ -114,7 +137,7 @@ function titlePreferenceRank(s, chatJid) {
   const t = String(s).trim();
   if (looksLikeUrlOrSocialJunk(t) || looksLikeOpaqueNumericId(t)) return 0;
   if (looksLikeLidFallbackContactLabel(t)) return 0;
-  if (looksLikePhoneDigitsOnly(t)) return 1;
+  if (looksLikeMaskedPhoneLabel(t) || looksLikePhoneDigitsOnly(t)) return 1;
   if (isPlausibleHumanChatTitle(t, chatJid)) return 3;
   return 2;
 }

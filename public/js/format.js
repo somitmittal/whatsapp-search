@@ -98,6 +98,18 @@ function looksLikeLidFallbackContactLabel(s) {
   return /^contact\s*\(\s*[\d\s]{1,14}\s*\)\s*$/i.test(String(s || '').trim());
 }
 
+function looksLikeOpaqueNumericId(s) {
+  const t = String(s || '').replace(/\s/g, '');
+  return /^\d+$/.test(t) && t.length >= 12;
+}
+
+function looksLikeMaskedPhoneLabel(s) {
+  const t = String(s || '').trim();
+  if (!t || !/[∙•·⋅⬤*]/.test(t)) return false;
+  const digits = t.replace(/[^\d]/g, '');
+  return digits.length >= 2 && digits.length <= 15 && /^[+\d\s()∙•·⋅⬤*-]+$/.test(t);
+}
+
 function prettyImportedChatTitle(name) {
   let t = String(name || '').trim();
   if (!t) return '';
@@ -129,8 +141,21 @@ export function displayChatTitle(chatJid, chatName) {
 
   const pnUser = jid.endsWith('@s.whatsapp.net');
   const hostedUser = jid.endsWith('@hosted');
-  if ((pnUser || hostedUser) && looksLikeLidFallbackContactLabel(raw)) {
+  const lidUser = jid.endsWith('@lid');
+  // LID leftovers after PN merge: "Contact (…)", long digit LIDs, privacy-masked phones.
+  if (
+    (pnUser || hostedUser)
+    && (
+      looksLikeLidFallbackContactLabel(raw)
+      || looksLikeOpaqueNumericId(raw)
+      || looksLikeMaskedPhoneLabel(raw)
+    )
+  ) {
     return formatPhoneLikeName(jid);
+  }
+  if (lidUser && (looksLikeOpaqueNumericId(raw) || !raw)) {
+    const tail = (jid.split('@')[0] || '').replace(/\D/g, '').slice(-6);
+    return tail ? `Contact (${tail})` : 'Contact';
   }
   const localPart = jid.split('@')[0] || '';
   const localDigits = localPart.replace(/[^\d]/g, '');

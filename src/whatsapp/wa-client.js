@@ -23,6 +23,7 @@ import {
     isPlausibleHumanChatTitle,
     isResolvedHumanChatTitle,
     looksLikeLidFallbackContactLabel,
+    looksLikeMaskedPhoneLabel,
     looksLikeOpaqueNumericId,
     looksLikePhoneDigitsOnly,
     looksLikeUrlOrSocialJunk,
@@ -179,11 +180,18 @@ function publicWebBaseUrl() {
   return `http://localhost:${config.webPort}`;
 }
 
-/** When the stored title is the LID placeholder "Contact (…)" but the row is keyed by phone JID, show +CC …. */
+/**
+ * When a row is keyed by phone JID but still carries a LID leftover title
+ * ("Contact (…)", opaque LID digits, masked +91∙∙∙…), show +CC ….
+ */
 function replaceLidPlaceholderWithPn(canonJid, chatName) {
+  if (!(canonJid.endsWith('@s.whatsapp.net') || canonJid.endsWith('@hosted'))) {
+    return chatName;
+  }
   if (
     looksLikeLidFallbackContactLabel(chatName)
-    && (canonJid.endsWith('@s.whatsapp.net') || canonJid.endsWith('@hosted'))
+    || looksLikeOpaqueNumericId(chatName)
+    || looksLikeMaskedPhoneLabel(chatName)
   ) {
     return formatPhoneLocalPart(canonJid.split('@')[0]);
   }
@@ -1285,7 +1293,7 @@ export default class WaClient {
           nameTasks.push(this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber));
         }
         for (const c of (contacts || [])) {
-          const label = c.name || c.notify || c.verifiedName;
+          const label = c.name || c.fullName || c.notify || c.verifiedName;
           if (!label) continue;
           nameTasks.push(this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber));
         }
@@ -1587,7 +1595,8 @@ export default class WaClient {
 
   async _ingestContact(c) {
     await this._noteContactPicture(c);
-    const label = c?.name || c?.notify || c?.verifiedName;
+    // App-state contact mutations often put the phone-book title on `fullName`.
+    const label = c?.name || c?.fullName || c?.notify || c?.verifiedName;
     if (!label) return;
     await this._applyLabelToLinkedJids(label, c.id, c.lidJid, c.pnJid, c.lid, c.phoneNumber);
   }
@@ -2148,14 +2157,9 @@ export default class WaClient {
       if (!jid) return row;
       const resolved = resolvedMap.get(jid);
       if (resolved && isResolvedHumanChatTitle(resolved, jid)) return { ...row, chatName: resolved };
-      let next = row;
-      if (
-        (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@hosted'))
-        && looksLikeLidFallbackContactLabel(row.chatName)
-      ) {
-        next = { ...row, chatName: replaceLidPlaceholderWithPn(jid, row.chatName) };
-      }
-      return next;
+      const cleaned = replaceLidPlaceholderWithPn(jid, row.chatName);
+      if (cleaned !== row.chatName) return { ...row, chatName: cleaned };
+      return row;
     });
   }
 
@@ -2519,15 +2523,30 @@ export default class WaClient {
         'Unknown';
       const snClean = sanitizePeerSenderName(senderName, jid);
       if (snClean) senderName = snClean;
-      else if (senderJid?.endsWith?.('@s.whatsapp.net')) {
+      else if (senderJid?.endsWith?.('@s.whatsapp.net') || senderJid?.endsWith?.('@hosted')) {
         senderName = formatPhoneLocalPart(senderJid.split('@')[0]);
+      } else if (senderJid?.endsWith?.('@lid')) {
+        // Never leave a raw LID local-part as the sender — getChatStats used to promote
+        // that into the sidebar title after Contact (…) placeholders were filtered out.
+        senderName = fallbackTitleForOneOnOneJid(senderJid) || 'Contact';
       } else {
         senderName = senderJid?.split('@')[0] || 'Unknown';
       }
       let chatName   = this._resolveChatDisplayName(jid, msg);
       // For 1:1 chats, WhatsApp often only gives a good name via pushName on an incoming message.
-      // If the resolved chat title is just a number but we have a human sender name, use that.
-      if (!isJidGroup(jid) && looksLikePhoneDigitsOnly(chatName) && senderName && senderName !== 'You' && !looksLikePhoneDigitsOnly(senderName)) {
+      // If the resolved chat title is just a number/placeholder but we have a human sender name, use that.
+      if (
+        !isJidGroup(jid)
+        && senderName
+        && senderName !== 'You'
+        && isResolvedHumanChatTitle(senderName, jid)
+        && (
+          looksLikePhoneDigitsOnly(chatName)
+          || looksLikeLidFallbackContactLabel(chatName)
+          || looksLikeOpaqueNumericId(chatName)
+          || looksLikeMaskedPhoneLabel(chatName)
+        )
+      ) {
         chatName = senderName;
       }
 

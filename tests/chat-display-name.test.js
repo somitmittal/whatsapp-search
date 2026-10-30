@@ -5,7 +5,9 @@ import {
   isPlausibleHumanChatTitle,
   isResolvedHumanChatTitle,
   looksLikeLidFallbackContactLabel,
+  looksLikeMaskedPhoneLabel,
   looksLikeOpaqueNumericId,
+  looksLikeUnusableChatTitle,
   looksLikeUrlOrSocialJunk,
   pickBetterChatTitle,
   prettyImportedChatTitle,
@@ -46,8 +48,24 @@ describe('chat-display-name', () => {
     expect(pickBetterChatTitle(phone, 'Contact (1212)', canon)).toBe(phone);
   });
 
+  test('pickBetterChatTitle prefers phone over opaque LID digits and masked phones', () => {
+    const canon = '919000012345@s.whatsapp.net';
+    const phone = formatPhoneLocalPart('919000012345');
+    expect(pickBetterChatTitle('262684947820604', phone, canon)).toBe(phone);
+    expect(pickBetterChatTitle('+91∙∙∙∙∙∙∙∙01', phone, canon)).toBe(phone);
+    expect(pickBetterChatTitle('+91∙∙∙∙∙∙∙∙01', 'Alice', canon)).toBe('Alice');
+  });
+
   test('isPlausibleHumanChatTitle rejects Contact (…) placeholders', () => {
     expect(isPlausibleHumanChatTitle('Contact (1212)', 'xxx@lid')).toBe(false);
+  });
+
+  test('masked phones and opaque LIDs are unusable titles', () => {
+    expect(looksLikeMaskedPhoneLabel('+91∙∙∙∙∙∙∙∙01')).toBe(true);
+    expect(looksLikeUnusableChatTitle('262684947820604')).toBe(true);
+    expect(looksLikeUnusableChatTitle('+91∙∙∙∙∙∙∙∙01')).toBe(true);
+    expect(isPlausibleHumanChatTitle('+91∙∙∙∙∙∙∙∙01', '91x@s.whatsapp.net')).toBe(false);
+    expect(isResolvedHumanChatTitle('+91∙∙∙∙∙∙∙∙01', '91x@s.whatsapp.net')).toBe(false);
   });
 
   describe('isResolvedHumanChatTitle', () => {
