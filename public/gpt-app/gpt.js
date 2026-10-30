@@ -1182,9 +1182,12 @@ function sourceCards(sources = []) {
     </button>`).join('')}</div></details>`;
 }
 
-function skillChoicesHtml(choices = []) {
+function skillChoicesHtml(choices = [], followUpPrompt = null) {
   if (!choices.length) return '';
-  return `<div class="gpt-skill-choices">${choices.map((c) =>
+  const lead = followUpPrompt
+    ? `<p class="gpt-skill-followup">${esc(followUpPrompt)}</p>`
+    : '';
+  return `${lead}<div class="gpt-skill-choices">${choices.map((c) =>
     `<button type="button" class="chip" data-skill-choice="${escAttr(c.message)}">${esc(c.label)}</button>`).join('')}</div>`;
 }
 
@@ -1216,7 +1219,7 @@ function assistantHtml(m) {
     <div class="gpt-md">${renderMarkdown(m.content, p.refs || {})}</div>
     ${interrupted}
     ${p.expenseDiff ? renderExpenseDiff(p.expenseDiff) : ''}
-    ${skillChoicesHtml(p.choices)}
+    ${skillChoicesHtml(p.choices, p.followUpPrompt || null)}
     ${skillSendHtml(p.skillRun, p.expenseDiff)}
     <div class="gpt-msg-foot">${sourceCards(p.sources || [])}${model}</div>
   </div>`;

@@ -546,7 +546,8 @@ describe('skill runner', () => {
       text: '/accountant/expense-reconciliation Site A 2026-10-17',
     });
     expect(outcome.skillRun.status).toBe('dry_run');
-    expect(outcome.answer).toMatch(/another date/i);
+    expect(outcome.answer).not.toMatch(/another date/i);
+    expect(outcome.followUpPrompt).toMatch(/another date/i);
     expect(outcome.choices.some((c) => c.label === '16 Oct')).toBe(true);
   });
 });

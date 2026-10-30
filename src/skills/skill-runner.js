@@ -338,13 +338,12 @@ export function createSkillRunner({ db, directory, expenseService }) {
         command,
         limit: 5,
       });
-      const followUp = otherDates.length
-        ? 'Would you like to check another date as well?'
-        : null;
       return {
-        answer: [answer, line, 'Dry run — nothing was sent to WhatsApp.', followUp].filter(Boolean).join('\n\n'),
+        answer: [answer, line, 'Dry run — nothing was sent to WhatsApp.'].filter(Boolean).join('\n\n'),
         steps: toolCalls.map((call) => call.detail ? `${call.tool}: ${call.detail}` : call.tool),
         choices: otherDates,
+        // Rendered under the expense table (with the date chips), not in the markdown above it.
+        followUpPrompt: otherDates.length ? 'Would you like to check another date as well?' : null,
         skillRun: skillRunView(saved, { canSend: true }),
         expenseDiff,
       };

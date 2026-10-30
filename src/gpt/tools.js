@@ -169,6 +169,7 @@ export function createToolbox({ db, embeddings, directory, runSkill = null }) {
       let lastSkillRun = null;
       let lastChoices = [];
       let lastExpenseDiff = null;
+      let lastFollowUpPrompt = null;
       for (const target of targets) {
         const { labelled, outcome } = await runOne(target);
         parts.push(labelled);
@@ -178,6 +179,7 @@ export function createToolbox({ db, embeddings, directory, runSkill = null }) {
         }
         if (outcome.skillRun) lastSkillRun = outcome.skillRun;
         if (outcome.choices?.length) lastChoices = outcome.choices;
+        if (outcome.followUpPrompt) lastFollowUpPrompt = outcome.followUpPrompt;
         if (outcome.steps?.length) skillSteps.push(...outcome.steps);
       }
       return {
@@ -187,6 +189,7 @@ export function createToolbox({ db, embeddings, directory, runSkill = null }) {
           ...(expenseDiffs.length > 1 ? { expenseDiffs } : {}),
           ...(lastSkillRun ? { skillRun: lastSkillRun } : {}),
           ...(lastChoices.length ? { choices: lastChoices } : {}),
+          ...(lastFollowUpPrompt ? { followUpPrompt: lastFollowUpPrompt } : {}),
           ...(skillSteps.length ? { skillSteps } : {}),
         },
       };
