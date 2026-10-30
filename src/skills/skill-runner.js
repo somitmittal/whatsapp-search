@@ -21,6 +21,27 @@ import { parseSkillInvocation, skillCommand } from './parse-invocation.js';
 /** Attachment / media extensions we show in the sheet picker (docs + photo sheets). */
 const SHEET_NAME_EXT = 'xlsx|xlsm|csv|tsv|txt|pdf|docx|jpe?g|png|webp';
 
+/** Skills with a dedicated code runner (structured UI / side effects). Everything else is prompt-style. */
+const CODED_SKILL_SLUGS = new Set(['expense-reconciliation']);
+
+export function isCodedSkill(skill) {
+  return Boolean(skill && CODED_SKILL_SLUGS.has(String(skill.slug || '')));
+}
+
+/** Context block injected into the model when a prompt-style skill is invoked. */
+export function skillPromptBlock(skill) {
+  if (!skill) return '';
+  const body = String(skill.body || '').trim();
+  if (!body) return '';
+  const title = skill.name ? `${skillCommand(skill)} (${skill.name})` : skillCommand(skill);
+  return [
+    `# Active skill: ${title}`,
+    'Follow these instructions for this turn. Use @mentioned / scoped chats as the working set.',
+    '',
+    body,
+  ].join('\n');
+}
+
 /**
  * Real document name for picker labels.
  * Never invent "expenses.xlsx" — that made PhonePe payment photos look like Excel files
@@ -143,8 +164,9 @@ export function createSkillRunner({ db, directory, expenseService }) {
     },
 
     /**
-     * Run a slash command. Never calls the chat model.
-     * @returns {Promise<{ answer: string, steps: string[], choices: object[], skillRun: object|null, expenseDiff: object|null }>}
+     * Resolve a slash command. Coded skills run here; prompt-style skills return
+     * `deferToModel` so GptService can inject the skill body and call the model.
+     * @returns {Promise<object>}
      */
     async run({ text, mentions = [], scopeChatJid = null, scopeChatName = null, conversationId = null, status = null, resolveProvider = null }) {
       const invocation = parseSkillInvocation(text);
@@ -196,18 +218,25 @@ export function createSkillRunner({ db, directory, expenseService }) {
         };
       }
 
-      if (skill.slug !== 'expense-reconciliation') {
-        const saved = record(skill, {
-          conversationId,
-          status: 'failed',
-          inputs: { rest: invocation.rest },
-          error: 'Skill has no runner yet',
-        });
+      if (!isCodedSkill(skill)) {
+        const body = String(skill.body || '').trim();
+        if (!body) {
+          return {
+            answer: `\`${skillCommand(skill)}\` has no instructions yet. Open Settings → Skills and add what the model should do.`,
+            steps: [],
+            choices: [],
+            skillRun: null,
+            expenseDiff: null,
+          };
+        }
         return {
-          answer: `\`${skillCommand(skill)}\` is saved but not runnable yet.`,
+          deferToModel: true,
+          skill,
+          rest: invocation.rest || '',
+          answer: null,
           steps: [],
           choices: [],
-          skillRun: skillRunView(saved),
+          skillRun: null,
           expenseDiff: null,
         };
       }

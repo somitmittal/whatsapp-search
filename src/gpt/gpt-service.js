@@ -22,8 +22,8 @@ import {
   skillFromUserRow,
   skillKey,
 } from '../skills/catalog.js';
-import { createSkillRunner } from '../skills/skill-runner.js';
-import { parseSkillInvocation } from '../skills/parse-invocation.js';
+import { createSkillRunner, skillPromptBlock } from '../skills/skill-runner.js';
+import { parseSkillInvocation, skillCommand } from '../skills/parse-invocation.js';
 import { naturalExpenseSkillCommand } from '../skills/expense-inputs.js';
 import { SYSTEM_SKILLS } from '../skills/system-skills.js';
 
@@ -213,7 +213,7 @@ export default class GptService {
     if (!text) throw new Error('message is required');
     if (parseSkillInvocation(text)) {
       return this._handleSkillTurn({
-        conversationId, createConversationIfMissing, message: text, scopeChatJid, mentions, model, emit,
+        conversationId, createConversationIfMissing, message: text, scopeChatJid, mentions, model, emit, signal,
       });
     }
     // "Please do expense reconciliation for 10th Oct" → same skill path as the slash command.
@@ -221,7 +221,7 @@ export default class GptService {
     if (naturalSkill) {
       return this._handleSkillTurn({
         conversationId, createConversationIfMissing, message: text, skillText: naturalSkill,
-        scopeChatJid, mentions, model, emit,
+        scopeChatJid, mentions, model, emit, signal,
       });
     }
     // `model` undefined → keep the thread's choice; null → back to Auto; object → explicit pick.
@@ -375,19 +375,27 @@ export default class GptService {
   }
 
   /**
-   * Slash command. Resolved from the skill catalog before any model call, then executed
-   * as a dry run. Sending the report is a separate confirm.
+   * Slash command. Coded skills (e.g. expense reconciliation) run as dry-runs.
+   * Other catalog skills inject their body into the model (Cursor-style prompts).
    */
   async _handleSkillTurn({
     conversationId = null, createConversationIfMissing = false, message, skillText = null,
-    scopeChatJid = null, mentions = [], model = undefined, emit = null,
+    scopeChatJid = null, mentions = [], model = undefined, emit = null, signal = null,
   }) {
     const text = String(message || '').trim();
     const runText = String(skillText || text).trim();
     const progress = [];
+    let partial = '';
+    const sink = emit;
     const status = (line) => {
       if (line) progress.push(line);
-      emit?.({ type: 'status', text: line });
+      sink?.({ type: 'status', text: line });
+    };
+    emit = (event) => {
+      if (event?.type === 'tool' && event.text) progress.push(event.text);
+      else if (event?.type === 'delta') partial += event.text || '';
+      else if (event?.type === 'reset') partial = '';
+      sink?.(event);
     };
     let conversation = conversationId ? this.db.getSearchConversation(conversationId) : null;
     if (conversationId && !conversation && !createConversationIfMissing) throw new Error('Conversation not found');
@@ -445,6 +453,27 @@ export default class GptService {
       });
       throw err;
     }
+
+    if (outcome.deferToModel && outcome.skill) {
+      return this._runPromptSkillTurn({
+        conversation,
+        skill: outcome.skill,
+        rest: outcome.rest || '',
+        effectiveScopeChatJid,
+        scopeChatName,
+        turnPins,
+        resolvedMentions,
+        memory,
+        selection,
+        resolveExpenseProvider,
+        emit,
+        status,
+        signal,
+        progress,
+        getPartial: () => partial,
+      });
+    }
+
     const assistant = this.db.addSearchMessage({
       id: randomUUID(),
       conversationId: conversation.id,
@@ -472,6 +501,137 @@ export default class GptService {
       expenseDiff: outcome.expenseDiff || null,
       model: null,
     };
+  }
+
+  /**
+   * Cursor-style skill: inject catalog body into context and run the normal agent.
+   * User message (the /command) is already stored by `_handleSkillTurn`.
+   */
+  async _runPromptSkillTurn({
+    conversation,
+    skill,
+    rest,
+    effectiveScopeChatJid,
+    scopeChatName,
+    turnPins,
+    resolvedMentions,
+    memory,
+    selection,
+    resolveExpenseProvider,
+    emit,
+    status,
+    signal,
+    progress,
+    getPartial,
+  }) {
+    const resolved = await this._resolveProvider(this.db, selection, this.getProvider());
+    const provider = resolved.provider;
+    if (!provider) throw new Error('No AI provider configured — pick a model from the picker or Settings.');
+
+    const skillPath = skillCommand(skill);
+    const query = String(rest || '').trim()
+      || `Apply ${skillPath} to the chats in scope and answer helpfully.`;
+    const scopeJids = turnPins.map((p) => p.chatJid).filter(Boolean);
+    const prior = this.db.listSearchMessages(conversation.id);
+    // Drop the slash user turn from history — it is this turn's query (via skill + rest).
+    const historyPrior = prior.slice(0, -1);
+
+    status('Gathering context…');
+    try {
+      const expenseHistory = expenseHistoryBlocks(historyPrior, { chatJids: scopeJids });
+      const [pre] = await Promise.all([this.context.prefetch({ query, scopeJids })]);
+      const contextText = [
+        skillPromptBlock(skill),
+        turnPins.length
+          ? `# Active chats this turn: ${turnPins.map((p) => p.chatName || p.chatJid).join(', ')}`
+          : '',
+        effectiveScopeChatJid
+          ? `# Thread home chat: ${scopeChatName || effectiveScopeChatJid}`
+          : '',
+        expenseHistory,
+        pre.text,
+      ].filter(Boolean).join('\n\n');
+      if (pre.messages.length) {
+        const chats = new Set(pre.messages.map((m) => m.chatJid)).size;
+        emit?.({ type: 'tool', text: `Pulled ${pre.messages.length} relevant messages from ${chats} chat${chats === 1 ? '' : 's'}${pre.range ? ` (${pre.range.label})` : ''}` });
+      }
+      emit?.({ type: 'tool', text: `Running skill ${skillPath}` });
+      status('Thinking…');
+
+      const { messages: history } = buildHistory(historyPrior, memory);
+      const defaultChat = turnPins[0] || null;
+      const mentionHint = resolvedMentions.length
+        ? `\n\n(@mentioned this turn: ${resolvedMentions.map((p) => p.chatName || p.chatJid).join(', ')}.)`
+        : '';
+      const result = await runAgent({
+        provider,
+        system: buildSystemPrompt({ db: this.db, businessContext: false }),
+        history,
+        contextText,
+        query: `${query}${mentionHint}`,
+        toolbox: this.toolbox,
+        ctx: {
+          status,
+          scopeChatJid: defaultChat?.chatJid || effectiveScopeChatJid || null,
+          scopeChatName: defaultChat?.chatName || scopeChatName || null,
+          turnMentions: resolvedMentions,
+          conversationId: conversation.id,
+          resolveProvider: resolveExpenseProvider,
+          prefetched: pre.messages,
+        },
+        emit,
+        signal,
+      });
+
+      const assistant = this.db.addSearchMessage({
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: result.answer,
+        payload: {
+          kind: 'skill',
+          skill: {
+            path: skillPath,
+            namespace: skill.namespace,
+            slug: skill.slug,
+            name: skill.name || null,
+          },
+          sources: result.sources,
+          refs: result.refs,
+          steps: progress,
+          model: { provider: provider.name, model: provider.model },
+        },
+      });
+
+      this._scheduleCompaction(conversation.id, provider);
+      const memoryPromise = this._scheduleUserMemory(provider, {
+        userText: query,
+        answerText: result.answer,
+        emit,
+      });
+      const fresh = this.getConversation(conversation.id);
+      return {
+        conversationId: conversation.id,
+        conversation: fresh.conversation,
+        messages: fresh.messages,
+        message: assistant,
+        answer: result.answer,
+        sources: result.sources || [],
+        expenseDiff: null,
+        model: { provider: provider.name, model: provider.model },
+        memoryPromise,
+      };
+    } catch (err) {
+      this._saveInterruptedTurn(conversation.id, {
+        content: String(getPartial?.() || '').trim(),
+        steps: progress,
+        stopped: err?.name === 'AbortedError',
+        error: err?.name === 'AbortedError' ? null : (err?.message || 'The skill stopped early'),
+        model: { provider: provider.name, model: provider.model },
+        kind: 'skill',
+      });
+      throw err;
+    }
   }
 
   /** Keep a stopped or failed turn, including the steps already streamed. */

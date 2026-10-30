@@ -24,7 +24,12 @@ const {
   resolveExpenseChat,
   resolveExpenseSheet,
 } = await import('../src/skills/expense-inputs.js');
-const { createSkillRunner, sheetFileName } = await import('../src/skills/skill-runner.js');
+const {
+  createSkillRunner,
+  isCodedSkill,
+  sheetFileName,
+  skillPromptBlock,
+} = await import('../src/skills/skill-runner.js');
 const { default: Database } = await import('../src/storage/database.js');
 const { runWithTenant } = await import('../src/storage/tenant-context.js');
 const { default: GptService } = await import('../src/gpt/gpt-service.js');
@@ -562,6 +567,110 @@ describe('skill runner', () => {
     expect(outcome.answer).not.toMatch(/another date/i);
     expect(outcome.followUpPrompt).toMatch(/another date/i);
     expect(outcome.choices.some((c) => c.label === '16 Oct')).toBe(true);
+  });
+});
+
+describe('prompt-style skills', () => {
+  test('expense reconciliation stays coded; custom skills are not', () => {
+    expect(isCodedSkill({ slug: 'expense-reconciliation' })).toBe(true);
+    expect(isCodedSkill({ slug: 'tally' })).toBe(false);
+    expect(skillPromptBlock({
+      namespace: 'accountant',
+      slug: 'tally',
+      name: 'Tally',
+      body: 'Export day-book rows.',
+    })).toContain('Export day-book rows.');
+  });
+
+  test('runner defers custom skills with a body to the model', async () => {
+    const db = {
+      listUserSkills: () => [{
+        namespace: 'accountant',
+        slug: 'tally',
+        version: 1,
+        frontmatter: { name: 'Tally', description: 'Books' },
+        body: 'Summarize for Tally.',
+        updated_at: 1,
+      }],
+      createSkillRun: () => { throw new Error('should not record a coded run'); },
+    };
+    const runner = createSkillRunner({ db, directory: null, expenseService: null });
+    const outcome = await runner.run({ text: '/accountant/tally Phonpay' });
+    expect(outcome.deferToModel).toBe(true);
+    expect(outcome.skill.slug).toBe('tally');
+    expect(outcome.rest).toBe('Phonpay');
+    expect(outcome.answer).toBeNull();
+  });
+
+  test('runner asks for instructions when the body is empty', async () => {
+    const db = {
+      listUserSkills: () => [{
+        namespace: 'accountant',
+        slug: 'tally',
+        version: 1,
+        frontmatter: { name: 'Tally' },
+        body: '  ',
+        updated_at: 1,
+      }],
+      createSkillRun: () => null,
+    };
+    const runner = createSkillRunner({ db, directory: null, expenseService: null });
+    const outcome = await runner.run({ text: '/accountant/tally' });
+    expect(outcome.deferToModel).toBeUndefined();
+    expect(outcome.answer).toMatch(/no instructions/i);
+  });
+
+  test('GptService routes a custom slash skill into the prompt-skill path', async () => {
+    const db = new Database();
+    const TENANT = 'tenant-prompt-skill';
+    await runWithTenant(TENANT, async () => {
+      db.upsertUserSkill({
+        namespace: 'accountant',
+        slug: 'tally',
+        version: 1,
+        frontmatter: { name: 'Tally', description: 'Books' },
+        body: 'List cash payments for the scoped chat.',
+      });
+      let seenBody = '';
+      let seenRest = '';
+      const gpt = new GptService({
+        db,
+        getProvider: () => ({ name: 'test', model: 'mock' }),
+      });
+      gpt._runPromptSkillTurn = async ({ conversation, skill, rest }) => {
+        seenBody = skillPromptBlock(skill);
+        seenRest = rest;
+        const assistant = db.addSearchMessage({
+          id: 'a1',
+          conversationId: conversation.id,
+          role: 'assistant',
+          content: 'Tally summary',
+          payload: { kind: 'skill', skill: { path: '/accountant/tally', slug: 'tally' } },
+        });
+        return {
+          conversationId: conversation.id,
+          conversation: db.getSearchConversation(conversation.id),
+          messages: db.listSearchMessages(conversation.id),
+          message: assistant,
+          answer: 'Tally summary',
+          sources: [],
+          expenseDiff: null,
+          model: { provider: 'test', model: 'mock' },
+        };
+      };
+
+      const result = await gpt.handleTurn({
+        message: '/accountant/tally focus cash',
+        scopeChatJid: SITE,
+      });
+      expect(seenBody).toContain('List cash payments');
+      expect(seenRest).toBe('focus cash');
+      expect(result.answer).toBe('Tally summary');
+      expect(result.model).toEqual({ provider: 'test', model: 'mock' });
+      expect(result.messages.at(-1).payload.kind).toBe('skill');
+      expect(result.messages.filter((m) => m.role === 'user').at(-1).content)
+        .toBe('/accountant/tally focus cash');
+    });
   });
 });
 
