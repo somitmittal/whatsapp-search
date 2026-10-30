@@ -7,8 +7,14 @@ import { syncIndexChatMenuItem } from './menus.js';
 import { showMemorySavedChip } from './memory.js';
 import { applyIncomingReactionToDom, applyMessageDeletedToDom, applyMessageEditedToDom, applyMessageRevokedToDom } from './messages-render.js';
 import { renderChatsFromState, scheduleRefreshDash } from './sidebar.js';
-import { $ } from './util.js';
+import { $, eventTouchesChat } from './util.js';
 import { showQr, updateSyncProgress, updateWaUI } from './wa-connection.js';
+
+let _openChatRefreshTimer = null;
+function scheduleRefreshOpenChat() {
+  clearTimeout(_openChatRefreshTimer);
+  _openChatRefreshTimer = setTimeout(() => { void refreshOpenChatMessages(); }, 220);
+}
 
 // ── WebSocket ──────────────────────────────────────────────────────
 function connectWS() {
@@ -24,12 +30,12 @@ function connectWS() {
       }
       else if (msg.type === 'new-messages') {
         scheduleRefreshDash(msg.data?.chatTouches);
-        void refreshOpenChatMessages();
+        if (eventTouchesChat(msg.data, store.activeChat)) scheduleRefreshOpenChat();
         if (store._waState === 'READY') { /* keep welcome hidden */ }
       }
       else if (msg.type === 'chat-action-items' && msg.data?.chatJid === store.activeChat) {
         void loadActionItemsForChat(store.activeChat);
-        void refreshOpenChatMessages();
+        scheduleRefreshOpenChat();
       }
       else if (msg.type === 'expense-reconciliation' && $('#overlay-expenses')?.classList.contains('open')) {
         void loadExpenseRuns();
@@ -74,8 +80,8 @@ function connectWS() {
       else if (msg.type === 'message-revoked' && msg.data) { applyMessageRevokedToDom(msg.data); }
       else if (msg.type === 'message-deleted' && msg.data) { applyMessageDeletedToDom(msg.data); }
       else if (msg.type === 'message-edited' && msg.data) { applyMessageEditedToDom(msg.data); }
-      else if (msg.type === 'message-media-ready' && msg.data?.chatJid === store.activeChat) {
-        void refreshOpenChatMessages();
+      else if (msg.type === 'message-media-ready' && eventTouchesChat(msg.data, store.activeChat)) {
+        scheduleRefreshOpenChat();
       }
       else if (msg.type === 'memory-saved') {
         showMemorySavedChip(msg.data?.entry?.text || '');
@@ -97,7 +103,7 @@ export function initWs() {
         store._lastSeenMsgCount = n;
         if (grew) {
           void refreshDash();
-          void refreshOpenChatMessages();
+          if (store.activeChat) scheduleRefreshOpenChat();
         }
       } else if (n) {
         store._lastSeenMsgCount = n;

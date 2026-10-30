@@ -474,6 +474,47 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
 /** Threshold (px) for "still following the live edge" — same idea as GPT nearBottom. */
 const CHAT_NEAR_BOTTOM_PX = 120;
 
+/** Last successful paint fingerprint per transcript container (avoids flicker on no-op reloads). */
+const _paintFpByEl = new WeakMap();
+
+/** Stable digest of fields that change bubble HTML / toolbar affordances. */
+export function messagesPaintFingerprint(msgs, jid = '', focusMessageId = null) {
+  // WA link state gates reply/react/edit menu rows — include so connect/disconnect still re-paints.
+  const parts = [
+    `j:${jid || ''}`,
+    `f:${focusMessageId != null ? String(focusMessageId) : ''}`,
+    `wa:${store._waState || ''}`,
+  ];
+  for (const m of msgs || []) {
+    parts.push([
+      m.messageId || '',
+      m.text || '',
+      m.sender || '',
+      m.timestamp || '',
+      m.mediaType || '',
+      m.mediaPath || '',
+      m.mediaCaption || '',
+      m.mediaPending ? 1 : 0,
+      m.mediaUnavailable ? 1 : 0,
+      m.mediaTooLarge ? 1 : 0,
+      m.mediaQueued ? 1 : 0,
+      m.receiptStatus || '',
+      m.reactionsJson || '',
+      m.chatJid || '',
+    ].join('\x1f'));
+  }
+  return parts.join('\x1e');
+}
+
+function shouldSkipPaint(container, fp) {
+  if (!container || !fp) return false;
+  return _paintFpByEl.get(container) === fp;
+}
+
+function rememberPaint(container, fp) {
+  if (container && fp) _paintFpByEl.set(container, fp);
+}
+
 /**
  * Snapshot scroll intent before a full transcript re-paint.
  * Live refreshes must not yank readers who scrolled up to read history.
@@ -536,17 +577,22 @@ export function renderMessages(msgs, jid, focusMessageId = null, { forceScroll =
       ? `This chat reports ${claimed.toLocaleString()} messages, but none loaded. Try refreshing, or re-import the chat export.`
       : 'No messages in this chat yet.';
     c.innerHTML = `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">${esc(hint)}</div></div>`;
+    rememberPaint(c, messagesPaintFingerprint([], jid, focusMessageId));
     return;
   }
   const focusStr = focusMessageId != null ? String(focusMessageId) : '';
-  const anchor = focusStr || forceScroll ? null : captureChatScrollAnchor(c);
   const sorted = [...msgs].sort((a, b) => {
     const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
     const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
     return ta - tb;
   });
+  const fp = messagesPaintFingerprint(sorted, jid, focusMessageId);
+  // Live Baileys re-deliveries often re-fetch identical rows; replacing DOM kills hover menus.
+  if (!forceScroll && !focusStr && shouldSkipPaint(c, fp)) return;
+  const anchor = focusStr || forceScroll ? null : captureChatScrollAnchor(c);
   const html = buildChatMessagesHtml(sorted, jid, focusMessageId, null);
   c.innerHTML = html;
+  rememberPaint(c, fp);
   if (focusStr) {
     const target = [...c.querySelectorAll('.bubble[data-message-id]')].find(
       el => el.getAttribute('data-message-id') === focusStr

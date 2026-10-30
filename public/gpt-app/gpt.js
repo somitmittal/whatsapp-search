@@ -18,14 +18,15 @@ import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js/message-actions.js';
 import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
-import { toggleMessageMenu } from '/js/messages-render.js';
 import { initMenus, priorityLoadChat, promptDeleteChat, showSidebarContextMenu } from '/js/menus.js';
 import {
   buildChatMessagesHtml,
   captureChatScrollAnchor,
   closeReactionEmojiPickers,
+  messagesPaintFingerprint,
   postWaReaction,
   restoreChatScroll,
+  toggleMessageMenu,
   toggleReactionEmojiPicker,
 } from '/js/messages-render.js';
 import { initOverlays, openOverlay } from '/js/overlays.js';
@@ -33,7 +34,7 @@ import { initSettings, loadSettings } from '/js/settings.js';
 import { initSkillsSettings, loadManagedSkills } from '/js/skills-settings.js';
 import { autoSelectSidebarTab, renderSidebarTabCounts, setSidebarListTab, sidebarTabOf } from '/js/sidebar.js';
 import { store } from '/js/store.js';
-import { esc, escAttr } from '/js/util.js';
+import { esc, escAttr, eventTouchesChat } from '/js/util.js';
 import { initWaBootstrap } from '/js/wa-bootstrap.js';
 import { accountPlanSummary, shouldAutoLogout } from '/js/trial-status.js';
 import { isWaUiReady, updateWaUI } from '/js/wa-connection.js';
@@ -287,18 +288,22 @@ function connectSyncSocket() {
     } else if (msg.type === 'wa-unread') {
       applyUnreadUpdates(msg.data?.updates);
     } else if (msg.type === 'new-messages') {
-      // Keep the sidebar and open transcript current after sync / priority-load.
+      // Keep the sidebar current; only re-paint the open transcript when this chat moved.
       void loadChats();
-      const touchJid = msg.data?.chatJid;
-      if (!touchJid || touchJid === state.activeChatJid) void reloadActiveWaMessages();
+      if (eventTouchesChat(msg.data, state.activeChatJid)) scheduleReloadActiveWaMessages();
     } else if (msg.type === 'message-media-ready') {
-      const jid = msg.data?.chatJid;
-      if (jid && jid === state.activeChatJid) void reloadActiveWaMessages();
+      if (eventTouchesChat(msg.data, state.activeChatJid)) scheduleReloadActiveWaMessages();
     } else if (msg.type === 'chat-names-refreshed') {
       void loadChats();
     }
   };
   ws.onclose = () => { setTimeout(connectSyncSocket, 3000); };
+}
+
+let _waReloadTimer = null;
+function scheduleReloadActiveWaMessages() {
+  clearTimeout(_waReloadTimer);
+  _waReloadTimer = setTimeout(() => { void reloadActiveWaMessages(); }, 220);
 }
 
 function flashRefreshButton(btn, note) {
@@ -1042,12 +1047,17 @@ function paintWaMessages(jid, msgs, { forceScroll = false } = {}) {
         ? 'This chat is still waiting for WhatsApp history. Keep the app linked — new and synced messages will appear here.'
         : 'No messages in this chat yet.'
     }</div></div>`;
+    els.waView.dataset.paintFp = messagesPaintFingerprint([], jid);
     return;
   }
+  const sorted = [...msgs].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  const fp = messagesPaintFingerprint(sorted, jid);
+  // Identical live reloads (Baileys re-delivery) must not rebuild DOM — menu hover flickers.
+  if (!forceScroll && els.waView.dataset.paintFp === fp) return;
   // Live sync / media-ready re-paints must keep scrolled-up readers in place.
   const anchor = forceScroll ? null : captureChatScrollAnchor(els.waView);
-  const sorted = [...msgs].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
   els.waView.innerHTML = buildChatMessagesHtml(sorted, jid, null, null);
+  els.waView.dataset.paintFp = fp;
   restoreChatScroll(els.waView, anchor, { force: forceScroll });
 }
 
