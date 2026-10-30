@@ -125,9 +125,6 @@ export default class ExpenseReconciliationService {
    */
   runForChat({ chatJid, messageId, notifyWhatsApp = true, forceRerun = false, provider = null } = {}, tenantId = getCurrentTenantId()) {
     return runWithTenant(tenantId, async () => {
-      if (!isConstructionExpenseAgentEnabled(this.db)) {
-        throw new Error('Enable the Construction expense agent first');
-      }
       const jid = String(chatJid || '').trim();
       if (!isExpenseChatJid(jid)) throw new Error('Pick a WhatsApp group or imported site chat');
       let mid = String(messageId || '').trim();
@@ -136,13 +133,15 @@ export default class ExpenseReconciliationService {
         const latest = sheets.find((sheet) => isExpenseSheetMessage(sheet, sheet.mediaPath))
           || sheets.find((sheet) => isExpenseSheetMessage(sheet, sheet.mediaPath, { strict: false }));
         if (!latest?.messageId) {
-          throw new Error('No expense sheet (Excel, CSV, PDF, Word, or text file) found in that chat yet');
+          throw new Error('No expense sheet (Excel, CSV, PDF, Word, image, or text file) found in that chat yet');
         }
         mid = latest.messageId;
       }
+      // Imported archives have no live WhatsApp thread to post the report into.
+      const canNotify = notifyWhatsApp !== false && !jid.endsWith('@imported');
       return this._enqueue(mid, tenantId, {
         requireSiteAllowlist: false,
-        notifyWhatsApp: notifyWhatsApp !== false,
+        notifyWhatsApp: canNotify,
         forceRerun: !!forceRerun,
         provider,
       });
@@ -257,7 +256,7 @@ export default class ExpenseReconciliationService {
     forceRerun = false,
     provider: providerOverride = null,
   } = {}) {
-    if (!isConstructionExpenseAgentEnabled(this.db)) return null;
+    if (!isConstructionExpenseAgentEnabled(this.db)) return null; // always true; kept for tests/hooks
     const row = this.db.getMessageRowByMessageId(messageId);
     const media = this.db.getMessageMediaRecord(messageId);
     const mediaPath = media?.mediaPath;

@@ -52,4 +52,19 @@ describe('deferred WhatsApp media priority', () => {
       'newsletter-today',
     ]);
   });
+
+  test('explicit priority chat drains before other conversations', () => {
+    const now = 2_000_000_000;
+    const queue = [
+      { row: { messageId: 'recent', chatJid: 'recent@g.us', timestamp: now } },
+      { row: { messageId: 'focus-old', chatJid: 'focus@g.us', timestamp: now - 40 * 86400 } },
+    ];
+
+    sortDeferredMediaByChatActivity(queue, now - 5 * 86400, 'focus@g.us');
+
+    expect(queue.map(({ row }) => row.messageId)).toEqual([
+      'focus-old',
+      'recent',
+    ]);
+  });
 });

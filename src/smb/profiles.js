@@ -1,23 +1,35 @@
 /**
- * WhatsApp-first SMB vertical profiles — tunes search prompts, fact extraction,
- * action items, and synthesis for clinics, real estate, and D2C businesses.
+ * Expense site allowlist + legacy personal profile stubs.
+ * Vertical SMB profiles (clinic / real estate / D2C / construction) were removed —
+ * expense reconciliation no longer requires a construction profile or agent toggle.
  */
 
 export const SMB_PROFILE_SETTING = 'smb_profile';
 export const SMB_BUSINESS_NAME_SETTING = 'smb_business_name';
-/** Opt-in for the construction expense-sheet reconciliation agent. Off unless the user enables it. */
+/** @deprecated Kept for DB compatibility; expense agent is always available. */
 export const CONSTRUCTION_EXPENSE_AGENT_SETTING = 'construction_expense_agent';
 /** JSON array of group chat JIDs allowed to auto-run when a sheet is posted. Empty = no auto-run. */
 export const CONSTRUCTION_EXPENSE_SITE_JIDS_SETTING = 'construction_expense_site_jids';
 
+/** @typedef {'personal'} SmbProfileId */
+
+/** @type {Record<SmbProfileId, object>} */
+export const SMB_PROFILES = {
+  personal: {
+    id: 'personal',
+    label: 'Personal',
+    tagline: 'Search your chats',
+    isBusiness: false,
+  },
+};
+
 /**
- * @param {import('../storage/database.js').default} db
+ * Expense reconciliation is always available (no profile / agent toggle).
+ * @param {import('../storage/database.js').default} [_db]
  * @returns {boolean}
  */
-export function isConstructionExpenseAgentEnabled(db) {
-  if (!db || typeof db.getSetting !== 'function') return false;
-  if (db.getSetting(SMB_PROFILE_SETTING) !== 'construction') return false;
-  return db.getSetting(CONSTRUCTION_EXPENSE_AGENT_SETTING) === '1';
+export function isConstructionExpenseAgentEnabled(_db) {
+  return true;
 }
 
 /**
@@ -48,165 +60,60 @@ export function isConstructionExpenseSiteAllowed(db, chatJid) {
   return getConstructionExpenseSiteJids(db).includes(jid);
 }
 
-/** @typedef {'personal' | 'clinic' | 'real_estate' | 'd2c' | 'construction'} SmbProfileId */
-
-/** @type {Record<SmbProfileId, object>} */
-export const SMB_PROFILES = {
-  personal: {
-    id: 'personal',
-    label: 'Personal',
-    tagline: 'Search your personal chats',
-    isBusiness: false,
-  },
-  clinic: {
-    id: 'clinic',
-    label: 'Clinic / Healthcare',
-    tagline: 'Appointments, follow-ups, and patient messages',
-    isBusiness: true,
-    factTypes: ['appointment', 'prescription', 'payment', 'meeting', 'question'],
-    factAddon: `Also extract these SMB types when relevant:
-- "appointment": patient_name, when, reason, status ("requested"|"confirmed"|"cancelled"|"unknown")
-- "prescription": medicine, dosage, patient_name, context
-Use "meeting" for consultations; "payment" for fees, bills, UPI.`,
-    searchPrompts: [
-      { label: 'Appointments', query: 'Which patients asked for or confirmed appointments? Include dates and times mentioned.' },
-      { label: 'Follow-ups due', query: 'Which patients need a follow-up call or message? Include what was promised.' },
-      { label: 'Payments pending', query: 'List consultation fees or payments discussed but not confirmed as received.' },
-      { label: 'Prescriptions', query: 'What medicines or prescriptions were discussed? Include dosage if mentioned.' },
-      { label: 'Lab reports', query: 'Which patients shared or asked about lab reports or test results?' },
-    ],
-    synthesisAddon: 'The user runs a clinic or healthcare practice on WhatsApp. Prioritize patient names, appointment dates/times, symptoms, prescriptions, fees, and follow-up commitments. Use professional tone.',
-    actionAddon: 'Healthcare context: flag appointment requests, report sharing, prescription refills, payment reminders, and urgent symptoms.',
-    inboxFactQuery: 'appointment payment prescription follow-up lab report',
-  },
-  real_estate: {
-    id: 'real_estate',
-    label: 'Real Estate',
-    tagline: 'Site visits, leads, and deal tracking',
-    isBusiness: true,
-    factTypes: ['site_visit', 'lead', 'payment', 'meeting', 'question'],
-    factAddon: `Also extract these SMB types when relevant:
-- "site_visit": property, when, buyer_name, location, status ("scheduled"|"done"|"cancelled"|"unknown")
-- "lead": buyer_name, budget, property_interest, source, temperature ("hot"|"warm"|"cold"|"unknown")
-Use "payment" for token, booking amount, brokerage.`,
-    searchPrompts: [
-      { label: 'Site visits', query: 'Which site visits or property showings were scheduled or completed? Include property names and dates.' },
-      { label: 'Hot leads', query: 'Which buyers showed strong interest, asked for visits, or discussed budget seriously?' },
-      { label: 'Deals in progress', query: 'Summarize negotiations, token amounts, or deals that are still open.' },
-      { label: 'Properties discussed', query: 'List properties, projects, or localities mentioned most often with buyer interest.' },
-      { label: 'Callbacks needed', query: 'Which leads asked for a call back or more details and have not received a clear answer?' },
-    ],
-    synthesisAddon: 'The user is a real-estate agent or broker on WhatsApp. Prioritize property names, budgets, site visit dates, lead names, and deal stage. Be specific about locations and amounts.',
-    actionAddon: 'Real-estate context: flag site visit requests, budget discussions, document sharing, and leads waiting for callback.',
-    inboxFactQuery: 'site visit property budget token booking lead',
-  },
-  d2c: {
-    id: 'd2c',
-    label: 'D2C / Online Store',
-    tagline: 'Orders, delivery, and customer support',
-    isBusiness: true,
-    factTypes: ['order', 'payment', 'delivery', 'complaint', 'question'],
-    factAddon: `Also extract these SMB types when relevant:
-- "order": product, quantity, customer_name, order_id, status ("placed"|"shipped"|"delivered"|"cancelled"|"unknown")
-- "delivery": address, pincode, expected_date, courier, status
-- "complaint": product, issue, customer_name, severity ("low"|"medium"|"high")
-Use "payment" for COD, UPI, refunds.`,
-    searchPrompts: [
-      { label: 'Open orders', query: 'Which orders are placed but not clearly delivered or confirmed? Include product and customer.' },
-      { label: 'Delivery issues', query: 'Summarize delivery delays, wrong address, or courier problems mentioned in chats.' },
-      { label: 'Refunds & returns', query: 'Which customers asked for refunds, returns, or exchanges? What was the reason?' },
-      { label: 'Top products', query: 'Which products or SKUs are customers asking about or ordering most?' },
-      { label: 'Unpaid orders', query: 'List payment pending, failed UPI, or COD confirmation issues.' },
-    ],
-    synthesisAddon: 'The user runs a D2C or online store on WhatsApp. Prioritize order IDs, products, quantities, delivery addresses, payment status, and complaints. Be actionable for support staff.',
-    actionAddon: 'E-commerce context: flag new orders, address confirmations, payment screenshots, delivery complaints, and refund requests.',
-    inboxFactQuery: 'order delivery payment refund complaint address',
-  },
-  construction: {
-    id: 'construction',
-    label: 'Construction',
-    tagline: 'Site expenses, labour, fuel, and reconciliation',
-    isBusiness: true,
-    factTypes: ['payment', 'delivery', 'meeting', 'question'],
-    factAddon: `Construction expense context:
-- For every expense or payment, extract "payment" with amount, currency, date, direction ("debit"|"credit"), payee, category as stated in the message, description, reference, and source_message_id when present. Preserve unfamiliar categories instead of forcing them into a fixed list.
-- Treat cash paid to labourers, fuel purchases, material bills, advances, reimbursements, and credits/refunds as separate facts.
-- Never infer an amount or recipient that is not explicitly present.`,
-    searchPrompts: [
-      { label: 'Compare vs Excel', query: "Check today’s expense summary in this chat and compare it with the excel sheet sent at the end of the day." },
-      { label: 'Today’s expenses', query: 'List today’s construction expenses by site, amount, payee, category, and source message.' },
-      { label: 'Labour payments', query: 'List labour payments and advances, including recipient and amount.' },
-      { label: 'Fuel & transport', query: 'List fuel and transport expenses with amounts and vehicles or vendors mentioned.' },
-      { label: 'Missing proofs', query: 'Which stated expenses do not have a receipt, bill, or payment confirmation?' },
-      { label: 'Daily total', query: 'Calculate the total debits and credits discussed today, grouped by category.' },
-    ],
-    synthesisAddon: 'The user manages construction sites on WhatsApp. Prioritize site name, date, exact amount, currency, debit or credit, payee, category, description, and message evidence. Never merge separate expenses.',
-    actionAddon: 'Construction context: flag unpaid labour, missing bills, fuel advances, material deliveries, and expense-sheet discrepancies.',
-    inboxFactQuery: 'expense payment labour fuel material transport advance reimbursement bill receipt',
-  },
-};
-
 /**
- * @param {string | null | undefined} id
+ * @param {string | null | undefined} [_id]
  * @returns {typeof SMB_PROFILES.personal}
  */
-export function resolveSmbProfile(id) {
-  const key = String(id || 'personal').trim().toLowerCase();
-  return SMB_PROFILES[key] || SMB_PROFILES.personal;
+export function resolveSmbProfile(_id) {
+  return SMB_PROFILES.personal;
 }
 
 /**
- * @param {import('../storage/database.js').default} db
+ * @param {import('../storage/database.js').default} [_db]
  * @returns {typeof SMB_PROFILES.personal}
  */
-export function getSmbProfileFromDb(db) {
-  if (!db || typeof db.getSetting !== 'function') return SMB_PROFILES.personal;
-  return resolveSmbProfile(db.getSetting(SMB_PROFILE_SETTING));
+export function getSmbProfileFromDb(_db) {
+  return SMB_PROFILES.personal;
 }
 
 /**
- * @param {typeof SMB_PROFILES.personal} profile
+ * @param {typeof SMB_PROFILES.personal} [_profile]
  * @returns {Array<{ label: string, query: string }>}
  */
-export function getSearchPrompts(profile) {
-  if (!profile?.isBusiness) return [];
-  return profile.searchPrompts || [];
+export function getSearchPrompts(_profile) {
+  return [];
 }
 
 /**
- * @param {typeof SMB_PROFILES.personal} profile
+ * @param {typeof SMB_PROFILES.personal} [_profile]
  * @returns {string}
  */
-export function synthesisSystemAddon(profile) {
-  if (!profile?.isBusiness || !profile.synthesisAddon) return '';
-  return profile.synthesisAddon;
+export function synthesisSystemAddon(_profile) {
+  return '';
 }
 
 /**
- * @param {typeof SMB_PROFILES.personal} profile
+ * @param {typeof SMB_PROFILES.personal} [_profile]
  * @returns {string}
  */
-export function factExtractionAddon(profile) {
-  if (!profile?.isBusiness || !profile.factAddon) return '';
-  return profile.factAddon;
+export function factExtractionAddon(_profile) {
+  return '';
 }
 
 /**
- * @param {typeof SMB_PROFILES.personal} profile
+ * @param {typeof SMB_PROFILES.personal} [_profile]
  * @returns {string}
  */
-export function actionItemAddon(profile) {
-  if (!profile?.isBusiness || !profile.actionAddon) return '';
-  return profile.actionAddon;
+export function actionItemAddon(_profile) {
+  return '';
 }
 
 /**
- * @param {typeof SMB_PROFILES.personal} profile
+ * @param {typeof SMB_PROFILES.personal} [_profile]
  * @returns {string}
  */
-export function inboxFactSearchQuery(profile) {
-  if (!profile?.isBusiness) return '';
-  return profile.inboxFactQuery || '';
+export function inboxFactSearchQuery(_profile) {
+  return '';
 }
 
 /**
@@ -222,29 +129,10 @@ export function listSmbProfileOptions() {
 }
 
 /**
- * Business profile active but library is mostly imported large groups — wrong vertical tuning.
- * @param {import('../storage/database.js').default} db
+ * Profiles removed — never flag a library mismatch.
+ * @param {import('../storage/database.js').default} [_db]
  * @returns {{ mismatch: boolean, reason?: string }}
  */
-export function detectSmbLibraryMismatch(db) {
-  const profile = getSmbProfileFromDb(db);
-  if (!profile.isBusiness) return { mismatch: false };
-  if (!db || typeof db.getChatStats !== 'function') return { mismatch: false };
-  const stats = db.getChatStats();
-  if (!stats?.length) return { mismatch: false };
-
-  const groupLike = stats.filter((c) => {
-    const jid = String(c.chatJid || '');
-    const participants = Number(c.participantCount) || 0;
-    return jid.includes('@imported') || jid.endsWith('@g.us') || participants > 8;
-  });
-
-  if (groupLike.length / stats.length < 0.5) return { mismatch: false };
-
-  return {
-    mismatch: true,
-    reason:
-      'Your chats look like personal or group imports, but a business profile is active. '
-      + 'Switch to Personal in Settings → Business for general chat search, or use the Business tab for customer workflows.',
-  };
+export function detectSmbLibraryMismatch(_db) {
+  return { mismatch: false };
 }

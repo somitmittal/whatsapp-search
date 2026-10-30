@@ -274,6 +274,10 @@
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
             </button>
             <div class="chat-menu-dropdown" id="chat-menu">
+              <div class="menu-item" id="menu-priority-load" title="Refresh this chat and download its media before other chats">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+                Load messages &amp; media now
+              </div>
               <div class="menu-item" id="menu-fetch-older-history" title="Uses WhatsApp on-demand sync — phone must be online">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="10"/></svg>
                 Load older messages from phone
@@ -507,7 +511,7 @@
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <div class="overlay-header-text">
-          <h2>Construction expenses</h2>
+          <h2>Expense reconciliations</h2>
           <p class="overlay-header-sub">Automatic WhatsApp sheet reconciliation and discrepancy history</p>
         </div>
       </div>
@@ -525,7 +529,7 @@
           <button type="button" class="btn btn-secondary" id="expense-refresh">Refresh</button>
         </div>
         <p style="font-size:12px;color:var(--text2);line-height:1.45;margin:0 0 14px;">
-          When a staff member posts a CSV/XLSX expense sheet in a live site group, Searchable compares it with that day’s expense messages and posts the report back to the same group.
+          When a sheet is posted in an allowlisted live group, Searchable compares it with that day’s expense messages and posts the report back. Imported chats support the same flow without posting to WhatsApp.
         </p>
         <div id="expense-runs"><div class="expense-empty">No reconciliations yet.</div></div>
       </div>
@@ -641,44 +645,20 @@
 
         <div class="settings-tab-panel" data-settings-panel="business" role="tabpanel">
         <div class="setting-group" id="smb-settings-group">
-          <h3>Business profile</h3>
-          <p style="font-size:13px;color:var(--text2);">Tune AI search for clinics, real estate, D2C stores, or construction expense workflows.</p>
-          <div class="setting-row">
-            <label>Account type</label>
-            <select id="smb-profile">
-              <option value="personal">Personal</option>
-              <option value="clinic">Clinic / Healthcare</option>
-              <option value="real_estate">Real Estate</option>
-              <option value="d2c">D2C / Online Store</option>
-              <option value="construction">Construction</option>
-            </select>
-          </div>
-          <div class="setting-row" id="smb-business-name-row" style="display:none;">
-            <label>Business name</label>
-            <input type="text" id="smb-business-name" placeholder="e.g. City Dental, PropHub, Glow Skincare" />
-          </div>
-          <div id="smb-agents-construction" class="smb-agent-card" hidden>
-            <div class="smb-agent-head">
-              <div>
-                <div class="smb-agent-title">Expense reconciliation agent</div>
-                <div class="smb-agent-sub">Available with the Construction profile</div>
-              </div>
-              <label class="smb-agent-switch">
-                <input type="checkbox" id="smb-expense-agent" />
-                <span>Enabled</span>
-              </label>
-            </div>
-            <p class="smb-agent-desc">When enabled, the agent reconciles a CSV/XLSX expense sheet against that day’s messages in the same site group and posts the report back. Automatic runs only happen for the site groups you select below; you can also run once for any group.</p>
+          <h3>Expense reconciliation</h3>
+          <p style="font-size:13px;color:var(--text2);">Compare expense sheets (Excel, CSV, PDF, or photos) with chat messages in live groups or imported archives. Always available — no business profile required.</p>
+          <div id="smb-agents-construction" class="smb-agent-card">
+            <p class="smb-agent-desc">Automatic runs only happen for the live site groups you select below. You can also run once for any group or imported chat.</p>
             <div class="smb-agent-sites">
               <div class="smb-agent-sites-label">Sites for automatic runs</div>
               <div id="smb-expense-sites" class="smb-agent-sites-list"></div>
-              <p class="smb-agent-hint">Leave unchecked to never auto-run. Sheets in other groups are ignored until you run them manually.</p>
+              <p class="smb-agent-hint">Leave unchecked to never auto-run. Sheets in other chats are ignored until you run them manually.</p>
             </div>
             <div class="smb-agent-run">
               <div class="smb-agent-sites-label">Run for a chat</div>
               <div class="smb-agent-run-row">
                 <select id="smb-expense-run-chat" aria-label="Site chat">
-                  <option value="">Select a site group…</option>
+                  <option value="">Select a group or import…</option>
                 </select>
                 <select id="smb-expense-run-sheet" aria-label="Expense sheet">
                   <option value="">Latest sheet in chat</option>
@@ -690,9 +670,12 @@
             <button type="button" class="btn btn-secondary" id="smb-expense-history">View reconciliation history</button>
           </div>
           <div class="setting-row" style="gap:12px;">
-            <button type="button" class="btn btn-secondary" id="smb-save">Save business profile</button>
+            <button type="button" class="btn btn-secondary" id="smb-save">Save expense sites</button>
             <span id="smb-status" style="font-size:12px;color:var(--text2);"></span>
           </div>
+          <input type="hidden" id="smb-profile" value="personal" />
+          <input type="hidden" id="smb-expense-agent" value="1" />
+          <div id="smb-business-name-row" style="display:none;"><input type="hidden" id="smb-business-name" value="" /></div>
         </div>
         <div class="setting-group" id="waba-settings-group">
           <h3>WhatsApp Business API <span style="font-weight:400;font-size:12px;color:var(--text2);">(live sync)</span></h3>

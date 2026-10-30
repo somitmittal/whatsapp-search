@@ -3371,21 +3371,26 @@ export default class Database {
     replace();
   }
 
-  /** Live WhatsApp groups that can be selected as construction sites. */
+  /** Live groups and imported archive chats that can be picked for expense reconciliation. */
   listExpenseSiteChats() {
     return (this.getChatStats() || [])
-      .filter((row) => String(row?.chatJid || '').endsWith('@g.us'))
+      .filter((row) => {
+        const jid = String(row?.chatJid || '');
+        return jid.endsWith('@g.us') || jid.endsWith('@imported');
+      })
       .map((row) => ({
         chatJid: row.chatJid,
         chatName: row.chatName || row.chatJid,
         messageCount: row.messageCount || 0,
         lastMessageTs: row.lastMessageTs || 0,
+        imported: String(row.chatJid || '').endsWith('@imported'),
       }))
       .sort((a, b) => String(a.chatName).localeCompare(String(b.chatName), undefined, { sensitivity: 'base' }));
   }
 
   /**
-   * Candidate expense documents (spreadsheet, PDF, Word, text) in a site chat (newest first).
+   * Candidate expense documents / photo sheets in a site chat (newest first).
+   * Includes imported archives where sheets are often images or PDFs, not only xlsx.
    * Callers still apply isExpenseSheetMessage for report-prefix / import filters.
    */
   listExpenseSheetMessages(chatJid) {
@@ -3400,17 +3405,22 @@ export default class Database {
       WHERE tenant_id = ?
         AND chat_jid = ?
         AND sender != 'You'
-        AND media_type = 'document'
+        AND media_type IN ('document', 'image')
         AND media_path IS NOT NULL
         AND lower(media_path) NOT LIKE '%searchable-expense-report-%'
         AND (
-          lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.xlsx%'
+          media_type = 'image'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.xlsx%'
           OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.xlsm%'
           OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.csv%'
           OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.tsv%'
           OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.txt%'
           OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.pdf%'
           OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.docx%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.jpg%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.jpeg%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.png%'
+          OR lower(coalesce(text, '') || ' ' || coalesce(media_caption, '') || ' ' || media_path) LIKE '%.webp%'
         )
       ORDER BY timestamp DESC, id DESC
     `).all(t, jid);

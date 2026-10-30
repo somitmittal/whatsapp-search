@@ -1,5 +1,5 @@
 import { store } from './store.js';
-import { openChat } from './chat-view.js';
+import { openChat, refreshOpenChatMessages } from './chat-view.js';
 import { refreshDash, setChatIndexEnabled } from './dashboard.js';
 import { switchPanel } from './overlays.js';
 import { $ } from './util.js';
@@ -107,6 +107,30 @@ export function initMenus() {
     const ch = store.chatData.find((c) => c.chatJid === store.activeChat);
     if (!ch || !(ch.messageCount > 0)) return;
     void setChatIndexEnabled(store.activeChat, !ch.indexOptedIn);
+  });
+
+  $('#menu-priority-load')?.addEventListener('click', async () => {
+    closeChatMenu();
+    if (!store.activeChat) return;
+    try {
+      const r = await fetch(`/api/chats/${encodeURIComponent(store.activeChat)}/priority-load`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ count: 50 }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'Request failed');
+      refreshOpenChatMessages();
+      const bits = ['This chat is now first for AI indexing.'];
+      if (j.mediaQueued > 0) bits.push(`${j.mediaQueued} media item(s) moved to the front of the download queue.`);
+      else if (!j.imported) bits.push('Media for this chat will download before other chats.');
+      if (j.history?.requested) bits.push('Asked your phone for older messages — keep WhatsApp online.');
+      else if (j.imported) bits.push('Imported chat — refreshed from local storage.');
+      alert(bits.join(' '));
+    } catch (e) {
+      alert(e.message || 'Could not prioritize this chat');
+    }
   });
 
   $('#menu-fetch-older-history')?.addEventListener('click', async () => {

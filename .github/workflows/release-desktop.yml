@@ -37,7 +37,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: mac-arm64
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.yml
+            dist/*.blockmap
           if-no-files-found: error
 
   build-mac-x64:
@@ -62,7 +66,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: mac-x64
-          path: dist/*.dmg
+          # Skip latest-mac.yml here so it does not overwrite the arm64 updater metadata
+          # on the GitHub release (same filename). Intel users install from the DMG.
+          path: |
+            dist/*.dmg
+            dist/*.zip
           if-no-files-found: error
 
   build-windows:
@@ -89,7 +97,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/*.exe
+          path: |
+            dist/*.exe
+            dist/*.yml
+            dist/*.blockmap
           if-no-files-found: error
 
   build-linux:
@@ -114,7 +125,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: dist/*.AppImage
+          path: |
+            dist/*.AppImage
+            dist/*.yml
+            dist/*.blockmap
           if-no-files-found: error
 
   release:

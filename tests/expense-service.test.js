@@ -138,32 +138,6 @@ describe('expense reconciliation automation', () => {
     expect(db.state.run.error).toBeTruthy();
   });
 
-  test('does not process spreadsheets unless the Construction profile is active', async () => {
-    const path = await expenseSheet('personal.xlsx');
-    const db = fakeDb(path);
-    db.getSetting = () => 'personal';
-    const service = new ExpenseReconciliationService({
-      db,
-      getProvider: () => ({ chat: async () => '[]' }),
-      getWaClient: () => ({ sendDocument: async () => { throw new Error('should not send'); } }),
-    });
-    await expect(service.enqueueMessage('sheet-1', 'tenant-c')).resolves.toBeNull();
-    expect(db.state.run).toBeNull();
-  });
-
-  test('does not process spreadsheets on Construction until the agent is enabled', async () => {
-    const path = await expenseSheet('agent-off.xlsx');
-    const db = fakeDb(path);
-    db.getSetting = (key) => (key === 'smb_profile' ? 'construction' : '0');
-    const service = new ExpenseReconciliationService({
-      db,
-      getProvider: () => ({ chat: async () => '[]' }),
-      getWaClient: () => ({ sendDocument: async () => { throw new Error('should not send'); } }),
-    });
-    await expect(service.enqueueMessage('sheet-1', 'tenant-d')).resolves.toBeNull();
-    expect(db.state.run).toBeNull();
-  });
-
   test('auto-run skips groups that are not selected as sites', async () => {
     const path = await expenseSheet('other-group.xlsx');
     const db = fakeDb(path);

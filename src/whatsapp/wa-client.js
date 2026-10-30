@@ -236,6 +236,8 @@ export default class WaClient {
     this._pendingBatch  = [];
     this._flushTimer    = null;
     this._mediaQueue    = [];
+    /** When set, deferred media for this chat drains before other chats. */
+    this._priorityMediaChatJid = null;
     this._queuedMediaIds = new Set();
     this._mediaDraining = false;
     /** Sidebar profile / group pictures. Filled newest-first and drained after history sync. */
@@ -2302,10 +2304,26 @@ export default class WaClient {
    * Media is the final ingestion queue. Rank by the chat's latest activity first, then by
    * message recency, with the configured recent-chat window as an explicit first tier.
    */
+  /**
+   * Prefer media downloads for this chat (user opened / tapped "Load messages & media").
+   * @param {string} chatJid
+   * @returns {{ ok: boolean, queuedForChat: number }}
+   */
+  prioritizeChatMedia(chatJid) {
+    const jid = String(chatJid || '').trim();
+    this._priorityMediaChatJid = jid || null;
+    this._sortDeferredMediaQueue();
+    if (this._historyDone) this._drainMediaQueue().catch(() => {});
+    const queuedForChat = jid
+      ? this._mediaQueue.filter((item) => item?.row?.chatJid === jid).length
+      : 0;
+    return { ok: true, queuedForChat };
+  }
+
   _sortDeferredMediaQueue() {
     const cutoff = Math.floor(Date.now() / 1000)
       - (config.liveRecentWindowDays * 24 * 60 * 60);
-    sortDeferredMediaByChatActivity(this._mediaQueue, cutoff);
+    sortDeferredMediaByChatActivity(this._mediaQueue, cutoff, this._priorityMediaChatJid || null);
   }
 
   async _drainMediaQueue() {

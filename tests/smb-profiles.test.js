@@ -9,45 +9,30 @@ import {
   synthesisSystemAddon,
 } from '../src/smb/profiles.js';
 
-describe('smb profiles', () => {
-  it('resolves known profiles and falls back to personal', () => {
-    expect(resolveSmbProfile('clinic').id).toBe('clinic');
-    expect(resolveSmbProfile('real_estate').isBusiness).toBe(true);
+describe('smb profiles (retired verticals)', () => {
+  it('always resolves to personal', () => {
+    expect(resolveSmbProfile('clinic').id).toBe('personal');
+    expect(resolveSmbProfile('construction').id).toBe('personal');
     expect(resolveSmbProfile('unknown').id).toBe('personal');
   });
 
-  it('lists all profile options', () => {
+  it('lists only the personal stub', () => {
     const opts = listSmbProfileOptions();
-    expect(opts.length).toBe(5);
-    expect(opts.map((o) => o.id)).toContain('d2c');
-    expect(opts.map((o) => o.id)).toContain('construction');
+    expect(opts).toEqual([
+      expect.objectContaining({ id: 'personal', isBusiness: false }),
+    ]);
   });
 
-  it('returns vertical search prompts only for business profiles', () => {
+  it('has no vertical search prompts or synthesis addons', () => {
     expect(getSearchPrompts(resolveSmbProfile('personal'))).toEqual([]);
-    const clinic = getSearchPrompts(resolveSmbProfile('clinic'));
-    expect(clinic.length).toBeGreaterThan(2);
-    expect(clinic[0]).toHaveProperty('label');
-    expect(clinic[0]).toHaveProperty('query');
-  });
-
-  it('adds synthesis context for business profiles', () => {
     expect(synthesisSystemAddon(resolveSmbProfile('personal'))).toBe('');
-    expect(synthesisSystemAddon(resolveSmbProfile('d2c'))).toMatch(/D2C/i);
   });
 
-  it('provides construction expense grounding and prompts', () => {
-    const construction = resolveSmbProfile('construction');
-    expect(construction.factAddon).toMatch(/source_message_id/);
-    expect(construction.searchPrompts.map((p) => p.label)).toContain('Today’s expenses');
-    expect(synthesisSystemAddon(construction)).toMatch(/construction sites/i);
-  });
-
-  it('runs the expense agent only on Construction with the agent toggled on', () => {
+  it('keeps the expense agent always enabled', () => {
     const db = (settings) => ({ getSetting: (key) => settings[key] || '' });
-    expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'construction', construction_expense_agent: '1' }))).toBe(true);
-    expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'construction' }))).toBe(false);
-    expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'clinic', construction_expense_agent: '1' }))).toBe(false);
+    expect(isConstructionExpenseAgentEnabled(db({}))).toBe(true);
+    expect(isConstructionExpenseAgentEnabled(db({ smb_profile: 'personal' }))).toBe(true);
+    expect(isConstructionExpenseAgentEnabled(null)).toBe(true);
   });
 
   it('auto-runs only for selected site groups', () => {
@@ -61,16 +46,13 @@ describe('smb profiles', () => {
     expect(isConstructionExpenseSiteAllowed(db, 'person@s.whatsapp.net')).toBe(false);
   });
 
-  it('flags business profile mismatch for imported group libraries', () => {
+  it('never flags a library mismatch after profiles were removed', () => {
     const db = {
       getSetting: () => 'clinic',
       getChatStats: () => [
         { chatJid: 'import_college@imported', participantCount: 129, messageCount: 400 },
-        { chatJid: 'import_alumni@imported', participantCount: 144, messageCount: 2800 },
       ],
     };
-    expect(detectSmbLibraryMismatch(db).mismatch).toBe(true);
-    const personalDb = { getSetting: () => 'personal', getChatStats: () => db.getChatStats() };
-    expect(detectSmbLibraryMismatch(personalDb).mismatch).toBe(false);
+    expect(detectSmbLibraryMismatch(db).mismatch).toBe(false);
   });
 });

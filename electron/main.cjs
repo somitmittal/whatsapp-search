@@ -323,6 +323,7 @@ app.whenReady().then(async () => {
     await startServer();
     createWindow();
     hookSystemSleepPause();
+    setupAutoUpdater();
   } catch (err) {
     console.error('[Desktop] Failed to start:', err.message);
     try {
@@ -331,6 +332,52 @@ app.whenReady().then(async () => {
     app.quit();
   }
 });
+
+/**
+ * In-app updates from GitHub Releases (same repo as desktop artifacts).
+ * Requires zip (mac) / nsis (win) / AppImage (linux) + latest*.yml on the release.
+ */
+function setupAutoUpdater() {
+  if (!app.isPackaged) return;
+  let autoUpdater;
+  try {
+    ({ autoUpdater } = require('electron-updater'));
+  } catch (err) {
+    console.warn('[Desktop] electron-updater missing:', err.message);
+    return;
+  }
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('error', (err) => {
+    console.warn('[Desktop] updater:', err?.message || err);
+  });
+  autoUpdater.on('update-available', (info) => {
+    console.log('[Desktop] update available:', info?.version);
+  });
+  autoUpdater.on('update-downloaded', (info) => {
+    const version = info?.version || 'a new version';
+    const show = () => {
+      const win = BrowserWindow.getFocusedWindow() || mainWindow;
+      dialog.showMessageBox(win || undefined, {
+        type: 'info',
+        title: 'Update ready',
+        message: `Searchable ${version} downloaded.`,
+        detail: 'Restart to install. Your local chat data stays on this computer.',
+        buttons: ['Restart now', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+      }).then(({ response }) => {
+        if (response === 0) autoUpdater.quitAndInstall(false, true);
+      }).catch(() => {});
+    };
+    show();
+  });
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch((err) => {
+      console.warn('[Desktop] checkForUpdates:', err?.message || err);
+    });
+  }, 12_000);
+}
 
 app.on('before-quit', () => {
   app.isQuitting = true;

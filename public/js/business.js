@@ -62,21 +62,15 @@ export async function loadSmbProfile() {
   try {
     const data = await fetch('/api/smb/profile').then((r) => r.json());
     store.smbState = {
-      profile: data.profile || 'personal',
-      businessName: data.businessName || '',
-      prompts: Array.isArray(data.prompts) ? data.prompts : [],
-      expenseAgentEnabled: !!data.expenseAgentEnabled,
+      profile: 'personal',
+      businessName: '',
+      prompts: [],
+      expenseAgentEnabled: true,
       expenseSiteJids: Array.isArray(data.expenseSiteJids) ? data.expenseSiteJids : [],
     };
-    const sel = $('#smb-profile');
-    if (sel) sel.value = store.smbState.profile;
-    const nameEl = $('#smb-business-name');
-    if (nameEl) nameEl.value = store.smbState.businessName;
-    const agentEl = $('#smb-expense-agent');
-    if (agentEl) agentEl.checked = store.smbState.expenseAgentEnabled;
-    syncSmbAgentCards(store.smbState.profile);
-    if (store.smbState.profile === 'construction') void loadExpenseSitePicker();
-    renderSmbMismatchBanner(data);
+    syncSmbAgentCards();
+    void loadExpenseSitePicker();
+    renderSmbMismatchBanner({ dataMismatch: false });
     applySmbUi();
   } catch { /* ignore */ }
 }
@@ -97,10 +91,11 @@ async function loadExpenseSitePicker() {
     const selected = new Set(
       Array.isArray(data.selectedJids) ? data.selectedJids : (store.smbState.expenseSiteJids || []),
     );
-    if (!sites.length) {
-      list.innerHTML = '<div class="smb-agent-hint" style="margin:0;">No WhatsApp groups indexed yet. Link WhatsApp or wait for groups to sync.</div>';
+    const liveSites = sites.filter((s) => !s.imported && String(s.chatJid || '').endsWith('@g.us'));
+    if (!liveSites.length) {
+      list.innerHTML = '<div class="smb-agent-hint" style="margin:0;">No live WhatsApp groups indexed yet. Link WhatsApp or wait for groups to sync. Imported chats still appear in Run below.</div>';
     } else {
-      list.innerHTML = sites.map((s) => `
+      list.innerHTML = liveSites.map((s) => `
         <label class="smb-agent-site">
           <input type="checkbox" value="${escAttr(s.chatJid)}"${selected.has(s.chatJid) ? ' checked' : ''} />
           <span>${esc(s.chatName || s.chatJid)}</span>
@@ -108,8 +103,11 @@ async function loadExpenseSitePicker() {
       `).join('');
     }
     const prev = runChat.value;
-    runChat.innerHTML = '<option value="">Select a site group…</option>'
-      + sites.map((s) => `<option value="${escAttr(s.chatJid)}">${esc(s.chatName || s.chatJid)}</option>`).join('');
+    runChat.innerHTML = '<option value="">Select a group or import…</option>'
+      + sites.map((s) => {
+        const tag = s.imported ? ' (imported)' : '';
+        return `<option value="${escAttr(s.chatJid)}">${esc((s.chatName || s.chatJid) + tag)}</option>`;
+      }).join('');
     if (prev && sites.some((s) => s.chatJid === prev)) runChat.value = prev;
   } catch (err) {
     list.innerHTML = `<div class="smb-agent-hint" style="margin:0;">${esc(err.message || 'Could not load sites')}</div>`;
@@ -227,10 +225,9 @@ export async function loadBusinessInbox() {
   }
 }
 
-function syncSmbAgentCards(profile) {
+function syncSmbAgentCards() {
   const card = $('#smb-agents-construction');
-  if (card) card.hidden = profile !== 'construction';
-  if (profile === 'construction') void loadExpenseSitePicker();
+  if (card) card.hidden = false;
 }
 
 export async function loadWabaConfig() {
@@ -270,13 +267,6 @@ export function initBusiness() {
     if (jid) void openChat(jid, mid || null);
   });
 
-  $('#smb-profile')?.addEventListener('change', () => {
-    const value = $('#smb-profile')?.value;
-    const nameRow = $('#smb-business-name-row');
-    if (nameRow) nameRow.style.display = value !== 'personal' ? '' : 'none';
-    syncSmbAgentCards(value);
-  });
-
   $('#smb-expense-run-chat')?.addEventListener('change', () => {
     void loadExpenseSheetsForRunChat();
   });
@@ -286,11 +276,7 @@ export function initBusiness() {
     const chatJid = $('#smb-expense-run-chat')?.value || '';
     const messageId = $('#smb-expense-run-sheet')?.value || '';
     if (!chatJid) {
-      if (status) status.textContent = 'Select a site group first';
-      return;
-    }
-    if (!$('#smb-expense-agent')?.checked) {
-      if (status) status.textContent = 'Enable the agent and save the profile first';
+      if (status) status.textContent = 'Select a group or imported chat first';
       return;
     }
     if (status) status.textContent = 'Queuing…';
@@ -346,30 +332,28 @@ export function initBusiness() {
   });
 
   $('#smb-save')?.addEventListener('click', async () => {
-    const profile = $('#smb-profile')?.value || 'personal';
-    const businessName = $('#smb-business-name')?.value || '';
-    const expenseAgentEnabled = profile === 'construction' && !!$('#smb-expense-agent')?.checked;
-    const expenseSiteJids = profile === 'construction' ? selectedExpenseSiteJids() : [];
+    const expenseSiteJids = selectedExpenseSiteJids();
     const status = $('#smb-status');
     if (status) status.textContent = 'Saving…';
     try {
       const data = await fetch('/api/smb/profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile, businessName, expenseAgentEnabled, expenseSiteJids }),
+        body: JSON.stringify({
+          profile: 'personal',
+          expenseAgentEnabled: true,
+          expenseSiteJids,
+        }),
       }).then((r) => r.json());
       if (data.error) throw new Error(data.error);
       store.smbState = {
-        profile: data.profile,
-        businessName: data.businessName || '',
-        prompts: data.prompts || [],
-        expenseAgentEnabled: !!data.expenseAgentEnabled,
+        profile: 'personal',
+        businessName: '',
+        prompts: [],
+        expenseAgentEnabled: true,
         expenseSiteJids: Array.isArray(data.expenseSiteJids) ? data.expenseSiteJids : [],
       };
-      const agentEl = $('#smb-expense-agent');
-      if (agentEl) agentEl.checked = store.smbState.expenseAgentEnabled;
-      syncSmbAgentCards(store.smbState.profile);
-      renderSmbMismatchBanner(data);
+      syncSmbAgentCards();
       applySmbUi();
       if (status) status.textContent = 'Saved';
     } catch (err) {

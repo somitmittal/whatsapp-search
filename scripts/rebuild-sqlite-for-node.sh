@@ -21,10 +21,11 @@ read_target_json() {
     echo "Missing $META — run prepare-node.sh first" >&2
     exit 1
   fi
-  VERSION="$(python3 -c 'import json;print(json.load(open("'"$META"'"))["version"])')"
-  PLATFORM="$(python3 -c 'import json;print(json.load(open("'"$META"'"))["platform"])')"
-  ARCH="$(python3 -c 'import json;print(json.load(open("'"$META"'"))["arch"])')"
-  BIN_REL="$(python3 -c 'import json;print(json.load(open("'"$META"'"))["binary"])')"
+  # Read via Node + a path relative to ROOT. On Windows Git Bash, python3 cannot open
+  # MSYS paths like /d/a/... (FileNotFoundError) even when the file exists for bash.
+  local line
+  line="$(cd "$ROOT" && node -e 'const j=require("./build/node/target.json"); process.stdout.write([j.version,j.platform,j.arch,j.binary].join("\t"))')"
+  IFS=$'\t' read -r VERSION PLATFORM ARCH BIN_REL <<<"$line"
   NODE_BIN="$ROOT/build/node/${BIN_REL}"
 }
 

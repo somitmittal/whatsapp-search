@@ -1607,6 +1607,71 @@ export default class WebServer {
       }
     });
 
+    /**
+     * User asked to load this chat now: bump AI index + media downloads, optionally pull
+     * older history from the phone (live chats), then refresh the open transcript.
+     */
+    this._app.post('/api/chats/:chatJid/priority-load', async (req, res) => {
+      try {
+        const chatJid = decodeURIComponent(req.params.chatJid || '');
+        if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+        const tid = getCurrentTenantId();
+        const st = this._getTenantState(tid);
+        const wa = st?.waClient;
+        const imported = chatJid.endsWith('@imported');
+        const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || 50));
+
+        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this._mediaIndexService?.notePriorityChange?.();
+        this._embeddingIndexService?.notePriorityChange?.();
+
+        let mediaQueued = 0;
+        if (wa && typeof wa.prioritizeChatMedia === 'function' && !imported) {
+          mediaQueued = Number(wa.prioritizeChatMedia(chatJid)?.queuedForChat || 0);
+        }
+
+        let history = { requested: false };
+        if (!imported && wa && typeof wa.fetchOlderHistoryFromPhone === 'function' && st.waState === 'READY') {
+          const guard = wa.canFetchPhoneHistory?.(chatJid);
+          if (!guard || guard.ok) {
+            const anchorRow = this.db.getOldestMessageAnchor(chatJid);
+            if (anchorRow?.messageId) {
+              try {
+                const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid, ...anchorRow }, count);
+                history = { requested: true, requestId: requestId ?? null };
+              } catch (err) {
+                history = { requested: false, error: err.message || String(err) };
+              }
+            } else {
+              history = { requested: false, error: 'no_anchor' };
+            }
+          } else {
+            history = { requested: false, error: guard.message, code: guard.code };
+          }
+        }
+
+        void runWithTenant(tid, async () => {
+          try {
+            await this.summaryService.indexPendingDays();
+            await this._embeddingIndexService?.processPending?.(12);
+          } catch (err) {
+            console.error('[priority-load]', err.message);
+          }
+        });
+
+        this._broadcast({ type: 'new-messages', data: { chatJid, priorityLoad: true } }, tid);
+        return res.json({
+          ok: true,
+          chatJid,
+          imported,
+          mediaQueued,
+          history,
+        });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || String(err) });
+      }
+    });
+
     this._app.get('/api/chats/:chatJid/away-summary', (req, res) => {
       try {
         const chatJid = decodeURIComponent(req.params.chatJid || '');
@@ -2852,9 +2917,8 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         if (Object.prototype.hasOwnProperty.call(req.body || {}, 'businessName')) {
           this.db.setSetting(SMB_BUSINESS_NAME_SETTING, String(businessName || '').trim());
         }
-        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'expenseAgentEnabled')) {
-          this.db.setSetting(CONSTRUCTION_EXPENSE_AGENT_SETTING, req.body.expenseAgentEnabled ? '1' : '0');
-        }
+        // Expense agent is always on; persist '1' when clients still send the legacy flag.
+        this.db.setSetting(CONSTRUCTION_EXPENSE_AGENT_SETTING, '1');
         if (Object.prototype.hasOwnProperty.call(req.body || {}, 'expenseSiteJids')) {
           const jids = Array.isArray(req.body.expenseSiteJids)
             ? [...new Set(req.body.expenseSiteJids.map((j) => String(j || '').trim()).filter((j) => j.endsWith('@g.us')))]
