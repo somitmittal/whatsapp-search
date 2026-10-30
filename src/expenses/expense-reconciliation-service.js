@@ -384,12 +384,17 @@ export default class ExpenseReconciliationService {
       this._emit(run.id, 'completed');
       return this.db.getExpenseReconciliationRun(run.id);
     } catch (error) {
+      const raw = error?.message || String(error);
+      // Node's undici surfaces opaque "fetch failed" for DNS/TLS/timeouts to the LLM host.
+      const nicer = /fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(raw)
+        ? 'Could not reach the AI provider (network or API). Check your connection / API key, free some RAM if using Ollama, then retry the reconciliation.'
+        : raw;
       this.db.updateExpenseReconciliationRun(run.id, {
         status: 'failed',
-        error: error.message || String(error),
+        error: nicer,
       });
-      this._emit(run.id, 'failed', { error: error.message || String(error) });
-      console.warn(`[Expenses] ${messageId}:`, error.message || error);
+      this._emit(run.id, 'failed', { error: nicer });
+      console.warn(`[Expenses] ${messageId}:`, nicer);
       return this.db.getExpenseReconciliationRun(run.id);
     }
   }

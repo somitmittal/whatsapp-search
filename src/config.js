@@ -133,10 +133,10 @@ const config = {
   waSyncDoneDelayMs: Math.max(3000, parseInt(process.env.WA_SYNC_DONE_DELAY_MS || '15000', 10) || 15000),
   /**
    * Parallel WhatsApp media downloads after (or for a prioritized chat during) history sync.
-   * Default 2 overlaps one download with the previous write/gap; set `WA_MEDIA_DRAIN_CONCURRENCY=1`
-   * to restore fully serial drain.
+   * Default 1 keeps phone/CDN load gentle (expired media must not storm re-uploads).
+   * Set `WA_MEDIA_DRAIN_CONCURRENCY=2` for faster drains when the phone stays quiet.
    */
-  waMediaDrainConcurrency: Math.max(1, parseInt(process.env.WA_MEDIA_DRAIN_CONCURRENCY || '2', 10) || 2),
+  waMediaDrainConcurrency: Math.max(1, parseInt(process.env.WA_MEDIA_DRAIN_CONCURRENCY || '1', 10) || 1),
   /** Live chats active within this user-selected window form the first post-sync indexing queue. */
   liveRecentWindowDays: 5,
   /**

@@ -1975,9 +1975,10 @@ export default class WaClient {
     console.log(`[WA] Sync complete — ${this._totalMsgs} messages`);
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
     this._sortDeferredMediaQueue();
+    // Drain CDN-only downloads already in memory. Do NOT re-queue the whole archive —
+    // each expired blob asks the phone to re-upload and floods "syncing" notifications.
+    // User Refresh / media Retry on a chat calls prioritizeChatMedia → phone reupload for that chat only.
     void this._drainMediaQueue();
-    // Restart / reconnect: re-queue recent pending media from persisted Baileys stubs.
-    this._requeuePersistedPendingMedia(null);
     try { this._onHistorySyncComplete?.(); } catch (e) {
       console.warn('[WA] onHistorySyncComplete:', e.message);
     }
@@ -2263,12 +2264,21 @@ export default class WaClient {
     });
   }
 
-  async _enrichRowWithMedia(msg, row) {
+  /**
+   * @param {object} msg Baileys message
+   * @param {object} row DB-shaped media row
+   * @param {{ allowPhoneReupload?: boolean }} [opts]
+   *   Phone re-upload (`updateMediaMessage`) notifies the primary device. Only enable
+   *   for an explicit user Refresh / Retry on that chat — never for bulk history drain.
+   */
+  async _enrichRowWithMedia(msg, row, { allowPhoneReupload = false } = {}) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return row;
     try {
       const download = async (m) => downloadMediaMessage(m, 'buffer', {}, {
         logger: this._mediaLogger,
-        reuploadRequest: (x) => this._sock.updateMediaMessage(x),
+        ...(allowPhoneReupload
+          ? { reuploadRequest: (x) => this._sock.updateMediaMessage(x) }
+          : {}),
       });
 
       let buffer;
@@ -2276,9 +2286,11 @@ export default class WaClient {
         buffer = await download(msg);
       } catch (e1) {
         const m = String(e1?.message || '');
-        // Common failure: the direct mmg.whatsapp.net URL in older messages is expired.
-        // Force a refresh of the media message from WhatsApp and retry once.
-        if (m.includes('Failed to fetch stream') || m.includes('Status code: 403') || m.includes('Status code: 401')) {
+        // Expired CDN URL — only ask the phone when the user opted into reupload for this chat.
+        if (
+          allowPhoneReupload
+          && (m.includes('Failed to fetch stream') || m.includes('Status code: 403') || m.includes('Status code: 401'))
+        ) {
           try {
             const refreshed = await this._sock.updateMediaMessage(msg);
             buffer = await download(refreshed || msg);
@@ -2404,7 +2416,10 @@ export default class WaClient {
       try {
         // On-demand history re-delivers messages whose file we may already have.
         if (this._onMediaNeedsDownload?.(row.messageId) === false) continue;
-        const enriched = await this._enrichRowWithMedia(msg, row);
+        const allowPhoneReupload = Boolean(
+          this._priorityMediaChatJid && row.chatJid === this._priorityMediaChatJid,
+        );
+        const enriched = await this._enrichRowWithMedia(msg, row, { allowPhoneReupload });
         settledPath = enriched.mediaPath || null;
         // Same object may still sit in the unflushed insert batch — carry the path into it.
         if (settledPath) row.mediaPath = settledPath;
