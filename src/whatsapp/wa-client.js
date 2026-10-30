@@ -40,6 +40,7 @@ import {
   MEDIA_UNAVAILABLE_PATH,
   isPermanentMediaFailure,
 } from './media-constants.js';
+import { buildMediaDownloadStub } from './media-download-stub.js';
 import { audioSendContent } from './voice-content.js';
 import {
     extractRenderableTextFromInner,
@@ -188,7 +189,7 @@ export default class WaClient {
     authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete,
     onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction,
     onResolvedDisplayName, onUnreadCounts, onMessageRevoked, onMessageEdited,
-    onChatAvatar, onMessageReceipt,
+    onChatAvatar, onMessageReceipt, onLoadPendingMediaStubs, onPersistMediaStub,
   }) {
     this._authDir = authDir || join(config.dataDir, '.baileys_auth');
     this._configFile = configFile || join(config.dataDir, 'wa-config.json');
@@ -202,6 +203,8 @@ export default class WaClient {
     this._onSearchQuery = onSearchQuery;
     this._onDisconnected = onDisconnected;
     this._onMediaPath   = onMediaPath;
+    this._onLoadPendingMediaStubs = onLoadPendingMediaStubs;
+    this._onPersistMediaStub = onPersistMediaStub;
     this._onReaction    = onReaction;
     this._onResolvedDisplayName = onResolvedDisplayName;
     this._onUnreadCounts = onUnreadCounts;
@@ -1968,6 +1971,8 @@ export default class WaClient {
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
     this._sortDeferredMediaQueue();
     void this._drainMediaQueue();
+    // Restart / reconnect: re-queue recent pending media from persisted Baileys stubs.
+    this._requeuePersistedPendingMedia(null);
     try { this._onHistorySyncComplete?.(); } catch (e) {
       console.warn('[WA] onHistorySyncComplete:', e.message);
     }
@@ -2315,13 +2320,21 @@ export default class WaClient {
   _rememberMediaRetry(msg, row) {
     const id = row?.messageId;
     if (!id || !msg?.key || !msg?.message) return;
+    const slimMsg = { key: msg.key, message: msg.message };
     this._mediaRetryCache.set(id, {
-      msg: { key: msg.key, message: msg.message },
+      msg: slimMsg,
       row: { ...row, mediaPath: null },
     });
     while (this._mediaRetryCache.size > MEDIA_RETRY_CACHE_MAX) {
       const oldest = this._mediaRetryCache.keys().next().value;
       this._mediaRetryCache.delete(oldest);
+    }
+    // Survive restarts: keep enough of the Baileys media node to re-download later.
+    if (typeof this._onPersistMediaStub === 'function') {
+      const stubJson = buildMediaDownloadStub(slimMsg) || row?.mediaDownloadJson;
+      if (stubJson) {
+        try { this._onPersistMediaStub(id, stubJson); } catch { /* ignore */ }
+      }
     }
   }
 
@@ -2360,6 +2373,7 @@ export default class WaClient {
         if (item.row.mediaPath === MEDIA_UNAVAILABLE_PATH) continue;
         this._queueMediaDownload(item.msg, item.row);
       }
+      this._requeuePersistedPendingMedia(jid);
     }
     this._sortDeferredMediaQueue();
     this._drainMediaQueue().catch(() => {});
@@ -2367,6 +2381,29 @@ export default class WaClient {
       ? this._mediaQueue.filter((item) => item?.row?.chatJid === jid).length
       : 0;
     return { ok: true, queuedForChat };
+  }
+
+  /**
+   * Load Baileys media stubs persisted in SQLite and put them back on the download queue.
+   * @param {string | null} chatJid null = recent window across chats (post-sync)
+   */
+  _requeuePersistedPendingMedia(chatJid) {
+    if (typeof this._onLoadPendingMediaStubs !== 'function') return 0;
+    let items = [];
+    try {
+      items = this._onLoadPendingMediaStubs(chatJid || null) || [];
+    } catch (e) {
+      console.warn('[WA] load pending media stubs:', e?.message || e);
+      return 0;
+    }
+    let n = 0;
+    for (const item of items) {
+      if (!item?.msg?.key || !item?.row?.messageId) continue;
+      this._queueMediaDownload(item.msg, item.row);
+      n += 1;
+    }
+    if (n) console.log(`[WA] Re-queued ${n} pending media download(s)${chatJid ? ` for ${chatJid}` : ''}`);
+    return n;
   }
 
   /**
@@ -2504,6 +2541,7 @@ export default class WaClient {
         text:         text || null,
         mediaType,
         mediaPath:    null,
+        mediaDownloadJson: mediaType ? buildMediaDownloadStub(msg) : null,
         mediaCaption:
           inner.imageMessage?.caption ||
           inner.videoMessage?.caption ||

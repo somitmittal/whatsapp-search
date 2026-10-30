@@ -520,6 +520,7 @@ export default class Database {
     this._migrateActionSuggestionsColumn();
     this._migrateReactionsJsonAndDedupe();
     this._migrateContactPayloadColumn();
+    this._migrateMediaDownloadJsonColumn();
     this._migrateReceiptStatusColumn();
     this._migrateChatImportTouches();
     this._migrateChatRoster();
@@ -819,6 +820,18 @@ export default class Database {
       }
     } catch (e) {
       console.warn('[DB] contact_payload column:', e.message);
+    }
+  }
+
+  _migrateMediaDownloadJsonColumn() {
+    try {
+      const cols = this._db.prepare('PRAGMA table_info(messages)').all();
+      if (!cols.some((c) => c.name === 'media_download_json')) {
+        this._db.exec('ALTER TABLE messages ADD COLUMN media_download_json TEXT');
+        console.log('[DB] Added messages.media_download_json');
+      }
+    } catch (e) {
+      console.warn('[DB] media_download_json column:', e.message);
     }
   }
 
@@ -1181,11 +1194,11 @@ export default class Database {
       INSERT OR IGNORE INTO messages (
         tenant_id, message_id, chat_jid, chat_name, sender, sender_jid,
         text, media_type, media_path, media_caption, media_ai_index, timestamp, reactions_json, contact_payload,
-        receipt_status
+        media_download_json, receipt_status
       ) VALUES (
         @tenantId, @messageId, @chatJid, @chatName, @sender, @senderJid,
         @text, @mediaType, @mediaPath, @mediaCaption, @mediaAiIndex, @timestamp, @reactionsJson, @contactPayload,
-        @receiptStatus
+        @mediaDownloadJson, @receiptStatus
       )
     `);
     this._stmtSelectIdByMessageId = this._db.prepare(
@@ -1513,7 +1526,7 @@ export default class Database {
   insertMessage({
     messageId, chatJid, chatName = null, sender = null, senderJid = null,
     text = null, mediaType = null, mediaPath = null, mediaCaption = null, mediaAiIndex = null, timestamp,
-    reactionsJson = null, contactPayload = null, receiptStatus = null,
+    reactionsJson = null, contactPayload = null, mediaDownloadJson = null, receiptStatus = null,
   }) {
     const tenantId = getCurrentTenantId();
     const info = this._stmtInsertMessage.run({
@@ -1523,9 +1536,13 @@ export default class Database {
       timestamp: normalizeUnixSeconds(timestamp, Math.floor(Date.now() / 1000)),
       reactionsJson,
       contactPayload,
+      mediaDownloadJson: mediaDownloadJson ?? null,
       receiptStatus: normalizeReceiptStatus(receiptStatus),
     });
     if (info.changes > 0) return Number(info.lastInsertRowid);
+    if (messageId && mediaDownloadJson) {
+      this.upsertMediaDownloadJsonIfPending(messageId, mediaDownloadJson);
+    }
     const row = this._stmtSelectIdByMessageId.get(tenantId, messageId);
     return row ? row.id : Number(info.lastInsertRowid);
   }
@@ -1553,6 +1570,7 @@ export default class Database {
           timestamp: normalizeUnixSeconds(row.timestamp, Math.floor(Date.now() / 1000)),
           reactionsJson: row.reactionsJson ?? null,
           contactPayload: row.contactPayload ?? null,
+          mediaDownloadJson: row.mediaDownloadJson ?? null,
           receiptStatus: normalizeReceiptStatus(row.receiptStatus),
         });
         const hasRx = row.reactionsJson != null || row.reactionSlots !== undefined;
@@ -1565,6 +1583,9 @@ export default class Database {
           }
         } else if (info.changes === 0 && row.messageId && hasRx) {
           this.applySyncedMessageReactions(row.messageId, row);
+        }
+        if (info.changes === 0 && row.messageId && row.mediaDownloadJson) {
+          this.upsertMediaDownloadJsonIfPending(row.messageId, row.mediaDownloadJson);
         }
         if (info.changes === 0 && row.messageId && row.receiptStatus != null) {
           this.updateMessageReceipt(row.chatJid, row.messageId, row.receiptStatus);
@@ -1657,9 +1678,94 @@ export default class Database {
   updateMessageMediaPath(messageId, mediaPath) {
     if (!messageId) return 0;
     const t = getCurrentTenantId();
-    const r = this._db.prepare('UPDATE messages SET media_path = ? WHERE tenant_id = ? AND message_id = ?')
-      .run(mediaPath, t, messageId);
+    // Drop the Baileys stub once we have a terminal path (file or permanent unavailable).
+    const r = this._db.prepare(`
+      UPDATE messages SET media_path = ?, media_download_json = NULL
+      WHERE tenant_id = ? AND message_id = ?
+    `).run(mediaPath, t, messageId);
     return r.changes ?? 0;
+  }
+
+  /** Store / refresh Baileys media stub while the local file is still missing. */
+  upsertMediaDownloadJsonIfPending(messageId, mediaDownloadJson) {
+    const mid = String(messageId || '').trim();
+    const raw = String(mediaDownloadJson || '').trim();
+    if (!mid || !raw) return 0;
+    const t = getCurrentTenantId();
+    const r = this._db.prepare(`
+      UPDATE messages SET media_download_json = ?
+      WHERE tenant_id = ? AND message_id = ?
+        AND media_type IS NOT NULL AND trim(media_type) != ''
+        AND (media_path IS NULL OR trim(media_path) = '' OR media_path = '__unavailable__')
+    `).run(raw, t, mid);
+    return r.changes ?? 0;
+  }
+
+  /**
+   * Pending media rows that still have a download stub (for restart / refresh re-queue).
+   * @param {{ chatJid?: string, newerThanTs?: number, limit?: number }} [opts]
+   */
+  listPendingMediaWithDownloadStub({ chatJid = null, newerThanTs = null, limit = 500 } = {}) {
+    const t = getCurrentTenantId();
+    const lim = Math.max(1, Math.min(Number(limit) || 500, 2000));
+    const jid = chatJid ? String(chatJid).trim() : '';
+    const cutoff = newerThanTs == null ? null : Number(newerThanTs);
+    if (jid && cutoff != null && Number.isFinite(cutoff)) {
+      return this._db.prepare(`
+        SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
+               sender, media_type AS mediaType, media_caption AS mediaCaption,
+               timestamp, media_download_json AS mediaDownloadJson
+        FROM messages
+        WHERE tenant_id = ? AND chat_jid = ?
+          AND media_type IS NOT NULL AND trim(media_type) != ''
+          AND (media_path IS NULL OR trim(media_path) = '')
+          AND media_download_json IS NOT NULL AND trim(media_download_json) != ''
+          AND timestamp >= ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `).all(t, jid, cutoff, lim);
+    }
+    if (jid) {
+      return this._db.prepare(`
+        SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
+               sender, media_type AS mediaType, media_caption AS mediaCaption,
+               timestamp, media_download_json AS mediaDownloadJson
+        FROM messages
+        WHERE tenant_id = ? AND chat_jid = ?
+          AND media_type IS NOT NULL AND trim(media_type) != ''
+          AND (media_path IS NULL OR trim(media_path) = '')
+          AND media_download_json IS NOT NULL AND trim(media_download_json) != ''
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `).all(t, jid, lim);
+    }
+    if (cutoff != null && Number.isFinite(cutoff)) {
+      return this._db.prepare(`
+        SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
+               sender, media_type AS mediaType, media_caption AS mediaCaption,
+               timestamp, media_download_json AS mediaDownloadJson
+        FROM messages
+        WHERE tenant_id = ?
+          AND media_type IS NOT NULL AND trim(media_type) != ''
+          AND (media_path IS NULL OR trim(media_path) = '')
+          AND media_download_json IS NOT NULL AND trim(media_download_json) != ''
+          AND timestamp >= ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `).all(t, cutoff, lim);
+    }
+    return this._db.prepare(`
+      SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
+             sender, media_type AS mediaType, media_caption AS mediaCaption,
+             timestamp, media_download_json AS mediaDownloadJson
+      FROM messages
+      WHERE tenant_id = ?
+        AND media_type IS NOT NULL AND trim(media_type) != ''
+        AND (media_path IS NULL OR trim(media_path) = '')
+        AND media_download_json IS NOT NULL AND trim(media_download_json) != ''
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `).all(t, lim);
   }
 
   /**

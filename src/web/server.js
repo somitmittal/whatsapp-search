@@ -34,6 +34,7 @@ import {
 } from '../whatsapp/unread-tracker.js';
 import { isSafeAvatarFileName, jidsNeedingAvatars } from '../whatsapp/chat-avatars.js';
 import { MEDIA_UNAVAILABLE_PATH, isMediaUnavailablePath } from '../whatsapp/media-constants.js';
+import { parseMediaDownloadStub } from '../whatsapp/media-download-stub.js';
 import { MAX_AUDIO_BYTES, isAudioMime } from '../whatsapp/voice-content.js';
 import { playableAudioFor } from './audio-transcode.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
@@ -890,6 +891,42 @@ export default class WebServer {
           this._mediaIndexService?.scheduleProcess?.();
           this._embeddingIndexService?.scheduleProcess?.();
           this._expenseReconciliationService?.enqueueMessage?.(messageId, tid);
+        });
+      },
+      onLoadPendingMediaStubs: (chatJid) => {
+        return runWithTenant(tid, () => {
+          const recentCutoffTs = Math.floor(Date.now() / 1000)
+            - (Number(config.liveRecentWindowDays) || 5) * 24 * 60 * 60;
+          const rows = this.db.listPendingMediaWithDownloadStub({
+            chatJid: chatJid || null,
+            // Chat refresh: all stubs for that chat. Post-sync: recent window only.
+            newerThanTs: chatJid ? null : recentCutoffTs,
+            limit: chatJid ? 500 : 400,
+          });
+          const out = [];
+          for (const r of rows || []) {
+            const stub = parseMediaDownloadStub(r.mediaDownloadJson);
+            if (!stub) continue;
+            out.push({
+              msg: stub,
+              row: {
+                messageId: r.messageId,
+                chatJid: r.chatJid,
+                chatName: r.chatName,
+                sender: r.sender,
+                mediaType: r.mediaType,
+                mediaCaption: r.mediaCaption,
+                mediaPath: null,
+                timestamp: r.timestamp,
+              },
+            });
+          }
+          return out;
+        });
+      },
+      onPersistMediaStub: (messageId, mediaDownloadJson) => {
+        runWithTenant(tid, () => {
+          this.db.upsertMediaDownloadJsonIfPending(messageId, mediaDownloadJson);
         });
       },
       onReaction: (payload) => {
