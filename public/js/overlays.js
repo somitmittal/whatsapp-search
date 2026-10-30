@@ -1,6 +1,5 @@
 import { store } from './store.js';
 import { openNewGroupOverlay, openNewMessageOverlay } from './contacts.js';
-import { loadExpenseRuns } from './expenses.js';
 import { refreshGmailImportUi } from './gmail.js';
 import { closeAllMenus, closeMenu } from './menus.js';
 import { loadSettings } from './settings.js';
@@ -135,13 +134,6 @@ export function initOverlays() {
   $('#close-forward')?.addEventListener('click', () => { closeOverlay('forward'); store.forwardTarget = null; store.forwardSelected.clear(); });
   $('#forward-cancel')?.addEventListener('click', () => { closeOverlay('forward'); store.forwardTarget = null; store.forwardSelected.clear(); });
 
-  $('#smb-expense-history')?.addEventListener('click', () => {
-    closeOverlay('settings');
-    openOverlay('expenses');
-    loadExpenseRuns();
-  });
-
-  $('#close-expenses')?.addEventListener('click', () => closeOverlay('expenses'));
   $('#menu-settings')?.addEventListener('click', () => { closeMenu(); openOverlay('settings'); loadSettings(); });
   $('#close-import')?.addEventListener('click', () => closeOverlay('import'));
   $('#close-settings')?.addEventListener('click', () => closeOverlay('settings'));
