@@ -162,6 +162,64 @@ describe('expense skill inputs', () => {
       mediaPath: '/media/00010636-Phone_pay_-_14.10.26.pdf',
     })).toBe('00010636-Phone pay - 14.10.26.pdf');
   });
+
+  test('sheetFileName keeps photo basenames instead of inventing expenses.xlsx', () => {
+    expect(sheetFileName({
+      text: 'Paid using PhonePe UPI.\nExplore the app now: https://phon.pe/download <attached: 00010635-PHOTO-2026-10-14-12-40-33.jpg>',
+      mediaPath: 'media/import__chat_imported/00010635-PHOTO-2026-10-14-12-40-33.jpg',
+      mediaType: 'image',
+    })).toBe('00010635-PHOTO-2026-10-14-12-40-33.jpg');
+  });
+
+  test('typing expenses.xlsx does not match PhonePe payment photos on that day', () => {
+    const daySheets = [
+      {
+        chatJid: SITE,
+        messageId: 'pdf-1',
+        fileName: '00010636-Phone pay - 14.10.26.pdf',
+        timestamp: Math.floor(new Date(2026, 9, 14, 20, 30, 0).getTime() / 1000),
+      },
+      {
+        chatJid: SITE,
+        messageId: 'img-1',
+        fileName: '00010635-PHOTO-2026-10-14-12-40-33.jpg',
+        timestamp: Math.floor(new Date(2026, 9, 14, 12, 40, 0).getTime() / 1000),
+      },
+      {
+        chatJid: SITE,
+        messageId: 'img-2',
+        fileName: '00010631-PHOTO-2026-10-14-10-21-38.jpg',
+        timestamp: Math.floor(new Date(2026, 9, 14, 10, 21, 0).getTime() / 1000),
+      },
+    ];
+    const picked = resolveExpenseSheet({
+      rest: '_chat 2026-10-14 expenses.xlsx',
+      chat: { chatJid: SITE, chatName: '_chat' },
+      sheets: daySheets,
+      now: NOW,
+    });
+    expect(picked.status).toBe('needs_input');
+    expect(picked.answer).toMatch(/No expense sheet named expenses\.xlsx/);
+  });
+
+  test('picker chips embed message ids so duplicate labels stay selectable', () => {
+    const twin = [
+      { chatJid: SITE, messageId: 'a', fileName: 'sheet.pdf', timestamp: SHEET_TS },
+      { chatJid: SITE, messageId: 'b', fileName: 'sheet.pdf', timestamp: SHEET_TS - 60 },
+    ];
+    const picked = resolveExpenseSheet({ rest: '', chat, sheets: twin, now: NOW });
+    expect(picked.status).toBe('needs_input');
+    expect(picked.choices[0].message).toContain('#a');
+    expect(picked.choices[1].message).toContain('#b');
+    const byId = resolveExpenseSheet({
+      rest: `Site A 2026-10-17 sheet.pdf #b`,
+      chat,
+      sheets: twin,
+      now: NOW,
+    });
+    expect(byId.status).toBe('ready');
+    expect(byId.messageId).toBe('b');
+  });
 });
 
 describe('skill catalog', () => {

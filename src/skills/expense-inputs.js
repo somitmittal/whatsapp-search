@@ -37,6 +37,7 @@ export function chatQueryFromRest(rest) {
   const file = fileHintFromRest(text);
   if (file) text = text.replace(file, ' ');
   return text
+    .replace(/#[^\s#]+/g, ' ')
     .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
     .replace(/\b(?:today|yesterday)\b/gi, ' ')
     .replace(/\s+/g, ' ')
@@ -119,6 +120,12 @@ export function resolveExpenseChat({
  * and not guessed, including when the user did not name a file or a day.
  * `sheets` must already be newest-first.
  */
+/** Optional `#messageId` token from a prior picker chip — uniquely selects one sheet. */
+export function messageIdHintFromRest(rest) {
+  const m = String(rest || '').match(/#([^\s#]+)/);
+  return m ? m[1].trim() : null;
+}
+
 export function resolveExpenseSheet({
   rest = '',
   chat,
@@ -128,7 +135,11 @@ export function resolveExpenseSheet({
 } = {}) {
   const dateHint = dateHintFromRest(rest, now);
   const fileHint = fileHintFromRest(rest);
+  const messageIdHint = messageIdHintFromRest(rest);
   let candidates = sheets.filter((sheet) => !sheet.chatJid || sheet.chatJid === chat.chatJid);
+  if (messageIdHint) {
+    candidates = candidates.filter((sheet) => sheet.messageId === messageIdHint);
+  }
   if (dateHint) {
     candidates = candidates.filter((sheet) => dayBoundsFromTimestamp(sheet.timestamp).date === dateHint);
   }
@@ -148,10 +159,12 @@ export function resolveExpenseSheet({
       `More than one sheet in ${chat.chatName || 'that chat'} matches. Send one of these:`,
       candidates.slice(0, 8).map((sheet) => {
         const day = dayBoundsFromTimestamp(sheet.timestamp).date;
-        // Include the calendar day so a click uniquely selects even when names collide.
+        // Include day + message id so a click uniquely selects even when names collide.
         return {
           label: `${sheet.fileName} (${day})`,
-          message: `${command} ${chat.chatName || ''} ${day} ${sheet.fileName}`.replace(/\s+/g, ' ').trim(),
+          message: `${command} ${chat.chatName || ''} ${day} ${sheet.fileName} #${sheet.messageId}`
+            .replace(/\s+/g, ' ')
+            .trim(),
         };
       }),
     );

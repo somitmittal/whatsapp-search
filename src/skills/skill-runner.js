@@ -14,8 +14,17 @@ import {
 import { resolveExpenseChat, resolveExpenseSheet } from './expense-inputs.js';
 import { parseSkillInvocation, skillCommand } from './parse-invocation.js';
 
-/** Real document name for picker labels — not a hardcoded expenses.xlsx fallback. */
+/** Attachment / media extensions we show in the sheet picker (docs + photo sheets). */
+const SHEET_NAME_EXT = 'xlsx|xlsm|csv|tsv|txt|pdf|docx|jpe?g|png|webp';
+
+/**
+ * Real document name for picker labels.
+ * Never invent "expenses.xlsx" — that made PhonePe payment photos look like Excel files
+ * and matched a typed `expenses.xlsx` filter when no such file existed.
+ */
 export function sheetFileName(row) {
+  const extRe = new RegExp(`\\.(?:${SHEET_NAME_EXT})$`, 'i');
+  const namedRe = new RegExp(`([^/\\\\]+?\\.(?:${SHEET_NAME_EXT}))\\b`, 'i');
   const sources = [row?.mediaCaption, row?.text, row?.mediaPath]
     .map((value) => String(value || '').trim())
     .filter(Boolean);
@@ -23,14 +32,14 @@ export function sheetFileName(row) {
     const attached = src.match(/<attached:\s*([^>]+)>/i);
     if (attached) {
       const name = basename(attached[1].trim());
-      if (/\.(xlsx|xlsm|csv|tsv|txt|pdf|docx)$/i.test(name)) return name;
+      if (extRe.test(name)) return name;
     }
-    const named = src.match(/([^/\\]+?\.(?:xlsx|xlsm|csv|tsv|txt|pdf|docx))\b/i);
+    const named = src.match(namedRe);
     if (named) return basename(named[1].trim());
   }
-  const fromPath = basename(String(row?.mediaPath || ''));
-  if (/\.(xlsx|xlsm|csv|tsv|txt|pdf|docx)$/i.test(fromPath)) return fromPath;
-  return 'expenses.xlsx';
+  const fromPath = basename(String(row?.mediaPath || '').trim());
+  if (fromPath && fromPath !== '.' && /\.[a-z0-9]+$/i.test(fromPath)) return fromPath;
+  return row?.mediaType === 'image' ? 'photo.jpg' : 'document';
 }
 
 function sheetsForChat(db, chatJid) {
