@@ -4,10 +4,12 @@
  * Baileys implements the WhatsApp multi-device WS protocol directly.
  * No Puppeteer / headless browser → no bot-detection / "Can't link" errors.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { writeFile } from 'fs/promises';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { rename, rm as rmAsync, writeFile } from 'fs/promises';
 import { createRequire } from 'module';
 import { extname, join } from 'path';
+import { Transform } from 'stream';
+import { pipeline } from 'stream/promises';
 import config from '../config.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 import {
@@ -97,6 +99,8 @@ const BATCH_MS = 2000;
 const WA_DRAIN_GAP_MS = 120;
 
 const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
+/** Drain order bias: light types first so videos cannot monopolize the shared worker pool. */
+const MEDIA_QUEUE_TYPES = ['image', 'audio', 'sticker', 'document', 'video'];
 const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
 
 function safeJidDir(jid) {
@@ -205,6 +209,7 @@ export default class WaClient {
     onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction,
     onResolvedDisplayName, onUnreadCounts, onMessageRevoked, onMessageEdited,
     onChatAvatar, onMessageReceipt, onLoadPendingMediaStubs, onMediaNeedsDownload, onMediaSettled,
+    onClaimMediaDownload, onReleaseMediaDownloadClaim,
   }) {
     this._authDir = authDir || join(config.dataDir, '.baileys_auth');
     this._configFile = configFile || join(config.dataDir, 'wa-config.json');
@@ -221,6 +226,8 @@ export default class WaClient {
     this._onLoadPendingMediaStubs = onLoadPendingMediaStubs;
     this._onMediaNeedsDownload = onMediaNeedsDownload;
     this._onMediaSettled = onMediaSettled;
+    this._onClaimMediaDownload = onClaimMediaDownload;
+    this._onReleaseMediaDownloadClaim = onReleaseMediaDownloadClaim;
     this._onReaction    = onReaction;
     this._onResolvedDisplayName = onResolvedDisplayName;
     this._onUnreadCounts = onUnreadCounts;
@@ -261,9 +268,13 @@ export default class WaClient {
     this._destroyed     = false;
     this._pendingBatch  = [];
     this._flushTimer    = null;
-    this._mediaQueue    = [];
+    // Per-type queues so a slow video cannot sit ahead of small images in a single FIFO.
+    // Shared worker budget below preserves the configured concurrency.
+    this._mediaQueues = new Map(MEDIA_QUEUE_TYPES.map((type) => [type, []]));
+    this._mediaQueueCursor = 0;
     /** When set, deferred media for this chat drains before other chats. */
     this._priorityMediaChatJid = null;
+    /** In-memory queue/in-flight set for UI `isMediaQueued` + cheap enqueue dedupe. */
     this._queuedMediaIds = new Set();
     this._mediaDraining = false;
     /** Sidebar profile / group pictures. Filled newest-first and drained after history sync. */
@@ -907,7 +918,7 @@ export default class WaClient {
     clearTimeout(this._historyRetryTimer);
     this._reconnectTimer = null;
     this._historyRetryTimer = null;
-    this._mediaQueue.length = 0;
+    for (const queue of this._mediaQueues.values()) queue.length = 0;
     this._queuedMediaIds.clear();
     try { this._sock?.end?.(new Error('destroy')); } catch {}
     this._sock = null;
@@ -2283,57 +2294,77 @@ export default class WaClient {
    */
   async _enrichRowWithMedia(msg, row, { allowPhoneReupload = false } = {}) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return row;
-    try {
-      const download = async (m) => downloadMediaMessage(m, 'buffer', {}, {
+    const inner = resolveInnerContent(msg.message) || msg.message;
+    const mime =
+      inner.imageMessage?.mimetype ||
+      inner.videoMessage?.mimetype ||
+      inner.ptvMessage?.mimetype ||
+      inner.audioMessage?.mimetype ||
+      inner.stickerMessage?.mimetype ||
+      inner.documentMessage?.mimetype ||
+      'application/octet-stream';
+    const documentExt = extname(String(inner.documentMessage?.fileName || '')).slice(1).toLowerCase();
+    const ext = ['xlsx', 'csv'].includes(documentExt) ? documentExt : extFromMime(mime);
+    const dir = join(config.mediaDir, safeJidDir(row.chatJid));
+    mkdirSync(dir, { recursive: true });
+    const filename = `${row.messageId}.${ext}`;
+    const fullPath = join(dir, filename);
+
+    // Stream decrypt → temp file → rename. Keeps the 12 MiB video cap without a full Buffer.
+    const downloadToFile = async (message) => {
+      const stream = await downloadMediaMessage(message, 'stream', {}, {
         logger: this._mediaLogger,
         ...(allowPhoneReupload
           ? { reuploadRequest: (x) => this._sock.updateMediaMessage(x) }
           : {}),
       });
-
-      let buffer;
-      try {
-        buffer = await download(msg);
-      } catch (e1) {
-        const m = String(e1?.message || '');
-        // Expired CDN URL — only ask the phone when the user opted into reupload for this chat.
-        if (
-          allowPhoneReupload
-          && (m.includes('Failed to fetch stream') || m.includes('Status code: 403') || m.includes('Status code: 401'))
-        ) {
-          try {
-            const refreshed = await this._sock.updateMediaMessage(msg);
-            buffer = await download(refreshed || msg);
-          } catch (e2) {
-            throw e2;
+      const tempPath = `${fullPath}.part-${process.pid}-${Date.now()}`;
+      let bytes = 0;
+      const limit = new Transform({
+        transform(chunk, _encoding, callback) {
+          bytes += chunk.length;
+          if (row.mediaType === 'video' && bytes > MAX_VIDEO_BYTES) {
+            const error = new Error(`video exceeds ${MAX_VIDEO_BYTES} byte limit`);
+            error.code = 'WA_MEDIA_TOO_LARGE';
+            callback(error);
+            return;
           }
+          callback(null, chunk);
+        },
+      });
+      try {
+        await pipeline(stream, limit, createWriteStream(tempPath, { flags: 'w' }));
+        await rmAsync(fullPath, { force: true });
+        await rename(tempPath, fullPath);
+        return bytes;
+      } catch (error) {
+        await rmAsync(tempPath, { force: true }).catch(() => {});
+        throw error;
+      }
+    };
+
+    try {
+      try {
+        await downloadToFile(msg);
+      } catch (e1) {
+        const message = String(e1?.message || '');
+        if (
+          e1?.code !== 'WA_MEDIA_TOO_LARGE'
+          && allowPhoneReupload
+          && (message.includes('Failed to fetch stream') || message.includes('Status code: 403') || message.includes('Status code: 401'))
+        ) {
+          const refreshed = await this._sock.updateMediaMessage(msg);
+          await downloadToFile(refreshed || msg);
         } else {
           throw e1;
         }
       }
-      if (row.mediaType === 'video' && buffer.length > MAX_VIDEO_BYTES) {
-        console.warn(`[WA] skip large video (${buffer.length} bytes)`);
-        return { ...row, mediaPath: MEDIA_TOO_LARGE_PATH };
-      }
-      const m = msg.message;
-      const mime =
-        m.imageMessage?.mimetype ||
-        m.videoMessage?.mimetype ||
-        m.ptvMessage?.mimetype ||
-        m.audioMessage?.mimetype ||
-        m.stickerMessage?.mimetype ||
-        m.documentMessage?.mimetype ||
-        'application/octet-stream';
-      const documentExt = extname(String(m.documentMessage?.fileName || '')).slice(1).toLowerCase();
-      const ext = ['xlsx', 'csv'].includes(documentExt) ? documentExt : extFromMime(mime);
-      const dir = join(config.mediaDir, safeJidDir(row.chatJid));
-      mkdirSync(dir, { recursive: true });
-      const filename = `${row.messageId}.${ext}`;
-      const fullPath = join(dir, filename);
-      await writeFile(fullPath, buffer);
       return { ...row, mediaPath: fullPath };
     } catch (e) {
-      // Avoid spamming full signed URLs (they're ephemeral and noisy in logs)
+      if (e?.code === 'WA_MEDIA_TOO_LARGE') {
+        console.warn(`[WA] skip large video (${MAX_VIDEO_BYTES}+ bytes)`);
+        return { ...row, mediaPath: MEDIA_TOO_LARGE_PATH };
+      }
       const msgText = String(e?.message || 'media download failed');
       console.warn(`[WA] media download ${row.messageId}:`, msgText.replace(/https?:\/\/\S+/g, '<url>'));
       if (isPermanentMediaFailure(e)) {
@@ -2365,15 +2396,27 @@ export default class WaClient {
   _queueMediaDownload(msg, row) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return;
     if (isTerminalMediaPath(row.mediaPath)) return;
+    const queue = this._mediaQueues.get(row.mediaType);
+    if (!queue) return;
     if (row.messageId && this._queuedMediaIds.has(row.messageId)) return;
     if (row.messageId) this._queuedMediaIds.add(row.messageId);
     // Retain only the fields Baileys needs for media download rather than the full history
     // event object; large first syncs can otherwise keep substantial protocol metadata alive.
     const slim = { msg: { key: msg.key, message: msg.message }, row };
-    this._mediaQueue.push(slim);
+    queue.push(slim);
     const priorityMatch = this._priorityMediaChatJid
       && row.chatJid === this._priorityMediaChatJid;
     if (this._historyDone || priorityMatch) this._drainMediaQueue().catch(() => {});
+  }
+
+  _mediaQueueLength(chatJid = null) {
+    let count = 0;
+    for (const queue of this._mediaQueues.values()) {
+      count += chatJid
+        ? queue.filter((item) => item?.row?.chatJid === chatJid).length
+        : queue.length;
+    }
+    return count;
   }
 
   /**
@@ -2391,10 +2434,7 @@ export default class WaClient {
     if (jid) this._requeuePersistedPendingMedia(jid, mid || null);
     this._sortDeferredMediaQueue();
     this._drainMediaQueue().catch(() => {});
-    const queuedForChat = jid
-      ? this._mediaQueue.filter((item) => item?.row?.chatJid === jid).length
-      : 0;
-    return { ok: true, queuedForChat };
+    return { ok: true, queuedForChat: jid ? this._mediaQueueLength(jid) : 0 };
   }
 
   /**
@@ -2432,21 +2472,51 @@ export default class WaClient {
   _sortDeferredMediaQueue() {
     const cutoff = Math.floor(Date.now() / 1000)
       - (config.liveRecentWindowDays * 24 * 60 * 60);
-    sortDeferredMediaByChatActivity(this._mediaQueue, cutoff, this._priorityMediaChatJid || null);
+    for (const queue of this._mediaQueues.values()) {
+      sortDeferredMediaByChatActivity(queue, cutoff, this._priorityMediaChatJid || null);
+    }
+  }
+
+  /**
+   * Round-robin across type queues, but skip video on the first pass so light media
+   * is not stuck behind large downloads when both are pending.
+   */
+  _takeNextMediaQueueItem() {
+    const types = MEDIA_QUEUE_TYPES;
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (let offset = 0; offset < types.length; offset += 1) {
+        const index = (this._mediaQueueCursor + offset) % types.length;
+        const type = types[index];
+        if (pass === 0 && type === 'video') continue;
+        const item = takeNextDeferredMediaItem(this._mediaQueues.get(type), {
+          historyDone: this._historyDone,
+          priorityChatJid: this._priorityMediaChatJid,
+        });
+        if (item) {
+          this._mediaQueueCursor = (index + 1) % types.length;
+          return item;
+        }
+      }
+    }
+    return null;
   }
 
   async _mediaDrainWorker() {
     while (!this._destroyed) {
-      const item = takeNextDeferredMediaItem(this._mediaQueue, {
-        historyDone: this._historyDone,
-        priorityChatJid: this._priorityMediaChatJid,
-      });
+      const item = this._takeNextMediaQueueItem();
       if (!item) return;
       const { msg, row } = item;
       let settledPath = null;
+      let claimed = false;
+      let reportOutcome = false;
       try {
+        claimed = typeof this._onClaimMediaDownload === 'function'
+          ? Boolean(this._onClaimMediaDownload(row.messageId))
+          : true;
+        if (!claimed) continue;
         // On-demand history re-delivers messages whose file we may already have.
         if (this._onMediaNeedsDownload?.(row.messageId) === false) continue;
+        reportOutcome = true;
         const allowPhoneReupload = Boolean(
           this._priorityMediaChatJid && row.chatJid === this._priorityMediaChatJid,
         );
@@ -2456,10 +2526,18 @@ export default class WaClient {
         if (settledPath) row.mediaPath = settledPath;
       } finally {
         if (row.messageId) this._queuedMediaIds.delete(row.messageId);
+        // Persist path/settled before releasing the lease so another worker cannot race.
+        if (claimed) {
+          try {
+            if (reportOutcome) {
+              if (settledPath) this._onMediaPath?.(row.messageId, settledPath);
+              else this._onMediaSettled?.(row.messageId);
+            }
+          } finally {
+            this._onReleaseMediaDownloadClaim?.(row.messageId);
+          }
+        }
       }
-      // Always report the outcome: a failed attempt must flip the UI out of "Loading".
-      if (settledPath) this._onMediaPath?.(row.messageId, settledPath);
-      else this._onMediaSettled?.(row.messageId);
       await new Promise((r) => setTimeout(r, WA_DRAIN_GAP_MS));
     }
   }
@@ -2474,8 +2552,7 @@ export default class WaClient {
       await Promise.all(Array.from({ length: workers }, () => this._mediaDrainWorker()));
     } finally {
       this._mediaDraining = false;
-      // History may have completed mid-drain while we were priority-only; pick up the rest.
-      if (this._historyDone && this._mediaQueue.length && !this._destroyed) {
+      if (this._historyDone && this._mediaQueueLength() && !this._destroyed) {
         this._drainMediaQueue().catch(() => {});
       }
     }

@@ -963,6 +963,8 @@ export default class WebServer {
         });
       },
       onMediaNeedsDownload: (messageId) => runWithTenant(tid, () => this.db.mediaNeedsDownload(messageId)),
+      onClaimMediaDownload: (messageId) => runWithTenant(tid, () => this.db.claimMediaDownload(messageId)),
+      onReleaseMediaDownloadClaim: (messageId) => runWithTenant(tid, () => this.db.releaseMediaDownloadClaim(messageId)),
       onMediaSettled: (messageId) => {
         runWithTenant(tid, () => {
           const chatJid = this.db.getMessageChatJid(messageId);

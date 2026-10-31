@@ -93,3 +93,18 @@ describe('deferred WhatsApp media priority', () => {
     expect(queue).toHaveLength(0);
   });
 });
+
+describe('per-type media queue take helper', () => {
+  test('priority chat still wins inside a typed queue while history syncs', () => {
+    const imageQueue = [
+      { row: { messageId: 'other-img', chatJid: 'other@g.us', mediaType: 'image' } },
+      { row: { messageId: 'focus-img', chatJid: 'focus@g.us', mediaType: 'image' } },
+    ];
+    expect(
+      takeNextDeferredMediaItem(imageQueue, {
+        historyDone: false,
+        priorityChatJid: 'focus@g.us',
+      })?.row?.messageId,
+    ).toBe('focus-img');
+  });
+});

@@ -419,6 +419,19 @@ export default class Database {
       );
     `);
 
+    // Cross-worker / cross-delivery media deduplication. Claims are short-lived leases:
+    // a crashed process cannot permanently strand a pending media item.
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS wa_media_download_claims (
+        tenant_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY (tenant_id, message_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wa_media_download_claims_expiry
+        ON wa_media_download_claims(expires_at);
+    `);
+
     this._migrateFtsToPorter();
 
     this._db.exec(`
@@ -1727,6 +1740,34 @@ export default class Database {
       ORDER BY timestamp DESC
     `;
     return jid ? this._db.prepare(sql).all(t, jid) : this._db.prepare(sql).all(t);
+  }
+
+  /**
+   * Atomically claim one media download across duplicate Baileys deliveries and workers.
+   * A lease expires after 30 minutes so an interrupted process cannot block retries forever.
+   */
+  claimMediaDownload(messageId, leaseMs = 30 * 60 * 1000) {
+    const mid = String(messageId || '').trim();
+    if (!mid) return false;
+    const tenantId = getCurrentTenantId();
+    const leaseSeconds = Math.max(60, Math.min(60 * 60, Math.ceil(Number(leaseMs) / 1000) || 1800));
+    const result = this._db.prepare(`
+      INSERT INTO wa_media_download_claims (tenant_id, message_id, expires_at)
+      VALUES (?, ?, unixepoch() + ?)
+      ON CONFLICT(tenant_id, message_id) DO UPDATE SET
+        expires_at = excluded.expires_at
+      WHERE wa_media_download_claims.expires_at <= unixepoch()
+    `).run(tenantId, mid, leaseSeconds);
+    return result.changes === 1;
+  }
+
+  releaseMediaDownloadClaim(messageId) {
+    const mid = String(messageId || '').trim();
+    if (!mid) return 0;
+    const tenantId = getCurrentTenantId();
+    return this._db.prepare(
+      'DELETE FROM wa_media_download_claims WHERE tenant_id = ? AND message_id = ?',
+    ).run(tenantId, mid).changes;
   }
 
   /** True when the row still lacks a local file / final sentinel. */

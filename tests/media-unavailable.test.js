@@ -112,3 +112,35 @@ describe('on-demand history anchor for stub-less pending media', () => {
     });
   });
 });
+
+
+describe('database-backed media download claims', () => {
+  test('claims are unique per tenant and can be released for retry', async () => {
+    await runWithTenant(LEGACY_TENANT_ID, async () => {
+      expect(db.claimMediaDownload('claim-1')).toBe(true);
+      expect(db.claimMediaDownload('claim-1')).toBe(false);
+      expect(db.releaseMediaDownloadClaim('claim-1')).toBe(1);
+      expect(db.claimMediaDownload('claim-1')).toBe(true);
+      db.releaseMediaDownloadClaim('claim-1');
+    });
+
+    await runWithTenant('tenant-media-claims-other', async () => {
+      expect(db.claimMediaDownload('claim-1')).toBe(true);
+      expect(db.claimMediaDownload('claim-1')).toBe(false);
+      db.releaseMediaDownloadClaim('claim-1');
+    });
+  });
+
+  test('expired claims can be reclaimed after an interrupted worker', async () => {
+    await runWithTenant(LEGACY_TENANT_ID, async () => {
+      expect(db.claimMediaDownload('claim-expired')).toBe(true);
+      db._db.prepare(`
+        UPDATE wa_media_download_claims
+        SET expires_at = unixepoch() - 1
+        WHERE tenant_id = ? AND message_id = ?
+      `).run(LEGACY_TENANT_ID, 'claim-expired');
+      expect(db.claimMediaDownload('claim-expired')).toBe(true);
+      db.releaseMediaDownloadClaim('claim-expired');
+    });
+  });
+});
