@@ -272,8 +272,13 @@ export default class WaClient {
     // Shared worker budget below preserves the configured concurrency.
     this._mediaQueues = new Map(MEDIA_QUEUE_TYPES.map((type) => [type, []]));
     this._mediaQueueCursor = 0;
-    /** When set, deferred media for this chat drains before other chats. */
-    this._priorityMediaChatJid = null;
+    /**
+     * Opened / refreshed chats, newest first. Cap matches `liveRecentWindowDays` so a
+     * click-tour cannot turn into a whole-archive download.
+     */
+    this._priorityMediaChatJids = [];
+    /** Chats that may ask the phone to re-upload expired CDN media (explicit Retry / Load). */
+    this._phoneReuploadChatJids = new Set();
     /** In-memory queue/in-flight set for UI `isMediaQueued` + cheap enqueue dedupe. */
     this._queuedMediaIds = new Set();
     this._mediaDraining = false;
@@ -2404,8 +2409,7 @@ export default class WaClient {
     // event object; large first syncs can otherwise keep substantial protocol metadata alive.
     const slim = { msg: { key: msg.key, message: msg.message }, row };
     queue.push(slim);
-    const priorityMatch = this._priorityMediaChatJid
-      && row.chatJid === this._priorityMediaChatJid;
+    const priorityMatch = this._priorityMediaChatJids.includes(row.chatJid);
     if (this._historyDone || priorityMatch) this._drainMediaQueue().catch(() => {});
   }
 
@@ -2420,18 +2424,42 @@ export default class WaClient {
   }
 
   /**
-   * Prefer media downloads for this chat (explicit “Load messages & media” / Retry).
-   * Opening a chat alone must not call this — that caused surprise bulk downloads.
+   * Push a chat to the front of the media-priority stack without dropping earlier opens.
+   * Cap = `liveRecentWindowDays` (same window used for “recent” media age).
+   */
+  _pushPriorityMediaChat(chatJid) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return;
+    this._priorityMediaChatJids = this._priorityMediaChatJids.filter((x) => x !== jid);
+    this._priorityMediaChatJids.unshift(jid);
+    const cap = Math.max(1, config.liveRecentWindowDays || 1);
+    if (this._priorityMediaChatJids.length > cap) {
+      this._priorityMediaChatJids.length = cap;
+    }
+  }
+
+  /**
+   * Prefer media downloads for this chat.
+   * - Open chat: `{ recentOnly: true }` → last `liveRecentWindowDays` only; no phone reupload.
+   * - Retry / Load messages & media: full chat (or one messageId); may reupload from phone.
+   * Fast chat switches push onto a stack — earlier opens keep downloading.
    * @param {string} chatJid
-   * @param {{ messageId?: string|null }} [opts] when set, only re-queue that one message
+   * @param {{ messageId?: string|null, recentOnly?: boolean, allowPhoneReupload?: boolean }} [opts]
    * @returns {{ ok: boolean, queuedForChat: number }}
    */
-  prioritizeChatMedia(chatJid, { messageId = null } = {}) {
+  prioritizeChatMedia(chatJid, {
+    messageId = null,
+    recentOnly = false,
+    allowPhoneReupload = !recentOnly,
+  } = {}) {
     const jid = String(chatJid || '').trim();
     const mid = messageId != null ? String(messageId).trim() : '';
-    this._priorityMediaChatJid = jid || null;
-    // Refresh: re-queue failed / interrupted downloads from their persisted stubs.
-    if (jid) this._requeuePersistedPendingMedia(jid, mid || null);
+    if (jid) this._pushPriorityMediaChat(jid);
+    if (jid && allowPhoneReupload) this._phoneReuploadChatJids.add(jid);
+    const sinceTs = recentOnly && !mid
+      ? Math.floor(Date.now() / 1000) - (config.liveRecentWindowDays * 24 * 60 * 60)
+      : null;
+    if (jid) this._requeuePersistedPendingMedia(jid, mid || null, { sinceTs });
     this._sortDeferredMediaQueue();
     this._drainMediaQueue().catch(() => {});
     return { ok: true, queuedForChat: jid ? this._mediaQueueLength(jid) : 0 };
@@ -2441,8 +2469,9 @@ export default class WaClient {
    * Load Baileys media stubs persisted in SQLite and put them back on the download queue.
    * @param {string | null} chatJid null = every chat (post-sync)
    * @param {string | null} [messageId] when set, only that message
+   * @param {{ sinceTs?: number|null }} [opts] when set, only media at/after this unix second
    */
-  _requeuePersistedPendingMedia(chatJid, messageId = null) {
+  _requeuePersistedPendingMedia(chatJid, messageId = null, { sinceTs = null } = {}) {
     if (typeof this._onLoadPendingMediaStubs !== 'function') return 0;
     let items = [];
     try {
@@ -2452,10 +2481,12 @@ export default class WaClient {
       return 0;
     }
     const wantMid = messageId != null ? String(messageId).trim() : '';
+    const minTs = sinceTs != null ? Number(sinceTs) || 0 : null;
     let n = 0;
     for (const item of items) {
       if (!item?.msg?.key || !item?.row?.messageId) continue;
       if (wantMid && String(item.row.messageId) !== wantMid) continue;
+      if (minTs != null && (Number(item.row.timestamp) || 0) < minTs) continue;
       this._queueMediaDownload(item.msg, item.row);
       n += 1;
     }
@@ -2463,7 +2494,8 @@ export default class WaClient {
       console.log(
         `[WA] Re-queued ${n} pending media download(s)`
         + (chatJid ? ` for ${chatJid}` : '')
-        + (wantMid ? ` (message ${wantMid})` : ''),
+        + (wantMid ? ` (message ${wantMid})` : '')
+        + (minTs != null ? ` (since ${minTs})` : ''),
       );
     }
     return n;
@@ -2473,7 +2505,7 @@ export default class WaClient {
     const cutoff = Math.floor(Date.now() / 1000)
       - (config.liveRecentWindowDays * 24 * 60 * 60);
     for (const queue of this._mediaQueues.values()) {
-      sortDeferredMediaByChatActivity(queue, cutoff, this._priorityMediaChatJid || null);
+      sortDeferredMediaByChatActivity(queue, cutoff, this._priorityMediaChatJids);
     }
   }
 
@@ -2490,7 +2522,7 @@ export default class WaClient {
         if (pass === 0 && type === 'video') continue;
         const item = takeNextDeferredMediaItem(this._mediaQueues.get(type), {
           historyDone: this._historyDone,
-          priorityChatJid: this._priorityMediaChatJid,
+          priorityChatJids: this._priorityMediaChatJids,
         });
         if (item) {
           this._mediaQueueCursor = (index + 1) % types.length;
@@ -2517,9 +2549,7 @@ export default class WaClient {
         // On-demand history re-delivers messages whose file we may already have.
         if (this._onMediaNeedsDownload?.(row.messageId) === false) continue;
         reportOutcome = true;
-        const allowPhoneReupload = Boolean(
-          this._priorityMediaChatJid && row.chatJid === this._priorityMediaChatJid,
-        );
+        const allowPhoneReupload = this._phoneReuploadChatJids.has(row.chatJid);
         const enriched = await this._enrichRowWithMedia(msg, row, { allowPhoneReupload });
         settledPath = enriched.mediaPath || null;
         // Same object may still sit in the unflushed insert batch — carry the path into it.
@@ -2544,8 +2574,8 @@ export default class WaClient {
 
   async _drainMediaQueue() {
     if (this._mediaDraining) return;
-    // Full archive waits until history finishes; a prioritized open chat may drain during sync.
-    if (!this._historyDone && !this._priorityMediaChatJid) return;
+    // Full archive waits until history finishes; prioritized open chats may drain during sync.
+    if (!this._historyDone && !this._priorityMediaChatJids.length) return;
     this._mediaDraining = true;
     const workers = Math.max(1, config.waMediaDrainConcurrency || 1);
     try {

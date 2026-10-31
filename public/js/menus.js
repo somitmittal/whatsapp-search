@@ -158,6 +158,8 @@ export async function priorityLoadChat(jid, {
   alertResult = true,
   requestHistory = false,
   messageId = null,
+  recentOnly = false,
+  skipUiRefresh = false,
 } = {}) {
   if (!jid) throw new Error('No chat selected');
   const r = await fetch(`/api/chats/${encodeURIComponent(jid)}/priority-load`, {
@@ -167,17 +169,21 @@ export async function priorityLoadChat(jid, {
     body: JSON.stringify({
       count,
       requestHistory: !!requestHistory,
+      recentOnly: !!recentOnly && !messageId,
       ...(messageId ? { messageId: String(messageId) } : {}),
     }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || 'Request failed');
   // Prefer opening/refreshing the prioritized chat so the user sees new media/messages.
-  if (store.activeChat !== jid) {
-    if (typeof store.onOpenChatContext === 'function') store.onOpenChatContext(jid);
-    else await openChat(jid);
-  } else {
-    await refreshOpenChatMessages();
+  // Open-chat soft prioritize passes skipUiRefresh to avoid a second messages fetch.
+  if (!skipUiRefresh) {
+    if (store.activeChat !== jid) {
+      if (typeof store.onOpenChatContext === 'function') store.onOpenChatContext(jid);
+      else await openChat(jid);
+    } else {
+      await refreshOpenChatMessages();
+    }
   }
   if (alertResult) {
     const bits = ['This chat is now first for AI indexing.'];

@@ -247,6 +247,17 @@ export async function openChat(jid, focusMessageId = null) {
       || jid.endsWith('@newsletter') || jid.endsWith('@bot');
     aiChatBtn.style.display = hideAi ? 'none' : 'flex';
   }
+  // Soft prioritize recent pending media for this chat (keeps earlier opens on a stack).
+  // Full-chat / phone reupload stays on Retry and “Load messages & media”.
+  if (jid && !String(jid).endsWith('@imported')) {
+    void import('./menus.js').then(({ priorityLoadChat }) =>
+      priorityLoadChat(jid, {
+        alertResult: false,
+        recentOnly: true,
+        skipUiRefresh: true,
+      }).catch(() => {}),
+    );
+  }
   try {
     const msgUrl = focusMessageId
       ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(focusMessageId)}`

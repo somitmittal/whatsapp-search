@@ -1104,6 +1104,14 @@ async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
   } else {
     els.waView.innerHTML = '<div class="gpt-wa-loading">Loading messages…</div>';
   }
+  // Soft prioritize recent pending media; earlier opens stay on the priority stack.
+  if (jid && !String(jid).endsWith('@imported')) {
+    void priorityLoadChat(jid, {
+      alertResult: false,
+      recentOnly: true,
+      skipUiRefresh: true,
+    }).catch(() => {});
+  }
   try {
     const res = await fetch(
       `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${INITIAL_CHAT_MESSAGES_LIMIT}&offset=0`,

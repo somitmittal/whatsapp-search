@@ -1714,10 +1714,18 @@ export default class WebServer {
         this._embeddingIndexService?.notePriorityChange?.();
 
         const messageId = String(req.body?.messageId || '').trim() || null;
+        const recentOnly = req.body?.recentOnly === true
+          || req.body?.recentOnly === 1
+          || String(req.body?.recentOnly || '').toLowerCase() === 'true';
         let mediaQueued = 0;
         if (wa && typeof wa.prioritizeChatMedia === 'function' && !imported) {
           mediaQueued = Number(
-            wa.prioritizeChatMedia(chatJid, { messageId })?.queuedForChat || 0,
+            wa.prioritizeChatMedia(chatJid, {
+              messageId,
+              recentOnly: recentOnly && !messageId,
+              // Explicit Retry / Load may re-upload; soft open-chat recent pass must not.
+              allowPhoneReupload: !recentOnly || Boolean(messageId),
+            })?.queuedForChat || 0,
           );
         }
 

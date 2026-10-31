@@ -71,6 +71,22 @@ describe('deferred WhatsApp media priority', () => {
     ]);
   });
 
+  test('newer open outranks an earlier open without dropping it', () => {
+    const now = 2_000_000_000;
+    const queue = [
+      { row: { messageId: 'a-media', chatJid: 'a@g.us', timestamp: now } },
+      { row: { messageId: 'b-media', chatJid: 'b@g.us', timestamp: now } },
+      { row: { messageId: 'other', chatJid: 'other@g.us', timestamp: now } },
+    ];
+    // Newest open is B, then A — both before unrelated chats.
+    sortDeferredMediaByChatActivity(queue, now - 5 * 86400, ['b@g.us', 'a@g.us']);
+    expect(queue.map(({ row }) => row.messageId)).toEqual([
+      'b-media',
+      'a-media',
+      'other',
+    ]);
+  });
+
   test('while history syncs, only priority-chat media is taken', () => {
     const queue = [
       { row: { messageId: 'a', chatJid: 'a@g.us' } },
@@ -81,6 +97,33 @@ describe('deferred WhatsApp media priority', () => {
       .toBe('focus');
     expect(queue.map(({ row }) => row.messageId)).toEqual(['a', 'b']);
     expect(takeNextDeferredMediaItem(queue, { historyDone: false, priorityChatJid: 'focus@g.us' })).toBeNull();
+  });
+
+  test('while history syncs, priority stack drains newest open first then earlier opens', () => {
+    const queue = [
+      { row: { messageId: 'a', chatJid: 'a@g.us' } },
+      { row: { messageId: 'b', chatJid: 'b@g.us' } },
+      { row: { messageId: 'c', chatJid: 'c@g.us' } },
+    ];
+    expect(
+      takeNextDeferredMediaItem(queue, {
+        historyDone: false,
+        priorityChatJids: ['b@g.us', 'a@g.us'],
+      })?.row?.messageId,
+    ).toBe('b');
+    expect(
+      takeNextDeferredMediaItem(queue, {
+        historyDone: false,
+        priorityChatJids: ['b@g.us', 'a@g.us'],
+      })?.row?.messageId,
+    ).toBe('a');
+    expect(
+      takeNextDeferredMediaItem(queue, {
+        historyDone: false,
+        priorityChatJids: ['b@g.us', 'a@g.us'],
+      }),
+    ).toBeNull();
+    expect(queue.map(({ row }) => row.messageId)).toEqual(['c']);
   });
 
   test('after history completes, media drains FIFO from the front', () => {
