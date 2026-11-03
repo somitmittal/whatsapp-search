@@ -88,6 +88,8 @@ Module._nodeModulePaths = function (from) {
     'utf8',
   );
 
+  // electron-updater: require the package (not autoUpdater — that needs Electron).
+  // Missing from app/node_modules → Settings shows "Updater is not available in this build."
   const script = [
     opts.skipNative ? '' : "require('better-sqlite3');",
     "require('googleapis');",
@@ -96,6 +98,7 @@ Module._nodeModulePaths = function (from) {
     "require('dunder-proto/get');",
     "require('call-bind-apply-helpers');",
     "require('es-abstract-get/GetMethod');",
+    "require('electron-updater');",
     "console.log('packaged dependency smoke ok');",
   ].filter(Boolean).join('');
 

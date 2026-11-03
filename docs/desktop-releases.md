@@ -58,11 +58,16 @@ can fetch the correct `better-sqlite3` prebuild without executing a foreign `nod
 ## Packaging smoke check
 
 `scripts/after-pack-mac.cjs` runs on **every** platform after electron-builder packs the app.
-It loads `better-sqlite3`, `googleapis`, `exceljs`, and the `qs` / `dunder-proto` chain under the
-**bundled** Node binary, with module resolution clamped to the packaged `app/` tree (so CI cannot
-false-pass by walking up into the checkout’s `node_modules`). Missing hoisted packages are copied
-from the project install into `app/node_modules` before the check. If the graph is still incomplete,
-the GitHub Action fails instead of shipping a DMG/EXE that shows “Searchable failed to start”.
+It loads `better-sqlite3`, `googleapis`, `exceljs`, `electron-updater`, and the `qs` / `dunder-proto`
+chain under the **bundled** Node binary, with module resolution clamped to the packaged `app/` tree
+(so CI cannot false-pass by walking up into the checkout’s `node_modules`). Missing hoisted packages
+are copied from the project install into `app/node_modules` before the check. If the graph is still
+incomplete, the GitHub Action fails instead of shipping a DMG/EXE that shows “Searchable failed to
+start” or Settings → Updates → “Updater is not available in this build.”
+
+**Local builds:** run `npm ci` (or `npm install`) before `npm run dist:*`. If `electron-updater` is
+listed in `package.json` but missing from `node_modules`, the pack succeeds without it and in-app
+updates are dead until you reinstall deps and rebuild.
 
 ## macOS install (unsigned / ad-hoc builds)
 

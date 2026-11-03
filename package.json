@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-gpt",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "WhatsApp GPT - a ChatGPT/Cursor-style agent over your WhatsApp chats, 100% local data",
   "main": "electron/main.cjs",
   "type": "module",
@@ -113,7 +113,7 @@
       "extendInfo": {
         "CFBundleDisplayName": "Searchable",
         "CFBundleName": "Searchable",
-        "NSLocalNetworkUsageDescription": "Searchable keeps your chats on this Mac. It only opens a local loopback server (127.0.0.1) for the app window — it does not share data on your LAN.",
+        "NSLocalNetworkUsageDescription": "Searchable keeps your chats on this Mac. It only opens a local loopback server (127.0.0.1) for the app window \u2014 it does not share data on your LAN.",
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         }

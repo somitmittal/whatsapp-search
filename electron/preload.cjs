@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('desktopApp', {
   platform: process.platform,
   getVersion: () => ipcRenderer.invoke('desktop:get-version'),
   checkForUpdates: () => ipcRenderer.invoke('desktop:check-for-updates'),
+  downloadUpdate: () => ipcRenderer.invoke('desktop:download-update'),
   installUpdate: () => ipcRenderer.invoke('desktop:install-update'),
   openReleases: () => ipcRenderer.invoke('desktop:open-releases'),
   onUpdaterEvent: (cb) => {

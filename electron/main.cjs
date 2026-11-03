@@ -351,6 +351,8 @@ app.whenReady().then(async () => {
 
 /** @type {import('electron-updater').AppUpdater | null} */
 let autoUpdaterRef = null;
+/** Set when require('electron-updater') fails in a packaged build. */
+let autoUpdaterLoadError = null;
 /** @type {object | null} */
 let updateDownloadedInfo = null;
 
@@ -376,12 +378,40 @@ function setupAutoUpdater() {
       return { ok: false, error: 'Updates only run in the installed desktop app (not npm start / browser).' };
     }
     if (!autoUpdaterRef) {
-      return { ok: false, error: 'Updater is not available in this build.' };
+      const detail = autoUpdaterLoadError ? ` (${autoUpdaterLoadError})` : '';
+      return { ok: false, error: `Updater is not available in this build.${detail}` };
     }
     try {
       broadcastUpdater({ status: 'checking' });
       const result = await autoUpdaterRef.checkForUpdates();
-      return { ok: true, updateInfo: result?.updateInfo || null };
+      const updateInfo = result?.updateInfo || null;
+      const isUpdateAvailable = result?.isUpdateAvailable === true;
+      if (!isUpdateAvailable) {
+        broadcastUpdater({ status: 'up-to-date', version: app.getVersion() });
+      }
+      return { ok: true, isUpdateAvailable, updateInfo };
+    } catch (err) {
+      const message = err?.message || String(err);
+      broadcastUpdater({ status: 'error', message });
+      return { ok: false, error: message };
+    }
+  });
+  ipcMain.handle('desktop:download-update', async () => {
+    if (!app.isPackaged || !autoUpdaterRef) {
+      return { ok: false, error: 'Updater is not available in this build.' };
+    }
+    try {
+      // electron-updater requires a prior check that set updateInfoAndProvider.
+      if (!autoUpdaterRef.updateInfoAndProvider) {
+        const result = await autoUpdaterRef.checkForUpdates();
+        if (!result?.isUpdateAvailable) {
+          broadcastUpdater({ status: 'up-to-date', version: app.getVersion() });
+          return { ok: false, error: 'No update available to download.' };
+        }
+      }
+      broadcastUpdater({ status: 'downloading' });
+      await autoUpdaterRef.downloadUpdate();
+      return { ok: true };
     } catch (err) {
       const message = err?.message || String(err);
       broadcastUpdater({ status: 'error', message });
@@ -390,7 +420,7 @@ function setupAutoUpdater() {
   });
   ipcMain.handle('desktop:install-update', async () => {
     if (!autoUpdaterRef || !updateDownloadedInfo) {
-      return { ok: false, error: 'No update downloaded yet. Check for updates first.' };
+      return { ok: false, error: 'No update downloaded yet. Download it first from Settings → Updates.' };
     }
     setImmediate(() => {
       try { autoUpdaterRef.quitAndInstall(false, true); } catch (err) {
@@ -405,12 +435,15 @@ function setupAutoUpdater() {
   try {
     ({ autoUpdater } = require('electron-updater'));
   } catch (err) {
-    console.warn('[Desktop] electron-updater missing:', err.message);
+    autoUpdaterLoadError = err?.message || String(err);
+    console.warn('[Desktop] electron-updater missing:', autoUpdaterLoadError);
     return;
   }
   autoUpdaterRef = autoUpdater;
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdaterLoadError = null;
+  // Manual: check → notify → user downloads → user installs.
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.on('error', (err) => {
     const message = err?.message || String(err);
     console.warn('[Desktop] updater:', message);
@@ -427,24 +460,12 @@ function setupAutoUpdater() {
     broadcastUpdater({ status: 'up-to-date', version: app.getVersion() });
   });
   autoUpdater.on('download-progress', (p) => {
-    broadcastUpdater({ status: 'downloading', percent: p?.percent });
+    broadcastUpdater({ status: 'downloading', percent: p?.percent, version: p?.version });
   });
   autoUpdater.on('update-downloaded', (info) => {
     updateDownloadedInfo = info || {};
     const version = info?.version || 'a new version';
     broadcastUpdater({ status: 'downloaded', version });
-    const win = BrowserWindow.getFocusedWindow() || mainWindow;
-    dialog.showMessageBox(win || undefined, {
-      type: 'info',
-      title: 'Update ready',
-      message: `Searchable ${version} downloaded.`,
-      detail: 'Restart to install. Your local chat data stays on this computer.',
-      buttons: ['Restart now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-    }).then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall(false, true);
-    }).catch(() => {});
   });
 
   const runCheck = () => {
@@ -454,7 +475,7 @@ function setupAutoUpdater() {
     });
   };
   setTimeout(runCheck, 12_000);
-  // Recheck a few times a day while the app stays open.
+  // Recheck a few times a day while the app stays open (notify only; no auto-download).
   setInterval(runCheck, 4 * 60 * 60 * 1000);
 }
 
