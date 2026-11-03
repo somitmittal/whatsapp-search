@@ -988,10 +988,11 @@ function onAccountChanged(detail = {}) {
 
 async function loadChats() {
   try {
-    const res = await fetch('/api/chats', { headers: authHeaders() });
+    const res = await fetch('/api/gpt/conversations', { headers: authHeaders() });
     if (!res.ok) throw new Error('failed');
     const data = await res.json();
-    state.chats = Array.isArray(data) ? data : (data.chats || []);
+    const chats = Array.isArray(data) ? data : (data.conversations || data.chats || []);
+    state.chats = chats.map(c => ({ ...c, sidebarTab: c.sidebarTab || 'chat' }));
     store.chatData = state.chats;
   } catch { state.chats = []; store.chatData = []; }
   autoSelectSidebarTab();
