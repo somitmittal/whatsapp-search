@@ -596,11 +596,6 @@ html[data-theme="dark"] .wa-picker-quick { border-bottom-color: #2a3942; }
 }
 .gpt-wa-composer .chat-composer button.composer-attach:hover,
 .gpt-wa-composer .chat-composer button.composer-mic:hover { background: #e8edef; }
-  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
-  background: #f0f2f5; border-top: 1px solid var(--line); font-size: 13px;
-}
-  border: none; border-radius: 999px; font-weight: 700; cursor: pointer; min-height: 36px; padding: 8px 14px; font-family: inherit;
-}
 .gpt-wa-composer .file-attachment-chip {
   padding: 4px 14px; font-size: 12.5px;
 }
@@ -808,10 +803,13 @@ html[data-theme="dark"] .btn-cancel { background: #1f2c33; color: #e9edef; }
 
 .gpt-assistant .expense-diff { color: #111b21; }
 
-/* Composer */
-.gpt-composer-wrap { padding: 8px 20px 18px; }
+/* Composer — keep above scroll content + classic overlay stacking quirks */
+.gpt-composer-wrap {
+  padding: 8px 20px 18px; flex-shrink: 0;
+  position: relative; z-index: 6;
+}
 .gpt-composer {
-  position: relative; max-width: var(--max); margin: 0 auto; background: var(--panel);
+  position: relative; z-index: 1; max-width: var(--max); margin: 0 auto; background: var(--panel);
   border: 1px solid var(--line); border-radius: 18px; padding: 10px 12px 8px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
 }
@@ -854,9 +852,9 @@ html[data-theme="dark"] .btn-cancel { background: #1f2c33; color: #e9edef; }
 .gpt-model-menu {
   position: absolute; left: 10px; bottom: calc(100% + 6px); width: min(420px, calc(100% - 20px)); max-height: 60vh;
   display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-  box-shadow: var(--shadow); z-index: 6; overflow: hidden;
+  box-shadow: var(--shadow); z-index: 20; overflow: hidden;
 }
-.gpt-model-menu[hidden] { display: none; }
+.gpt-model-menu[hidden] { display: none !important; }
 .gpt-model-menu-head { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
 .gpt-model-menu-head input {
   flex: 1; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); outline: none;
@@ -897,8 +895,9 @@ html[data-theme="dark"] .btn-cancel { background: #1f2c33; color: #e9edef; }
 .gpt-mention {
   position: absolute; left: 10px; right: 10px; bottom: calc(100% + 6px); max-height: 300px; overflow-y: auto;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px;
-  box-shadow: var(--shadow); z-index: 5;
+  box-shadow: var(--shadow); z-index: 20;
 }
+.gpt-mention[hidden] { display: none !important; }
 .gpt-mention .opt { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
 .gpt-mention .opt.on, .gpt-mention .opt:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .gpt-mention .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

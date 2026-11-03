@@ -225,6 +225,9 @@ async function main() {
     db,
     getProvider: () => searchEngine.getProvider(),
     getWaClient: (tenantId) => webServer?.getTenantWaClient?.(tenantId),
+    setPriorityChat: (tenantId, chatJid) => {
+      summaryService.setPriorityChatForTenant(tenantId, chatJid);
+    },
     onProgress: (data, tenantId) => {
       webServer?._broadcast?.({ type: 'expense-reconciliation', data }, tenantId);
     },

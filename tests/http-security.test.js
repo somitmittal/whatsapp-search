@@ -1,8 +1,10 @@
 import { describe, expect, test } from '@jest/globals';
 import {
+  applySecurityHeaders,
   defaultBindHost,
   isLoopbackHostname,
   isSafeExternalUrl,
+  isSameOriginEmbedPath,
   isTrustedBrowserOrigin,
   pathAllowsUnauthenticatedCrossOrigin,
 } from '../src/web/http-security.js';
@@ -71,5 +73,22 @@ describe('http-security origin policy', () => {
     expect(defaultBindHost({ hostEnv: '', isPublicInternet: false })).toBe('127.0.0.1');
     expect(defaultBindHost({ hostEnv: '', isPublicInternet: true })).toBe('0.0.0.0');
     expect(defaultBindHost({ hostEnv: '0.0.0.0', isPublicInternet: false })).toBe('0.0.0.0');
+  });
+
+  test('message-media may be framed same-origin for PDF preview', () => {
+    expect(isSameOriginEmbedPath('/api/message-media')).toBe(true);
+    expect(isSameOriginEmbedPath('/api/message-media?messageId=x')).toBe(true);
+    expect(isSameOriginEmbedPath('/api/chats')).toBe(false);
+
+    const headers = {};
+    const res = { setHeader: (k, v) => { headers[k] = v; } };
+    applySecurityHeaders({ path: '/api/message-media' }, res);
+    expect(headers['X-Frame-Options']).toBe('SAMEORIGIN');
+    expect(String(headers['Content-Security-Policy'])).toContain("frame-ancestors 'self'");
+    expect(String(headers['Content-Security-Policy'])).not.toContain("frame-ancestors 'none'");
+
+    const denyHeaders = {};
+    applySecurityHeaders({ path: '/api/chats' }, { setHeader: (k, v) => { denyHeaders[k] = v; } });
+    expect(denyHeaders['X-Frame-Options']).toBe('DENY');
   });
 });

@@ -35,7 +35,7 @@ function syncFetchOlderMenuItem() {
   item.title = imported
     ? 'Imported chats already include their full export — nothing to pull from the phone'
     : usable
-      ? 'Asks your phone for ~100 older messages (paced to limit sync notifications)'
+      ? 'Asks your phone for ~100 older messages and downloads their media first (paced to limit sync notifications)'
       : FETCH_OLDER_NEEDS_ANCHOR;
 }
 
@@ -65,7 +65,25 @@ export async function requestOlderHistoryFromPhone(jid, { count = 100 } = {}) {
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || 'Request failed');
-  return { ok: true, requestId: j.requestId ?? null };
+  return {
+    ok: true,
+    requestId: j.requestId ?? null,
+    mediaQueued: Number(j.mediaQueued) || 0,
+  };
+}
+
+function olderHistoryAlertText(result) {
+  const bits = [
+    'Older messages requested from your phone (up to ~100). Keep WhatsApp online — a batch may arrive over the next minute.',
+  ];
+  const queued = Number(result?.mediaQueued) || 0;
+  if (queued > 0) {
+    bits.push(`${queued} media item(s) for this chat are downloading first.`);
+  } else {
+    bits.push('This chat’s media (including what arrives with the batch) downloads before other chats.');
+  }
+  bits.push('Requests are paced so your phone is not notified constantly; for years of history, import a chat export.');
+  return bits.join(' ');
 }
 
 function setMenuItemLabel(item, label) {
@@ -242,11 +260,8 @@ export function initMenus() {
     closeChatMenu();
     if (!store.activeChat || $('#menu-fetch-older-history')?.classList.contains('disabled')) return;
     try {
-      await requestOlderHistoryFromPhone(store.activeChat);
-      alert(
-        'Older messages requested from your phone (up to ~100). Keep WhatsApp online — a batch may arrive over the next minute. '
-        + 'Requests are paced so your phone is not notified constantly; for years of history, import a chat export.',
-      );
+      const result = await requestOlderHistoryFromPhone(store.activeChat);
+      alert(olderHistoryAlertText(result));
       setTimeout(() => { void refreshOpenChatMessages(); }, 2500);
     } catch (e) {
       alert(e.message || 'Could not request older messages');
@@ -258,11 +273,8 @@ export function initMenus() {
     closeSidebarContextMenu();
     if (!jid) return;
     try {
-      await requestOlderHistoryFromPhone(jid);
-      alert(
-        'Older messages requested from your phone (up to ~100). Keep WhatsApp online — a batch may arrive over the next minute. '
-        + 'Requests are paced so your phone is not notified constantly; for years of history, import a chat export.',
-      );
+      const result = await requestOlderHistoryFromPhone(jid);
+      alert(olderHistoryAlertText(result));
       if (store.activeChat === jid) setTimeout(() => { void refreshOpenChatMessages(); }, 2500);
     } catch (e) {
       alert(e.message || 'Could not request older messages');

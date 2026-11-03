@@ -47,6 +47,41 @@ describe('media terminal states', () => {
     expect(isPermanentMediaFailure(new Error('Failed to fetch stream'))).toBe(false);
   });
 
+  test('clearUnavailableMediaPaths restores pending so Retry can re-queue', async () => {
+    await runWithTenant(LEGACY_TENANT_ID, async () => {
+      const jid = 'clear-unavail@g.us';
+      db.insertMessageBatch([
+        media('u1', jid, 500, { mediaPath: MEDIA_UNAVAILABLE_PATH, mediaDownloadJson: '{"k":1}' }),
+        media('u2', jid, 501, { mediaPath: MEDIA_UNAVAILABLE_PATH }),
+        media('u3', jid, 502, { mediaPath: '/tmp/ok.jpg' }),
+      ]);
+      expect(db.clearUnavailableMediaPaths(jid, 'u1')).toBe(1);
+      expect(pathOf('u1')).toBeNull();
+      expect(pathOf('u2')).toBe(MEDIA_UNAVAILABLE_PATH);
+      expect(db.clearUnavailableMediaPaths(jid)).toBe(1);
+      expect(pathOf('u2')).toBeNull();
+      expect(pathOf('u3')).toBe('/tmp/ok.jpg');
+      expect(db.mediaNeedsDownload('u1')).toBe(true);
+      expect(db.listPendingMediaWithDownloadStub(jid).map((r) => r.messageId)).toEqual(['u1']);
+    });
+  });
+
+  test('unavailable path keeps download stub for Retry', async () => {
+    await runWithTenant(LEGACY_TENANT_ID, async () => {
+      const jid = 'keep-stub@g.us';
+      db.insertMessageBatch([media('k1', jid, 600, { mediaDownloadJson: '{"z":9}' })]);
+      db.updateMessageMediaPath('k1', MEDIA_UNAVAILABLE_PATH);
+      expect(pathOf('k1')).toBe(MEDIA_UNAVAILABLE_PATH);
+      // Stub retained until a real file lands (or clearUnavailable + requeue).
+      const stub = db._db.prepare(
+        'SELECT media_download_json AS j FROM messages WHERE message_id = ?',
+      ).get('k1')?.j;
+      expect(stub).toBe('{"z":9}');
+      db.clearUnavailableMediaPaths(jid, 'k1');
+      expect(db.listPendingMediaWithDownloadStub(jid).map((r) => r.messageId)).toEqual(['k1']);
+    });
+  });
+
   test('sentinels are terminal, real paths and empty are not', () => {
     expect(isTerminalMediaPath(MEDIA_UNAVAILABLE_PATH)).toBe(true);
     expect(isTerminalMediaPath(MEDIA_TOO_LARGE_PATH)).toBe(true);

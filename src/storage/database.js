@@ -16,6 +16,10 @@ import { LEGACY_TENANT_ID } from './tenant-constants.js';
 import { decryptName, deriveTenantContactKey, encryptName, hashPhone, normalizePhone } from '../privacy/contact-directory.js';
 import { groupStatusBroadcastRows } from '../status/status-feed.js';
 import { isSafeAvatarFileName } from '../whatsapp/chat-avatars.js';
+import {
+  MEDIA_UNAVAILABLE_PATH,
+  isTerminalMediaPath,
+} from '../whatsapp/media-constants.js';
 import { chatListPreview, higherReceipt, normalizeReceiptStatus } from '../whatsapp/message-receipt.js';
 import { STATUS_BROADCAST_JID, isImportedChatJid, sidebarTabForJid } from '../whatsapp/jid-filters.js';
 import { isContentPlaceholder, legacyControlFramePlaceholders } from '../whatsapp/message-content.js';
@@ -1698,12 +1702,45 @@ export default class Database {
   updateMessageMediaPath(messageId, mediaPath) {
     if (!messageId) return 0;
     const t = getCurrentTenantId();
-    // Drop the Baileys stub once we have a terminal path (file or permanent unavailable).
+    const path = String(mediaPath || '').trim();
+    // Keep the Baileys stub on unavailable/too-large so Retry can re-attempt.
+    // Only drop it once a real file path lands.
+    if (isTerminalMediaPath(path)) {
+      const r = this._db.prepare(`
+        UPDATE messages SET media_path = ?
+        WHERE tenant_id = ? AND message_id = ?
+      `).run(path, t, messageId);
+      return r.changes ?? 0;
+    }
     const r = this._db.prepare(`
       UPDATE messages SET media_path = ?, media_download_json = NULL
       WHERE tenant_id = ? AND message_id = ?
-    `).run(mediaPath, t, messageId);
+    `).run(path, t, messageId);
     return r.changes ?? 0;
+  }
+
+  /**
+   * Clear false-positive `__unavailable__` marks so Retry / Load can re-queue downloads.
+   * @param {string} chatJid
+   * @param {string | null} [messageId] when set, only that message
+   */
+  clearUnavailableMediaPaths(chatJid, messageId = null) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return 0;
+    const t = getCurrentTenantId();
+    const mid = messageId != null ? String(messageId).trim() : '';
+    if (mid) {
+      return this._db.prepare(`
+        UPDATE messages SET media_path = NULL
+        WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?
+          AND media_path = ?
+      `).run(t, jid, mid, MEDIA_UNAVAILABLE_PATH).changes ?? 0;
+    }
+    return this._db.prepare(`
+      UPDATE messages SET media_path = NULL
+      WHERE tenant_id = ? AND chat_jid = ?
+        AND media_path = ?
+    `).run(t, jid, MEDIA_UNAVAILABLE_PATH).changes ?? 0;
   }
 
   /** Store / refresh Baileys media stub while the local file is still missing. */
@@ -1743,8 +1780,8 @@ export default class Database {
   }
 
   /**
-   * Atomically claim one media download across duplicate Baileys deliveries and workers.
-   * A lease expires after 30 minutes so an interrupted process cannot block retries forever.
+   * Atomically reserve one media download (queued or in-flight) across duplicate Baileys
+   * deliveries and workers. A lease expires after 30 minutes so a crash cannot block retries.
    */
   claimMediaDownload(messageId, leaseMs = 30 * 60 * 1000) {
     const mid = String(messageId || '').trim();
@@ -1761,6 +1798,19 @@ export default class Database {
     return result.changes === 1;
   }
 
+  /** True while a non-expired download claim exists for this message. */
+  hasMediaDownloadClaim(messageId) {
+    const mid = String(messageId || '').trim();
+    if (!mid) return false;
+    const tenantId = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT 1 AS ok FROM wa_media_download_claims
+      WHERE tenant_id = ? AND message_id = ? AND expires_at > unixepoch()
+      LIMIT 1
+    `).get(tenantId, mid);
+    return Boolean(row);
+  }
+
   releaseMediaDownloadClaim(messageId) {
     const mid = String(messageId || '').trim();
     if (!mid) return 0;
@@ -1768,6 +1818,14 @@ export default class Database {
     return this._db.prepare(
       'DELETE FROM wa_media_download_claims WHERE tenant_id = ? AND message_id = ?',
     ).run(tenantId, mid).changes;
+  }
+
+  /** Drop every download claim for the current tenant (socket teardown / reconnect). */
+  releaseAllMediaDownloadClaims() {
+    const tenantId = getCurrentTenantId();
+    return this._db.prepare(
+      'DELETE FROM wa_media_download_claims WHERE tenant_id = ?',
+    ).run(tenantId).changes;
   }
 
   /** True when the row still lacks a local file / final sentinel. */
@@ -3364,6 +3422,26 @@ export default class Database {
       WHERE tenant_id = ? AND chat_jid = ? AND timestamp >= ? AND timestamp <= ?
       ORDER BY timestamp ASC
     `).all(t, chatJid, startTs, endTs);
+  }
+
+  /**
+   * Image / document / sticker rows in a chat time span — used to gate expense reconciliation
+   * until files are downloaded.
+   */
+  listExpenseMediaInRange(chatJid, startTs, endTs) {
+    const jid = String(chatJid || '').trim();
+    if (!jid) return [];
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT message_id AS messageId, chat_jid AS chatJid,
+             media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
+             timestamp
+      FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+        AND timestamp >= ? AND timestamp <= ?
+        AND media_type IN ('image', 'document', 'sticker')
+      ORDER BY timestamp ASC
+    `).all(t, jid, Number(startTs) || 0, Number(endTs) || 0);
   }
 
   getAllMessagesForChat(chatJid) {

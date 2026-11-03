@@ -13,10 +13,12 @@ import { looksLikeExpensePdfName } from './pdf-sheet-parser.js';
 import { documentExtension, isSupportedSheetExtension } from './document-sheet-parser.js';
 import { reconcileExpenses } from './reconciler.js';
 import { writeExpenseReport } from './report-workbook.js';
+import { ensureExpenseRangeMediaReady } from './expense-media-ready.js';
 import {
   isConstructionExpenseAgentEnabled,
   isConstructionExpenseSiteAllowed,
 } from '../smb/profiles.js';
+import { WA_MEDIA_DRAIN_GAP_MS } from '../whatsapp/media-constants.js';
 
 const REPORT_PREFIX = 'searchable-expense-report-';
 
@@ -99,10 +101,17 @@ function reportCaption(run, reconciliation) {
 }
 
 export default class ExpenseReconciliationService {
-  constructor({ db, getProvider, getWaClient, onProgress }) {
+  constructor({
+    db,
+    getProvider,
+    getWaClient,
+    setPriorityChat,
+    onProgress,
+  }) {
     this.db = db;
     this.getProvider = getProvider;
     this.getWaClient = getWaClient;
+    this.setPriorityChat = typeof setPriorityChat === 'function' ? setPriorityChat : null;
     this.onProgress = typeof onProgress === 'function' ? onProgress : null;
     this._pending = new Map();
     this._reportDir = join(config.dataDir, 'expense-reports');
@@ -304,6 +313,25 @@ export default class ExpenseReconciliationService {
       const firstDate = sheetDates[0] || bounds.date;
       const lastDate = sheetDates[sheetDates.length - 1] || firstDate;
       const businessDate = firstDate === lastDate ? firstDate : `${firstDate} – ${lastDate}`;
+      // Download image/document media for this date before chat extraction.
+      const rangeStart = dayBoundsFromDate(firstDate).startTs;
+      const rangeEnd = dayBoundsFromDate(lastDate).endTs;
+      const tid = getCurrentTenantId();
+      await ensureExpenseRangeMediaReady({
+        db: this.db,
+        chatJid: row.chatJid,
+        startTs: rangeStart,
+        endTs: rangeEnd,
+        waClient: this.getWaClient?.(tid) || null,
+        setPriorityChat: this.setPriorityChat
+          ? (chatJid) => this.setPriorityChat(tid, chatJid)
+          : null,
+        onStatus: (message) => {
+          this.db.updateExpenseReconciliationRun(run.id, { status: 'processing', error: null });
+          this._emit(run.id, 'processing', { detail: message });
+        },
+        pollMs: WA_MEDIA_DRAIN_GAP_MS,
+      });
       const messages = this._chatMessages(row, firstDate, lastDate);
       let unreadable = [];
       const chatEntries = await extractChatExpenses(provider, messages, {

@@ -294,7 +294,7 @@ export function createSkillRunner({ db, directory, expenseService }) {
         };
       }
 
-      status?.(`Reconciling ${inputs.chat.chatName || 'the site'} against ${inputs.fileName}…`);
+      status?.(`Preparing media for ${inputs.chat.chatName || 'the site'}, then reconciling against ${inputs.fileName}…`);
       let expenseRun = null;
       try {
         const provider = typeof resolveProvider === 'function' ? await resolveProvider() : undefined;

@@ -123,16 +123,34 @@ export function contentSecurityPolicy() {
   ].join('; ');
 }
 
+/** Paths the UI embeds in a same-origin <iframe> (PDF preview). Must not use DENY / frame-ancestors none. */
+const SAME_ORIGIN_EMBED_PATHS = new Set(['/api/message-media']);
+
+export function isSameOriginEmbedPath(pathname) {
+  const p = String(pathname || '').split('?')[0];
+  return SAME_ORIGIN_EMBED_PATHS.has(p);
+}
+
 export function applySecurityHeaders(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   // `microphone=(self)` — the WhatsApp voice-note composer and Ask AI dictation
   // need same-origin mic access; camera stays locked down.
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=(), payment=()');
   res.setHeader('X-DNS-Prefetch-Control', 'off');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  if (req.path === '/' || req.path.endsWith('.html') || !req.path.includes('.')) {
+  const path = String(req.path || '').split('?')[0];
+  if (isSameOriginEmbedPath(path)) {
+    // Chat PDF preview uses <iframe src="/api/message-media?...">. DENY / frame-ancestors
+    // 'none' on this response blank the frame (Chrome often shows a localhost error page)
+    // while <a download> still works — that was the user-visible bug.
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    // Only frame-ancestors — extra CSP (sandbox / default-src) breaks Chrome's PDF viewer.
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+    return;
+  }
+  res.setHeader('X-Frame-Options', 'DENY');
+  if (path === '/' || path.endsWith('.html') || !path.includes('.')) {
     res.setHeader('Content-Security-Policy', contentSecurityPolicy());
   }
 }

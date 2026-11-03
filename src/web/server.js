@@ -1634,6 +1634,9 @@ export default class WebServer {
             dlName = dot > 0 ? `${fname.slice(0, dot)}.${serveExt}` : `${fname}.${serveExt}`;
           }
           res.setHeader('Content-Disposition', `attachment; filename="${dlName}"`);
+        } else {
+          // Inline so the chat PDF <iframe> renders instead of prompting download.
+          res.setHeader('Content-Disposition', `inline; filename="${fname}"`);
         }
         return res.sendFile(servePath, { dotfiles: 'allow' });
       } catch (err) {
@@ -1719,12 +1722,18 @@ export default class WebServer {
           || String(req.body?.recentOnly || '').toLowerCase() === 'true';
         let mediaQueued = 0;
         if (wa && typeof wa.prioritizeChatMedia === 'function' && !imported) {
+          const allowPhoneReupload = !recentOnly || Boolean(messageId);
+          // Soft open used to mark expired CDN 404s as permanent; clear those so Retry
+          // / Load messages can ask the phone and download images that still exist.
+          if (allowPhoneReupload && typeof this.db.clearUnavailableMediaPaths === 'function') {
+            this.db.clearUnavailableMediaPaths(chatJid, messageId);
+          }
           mediaQueued = Number(
             wa.prioritizeChatMedia(chatJid, {
               messageId,
               recentOnly: recentOnly && !messageId,
               // Explicit Retry / Load may re-upload; soft open-chat recent pass must not.
-              allowPhoneReupload: !recentOnly || Boolean(messageId),
+              allowPhoneReupload,
             })?.queuedForChat || 0,
           );
         }
@@ -2508,7 +2517,27 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           });
         }
         const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid, ...anchorRow }, count);
-        res.json({ ok: true, requestId: requestId ?? null });
+
+        // Same priority path as open-chat / “Load messages & media”: put this chat first
+        // so pending media + media on the arriving history batch download before other chats.
+        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this._mediaIndexService?.notePriorityChange?.();
+        this._embeddingIndexService?.notePriorityChange?.();
+        if (typeof this.db.clearUnavailableMediaPaths === 'function') {
+          this.db.clearUnavailableMediaPaths(chatJid);
+        }
+        let mediaQueued = 0;
+        if (typeof wa.prioritizeChatMedia === 'function') {
+          mediaQueued = Number(
+            wa.prioritizeChatMedia(chatJid, {
+              recentOnly: false,
+              allowPhoneReupload: true,
+            })?.queuedForChat || 0,
+          );
+        }
+
+        this._broadcast({ type: 'new-messages', data: { chatJid, priorityLoad: true } }, tid);
+        res.json({ ok: true, requestId: requestId ?? null, mediaQueued });
       } catch (err) {
         if (err.status && err.code) {
           return res.status(err.status).json({ error: err.message, code: err.code });

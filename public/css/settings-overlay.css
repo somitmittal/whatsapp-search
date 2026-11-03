@@ -31,8 +31,11 @@ html[data-theme="dark"] {
   --set-danger: var(--danger, #f15c6d);
 }
 
+/* Panels are already position:fixed;inset:0 — do not put a full-viewport
+   wrapper above the GPT composer (z-index 200 + leftover hit targets made
+   model / @ Add context unclickable after Ask AI). */
 .gpt-classic-overlays {
-  position: fixed; inset: 0; z-index: 200; pointer-events: none;
+  pointer-events: none;
 }
 .gpt-classic-overlays .overlay-panel { pointer-events: auto; }
 

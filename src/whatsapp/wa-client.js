@@ -49,6 +49,7 @@ import { sortDeferredMediaByChatActivity, takeNextDeferredMediaItem } from './me
 import {
   MEDIA_TOO_LARGE_PATH,
   MEDIA_UNAVAILABLE_PATH,
+  WA_MEDIA_DRAIN_GAP_MS,
   isPermanentMediaFailure,
   isTerminalMediaPath,
 } from './media-constants.js';
@@ -96,7 +97,7 @@ const P        = require('pino');
 const BATCH_MS = 2000;
 
 /** Pause between WhatsApp network calls while draining media and profile pictures. */
-const WA_DRAIN_GAP_MS = 120;
+const WA_DRAIN_GAP_MS = WA_MEDIA_DRAIN_GAP_MS; // from media-constants (shared with expense wait)
 
 const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
 /** Drain order bias: light types first so videos cannot monopolize the shared worker pool. */
@@ -2372,7 +2373,9 @@ export default class WaClient {
       }
       const msgText = String(e?.message || 'media download failed');
       console.warn(`[WA] media download ${row.messageId}:`, msgText.replace(/https?:\/\/\S+/g, '<url>'));
-      if (isPermanentMediaFailure(e)) {
+      // Soft open / bulk drain skip phone reupload. Expired CDN URLs often 404 even
+      // though the image still exists on WhatsApp — never mark those permanent.
+      if (allowPhoneReupload && isPermanentMediaFailure(e)) {
         return { ...row, mediaPath: MEDIA_UNAVAILABLE_PATH };
       }
       return row;
@@ -2421,6 +2424,34 @@ export default class WaClient {
         : queue.length;
     }
     return count;
+  }
+
+  /** Public length for expense / UI waiters. */
+  mediaQueueLength(chatJid = null) {
+    return this._mediaQueueLength(chatJid);
+  }
+
+  /**
+   * Resolve when this chat has nothing left in the media queues and a drain wave is not running.
+   * Used by expense reconciliation so date-span media is downloaded before extract.
+   * @param {string} chatJid
+   * @param {{ pollMs?: number }} [opts] pollMs defaults to WA_MEDIA_DRAIN_GAP_MS
+   */
+  async awaitChatMediaQueueIdle(chatJid, { pollMs = WA_DRAIN_GAP_MS } = {}) {
+    const jid = String(chatJid || '').trim();
+    const gap = Number(pollMs);
+    if (!jid || !Number.isFinite(gap) || gap <= 0) return;
+    let idleRounds = 0;
+    while (!this._destroyed && idleRounds < 2) {
+      const queued = this._mediaQueueLength(jid);
+      if (queued > 0 && !this._mediaDraining) {
+        this._drainMediaQueue().catch(() => {});
+      }
+      if (queued === 0 && !this._mediaDraining) idleRounds += 1;
+      else idleRounds = 0;
+      if (idleRounds >= 2) return;
+      await new Promise((r) => setTimeout(r, gap));
+    }
   }
 
   /**

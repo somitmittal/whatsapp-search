@@ -230,6 +230,13 @@ function setMode(mode) {
     els.waView.hidden = true;
     clearReplyTarget();
     clearEditTarget();
+    // Drop WA chrome that can leave fixed/absolute hit-targets over the Ask AI composer.
+    document.getElementById('chat-menu')?.classList.remove('open');
+    const ctx = document.getElementById('sidebar-ctx-menu');
+    if (ctx) ctx.style.display = 'none';
+    document.querySelectorAll('.wa-msg-menu:not([hidden]), .wa-reaction-picker:not([hidden])').forEach((el) => {
+      el.hidden = true;
+    });
   }
   syncWaComposerUi();
 }
