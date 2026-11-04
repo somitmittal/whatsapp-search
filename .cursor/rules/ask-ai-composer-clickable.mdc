@@ -1,0 +1,29 @@
+---
+description: Keep Ask AI model picker and @ Add context clickable — never cover the composer with overlay hit-targets
+globs: public/gpt-app/**,public/css/settings-overlay.css,public/gpt.html
+alwaysApply: false
+---
+
+# Ask AI composer must stay clickable
+
+Regressed twice: model menu / `@ Add context` look fine but clicks do nothing.
+
+## Root cause
+
+A layer above `#gpt-composer-wrap` eats pointer events:
+
+1. `#gpt-classic-overlays` with `position: fixed; inset: 0; z-index: 200` (even with `pointer-events: none` on the wrapper, children with `pointer-events: auto` or leftover targets still steal hits).
+2. `#gpt-settings` / `#gpt-thread-search` scrims (`position: absolute; inset: …; z-index: 30`) still painted because `[hidden] { display: none }` lacked `!important`.
+3. WA chat menus / context menus left open when switching to Ask AI mode.
+
+## Hard rules
+
+- **Never** put `position: fixed; inset: 0; z-index: …` on `#gpt-classic-overlays` / `.gpt-classic-overlays`. Only `.overlay-panel` may be full-viewport.
+- Keep `.gpt-classic-overlays { pointer-events: none; }` and `.overlay-panel { pointer-events: auto; }`.
+- Use `[hidden] { display: none !important; }` for `.gpt-settings`, `.gpt-thread-search`, `.gpt-model-menu`, `.gpt-mention`.
+- Keep `#gpt-composer-wrap` / `.gpt-composer` at `overflow: visible` and a stacking `z-index` so the model / mention menus are not covered by `.gpt-scroll`.
+- On `setMode('gpt')`, close chat menu, sidebar context menu, WA message menus, settings, and thread search.
+
+## Before shipping UI/CSS near GPT
+
+Manually verify on `/gpt`: open model menu, pick a model, open `@ Add context`, type. If clicks miss, check DevTools → elementFromPoint over the composer for an unexpected overlay.

@@ -237,6 +237,9 @@ function setMode(mode) {
     document.querySelectorAll('.wa-msg-menu:not([hidden]), .wa-reaction-picker:not([hidden])').forEach((el) => {
       el.hidden = true;
     });
+    // Settings/search scrims also sit above the composer when open.
+    if (typeof closeSettings === 'function') closeSettings();
+    if (typeof closeThreadSearch === 'function') closeThreadSearch();
   }
   syncWaComposerUi();
 }
@@ -1997,7 +2000,10 @@ function wire() {
   });
   els.send.addEventListener('click', () => void send());
 
-  els.modelBtn.addEventListener('click', () => openModelMenu(els.modelMenu.hidden));
+  els.modelBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openModelMenu(els.modelMenu.hidden);
+  });
   els.modelFilter.addEventListener('input', renderModelMenu);
   els.modelManage.addEventListener('click', () => { state.manageModels = !state.manageModels; renderModelMenu(); });
   els.modelMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { openModelMenu(false); els.input.focus(); } });
