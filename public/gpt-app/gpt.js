@@ -988,11 +988,11 @@ function onAccountChanged(detail = {}) {
 
 async function loadChats() {
   try {
-    const res = await fetch('/api/gpt/conversations', { headers: authHeaders() });
+    // WhatsApp / imported roster — not GPT threads (those use loadThreads → /api/gpt/conversations).
+    const res = await fetch('/api/chats', { headers: authHeaders() });
     if (!res.ok) throw new Error('failed');
     const data = await res.json();
-    const chats = Array.isArray(data) ? data : (data.conversations || data.chats || []);
-    state.chats = chats.map(c => ({ ...c, sidebarTab: c.sidebarTab || 'chat' }));
+    state.chats = Array.isArray(data) ? data : (data.chats || []);
     store.chatData = state.chats;
   } catch { state.chats = []; store.chatData = []; }
   autoSelectSidebarTab();
