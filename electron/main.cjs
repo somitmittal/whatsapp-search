@@ -318,21 +318,15 @@ app.enableSandbox();
 
 app.whenReady().then(async () => {
   try {
-    // Allow the page's own microphone (voice notes + Ask AI dictation); deny the rest.
+    // Microphone (voice notes) + HTML5 video fullscreen for our loopback UI only.
+    const { shouldAllowPermission } = require('./media-permissions.cjs');
     session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
-      if (permission === 'media') {
-        try {
-          const u = new URL(details?.requestingUrl || '');
-          callback(u.origin === `http://127.0.0.1:${serverPort}`);
-          return;
-        } catch {
-          callback(false);
-          return;
-        }
-      }
-      callback(false);
+      const url = details?.requestingUrl || details?.requestingOrigin || '';
+      callback(shouldAllowPermission(permission, url, serverPort));
     });
-    session.defaultSession.setPermissionCheckHandler(() => false);
+    session.defaultSession.setPermissionCheckHandler((_wc, permission, requestingOrigin) => {
+      return shouldAllowPermission(permission, requestingOrigin, serverPort);
+    });
     if (process.platform === 'darwin' && existsSync(APP_ICON)) {
       app.dock.setIcon(APP_ICON);
     }

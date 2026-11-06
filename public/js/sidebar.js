@@ -3,12 +3,18 @@ import { openAvatarViewer } from './avatars.js';
 import { applySmbUi, loadBusinessInbox } from './business.js';
 import { openChat } from './chat-view.js';
 import { chatRowHtml } from './chat-row.js';
+import { filterAndRankChats } from './chat-list-filter.js';
 import { applyChatSummaryBars, applySearchIndexBars, refreshDash, setChatIndexEnabled } from './dashboard.js';
-import { formatPhoneLikeName } from './format.js';
+import { displayChatTitle, formatPhoneLikeName } from './format.js';
 import { showSidebarContextMenu } from './menus.js';
 import { renderStatusStrip } from './status-feed.js';
 import { $ } from './util.js';
 import { applyWaSyncBars, canShowChatUI, isWaUiReady } from './wa-connection.js';
+
+const CHAT_FILTER_HELPERS = {
+  titleFor: (c) => displayChatTitle(c.chatJid, c.chatName || c.chatJid),
+  phoneLabelFor: (jid) => formatPhoneLikeName(jid),
+};
 
 export function sidebarTabOf(row) {
   if (row?.sidebarTab) return row.sidebarTab;
@@ -108,24 +114,67 @@ export function scheduleRefreshDash(chatTouches) {
 export function renderChatsFromState() {
   if (!canShowChatUI()) return;
   sortChatDataByRecency();
-  const fq = ($('#filter') && $('#filter').value || '').trim().toLowerCase();
-  let list = chatsForCurrentSidebarTab();
+  const fq = ($('#filter') && $('#filter').value || '').trim();
+  const tabChats = chatsForCurrentSidebarTab();
   renderSidebarTabCounts();
-  if (fq) {
-    list = list.filter((c) => {
-      const jid = String(c.chatJid || '');
-      const hay = (c.chatName || c.chatJid).toLowerCase();
-      if (hay.includes(fq)) return true;
-      if (jid.endsWith('@s.whatsapp.net')) {
-        const disp = formatPhoneLikeName(jid).toLowerCase();
-        if (disp.includes(fq)) return true;
-        const jq = fq.replace(/\D/g, '');
-        if (jq.length >= 3 && jid.split('@')[0].includes(jq)) return true;
-      }
-      return false;
-    });
-  }
+  const list = fq
+    ? filterAndRankChats({
+      chats: tabChats,
+      query: fq,
+      keywordHits: store._chatFilterKeywordHits || [],
+      helpers: CHAT_FILTER_HELPERS,
+    })
+    : tabChats;
   renderChats(list);
+}
+
+function activeChatFilterQuery() {
+  const classic = ($('#filter') && $('#filter').value || '').trim();
+  const gpt = ($('#gpt-chat-filter') && $('#gpt-chat-filter').value || '').trim();
+  const activeId = document.activeElement?.id;
+  if (activeId === 'gpt-chat-filter') return gpt;
+  if (activeId === 'filter') return classic;
+  return classic || gpt;
+}
+
+function notifyChatFilterUpdated() {
+  renderChatsFromState();
+  if (typeof store.onChatFilterUpdate === 'function') store.onChatFilterUpdate();
+}
+
+/** Debounced FTS keyword lookup for the sidebar search bar (title filter stays instant). */
+export function scheduleChatKeywordFilter(query) {
+  const q = String(query || '').trim();
+  clearTimeout(store._chatFilterKeywordTimer);
+  if (!q || q.length < 2) {
+    store._chatFilterKeywordHits = [];
+    store._chatFilterKeywordQuery = '';
+    notifyChatFilterUpdated();
+    return;
+  }
+  // Keep prior hits while typing so the list does not flicker empty between keystrokes.
+  store._chatFilterKeywordTimer = setTimeout(() => {
+    void fetchChatKeywordHits(q);
+  }, 220);
+}
+
+async function fetchChatKeywordHits(query) {
+  const q = String(query || '').trim();
+  if (!q) return;
+  const seq = (store._chatFilterKeywordSeq = (store._chatFilterKeywordSeq || 0) + 1);
+  try {
+    const res = await fetch(`/api/chats/search?q=${encodeURIComponent(q)}`, { credentials: 'same-origin' });
+    const data = await res.json().catch(() => ({}));
+    if (seq !== store._chatFilterKeywordSeq) return;
+    if (activeChatFilterQuery() !== q) return;
+    store._chatFilterKeywordHits = Array.isArray(data.hits) ? data.hits : [];
+    store._chatFilterKeywordQuery = q;
+    notifyChatFilterUpdated();
+  } catch {
+    if (seq !== store._chatFilterKeywordSeq) return;
+    store._chatFilterKeywordHits = [];
+    notifyChatFilterUpdated();
+  }
 }
 
 const SIDEBAR_TABS = ['imported', 'chat', 'feed', 'business'];
@@ -264,8 +313,10 @@ export function initSidebar() {
     });
   })();
 
-  $('#filter').addEventListener('input', () => {
+  $('#filter')?.addEventListener('input', () => {
+    const q = ($('#filter') && $('#filter').value || '').trim();
     renderChatsFromState();
+    scheduleChatKeywordFilter(q);
   });
 
   document.querySelectorAll('[data-sidebar-tab]').forEach((btn) => {

@@ -86,31 +86,70 @@ function closeChatImageViewer() {
   imageViewerEl.setAttribute('aria-hidden', 'true');
   const image = imageViewerEl.querySelector('img');
   if (image) image.removeAttribute('src');
+  const video = imageViewerEl.querySelector('video');
+  if (video) {
+    try { video.pause(); } catch { /* ignore */ }
+    video.removeAttribute('src');
+    try { video.load(); } catch { /* ignore */ }
+  }
+}
+
+function ensureChatMediaViewer() {
+  if (imageViewerEl) return imageViewerEl;
+  imageViewerEl = document.createElement('div');
+  imageViewerEl.className = 'chat-image-viewer';
+  imageViewerEl.hidden = true;
+  imageViewerEl.setAttribute('role', 'dialog');
+  imageViewerEl.setAttribute('aria-modal', 'true');
+  imageViewerEl.setAttribute('aria-label', 'Media preview');
+  imageViewerEl.innerHTML = '<button class="chat-image-viewer-close" type="button" aria-label="Close">×</button><div class="chat-image-viewer-stage"><img alt="" hidden><video class="chat-image-viewer-video" controls playsinline hidden></video></div><div class="chat-image-viewer-caption"></div>';
+  document.body.appendChild(imageViewerEl);
+  imageViewerEl.addEventListener('click', (event) => {
+    if (event.target === imageViewerEl || event.target.closest('.chat-image-viewer-close')) closeChatImageViewer();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && imageViewerEl && !imageViewerEl.hidden) closeChatImageViewer();
+  });
+  return imageViewerEl;
 }
 
 function openChatImageViewer(source, alt = '', caption = '') {
-  if (!imageViewerEl) {
-    imageViewerEl = document.createElement('div');
-    imageViewerEl.className = 'chat-image-viewer';
-    imageViewerEl.hidden = true;
-    imageViewerEl.setAttribute('role', 'dialog');
-    imageViewerEl.setAttribute('aria-modal', 'true');
-    imageViewerEl.setAttribute('aria-label', 'Image preview');
-    imageViewerEl.innerHTML = '<button class="chat-image-viewer-close" type="button" aria-label="Close image">×</button><div class="chat-image-viewer-stage"><img alt=""></div><div class="chat-image-viewer-caption"></div>';
-    document.body.appendChild(imageViewerEl);
-    imageViewerEl.addEventListener('click', (event) => {
-      if (event.target === imageViewerEl || event.target.closest('.chat-image-viewer-close')) closeChatImageViewer();
-    });
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && imageViewerEl && !imageViewerEl.hidden) closeChatImageViewer();
-    });
+  const root = ensureChatMediaViewer();
+  const image = root.querySelector('img');
+  const video = root.querySelector('video');
+  if (video) {
+    try { video.pause(); } catch { /* ignore */ }
+    video.hidden = true;
+    video.removeAttribute('src');
   }
-  const image = imageViewerEl.querySelector('img');
-  if (image) { image.src = source; image.alt = alt || 'Chat image'; }
-  const captionEl = imageViewerEl.querySelector('.chat-image-viewer-caption');
+  if (image) {
+    image.hidden = false;
+    image.src = source;
+    image.alt = alt || 'Chat image';
+  }
+  const captionEl = root.querySelector('.chat-image-viewer-caption');
   if (captionEl) captionEl.textContent = caption;
-  imageViewerEl.hidden = false;
-  imageViewerEl.setAttribute('aria-hidden', 'false');
+  root.hidden = false;
+  root.setAttribute('aria-hidden', 'false');
+}
+
+function openChatVideoViewer(source, caption = '') {
+  const root = ensureChatMediaViewer();
+  const image = root.querySelector('img');
+  const video = root.querySelector('video');
+  if (image) {
+    image.hidden = true;
+    image.removeAttribute('src');
+  }
+  if (video) {
+    video.hidden = false;
+    video.src = source;
+    video.play?.().catch(() => {});
+  }
+  const captionEl = root.querySelector('.chat-image-viewer-caption');
+  if (captionEl) captionEl.textContent = caption;
+  root.hidden = false;
+  root.setAttribute('aria-hidden', 'false');
 }
 
 document.addEventListener('click', (event) => {
@@ -119,6 +158,15 @@ document.addEventListener('click', (event) => {
   event.preventDefault();
   const wrap = image.closest('.media-wrap');
   openChatImageViewer(image.currentSrc || image.src, image.alt, wrap?.querySelector('.media-cap')?.textContent || '');
+});
+
+/** Expand video into the lightbox (native fullscreen is also enabled via Electron permissions). */
+document.addEventListener('dblclick', (event) => {
+  const video = event.target?.closest?.('.msg-media-vid');
+  if (!video) return;
+  event.preventDefault();
+  const wrap = video.closest('.media-wrap');
+  openChatVideoViewer(video.currentSrc || video.src, wrap?.querySelector('.media-cap')?.textContent || '');
 });
 
 /** Classic chat panel + GPT WhatsApp transcript. */

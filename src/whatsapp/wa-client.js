@@ -504,14 +504,49 @@ export default class WaClient {
     const mime = String(mimetype || 'application/octet-stream').slice(0, 160);
     const text = String(caption || '').trim().slice(0, 4000) || undefined;
     let content;
-    if (mime.startsWith('image/')) content = { image: buffer, mimetype: mime, caption: text };
-    else if (mime.startsWith('video/')) content = { video: buffer, mimetype: mime, caption: text };
-    else if (mime.startsWith('audio/')) {
+    let mediaType = null;
+    if (mime.startsWith('image/')) {
+      content = { image: buffer, mimetype: mime, caption: text };
+      mediaType = 'image';
+    } else if (mime.startsWith('video/')) {
+      content = { video: buffer, mimetype: mime, caption: text };
+      mediaType = 'video';
+    } else if (mime.startsWith('audio/') || mime === 'application/ogg') {
       const built = audioSendContent(buffer, { mimeType: mime, ptt });
       if (built.error) throw new Error(built.error);
       content = built.content;
-    } else content = { document: buffer, fileName: name, mimetype: mime, caption: text };
-    return this._noteSuccessfulSend(await this._sock.sendMessage(chatJid, content));
+      mediaType = 'audio';
+    } else {
+      content = { document: buffer, fileName: name, mimetype: mime, caption: text };
+      mediaType = 'document';
+    }
+    const sent = await this._sock.sendMessage(chatJid, content);
+    this._noteSuccessfulSend(sent);
+    // Keep the bytes we just uploaded so Searchable can play/download without
+    // waiting on a WhatsApp CDN round-trip (self-chat echoes often skip media).
+    this._persistOutboundMediaFile(sent, chatJid, buffer, { mediaType, mime, fileName: name });
+    return sent;
+  }
+
+  /**
+   * Write an outbound attach/voice buffer next to inbound media and publish the path.
+   * Safe to no-op when the send result has no message id.
+   */
+  _persistOutboundMediaFile(sent, chatJid, buffer, { mediaType, mime, fileName } = {}) {
+    try {
+      const messageId = sent?.key?.id ? String(sent.key.id) : '';
+      if (!messageId || !mediaType || !MEDIA_FOR_INDEX.has(mediaType)) return;
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0) return;
+      const fromName = extname(String(fileName || '')).slice(1).toLowerCase();
+      const ext = (fromName && fromName !== 'bin' ? fromName : null) || extFromMime(mime) || 'bin';
+      const dir = join(config.mediaDir, safeJidDir(chatJid));
+      mkdirSync(dir, { recursive: true });
+      const fullPath = join(dir, `${messageId}.${ext}`);
+      writeFileSync(fullPath, buffer);
+      this._onMediaPath?.(messageId, fullPath);
+    } catch (e) {
+      console.warn('[WA] persist outbound media:', e?.message || e);
+    }
   }
 
   /**

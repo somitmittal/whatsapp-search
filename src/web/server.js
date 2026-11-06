@@ -37,6 +37,11 @@ import { isMediaTooLargePath, isMediaUnavailablePath, isTerminalMediaPath } from
 import { parseMediaDownloadStub } from '../whatsapp/media-download-stub.js';
 import { MAX_AUDIO_BYTES, isAudioMime } from '../whatsapp/voice-content.js';
 import { playableAudioFor } from './audio-transcode.js';
+import {
+  attachmentFilenameFromMessage,
+  contentTypeForMediaFile,
+  downloadFilenameForServedMedia,
+} from './media-filename.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
@@ -171,47 +176,6 @@ function assertPathUnderMediaRoot(absFilePath) {
   } catch {
     return null;
   }
-}
-
-function contentTypeForMediaFile(filePath) {
-  const ext = (String(filePath).split('.').pop() || '').toLowerCase();
-  const map = {
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    png: 'image/png',
-    gif: 'image/gif',
-    webp: 'image/webp',
-    mp4: 'video/mp4',
-    webm: 'video/webm',
-    mov: 'video/quicktime',
-    mp3: 'audio/mpeg',
-    ogg: 'audio/ogg',
-    opus: 'audio/opus',
-    aac: 'audio/aac',
-    m4a: 'audio/mp4',
-    wav: 'audio/wav',
-    pdf: 'application/pdf',
-    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    xls: 'application/vnd.ms-excel',
-    csv: 'text/csv',
-    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    doc: 'application/msword',
-  };
-  return map[ext] || 'application/octet-stream';
-}
-
-/** Prefer a human filename from caption/text when the on-disk name is a Baileys `.bin`. */
-function attachmentFilenameFromMessage(absPath, messageId, hintText = '') {
-  const fromHint = String(hintText || '').match(/([^/\\\s][^/\\]*\.(?:xlsx|xls|csv|pdf|docx?|png|jpe?g|webp|mp4|bin))\b/i)?.[1];
-  let base = basename(String(fromHint || absPath || ''));
-  if (!base || base === '.' || base === '..' || /\.bin$/i.test(base)) {
-    const labeled = String(hintText || '').trim().split(/[\n\r]/)[0].slice(0, 120);
-    if (labeled && !/^\[/.test(labeled)) base = labeled.replace(/[^\x20-\x7E]/g, '_').replace(/["\\/]/g, '_') || base;
-  }
-  if (!base || base === '.' || base === '..') {
-    base = `whatsapp-media-${String(messageId || 'file').slice(0, 40)}`;
-  }
-  return base.replace(/[^\x20-\x7E]/g, '_').replace(/["\\\r\n]/g, '_').slice(0, 180) || 'download.bin';
 }
 
 export default class WebServer {
@@ -1513,6 +1477,23 @@ export default class WebServer {
       }
     });
 
+    /**
+     * Keyword hits for the sidebar search bar (message / caption / media index text).
+     * The UI merges these under title matches — see `public/js/chat-list-filter.js`.
+     */
+    this._app.get('/api/chats/search', (req, res) => {
+      try {
+        const q = String(req.query?.q || '').trim();
+        if (!q) return res.json({ hits: [] });
+        if (q.length > 120) return res.status(400).json({ error: 'Query too long' });
+        const hits = this.db.searchChatsByKeyword(q, { limit: 40 });
+        return res.json({ hits });
+      } catch (err) {
+        console.error('[/api/chats/search]', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
     this._app.get('/api/chats/:chatJid/avatar', (req, res) => {
       try {
         const chatJid = decodeURIComponent(req.params.chatJid || '');
@@ -1616,23 +1597,22 @@ export default class WebServer {
         const isVoiceNote = row.mediaType === 'audio' || row.mediaType === 'ptt';
         const playable = isVoiceNote ? await playableAudioFor(safe) : { path: safe, contentType: null };
         const servePath = playable.path;
-        res.setHeader(
-          'Content-Type',
-          playable.contentType
-            || (typeFromName !== 'application/octet-stream' ? typeFromName : contentTypeForMediaFile(safe)),
-        );
+        const servedType = playable.contentType
+          || (typeFromName !== 'application/octet-stream' ? typeFromName : contentTypeForMediaFile(safe));
+        res.setHeader('Content-Type', servedType);
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Cache-Control', 'private, max-age=3600');
         if (wantDownload) {
           // Phones pick the handler from the filename extension, so it must match
           // the bytes actually served — a transcode of `<id>.mp4`/`<id>.ogg` is an
           // `.m4a`, and a mismatched name makes iOS/Android refuse to open it.
-          let dlName = fname;
-          if (servePath !== safe) {
-            const serveExt = (servePath.split('.').pop() || ext || 'bin').toLowerCase();
-            const dot = fname.lastIndexOf('.');
-            dlName = dot > 0 ? `${fname.slice(0, dot)}.${serveExt}` : `${fname}.${serveExt}`;
-          }
+          const dlName = downloadFilenameForServedMedia({
+            fname,
+            servePath,
+            originalPath: safe,
+            mediaType: row.mediaType,
+            contentType: servedType,
+          });
           res.setHeader('Content-Disposition', `attachment; filename="${dlName}"`);
         } else {
           // Inline so the chat PDF <iframe> renders instead of prompting download.

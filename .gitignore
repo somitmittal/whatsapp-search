@@ -35,3 +35,6 @@ Thumbs.db
 
 # Vercel env (local secrets)
 env.vercel
+
+# Local agent session notes (not for git)
+.agent-context/

@@ -13,7 +13,8 @@ import { INITIAL_CHAT_MESSAGES_LIMIT } from '/js/constants.js';
 import { renderExpenseDiff } from '/js/expense-sheet-view.js';
 import { initExpenses } from '/js/expenses.js';
 import { initFetchShim } from '/js/fetch-shim.js';
-import { displayChatTitle } from '/js/format.js';
+import { displayChatTitle, formatPhoneLikeName } from '/js/format.js';
+import { filterAndRankChats } from '/js/chat-list-filter.js';
 import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
 import { initMessageActions, openForwardOverlay, promptDeleteMessage } from '/js/message-actions.js';
@@ -33,7 +34,13 @@ import {
 import { initOverlays, openOverlay } from '/js/overlays.js';
 import { initSettings, loadSettings } from '/js/settings.js';
 import { initSkillsSettings, loadManagedSkills } from '/js/skills-settings.js';
-import { autoSelectSidebarTab, renderSidebarTabCounts, setSidebarListTab, sidebarTabOf } from '/js/sidebar.js';
+import {
+  autoSelectSidebarTab,
+  renderSidebarTabCounts,
+  scheduleChatKeywordFilter,
+  setSidebarListTab,
+  sidebarTabOf,
+} from '/js/sidebar.js';
 import { store } from '/js/store.js';
 import { esc, escAttr, eventTouchesChat } from '/js/util.js';
 import { initWaBootstrap } from '/js/wa-bootstrap.js';
@@ -1013,17 +1020,24 @@ function gptSidebarEmptyHtml() {
 }
 
 function renderChats() {
-  const q = (els.chatFilter?.value || '').trim().toLowerCase();
+  const q = (els.chatFilter?.value || '').trim();
   const tab = store.sidebarListTab === 'chat' ? 'chat' : 'imported';
-  const rows = state.chats
-    .filter((c) => {
-      if (!c?.chatJid || c.chatJid === 'status@broadcast') return false;
-      if (sidebarTabOf(c) !== tab) return false;
-      if (!q) return true;
-      const name = displayChatTitle(c.chatJid, c.chatName || c.chatJid).toLowerCase();
-      return name.includes(q) || String(c.chatJid).toLowerCase().includes(q);
+  const tabChats = state.chats.filter((c) => {
+    if (!c?.chatJid || c.chatJid === 'status@broadcast') return false;
+    return sidebarTabOf(c) === tab;
+  });
+  const rows = (q
+    ? filterAndRankChats({
+      chats: tabChats,
+      query: q,
+      keywordHits: store._chatFilterKeywordHits || [],
+      helpers: {
+        titleFor: (c) => displayChatTitle(c.chatJid, c.chatName || c.chatJid),
+        phoneLabelFor: (jid) => formatPhoneLikeName(jid),
+      },
     })
-    .sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
+    : tabChats.slice().sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0))
+  );
   renderSidebarTabCounts();
   if (!rows.length) {
     els.chatList.innerHTML = `<div class="sidebar-empty">${gptSidebarEmptyHtml()}</div>`;
@@ -2202,7 +2216,11 @@ function wire() {
     btn.addEventListener('click', () => setSidebarListTab(btn.getAttribute('data-sidebar-tab')));
   });
   store.onSidebarListTabChange = () => renderChats();
-  els.chatFilter.addEventListener('input', renderChats);
+  store.onChatFilterUpdate = () => renderChats();
+  els.chatFilter.addEventListener('input', () => {
+    renderChats();
+    scheduleChatKeywordFilter(els.chatFilter?.value || '');
+  });
   els.chatList.addEventListener('click', (e) => {
     const toggle = e.target.closest('.chat-ai-toggle');
     if (toggle) {

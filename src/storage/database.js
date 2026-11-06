@@ -2474,6 +2474,52 @@ export default class Database {
     `).all(t, cleaned, chatJid, chatJid, safeLimit);
   }
 
+  /**
+   * Sidebar keyword search: one best message hit per chat (FTS), for merging under
+   * title matches in the chat list filter.
+   * @returns {Array<{ chatJid: string, chatName: string|null, snippet: string, messageId: string|null, messageTs: number|null, rank: number }>}
+   */
+  searchChatsByKeyword(query, { limit = 40 } = {}) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 40, 100));
+    const cleaned = this._toFtsQuery(query);
+    if (!cleaned) return [];
+    const t = getCurrentTenantId();
+    const rows = this._db.prepare(`
+      SELECT chatJid, chatName, snippet, messageId, messageTs, rank FROM (
+        SELECT m.chat_jid AS chatJid,
+               m.chat_name AS chatName,
+               COALESCE(
+                 NULLIF(trim(m.text), ''),
+                 NULLIF(trim(m.media_caption), ''),
+                 NULLIF(trim(m.media_ai_index), ''),
+                 ''
+               ) AS snippet,
+               m.message_id AS messageId,
+               m.timestamp AS messageTs,
+               bm25(messages_fts) AS rank,
+               ROW_NUMBER() OVER (
+                 PARTITION BY m.chat_jid
+                 ORDER BY bm25(messages_fts) ASC, m.timestamp DESC
+               ) AS rn
+        FROM messages_fts
+        INNER JOIN messages m ON m.id = messages_fts.rowid
+        WHERE m.tenant_id = ?
+          AND messages_fts MATCH ?
+      )
+      WHERE rn = 1
+      ORDER BY rank ASC, messageTs DESC
+      LIMIT ?
+    `).all(t, cleaned, safeLimit);
+    return rows.map((r) => ({
+      chatJid: r.chatJid,
+      chatName: r.chatName || null,
+      snippet: String(r.snippet || '').slice(0, 160),
+      messageId: r.messageId || null,
+      messageTs: r.messageTs ?? null,
+      rank: r.rank,
+    }));
+  }
+
   getMessagesForDay(chatJid, dateStr) {
     const t = getCurrentTenantId();
     return this._db.prepare(`

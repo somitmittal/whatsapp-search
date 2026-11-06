@@ -19,7 +19,7 @@ const execFileAsync = promisify(execFile);
 const PLAY_SUFFIX = '.play.m4a';
 
 /** On-disk extensions whose audio needs an AAC copy for universal playback. */
-const NEEDS_PLAYABLE_COPY = new Set(['ogg', 'oga', 'opus', 'mp4', 'm4a']);
+const NEEDS_PLAYABLE_COPY = new Set(['ogg', 'oga', 'opus', 'mp4', 'm4a', 'webm']);
 
 function ffmpegBin() {
   return process.env.FFMPEG_PATH || 'ffmpeg';

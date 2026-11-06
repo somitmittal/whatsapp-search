@@ -12,13 +12,13 @@ describe('audio-transcode', () => {
   });
 
   test('voice-note containers all request a playable copy', () => {
-    for (const ext of ['ogg', 'oga', 'opus', 'mp4', 'm4a']) {
+    for (const ext of ['ogg', 'oga', 'opus', 'mp4', 'm4a', 'webm']) {
       expect(needsPlayableAudioCopy(`note.${ext}`)).toBe(true);
     }
   });
 
   test('plain-playable formats pass through untouched', () => {
-    for (const name of ['clip.mp3', 'tone.wav', 'audio.aac', 'song.flac', 'doc.pdf', 'vid.webm']) {
+    for (const name of ['clip.mp3', 'tone.wav', 'audio.aac', 'song.flac', 'doc.pdf', 'clip.mov']) {
       expect(needsPlayableAudioCopy(name)).toBe(false);
     }
   });
