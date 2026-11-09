@@ -5,22 +5,105 @@ import { messageBody } from './retrieval.js';
 
 const CALL_RE = /^\s*CALL\s+(\{.*\})\s*$/;
 const REF_RE = /\[m(\d+)\]/g;
+const KNOWN_TOOLS = new Set(['search', 'read', 'chats', 'summaries', 'reconcile']);
 
 export class AbortedError extends Error {
   constructor() { super('aborted'); this.name = 'AbortedError'; }
 }
 
+function normalizeCallObj(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  const name = String(obj.tool || obj.name || obj.function || '').trim();
+  if (!name) return null;
+  const rawArgs = obj.args || obj.arguments || obj.parameters || {};
+  let args = rawArgs;
+  if (typeof rawArgs === 'string') {
+    try { args = JSON.parse(rawArgs); } catch { args = {}; }
+  }
+  return { name, args: args && typeof args === 'object' ? args : {} };
+}
+
+/**
+ * Robust tool-call parser (Runtime Harness).
+ * Handles single-line CALL {...}, multi-line CALL {...}, markdown-wrapped JSON,
+ * and direct JSON function calls from small local models (Ollama).
+ */
 export function parseToolCalls(text) {
+  const str = String(text || '').trim();
+  if (!str) return [];
+
   const calls = [];
-  for (const line of String(text || '').replace(/```(?:json)?/g, '').split('\n')) {
+
+  // 1. Line-by-line CALL_RE check (fast path & legacy format)
+  const lines = str.replace(/```(?:json)?/g, '').split('\n');
+  for (const line of lines) {
     const m = line.match(CALL_RE);
     if (!m) continue;
     try {
-      const obj = JSON.parse(m[1]);
-      const name = String(obj.tool || obj.name || '').trim();
-      if (name) calls.push({ name, args: obj.args && typeof obj.args === 'object' ? obj.args : {} });
+      const call = normalizeCallObj(JSON.parse(m[1]));
+      if (call) calls.push(call);
     } catch { /* model wrote a malformed call; ignore that line */ }
   }
+  if (calls.length > 0) return calls;
+
+  // 2. Multi-line CALL { ... } blocks
+  const multiCallRe = /CALL\s*(\{[\s\S]*?\})(?=\s*(?:CALL|$))/g;
+  let match;
+  while ((match = multiCallRe.exec(str)) !== null) {
+    try {
+      const call = normalizeCallObj(JSON.parse(match[1]));
+      if (call) calls.push(call);
+    } catch { /* ignore malformed segment */ }
+  }
+  if (calls.length > 0) return calls;
+
+  // 3. Markdown code blocks ```(?:json)? ... ```
+  const codeBlockRe = /```(?:json)?\s*([\s\S]*?)\s*```/g;
+  while ((match = codeBlockRe.exec(str)) !== null) {
+    const blockContent = match[1].trim();
+    try {
+      const parsed = JSON.parse(blockContent);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const call = normalizeCallObj(item);
+          if (call) calls.push(call);
+        }
+      } else {
+        const call = normalizeCallObj(parsed);
+        if (call && (KNOWN_TOOLS.has(call.name) || parsed.tool)) calls.push(call);
+      }
+    } catch {
+      // Check if code block contains CALL lines
+      for (const line of blockContent.split('\n')) {
+        const m = line.match(CALL_RE);
+        if (m) {
+          try {
+            const call = normalizeCallObj(JSON.parse(m[1]));
+            if (call) calls.push(call);
+          } catch { /* ignore */ }
+        }
+      }
+    }
+  }
+  if (calls.length > 0) return calls;
+
+  // 4. Standalone JSON tool calls (common in Ollama outputs)
+  if (str.startsWith('{') || str.startsWith('[') || str.includes('{"tool"') || str.includes('{"name"')) {
+    try {
+      const jsonStart = str.indexOf('{');
+      const jsonEnd = str.lastIndexOf('}');
+      if (jsonStart !== -1 && jsonEnd > jsonStart) {
+        const candidate = str.slice(jsonStart, jsonEnd + 1);
+        const obj = JSON.parse(candidate);
+        const call = normalizeCallObj(obj);
+        if (call && (KNOWN_TOOLS.has(call.name) || obj.tool)) {
+          calls.push(call);
+          return calls;
+        }
+      }
+    } catch { /* not valid JSON */ }
+  }
+
   return calls;
 }
 
@@ -56,7 +139,7 @@ async function streamStep(provider, messages, { emit, signal }) {
     if (mode === 'tool') return;
     const head = buf.trimStart();
     if (head.length < 4 && !head.includes('\n')) return;
-    mode = /^(CALL|```)/.test(head) ? 'tool' : 'text';
+    mode = /^(CALL|```|\{\s*"(?:tool|name)")/.test(head) ? 'tool' : 'text';
     if (mode === 'text') emit?.({ type: 'delta', text: buf });
   });
   return { text: String(text || buf).trim(), streamed: mode === 'text' };
@@ -112,7 +195,12 @@ export async function runAgent({
         register(out.messages);
         if (out.payload) payload = { ...payload, ...out.payload };
         transcriptParts.push(out.text);
-        return `## ${call.name} ${JSON.stringify(call.args)}\n${out.text}`;
+
+        let outText = out.text;
+        if (GPT_LIMITS.supervisorNudge && call.name === 'search' && (!out.messages || out.messages.length === 0)) {
+          outText += '\n[Supervisor note: 0 messages matched this query. If looking for a person or group, call `chats` to check exact chat names or search with broader keywords.]';
+        }
+        return `## ${call.name} ${JSON.stringify(call.args)}\n${outText}`;
       } catch (err) {
         return `## ${call.name}\nFailed: ${err.message}`;
       }

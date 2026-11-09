@@ -1,0 +1,60 @@
+{
+  "version": "1.0.0",
+  "project": "whatsapp-gpt",
+  "harness": {
+    "bootstrap": "scripts/init.sh",
+    "verification": "scripts/verify.sh",
+    "hygiene": "scripts/prune-worktrees.sh"
+  },
+  "features": [
+    {
+      "id": "dev-harness-bootstrap",
+      "category": "developer-harness",
+      "description": "Deterministic environment bootstrap script ensuring Node 22 and SQLite ABI integrity",
+      "verify_cmd": "bash scripts/init.sh",
+      "status": "passing"
+    },
+    {
+      "id": "dev-harness-three-layer-verify",
+      "category": "developer-harness",
+      "description": "Three-layer termination script verifying syntax, test suites, and architectural contracts",
+      "verify_cmd": "bash scripts/verify.sh tests/skills.test.js",
+      "status": "passing"
+    },
+    {
+      "id": "dev-harness-worktree-prune",
+      "category": "developer-harness",
+      "description": "Worktree lifecycle script identifying and safely pruning dead metadata and merged worktrees",
+      "verify_cmd": "bash scripts/prune-worktrees.sh",
+      "status": "passing"
+    },
+    {
+      "id": "dev-harness-progressive-docs",
+      "category": "developer-harness",
+      "description": "Progressive disclosure docs in docs/agents/ covering architecture, anti-regressions, and handoff",
+      "verify_cmd": "test -f docs/agents/architecture.md && test -f docs/agents/anti-regressions.md",
+      "status": "passing"
+    },
+    {
+      "id": "runtime-harness-robust-tool-parsing",
+      "category": "runtime-harness",
+      "description": "Robust tool call parser in src/gpt/agent.js supporting multi-line JSON, markdown fences, and relaxed syntax for small models like Ollama",
+      "verify_cmd": "bash scripts/verify.sh tests/runtime-harness.test.js",
+      "status": "passing"
+    },
+    {
+      "id": "runtime-harness-supervisor-nudge",
+      "category": "runtime-harness",
+      "description": "Supervisor guidance injected into agent observations when search returns 0 hits, preventing premature giving up",
+      "verify_cmd": "bash scripts/verify.sh tests/runtime-harness.test.js",
+      "status": "passing"
+    },
+    {
+      "id": "runtime-harness-eval-suite",
+      "category": "runtime-harness",
+      "description": "Eval harness test suite in tests/runtime-harness.test.js benchmarking tool parsing, grounding, and nudges",
+      "verify_cmd": "bash scripts/verify.sh tests/runtime-harness.test.js",
+      "status": "passing"
+    }
+  ]
+}

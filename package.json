@@ -18,6 +18,9 @@
     "dist:linux": "bash scripts/prepare-node.sh linux-x64 && bash scripts/rebuild-sqlite-for-node.sh --from-target && electron-builder --linux --x64 && npm_config_python=/usr/bin/python3 PYTHON=/usr/bin/python3 npm rebuild better-sqlite3",
     "dist:windows": "npm run dist:win",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit",
+    "verify": "bash scripts/verify.sh",
+    "init:env": "bash scripts/init.sh",
+    "prune:worktrees": "bash scripts/prune-worktrees.sh",
     "qa:search": "node scripts/search-qa-agent.mjs"
   },
   "dependencies": {

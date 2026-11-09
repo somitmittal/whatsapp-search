@@ -8,6 +8,12 @@ function envNum(name, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function envBool(name, fallback) {
+  const val = process.env[name];
+  if (val === undefined || val === '') return fallback;
+  return val === '1' || val === 'true' || val === 'yes';
+}
+
 export const GPT_LIMITS = Object.freeze({
   /** SmartSearch MAX_MSGS_FOR_SYNTHESIS */
   maxMessagesInContext: envNum('GPT_MAX_CONTEXT_MESSAGES', 50),
@@ -30,6 +36,8 @@ export const GPT_LIMITS = Object.freeze({
   neighborRadius: envNum('GPT_NEIGHBOR_RADIUS', 2),
   /** Chat directory cache for name → chat resolution. */
   directoryTtlMs: envNum('GPT_DIRECTORY_TTL_MS', 60_000),
+  /** Runtime Harness: supervisor guidance on empty tool results */
+  supervisorNudge: envBool('GPT_SUPERVISOR_NUDGE', true),
 });
 
 /** ~4 chars per token (OpenAI rule of thumb); good enough for budget packing. */
