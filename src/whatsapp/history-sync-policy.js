@@ -32,8 +32,8 @@ export const PHONE_HISTORY_GLOBAL_MIN_GAP_MS = 8 * 60 * 1000;
 export const PHONE_HISTORY_MAX_PER_HOUR = 4;
 /** How long a single in-flight pull blocks the next. */
 export const PHONE_HISTORY_INFLIGHT_MS = 90 * 1000;
-/** Prefer max Baileys page size so each approved pull buys more archive. */
-export const PHONE_HISTORY_DEFAULT_COUNT = 100;
+/** Prefer larger batch so each phone notification yields substantial archive. */
+export const PHONE_HISTORY_DEFAULT_COUNT = 500;
 
 /**
  * Decide whether another phone history pull is allowed right now.

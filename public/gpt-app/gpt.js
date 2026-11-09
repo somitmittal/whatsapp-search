@@ -306,15 +306,21 @@ function connectSyncSocket() {
       applyUnreadUpdates(msg.data?.updates);
     } else if (msg.type === 'new-messages') {
       // Keep the sidebar current; only re-paint the open transcript when this chat moved.
-      void loadChats();
-      if (openChatTouched(msg.data)) scheduleReloadActiveWaMessages();
+      scheduleLoadChats();
+      if (openChatTouched(msg.data)) scheduleReloadActiveWaMessages({ coalesceMs: 120 });
     } else if (msg.type === 'message-media-ready') {
       if (openChatTouched(msg.data)) scheduleReloadActiveWaMessages({ coalesceMs: 120 });
     } else if (msg.type === 'chat-names-refreshed') {
-      void loadChats();
+      scheduleLoadChats();
     }
   };
   ws.onclose = () => { setTimeout(connectSyncSocket, 3000); };
+}
+
+let _loadChatsTimer = null;
+function scheduleLoadChats({ coalesceMs = 250 } = {}) {
+  clearTimeout(_loadChatsTimer);
+  _loadChatsTimer = setTimeout(() => { void loadChats(); }, coalesceMs);
 }
 
 let _waReloadTimer = null;

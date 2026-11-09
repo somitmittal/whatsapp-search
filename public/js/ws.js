@@ -39,7 +39,7 @@ function connectWS() {
       }
       else if (msg.type === 'new-messages') {
         scheduleRefreshDash(msg.data?.chatTouches);
-        if (openChatTouched(msg.data)) scheduleRefreshOpenChat();
+        if (openChatTouched(msg.data)) scheduleRefreshOpenChat({ coalesceMs: 120 });
         if (store._waState === 'READY') { /* keep welcome hidden */ }
       }
       else if (msg.type === 'chat-action-items' && openChatTouched(msg.data)) {

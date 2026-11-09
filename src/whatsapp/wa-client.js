@@ -97,7 +97,7 @@ const P        = require('pino');
 const BATCH_MS = 2000;
 
 /** Pause between WhatsApp network calls while draining media and profile pictures. */
-const WA_DRAIN_GAP_MS = WA_MEDIA_DRAIN_GAP_MS; // from media-constants (shared with expense wait)
+const WA_DRAIN_GAP_MS = config.waMediaDrainGapMs ?? WA_MEDIA_DRAIN_GAP_MS;
 
 const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
 /** Drain order bias: light types first so videos cannot monopolize the shared worker pool. */
@@ -1029,7 +1029,7 @@ export default class WaClient {
     if (priorCfg.acceptHistoryOnce) {
       syncFullHistoryOnce = true;
     } else if (!priorCfg.initialHistorySyncDone) {
-      syncFullHistoryOnce = false;
+      syncFullHistoryOnce = true;
     }
     // Paced acceptance: user-initiated resyncs always run immediately; automated
     // zero-touch retries wait out the backoff gap first, then retry automatically.
@@ -1052,6 +1052,7 @@ export default class WaClient {
       this._forceFullHistoryOnce = false;
       this._recordFullHistoryRequest(priorCfg);
       this._acceptPhoneHistorySync = true;
+      syncFullHistoryOnce = true;
       console.log('[WA] Accepting phone history sync (initial / recovery)');
     } else {
       this._acceptPhoneHistorySync = false;
@@ -1091,10 +1092,10 @@ export default class WaClient {
       }),
       /**
        * Linked-device label on your phone (Settings → Linked devices).
-       * Do **not** use "Chrome" here — WhatsApp surfaces that in OS notifications as
-       * "syncing with Google Chrome" even though this is the Node/Baileys client, not web.whatsapp.com.
+       * Use 'Mac OS' or 'Windows' so Baileys maps webSubPlatform to DARWIN or WIN32
+       * for desktop companion capability.
        */
-      browser: ['WhatsApp Search', 'Desktop', '1.0.0'],
+      browser: [process.platform === 'darwin' ? 'Mac OS' : (process.platform === 'win32' ? 'Windows' : 'Desktop'), 'Desktop', '1.0.0'],
     });
 
     this._sock.ev.on('creds.update', saveCreds);
@@ -2805,7 +2806,7 @@ export default class WaClient {
       id: String(messageId),
       fromMe: Boolean(fromMe),
     };
-    const n = Math.min(100, Math.max(1, Math.floor(Number(count) || PHONE_HISTORY_DEFAULT_COUNT)));
+    const n = Math.min(500, Math.max(1, Math.floor(Number(count) || PHONE_HISTORY_DEFAULT_COUNT)));
     return this._sock.fetchMessageHistory(n, key, ts);
   }
 

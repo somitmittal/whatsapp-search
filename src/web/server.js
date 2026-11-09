@@ -43,6 +43,7 @@ import {
   downloadFilenameForServedMedia,
 } from './media-filename.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
+import { PHONE_HISTORY_DEFAULT_COUNT } from '../whatsapp/history-sync-policy.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
 import {
@@ -530,10 +531,12 @@ export default class WebServer {
   /** True only while WhatsApp is actually delivering history — see `isWaIngestionActive`. */
   isTenantWaHistoryBusy(tenantId) {
     const st = this._getTenantState(tenantId);
+    const wa = st.waClient;
+    const isPhoneHistoryInflight = Boolean(wa?._phoneHistory?.inflight);
     return isWaIngestionActive({
       waState: st.waState,
       isInitialHistorySync: st.waClient?.isInitialHistorySync,
-    });
+    }) || isPhoneHistoryInflight;
   }
 
   /**
@@ -836,7 +839,7 @@ export default class WebServer {
           for (const [chatJid, chatName] of lastNameByChat) {
             if (!historyBusy && waClient?.propagateDisplayNameForChat) {
               void waClient.propagateDisplayNameForChat(this.db, chatJid, chatName).catch(() => {});
-            } else {
+            } else if (!historyBusy) {
               this.db.propagateChatDisplayName(chatJid, chatName);
             }
           }
@@ -857,7 +860,7 @@ export default class WebServer {
                 type: 'new-messages',
                 data: {
                   count: inserted,
-                  stats: this._getCachedTotalStats(tid, { force: true }),
+                  stats: this._getCachedTotalStats(tid),
                   chatTouches,
                 },
               }, tid);
@@ -866,7 +869,7 @@ export default class WebServer {
                 type: 'new-messages',
                 data: {
                   count: inserted,
-                  stats: this._getCachedTotalStats(tid, { force: true }),
+                  stats: this._getCachedTotalStats(tid),
                   chatTouches: baseTouches,
                 },
               }, tid);
@@ -1687,7 +1690,7 @@ export default class WebServer {
         const st = this._getTenantState(tid);
         const wa = st?.waClient;
         const imported = chatJid.endsWith('@imported');
-        const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || 100));
+        const count = Math.min(500, Math.max(1, parseInt(req.body?.count, 10) || PHONE_HISTORY_DEFAULT_COUNT));
         const requestHistory = req.body?.requestHistory === true
           || req.body?.requestHistory === 1
           || String(req.body?.requestHistory || '').toLowerCase() === 'true';
@@ -2480,7 +2483,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       if (st.waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
       const chatJid = String(req.body?.chatJid || '').trim();
       if (!chatJid) return res.status(400).json({ error: 'chatJid required' });
-      const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || 100));
+      const count = Math.min(500, Math.max(1, parseInt(req.body?.count, 10) || PHONE_HISTORY_DEFAULT_COUNT));
       // Anti notification-spam: in-flight lock, per-chat + global cooldowns, hourly cap, sleep pause.
       const guard = wa.canFetchPhoneHistory?.(chatJid);
       if (guard && !guard.ok) {

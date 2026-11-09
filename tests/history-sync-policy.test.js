@@ -7,6 +7,7 @@ import {
   PHONE_HISTORY_CHAT_COOLDOWN_MS,
   PHONE_HISTORY_GLOBAL_MIN_GAP_MS,
   PHONE_HISTORY_MAX_PER_HOUR,
+  PHONE_HISTORY_DEFAULT_COUNT,
   shouldRequestRecentDaysCatchUp,
   shouldSyncHistoryMessage,
   HISTORY_SYNC_TYPE_ON_DEMAND,
@@ -134,6 +135,9 @@ describe('evaluatePhoneHistoryQuota', () => {
     const r = evaluatePhoneHistoryQuota({ ...base, pullsLastHourMs: pulls });
     expect(r.ok).toBe(false);
     expect(r.code).toBe('HOURLY_CAP');
+  });
+  test('PHONE_HISTORY_DEFAULT_COUNT yields 500 messages per notification', () => {
+    expect(PHONE_HISTORY_DEFAULT_COUNT).toBe(500);
   });
 });
 

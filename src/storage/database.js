@@ -60,7 +60,11 @@ export default class Database {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     this._db = new SQLite(config.dbPath);
     this._db.pragma('journal_mode = WAL');
+    this._db.pragma('synchronous = NORMAL');
     this._db.pragma('foreign_keys = ON');
+    this._db.pragma('cache_size = -64000');
+    this._db.pragma('temp_store = MEMORY');
+    this._db.pragma('mmap_size = 268435456');
     this._initSchema();
     migrateMultiTenant(this._db);
     migrateUserSessionsAndNullableTenants(this._db);
@@ -1227,6 +1231,9 @@ export default class Database {
     `);
     this._stmtSelectIdByMessageId = this._db.prepare(
       'SELECT id FROM messages WHERE tenant_id = ? AND message_id = ?'
+    );
+    this._stmtSelectTextByMessageId = this._db.prepare(
+      'SELECT text FROM messages WHERE tenant_id = ? AND message_id = ?'
     );
     this._stmtGetState = this._db.prepare('SELECT value FROM agent_state WHERE key = ?');
     this._stmtUpsertState = this._db.prepare(`
@@ -3251,9 +3258,9 @@ export default class Database {
   _upgradePlaceholderMessageBody(tenantId, row) {
     const next = String(row?.text || '').trim();
     if (!next || isContentPlaceholder(next)) return false;
-    const existing = this._db.prepare(
+    const existing = (this._stmtSelectTextByMessageId || this._db.prepare(
       'SELECT text FROM messages WHERE tenant_id = ? AND message_id = ?',
-    ).get(tenantId, row.messageId);
+    )).get(tenantId, row.messageId);
     if (!existing || !isContentPlaceholder(existing.text)) return false;
     return this.updateMessageBody(row.chatJid, row.messageId, next);
   }

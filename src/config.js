@@ -127,16 +127,18 @@ const config = {
    * shed older rows instead (load-shedding for very large accounts).
    */
   waHistoryKeepDays: Math.max(0, parseInt(process.env.WA_HISTORY_KEEP_DAYS || '0', 10) || 0),
-  /** Rows per SQLite batch during `messaging-history.set` (smaller = less event-loop blocking / fewer disconnects). */
-  waHistoryChunkSize: Math.max(50, parseInt(process.env.WA_HISTORY_CHUNK_SIZE || '350', 10) || 350),
+  /** Rows per SQLite batch during `messaging-history.set` (balanced with WAL mode for speed and event-loop health). */
+  waHistoryChunkSize: Math.max(50, parseInt(process.env.WA_HISTORY_CHUNK_SIZE || '1000', 10) || 1000),
   /** Idle ms after the last history batch before marking sync complete (Baileys often pauses 5–30s between batches). */
   waSyncDoneDelayMs: Math.max(3000, parseInt(process.env.WA_SYNC_DONE_DELAY_MS || '15000', 10) || 15000),
   /**
    * Parallel WhatsApp media downloads after (or for a prioritized chat during) history sync.
-   * Default 2 overlaps one download with the previous write/gap. Set `WA_MEDIA_DRAIN_CONCURRENCY=1`
-   * for fully serial drain if the phone/CDN complains.
+   * Default 4 overlaps direct CDN downloads without phone impact. Set `WA_MEDIA_DRAIN_CONCURRENCY=1`
+   * for fully serial drain if desired.
    */
-  waMediaDrainConcurrency: Math.max(1, parseInt(process.env.WA_MEDIA_DRAIN_CONCURRENCY || '2', 10) || 2),
+  waMediaDrainConcurrency: Math.max(1, parseInt(process.env.WA_MEDIA_DRAIN_CONCURRENCY || '4', 10) || 4),
+  /** Pause between media downloads (CDN edge requests). Lower values speed up media downloads. */
+  waMediaDrainGapMs: Math.max(0, parseInt(process.env.WA_MEDIA_DRAIN_GAP_MS || '25', 10) || 25),
   /** Live chats active within this user-selected window form the first post-sync indexing queue. */
   liveRecentWindowDays: 5,
   /**
