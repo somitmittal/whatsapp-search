@@ -1,3 +1,4 @@
+import './node-version-check.js';
 import { mkdirSync } from 'fs';
 import config from './config.js';
 import { runWithTenant, getCurrentTenantId } from './storage/tenant-context.js';

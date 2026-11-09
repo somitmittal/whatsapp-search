@@ -38,7 +38,23 @@ import { reactionParticipantSlotKey } from '../whatsapp/reaction-counts.js';
 import { normalizeUnixSeconds } from '../utils/timestamp.js';
 
 const require = createRequire(import.meta.url);
-const SQLite = require('better-sqlite3');
+let SQLite;
+try {
+  SQLite = require('better-sqlite3');
+} catch (err) {
+  if (err && err.message && err.message.includes('NODE_MODULE_VERSION')) {
+    console.error('\n' + '='.repeat(70));
+    console.error('[Searchable Native Module ABI Error]');
+    console.error(`Current Node: ${process.version} (${process.execPath})`);
+    console.error(err.message);
+    console.error('\nSearchable requires Node.js 22 (engines: >=22.23.4 <23).');
+    console.error('To run under the compatible Node 22 environment:');
+    console.error('  source scripts/init.sh && npm start');
+    console.error('  or: PATH="/opt/homebrew/opt/node@22/bin:$PATH" npm test');
+    console.error('='.repeat(70) + '\n');
+  }
+  throw err;
+}
 
 /** True if `name` is a better sidebar title than the bare JID local part (avoids last-outgoing-msg wiping the label). */
 function looksLikeContactDisplayName(name, chatJid) {

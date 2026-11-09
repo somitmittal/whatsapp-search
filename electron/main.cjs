@@ -45,8 +45,16 @@ function resolveNodeExecutable() {
 
   const nodeName = bundledNodeName();
 
-  // Dev: prefer system Node so native modules match local npm install/rebuild.
+  // Dev: prefer Node 22 (required for native better-sqlite3 ABI) or system Node.
   if (!app.isPackaged) {
+    const knownNode22 = [
+      process.env.NODE22_PATH,
+      '/opt/homebrew/opt/node@22/bin/node',
+      '/usr/local/opt/node@22/bin/node',
+    ].filter(Boolean);
+    for (const p of knownNode22) {
+      if (existsSync(p)) return p;
+    }
     try {
       if (process.platform === 'win32') {
         const nodePath = execFileSync('where', ['node'], { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
