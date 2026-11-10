@@ -110,14 +110,13 @@ const config = {
     (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || (onRender ? 'gemini-3.8-flash' : 'llama3.2:3b')).trim(),
 
   /**
-   * Baileys history dump. Default `false`: already-linked phones are not asked to sync again,
-   * which is what raises repeated “syncing with WhatsApp Search” notifications.
-   * Set `WA_SYNC_FULL_HISTORY=true` only if you explicitly want a sync on every reconnect.
+   * Baileys history dump. Default `true` so the complete archive across all chats is synced.
+   * Can be disabled by setting `WA_SYNC_FULL_HISTORY=false`.
    */
   waSyncFullHistory: (() => {
     const v = String(process.env.WA_SYNC_FULL_HISTORY ?? '').trim().toLowerCase();
-    if (v === '1' || v === 'true' || v === 'yes') return true;
-    return false;
+    if (v === '0' || v === 'false' || v === 'no') return false;
+    return true;
   })(),
   /**
    * How much of the phone's `messaging-history.set` dump to store, in days.
@@ -129,8 +128,8 @@ const config = {
   waHistoryKeepDays: Math.max(0, parseInt(process.env.WA_HISTORY_KEEP_DAYS || '0', 10) || 0),
   /** Rows per SQLite batch during `messaging-history.set` (balanced with WAL mode for speed and event-loop health). */
   waHistoryChunkSize: Math.max(50, parseInt(process.env.WA_HISTORY_CHUNK_SIZE || '1000', 10) || 1000),
-  /** Idle ms after the last history batch before marking sync complete (Baileys often pauses 5–30s between batches). */
-  waSyncDoneDelayMs: Math.max(3000, parseInt(process.env.WA_SYNC_DONE_DELAY_MS || '15000', 10) || 15000),
+  /** Idle ms after the last history batch before marking sync complete (Baileys often pauses 15–30s between batches). */
+  waSyncDoneDelayMs: Math.max(3000, parseInt(process.env.WA_SYNC_DONE_DELAY_MS || '45000', 10) || 45000),
   /**
    * Parallel WhatsApp media downloads after (or for a prioritized chat during) history sync.
    * Default 4 overlaps direct CDN downloads without phone impact. Set `WA_MEDIA_DRAIN_CONCURRENCY=1`

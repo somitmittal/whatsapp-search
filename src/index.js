@@ -324,7 +324,9 @@ async function main() {
   await webServer.start();
 
   console.log('Server ready.');
-  if (!config.waSyncFullHistory) {
+  if (config.waSyncFullHistory) {
+    console.log('[WA] WA_SYNC_FULL_HISTORY enabled — full history dump active.');
+  } else {
     console.log('[WA] WA_SYNC_FULL_HISTORY disabled — skip FULL dump; on-demand phone history is paced (Refresh stays local).');
   }
   if (config.waAutoAppStateResync) {
