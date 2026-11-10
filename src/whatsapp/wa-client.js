@@ -1090,10 +1090,11 @@ export default class WaClient {
       }),
       /**
        * Linked-device label on your phone (Settings → Linked devices).
-       * Use 'Mac OS' or 'Windows' so Baileys maps webSubPlatform to DARWIN or WIN32
-       * for desktop companion capability.
+       * Do **not** use "Chrome" here — WhatsApp surfaces that in OS notifications as
+       * "syncing with Google Chrome" even though this is the Node/Baileys client, not web.whatsapp.com.
+       * Also keep "WhatsApp Search" (avoid 'Mac OS' which maps to DARWIN and causes WhatsApp servers to drop with 428).
        */
-      browser: [process.platform === 'darwin' ? 'Mac OS' : (process.platform === 'win32' ? 'Windows' : 'Desktop'), 'Desktop', '1.0.0'],
+      browser: ['WhatsApp Search', 'Desktop', '1.0.0'],
     });
 
     this._sock.ev.on('creds.update', saveCreds);

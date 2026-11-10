@@ -195,16 +195,12 @@ describe('Human QA E2E: Ingestion Optimization & Anti-Notification Gate', () => 
   });
 
   describe('4. Browser Identity & Desktop Platform Mapping', () => {
-    test('platform detection provides Desktop identifier matching Baileys PLATFORM_MAP', () => {
-      const osPlatform = process.platform === 'darwin' ? 'Mac OS' : (process.platform === 'win32' ? 'Windows' : 'Desktop');
-      const browserTuple = [osPlatform, 'Desktop', '1.0.0'];
+    test('browser identifier uses WhatsApp Search to avoid 428 companion termination', () => {
+      const browserTuple = ['WhatsApp Search', 'Desktop', '1.0.0'];
 
+      expect(browserTuple[0]).toBe('WhatsApp Search');
       expect(browserTuple[1]).toBe('Desktop');
-      if (process.platform === 'darwin') {
-        expect(browserTuple[0]).toBe('Mac OS');
-      } else if (process.platform === 'win32') {
-        expect(browserTuple[0]).toBe('Windows');
-      }
+      expect(browserTuple[2]).toBe('1.0.0');
     });
   });
 
