@@ -44,9 +44,7 @@ rtk pip list            rtk pnpm install        rtk npm run <script>
 <!-- headroom:workspace-rules -->
 # Workspace rules (multi-agent)
 
-1. **Worktrees only.** Never edit this main checkout directly. Create a
-   worktree per task off `main` (`git worktree add .worktrees/feature/<name> -b
-   feature/<name> main`) and do all work there. See AGENTS.md.
-2. **Test before push.** Run `npm test` and verify affected flows in the
-   running app before any push/merge. See AGENTS.md.
+1. **Worktrees only.** Every agent MUST create an isolated worktree for their separate changes off `main` (`git worktree add .worktrees/feature/<name> -b feature/<name> main`). Never edit the main checkout or another agent's worktree directly. See AGENTS.md.
+2. **Test end-to-end before merge.** Run `./scripts/verify.sh` (Layer 1 syntax, Layer 2 tests, Layer 3 contract gate) AND verify the complete end-to-end flow in the running app before any merge.
+3. **Merge to main & inform user.** Once end-to-end testing is completely verified, merge the feature branch into `main` (`git -C /Users/somitmittal/Desktop/whatsapp-gpt merge feature/<name>`), prune merged worktrees (`bash scripts/prune-worktrees.sh --force`), and immediately inform the user with change summary and test evidence. See AGENTS.md.
 <!-- /headroom:workspace-rules -->

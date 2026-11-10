@@ -4,6 +4,19 @@ The `kavida` workspace has multiple autonomous agents working on the same reposi
 
 ---
 
+## 🚨 Non-Negotiable Core Rules
+
+1. **Dedicated Worktree for Separate Changes (Rule 1):**
+   Every agent MUST create an isolated worktree off `main` for their task. NEVER edit `/Users/somitmittal/Desktop/whatsapp-gpt` (the main checkout) or another agent's worktree directly.
+2. **End-to-End Testing Verification (Rule 2):**
+   All changes MUST be tested end-to-end and pass the Three-Layer Gate (`./scripts/verify.sh`) before any merge. No unverified code may be merged.
+3. **Merge to `main` Once Tested (Rule 3):**
+   Once and ONLY once changes are verified end-to-end, merge the feature branch cleanly into `main`.
+4. **Inform the User Immediately (Rule 4):**
+   Immediately after merging to `main`, inform the user with a summary of changes, end-to-end verification evidence, and merge confirmation.
+
+---
+
 ## ⚡ The Agent Operating Harness (5 Subsystems)
 
 Every agent session must follow the **Harness Lifecycle** (from `walkinglabs/learn-harness-engineering`):
@@ -16,35 +29,52 @@ source scripts/init.sh
 * Ensures Node `>=22.23.4 <23` is active (from `/opt/homebrew/opt/node@22/bin`).
 * Verifies `node_modules` and `better-sqlite3` native ABI bindings.
 
-### Phase 2: Work in Dedicated Worktree (Rule 1)
+### Phase 2: Create & Work in Dedicated Worktree (Rule 1)
 * **NEVER** edit `/Users/somitmittal/Desktop/whatsapp-gpt` (the main checkout) or another agent's worktree directly.
-* Create a dedicated worktree off `main`:
+* Create a dedicated worktree off `main` for each separate task:
   ```bash
   git -C /Users/somitmittal/Desktop/whatsapp-gpt worktree add .worktrees/feature/<short-name> -b feature/<short-name> main
   ```
 * Make all edits, tests, and commits inside that worktree only.
 * Target **one atomic task at a time (WIP=1)**.
 
-### Phase 3: Three-Layer Termination Verification (Rule 2)
-Nothing gets pushed or merged without passing the **Three-Layer Termination Gate**:
+### Phase 3: End-to-End Testing & Verification Gate (Rule 2)
+Nothing gets merged to `main` without full end-to-end testing and passing the **Three-Layer Termination Gate**:
 ```bash
 ./scripts/verify.sh
 ```
-1. **Layer 1 (Static):** `node --check` syntax validation on all core files.
-2. **Layer 2 (Test Suite):** `npm test` (Jest VM modules) passes cleanly.
+1. **Layer 1 (Static):** `node --check` syntax validation on all core and touched files.
+2. **Layer 2 (Test Suite):** `npm test` (Jest VM modules) passes cleanly with 0 failures.
 3. **Layer 3 (Smoke / Contracts):** `node scripts/smoke-contract.mjs` architectural invariants pass.
 
-For UI or Electron changes:
-* Start the local server (`npm start`) or app (`npm run electron`) from the worktree and verify the user flow.
-* If a change cannot be fully tested (e.g. needs live WhatsApp pairing), state explicitly what was tested and what remains manual.
+**End-to-End (E2E) Flow Verification:**
+* For UI, API, or Electron changes: start the local server (`npm start`) or app (`npm run electron`) from the worktree and verify the complete user flow end-to-end.
+* Check against regressions listed in [docs/agents/anti-regressions.md](docs/agents/anti-regressions.md).
+* If a change cannot be fully tested with live services (e.g. needs live WhatsApp pairing), mock or simulate the integration, explicitly stating what was tested end-to-end and what remains manual.
 
-### Phase 4: Lifecycle Handoff & Hygiene
-* If another agent or user will continue your work, fill out the handoff notes following [docs/agents/session-handoff-template.md](docs/agents/session-handoff-template.md).
-* Periodically audit and prune dead worktrees:
-  ```bash
-  bash scripts/prune-worktrees.sh          # Dry run
-  bash scripts/prune-worktrees.sh --force  # Prune merged/dead worktrees
-  ```
+### Phase 4: Merge to `main` Once Tested End-to-End (Rule 3)
+Once all three layers and end-to-end tests have passed:
+1. Commit all changes cleanly on the feature branch inside your worktree:
+   ```bash
+   git add -A
+   git commit -m "feat(<scope>): description of changes"
+   ```
+2. Merge the feature branch into `main`:
+   ```bash
+   git -C /Users/somitmittal/Desktop/whatsapp-gpt merge feature/<short-name>
+   ```
+3. Ensure `main` is clean, intact, and all changes integrate seamlessly without conflict.
+
+### Phase 5: Inform User & Lifecycle Hygiene (Rule 4)
+1. **Inform the User:** Notify the user immediately upon completing the merge to `main`. Include:
+   * **Summary of Changes:** What was changed, created, or fixed.
+   * **Test Verification Evidence:** Proof that Layer 1, Layer 2, Layer 3, and end-to-end manual/contract checks passed.
+   * **Merge Confirmation:** Explicit confirmation that changes are merged to `main`.
+2. **Worktree Hygiene:** Prune the completed/merged worktree:
+   ```bash
+   bash scripts/prune-worktrees.sh --force
+   ```
+3. **Session Handoff (if applicable):** If work is partial or being handed over to another agent/human, fill out notes following [docs/agents/session-handoff-template.md](docs/agents/session-handoff-template.md).
 
 ---
 
