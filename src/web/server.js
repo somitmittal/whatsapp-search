@@ -43,6 +43,7 @@ import {
   downloadFilenameForServedMedia,
 } from './media-filename.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
+import { isPlaceholderSenderName } from '../whatsapp/chat-display-name.js';
 import { PHONE_HISTORY_DEFAULT_COUNT } from '../whatsapp/history-sync-policy.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
@@ -829,6 +830,21 @@ export default class WebServer {
         });
         this._scheduleChatNamesBroadcast(tid);
       },
+      onResolvedSenderName: (jid, name) => {
+        runWithTenant(tid, () => {
+          try {
+            const updated = this.db.backfillSenderName(jid, name);
+            if (updated > 0) {
+              this._broadcast({
+                type: 'sender-names-resolved',
+                data: { updates: [{ senderJid: jid, sender: name, changed: updated }] },
+              }, tid);
+            }
+          } catch (e) {
+            console.warn('[WA] backfill sender error:', e.message);
+          }
+        });
+      },
       onMessages: (rows) => {
         const historyBusy = this.isTenantWaHistoryBusy(tid);
         runWithTenant(tid, () => {
@@ -1578,16 +1594,71 @@ export default class WebServer {
       }
       const unique = [...new Set(jids)].filter(Boolean);
       try {
+        let rows;
         if (focusMessageId) {
           if (unique.length <= 1) {
-            return res.json(sanitizeMessageList(this.db.getMessagesAroundMessageId(chatJid, focusMessageId, limit), isQueued));
+            rows = this.db.getMessagesAroundMessageId(chatJid, focusMessageId, limit);
+          } else {
+            rows = this.db.getMessagesAroundMessageIdForJids(unique, focusMessageId, limit);
           }
-          return res.json(sanitizeMessageList(this.db.getMessagesAroundMessageIdForJids(unique, focusMessageId, limit), isQueued));
+        } else {
+          if (unique.length <= 1) {
+            rows = this.db.getMessagesPaginated(chatJid, limit, offset);
+          } else {
+            rows = this.db.getMessagesPaginatedForJids(unique, limit, offset);
+          }
         }
-        if (unique.length <= 1) {
-          return res.json(sanitizeMessageList(this.db.getMessagesPaginated(chatJid, limit, offset), isQueued));
+        const sanitized = sanitizeMessageList(rows, isQueued);
+        if (wa) {
+          let hasPlaceholder = false;
+          for (const m of sanitized) {
+            if (m.senderJid && m.sender && isPlaceholderSenderName(m.sender)) {
+              const fast = wa.getSenderDisplayNameFast(m.senderJid);
+              if (fast && !isPlaceholderSenderName(fast)) {
+                m.sender = fast;
+              } else {
+                hasPlaceholder = true;
+              }
+            }
+          }
+          if (hasPlaceholder) {
+            const tid = getCurrentTenantId();
+            setImmediate(async () => {
+              try {
+                await runWithTenant(tid, async () => {
+                  const updates = await wa.resolveChatSenders(chatJid, this.db);
+                  if (updates.length > 0) {
+                    this._broadcast({
+                      type: 'sender-names-resolved',
+                      data: { chatJid, updates },
+                    }, tid);
+                  }
+                });
+              } catch (_) {}
+            });
+          }
         }
-        return res.json(sanitizeMessageList(this.db.getMessagesPaginatedForJids(unique, limit, offset), isQueued));
+        return res.json(sanitized);
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this._app.post('/api/chats/:chatJid/resolve-senders', async (req, res) => {
+      const chatJid = req.params.chatJid;
+      if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
+      const tid = getCurrentTenantId();
+      const wa = this._getTenantState(tid)?.waClient;
+      if (!wa) return res.json({ ok: true, updates: [] });
+      try {
+        const updates = await wa.resolveChatSenders(chatJid, this.db);
+        if (updates.length > 0) {
+          this._broadcast({
+            type: 'sender-names-resolved',
+            data: { chatJid, updates },
+          }, tid);
+        }
+        return res.json({ ok: true, updates });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }

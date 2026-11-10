@@ -161,3 +161,15 @@ export function sanitizePeerSenderName(name, chatJid) {
   if (isPlausibleHumanChatTitle(t, chatJid)) return t;
   return null;
 }
+
+/** Returns true if a sender name is a placeholder that should eventually be resolved to a contact name. */
+export function isPlaceholderSenderName(s) {
+  if (!s || typeof s !== 'string') return true;
+  const t = s.trim();
+  if (!t || /^unknown$/i.test(t) || /^contact$/i.test(t)) return true;
+  if (looksLikeLidFallbackContactLabel(t)) return true;
+  if (looksLikeOpaqueNumericId(t)) return true;
+  if (/^\d{8,20}$/.test(t)) return true;
+  return false;
+}
+

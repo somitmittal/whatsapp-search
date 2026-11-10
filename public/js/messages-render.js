@@ -398,11 +398,12 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     const ticks = out ? receiptTicksHtml(m.receiptStatus) : '';
     let sender = '';
     if (!out && m.sender) {
+      const sjidAttr = m.senderJid ? ` data-sender-jid="${escAttr(m.senderJid)}"` : '';
       if (isGroup || jid === 'status@broadcast') {
         const colors = ['#1fa855','#6b46c1','#d93025','#1a73e8','#e8710a','#9334e6','#0d652d'];
-        sender = `<div class="sender" style="color:${colors[hash(m.sender) % colors.length]}">${esc(m.sender)}</div>`;
+        sender = `<div class="sender"${sjidAttr} style="color:${colors[hash(m.sender) % colors.length]}">${esc(m.sender)}</div>`;
       } else {
-        sender = `<div class="sender" style="color:#54656f">${esc(m.sender)}</div>`;
+        sender = `<div class="sender"${sjidAttr} style="color:#54656f">${esc(m.sender)}</div>`;
       }
     }
     const cap = m.mediaCaption ? esc(m.mediaCaption) : '';
@@ -753,4 +754,29 @@ if (typeof document !== 'undefined') {
       _vnUpdate(note, audio);
     }, true);
   });
+}
+
+/**
+ * Update sender names in-place across rendered message bubbles without repainting the transcript.
+ * @param {string} chatJid
+ * @param {Array<{ senderJid: string, sender: string }>} updates
+ */
+export function applyResolvedSenderNamesToDom(chatJid, updates) {
+  if (!Array.isArray(updates) || !updates.length) return;
+  const colors = ['#1fa855','#6b46c1','#d93025','#1a73e8','#e8710a','#9334e6','#0d652d'];
+  for (const u of updates) {
+    const sjid = u?.senderJid;
+    const name = u?.sender;
+    if (!sjid || !name) continue;
+    try {
+      const selector = `.sender[data-sender-jid="${CSS.escape(sjid)}"]`;
+      const els = document.querySelectorAll(`#cv-messages ${selector}, #gpt-wa-view ${selector}`);
+      for (const el of els) {
+        el.textContent = name;
+        if (el.closest('.bubble')?.parentElement?.classList.contains('in')) {
+          el.style.color = colors[hash(name) % colors.length];
+        }
+      }
+    } catch (_) {}
+  }
 }

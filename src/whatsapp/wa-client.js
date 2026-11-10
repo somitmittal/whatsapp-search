@@ -4,7 +4,7 @@
  * Baileys implements the WhatsApp multi-device WS protocol directly.
  * No Puppeteer / headless browser → no bot-detection / "Can't link" errors.
  */
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { rename, rm as rmAsync, writeFile } from 'fs/promises';
 import { createRequire } from 'module';
 import { extname, join } from 'path';
@@ -23,6 +23,7 @@ import {
     fallbackTitleForOneOnOneJid,
     formatPhoneLocalPart,
     isPlausibleHumanChatTitle,
+    isPlaceholderSenderName,
     isResolvedHumanChatTitle,
     looksLikeLidFallbackContactLabel,
     looksLikeMaskedPhoneLabel,
@@ -211,7 +212,7 @@ export default class WaClient {
   constructor({
     authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete,
     onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction,
-    onResolvedDisplayName, onUnreadCounts, onMessageRevoked, onMessageEdited,
+    onResolvedDisplayName, onResolvedSenderName, onUnreadCounts, onMessageRevoked, onMessageEdited,
     onChatAvatar, onMessageReceipt, onLoadPendingMediaStubs, onLoadDeferredLargeVideos, onClearDeferredVideoPath, onMediaNeedsDownload, onMediaSettled,
     onClaimMediaDownload, onReleaseMediaDownloadClaim,
   }) {
@@ -236,6 +237,7 @@ export default class WaClient {
     this._onReleaseMediaDownloadClaim = onReleaseMediaDownloadClaim;
     this._onReaction    = onReaction;
     this._onResolvedDisplayName = onResolvedDisplayName;
+    this._onResolvedSenderName = onResolvedSenderName;
     this._onUnreadCounts = onUnreadCounts;
     this._onMessageRevoked = onMessageRevoked;
     this._onMessageEdited = onMessageEdited;
@@ -254,6 +256,9 @@ export default class WaClient {
     this._ownerJid      = null;
     this._ownerName     = null;
     this._chatNames     = new Map();   // jid → display name
+    this._lidToPn       = new Map();   // lid jid -> pn jid
+    this._pnToLid       = new Map();   // pn jid -> lid jid
+    this._preloadLidMappingsFromAuthDir();
     /** Messages received per chat during current history sync (for UI progress). */
     this._syncByChat    = new Map();
     this._totalMsgs     = 0;
@@ -1480,6 +1485,9 @@ export default class WaClient {
     if (isResolvedHumanChatTitle(s, jid)) {
       try { this._onResolvedDisplayName?.(jid, s); } catch (_) { /* persist is best-effort */ }
     }
+    if (!isPlaceholderSenderName(s)) {
+      try { this._onResolvedSenderName?.(jid, s); } catch (_) {}
+    }
   }
 
   /**
@@ -1528,6 +1536,166 @@ export default class WaClient {
   }
 
   /**
+   * Baileys auth directory contains lid-mapping-* files persisting the phone ↔ LID link.
+   * Pre-load them synchronously on startup so sender resolution works immediately.
+   */
+  _preloadLidMappingsFromAuthDir() {
+    try {
+      if (!this._authDir || !existsSync(this._authDir)) return;
+      const files = readdirSync(this._authDir);
+      for (const f of files) {
+        if (!f.startsWith('lid-mapping-') || !f.endsWith('.json')) continue;
+        const full = join(this._authDir, f);
+        const raw = readFileSync(full, 'utf8');
+        const val = JSON.parse(raw);
+        if (typeof val !== 'string' || !val) continue;
+        if (f.endsWith('_reverse.json')) {
+          const lidDigits = f.replace(/^lid-mapping-/, '').replace(/_reverse\.json$/, '');
+          const lidJid = `${lidDigits}@lid`;
+          const pnJid = `${val}@s.whatsapp.net`;
+          this._lidToPn.set(lidJid, pnJid);
+          this._pnToLid.set(pnJid, lidJid);
+        } else {
+          const pnDigits = f.replace(/^lid-mapping-/, '').replace(/\.json$/, '');
+          const pnJid = `${pnDigits}@s.whatsapp.net`;
+          const lidJid = `${val}@lid`;
+          this._pnToLid.set(pnJid, lidJid);
+          this._lidToPn.set(lidJid, pnJid);
+        }
+      }
+    } catch (e) {
+      console.warn('[WA] Preloading LID mappings:', e.message);
+    }
+  }
+
+  _ingestAllGroupParticipants(allGroups, db = null) {
+    if (!allGroups || typeof allGroups !== 'object') return;
+    const values = Array.isArray(allGroups) ? allGroups : Object.values(allGroups);
+    for (const group of values) {
+      if (group && typeof group === 'object') {
+        this._ingestGroupParticipants(group, db);
+      }
+    }
+  }
+
+  _ingestGroupParticipants(metadata, db = null) {
+    if (!metadata?.participants || !Array.isArray(metadata.participants)) return;
+    const sock = this._sock;
+    const lm = sock?.signalRepository?.lidMapping;
+    for (const p of metadata.participants) {
+      const lid = p?.lid ? jidNormalizedUser(p.lid) : null;
+      const id = p?.id ? jidNormalizedUser(p.id) : null;
+      const pn = p?.phoneNumber ? jidNormalizedUser(`${p.phoneNumber}@s.whatsapp.net`) : (id && isPnUser(id) ? id : null);
+      const actualLid = lid || (id && isLidUser(id) ? id : null);
+
+      if (actualLid && pn) {
+        this._lidToPn.set(actualLid, pn);
+        this._pnToLid.set(pn, actualLid);
+        if (lm?.storeLIDPNMapping) {
+          try { lm.storeLIDPNMapping(actualLid, pn); } catch (_) {}
+        }
+      }
+
+      const name = p?.notify || p?.name || p?.pushName || p?.username;
+      if (name && !isPlaceholderSenderName(name)) {
+        if (actualLid) this._chatNames.set(actualLid, name);
+        if (pn) this._chatNames.set(pn, name);
+        if (db && typeof db.backfillSenderName === 'function') {
+          const targets = [actualLid, pn].filter(Boolean);
+          try { db.backfillSenderName(targets, name); } catch (_) {}
+        }
+      }
+    }
+  }
+
+  /** Fast synchronous lookup for sender display name (no async/disk overhead). */
+  getSenderDisplayNameFast(senderJid) {
+    if (!senderJid) return null;
+    const norm = jidNormalizedUser(senderJid);
+    const cached = this._chatNames.get(norm);
+    if (cached && !isPlaceholderSenderName(cached)) return cached;
+
+    if (isLidUser(norm)) {
+      const pn = this._lidToPn.get(norm);
+      if (pn) {
+        const pnName = this._chatNames.get(pn);
+        if (pnName && !isPlaceholderSenderName(pnName)) return pnName;
+        return formatPhoneLocalPart(pn.split('@')[0]);
+      }
+    }
+    return null;
+  }
+
+  /** Resolves human-readable sender name using Signal LID mapping, pushNames, and SQLite. */
+  async resolveSenderDisplayName(senderJid, db = null) {
+    if (!senderJid) return null;
+    const norm = jidNormalizedUser(senderJid);
+
+    // 1. Fast cache
+    const fast = this.getSenderDisplayNameFast(norm);
+    if (fast && !isPlaceholderSenderName(fast)) return fast;
+
+    // 2. Query Baileys signalRepository if LID
+    let pn = this._lidToPn.get(norm);
+    if (!pn && isLidUser(norm) && this._sock?.signalRepository?.lidMapping) {
+      try {
+        const rawPn = await this._sock.signalRepository.lidMapping.getPNForLID(norm);
+        if (rawPn) {
+          pn = jidNormalizedUser(rawPn);
+          this._lidToPn.set(norm, pn);
+          this._pnToLid.set(pn, norm);
+        }
+      } catch (_) {}
+    }
+
+    // 3. Check chatNames with pn
+    if (pn) {
+      const pnName = this._chatNames.get(pn);
+      if (pnName && !isPlaceholderSenderName(pnName)) return pnName;
+    }
+
+    // 4. Query DB for known human name
+    if (db && typeof db.getResolvedSenderForJid === 'function') {
+      const candidates = [norm, pn].filter(Boolean);
+      const dbName = db.getResolvedSenderForJid(candidates);
+      if (dbName && !isPlaceholderSenderName(dbName)) {
+        this._chatNames.set(norm, dbName);
+        if (pn) this._chatNames.set(pn, dbName);
+        return dbName;
+      }
+    }
+
+    // 5. Fallback to formatted phone number if known
+    if (pn) {
+      const formatted = formatPhoneLocalPart(pn.split('@')[0]);
+      if (formatted) return formatted;
+    }
+
+    return null;
+  }
+
+  /** Batch resolves placeholder sender names in a chat and backfills SQLite. */
+  async resolveChatSenders(chatJid, db) {
+    if (!db || typeof db.getDistinctPlaceholderSenderJids !== 'function') return [];
+    const placeholderSenders = db.getDistinctPlaceholderSenderJids(chatJid, 100);
+    if (!placeholderSenders.length) return [];
+
+    const updates = [];
+    for (const sJid of placeholderSenders) {
+      try {
+        const resolved = await this.resolveSenderDisplayName(sJid, db);
+        if (resolved && !isPlaceholderSenderName(resolved)) {
+          const pn = this._lidToPn.get(sJid);
+          const targets = [sJid, pn].filter(Boolean);
+          const changed = db.backfillSenderName(targets, resolved);
+          updates.push({ senderJid: sJid, sender: resolved, changed });
+        }
+      } catch (_) {}
+    }
+    return updates;
+  }
+
+  /**
    * After sync, push resolved titles into SQLite so `getChatStats()` sidebar matches WhatsApp
    * (fixes rows indexed under LID before PN↔LID name mapping was applied).
    */
@@ -1543,8 +1711,26 @@ export default class WaClient {
         rowsUpdated += await this._propagateChatNameToDb(db, jid, name);
       } catch (_) { /* ignore per-chat */ }
     }
+    // Also backfill placeholder sender names across group messages
+    if (typeof db.getDistinctPlaceholderSenderJids === 'function' && typeof db.backfillSenderName === 'function') {
+      setTimeout(() => {
+        try {
+          const distinctSenders = db.getDistinctPlaceholderSenderJids(null, 500);
+          for (const sJid of distinctSenders) {
+            const resolved = this.getSenderDisplayNameFast(sJid);
+            if (resolved && !isPlaceholderSenderName(resolved)) {
+              const pn = this._lidToPn.get(sJid);
+              const targets = [sJid, pn].filter(Boolean);
+              rowsUpdated += db.backfillSenderName(targets, resolved);
+            }
+          }
+        } catch (e) {
+          console.warn('[WA] backfill sender names error:', e.message);
+        }
+      }, 100);
+    }
     if (rowsUpdated > 0) {
-      console.log(`[WA] Backfilled chat_name on ${rowsUpdated} message row(s) from resolved contact titles`);
+      console.log(`[WA] Backfilled chat_name / sender on ${rowsUpdated} message row(s) from resolved contact titles`);
     }
     return rowsUpdated;
   }
@@ -1589,6 +1775,7 @@ export default class WaClient {
       console.warn('[WA] Group subject refresh failed:', e.message);
       return 0;
     }
+    this._ingestAllGroupParticipants(allGroups, db);
     let rowsUpdated = 0;
     for (const { jid, subject } of groupSubjectUpdates(allGroups)) {
       this._chatNames.set(jid, subject);
@@ -1621,6 +1808,7 @@ export default class WaClient {
       console.warn('[WA] Group title hydrate failed:', e.message);
       return 0;
     }
+    this._ingestAllGroupParticipants(allGroups);
     const updates = groupSubjectUpdates(allGroups);
     if (!updates.length) return 0;
     for (const { jid, subject } of updates) {
@@ -1646,16 +1834,30 @@ export default class WaClient {
 
   /** WhatsApp links the same person under @lid (chat id) and @s.whatsapp.net (contact id) — mirror the label. */
   async _mirrorDisplayNameAcrossJids(jid, label) {
+    if (!label) return;
     const sock = this._sock;
     const lm = sock?.signalRepository?.lidMapping;
-    if (!lm || !label) return;
     try {
       if (isLidUser(jid)) {
-        const pn = await lm.getPNForLID(jid);
-        if (pn) this._chatNames.set(jidNormalizedUser(pn), label);
+        let pn = this._lidToPn.get(jid) || this._lidToPn.get(jidNormalizedUser(jid));
+        if (!pn && lm) pn = await lm.getPNForLID(jid).catch(() => null);
+        if (pn) {
+          const pnNorm = jidNormalizedUser(pn);
+          const lidNorm = jidNormalizedUser(jid);
+          this._chatNames.set(pnNorm, label);
+          this._lidToPn.set(lidNorm, pnNorm);
+          this._pnToLid.set(pnNorm, lidNorm);
+        }
       } else if (isPnUser(jid)) {
-        const lid = await lm.getLIDForPN(jid);
-        if (lid) this._chatNames.set(jidNormalizedUser(lid), label);
+        let lid = this._pnToLid.get(jid) || this._pnToLid.get(jidNormalizedUser(jid));
+        if (!lid && lm) lid = await lm.getLIDForPN(jid).catch(() => null);
+        if (lid) {
+          const lidNorm = jidNormalizedUser(lid);
+          const pnNorm = jidNormalizedUser(jid);
+          this._chatNames.set(lidNorm, label);
+          this._pnToLid.set(pnNorm, lidNorm);
+          this._lidToPn.set(lidNorm, pnNorm);
+        }
       }
     } catch (_) { /* mapping may lag behind first messages */ }
   }
@@ -2173,6 +2375,7 @@ export default class WaClient {
     try {
       if (isJidGroup(jid)) {
         const meta = await this._sock.groupMetadata(jid);
+        this._ingestGroupParticipants(meta);
         return {
           ...base,
           waConnected: true,
@@ -2769,17 +2972,22 @@ export default class WaClient {
         msg.pushName ||
         this._nameFromChatMap(senderJid) ||
         this._nameFromChatMap(msg.key?.participantAlt) ||
-        this._nameFromChatMap(msg.key?.remoteJidAlt) ||
-        senderJid?.split('@')[0] ||
-        'Unknown';
+        this._nameFromChatMap(msg.key?.remoteJidAlt);
+      if (!senderName && senderJid?.endsWith?.('@lid')) {
+        const pn = this._lidToPn.get(senderJid) || this._lidToPn.get(jidNormalizedUser(senderJid));
+        if (pn) senderName = this._nameFromChatMap(pn) || formatPhoneLocalPart(pn.split('@')[0]);
+      }
+      if (!senderName) {
+        senderName = senderJid?.split('@')[0] || 'Unknown';
+      }
       const snClean = sanitizePeerSenderName(senderName, jid);
       if (snClean) senderName = snClean;
       else if (senderJid?.endsWith?.('@s.whatsapp.net') || senderJid?.endsWith?.('@hosted')) {
         senderName = formatPhoneLocalPart(senderJid.split('@')[0]);
       } else if (senderJid?.endsWith?.('@lid')) {
-        // Never leave a raw LID local-part as the sender — getChatStats used to promote
-        // that into the sidebar title after Contact (…) placeholders were filtered out.
-        senderName = fallbackTitleForOneOnOneJid(senderJid) || 'Contact';
+        const pn = this._lidToPn.get(senderJid) || this._lidToPn.get(jidNormalizedUser(senderJid));
+        if (pn) senderName = formatPhoneLocalPart(pn.split('@')[0]);
+        else senderName = fallbackTitleForOneOnOneJid(senderJid) || 'Contact';
       } else {
         senderName = senderJid?.split('@')[0] || 'Unknown';
       }

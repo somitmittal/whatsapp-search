@@ -28,6 +28,7 @@ import {
   fallbackTitleForOneOnOneJid,
   formatPhoneLocalPart,
   isPlausibleHumanChatTitle,
+  isPlaceholderSenderName,
   looksLikeLidFallbackContactLabel,
   looksLikeOpaqueNumericId,
   looksLikeUnusableChatTitle,
@@ -1715,6 +1716,167 @@ export default class Database {
       'UPDATE messages SET chat_name = ? WHERE tenant_id = ? AND chat_jid = ? AND chat_name IS NOT ?',
     ).run(chatName, t, chatJid, chatName);
     return r.changes ?? 0;
+  }
+
+  /**
+   * When we learn a human-readable contact name (or resolved phone number) for a sender JID,
+   * backfill all messages where sender is a placeholder ("Contact (...)", bare LID digits, etc.).
+   */
+  backfillSenderName(senderJids, newSenderName) {
+    const name = String(newSenderName || '').trim();
+    if (!name || name === 'You' || looksLikeUnusableChatTitle(name)) return 0;
+    const jids = (Array.isArray(senderJids) ? senderJids : [senderJids])
+      .map((j) => String(j || '').trim())
+      .filter(Boolean);
+    if (!jids.length) return 0;
+
+    const t = getCurrentTenantId();
+    const isHuman = isPlausibleHumanChatTitle(name) && !looksLikePhoneOnly(name);
+    const ph = jids.map(() => '?').join(',');
+
+    let sql;
+    if (isHuman) {
+      sql = `UPDATE messages SET sender = ?
+             WHERE tenant_id = ?
+               AND sender_jid IN (${ph})
+               AND sender != 'You'
+               AND sender IS NOT ?
+               AND (
+                 sender IS NULL OR sender = ''
+                 OR sender LIKE 'Contact (%'
+                 OR sender GLOB '[0-9]*'
+                 OR sender GLOB '+*'
+                 OR LENGTH(sender) >= 12
+               )`;
+    } else {
+      sql = `UPDATE messages SET sender = ?
+             WHERE tenant_id = ?
+               AND sender_jid IN (${ph})
+               AND sender != 'You'
+               AND sender IS NOT ?
+               AND (
+                 sender IS NULL OR sender = ''
+                 OR sender LIKE 'Contact (%'
+                 OR (LENGTH(sender) >= 12 AND sender GLOB '[0-9]*')
+               )`;
+    }
+    const r = this._db.prepare(sql).run(name, t, ...jids, name);
+    return r.changes ?? 0;
+  }
+
+  /**
+   * Returns distinct sender_jids that currently have placeholder sender names.
+   */
+  getDistinctPlaceholderSenderJids(chatJid = null, limit = 200) {
+    const t = getCurrentTenantId();
+    const lim = Math.max(1, Math.min(Number(limit) || 200, 1000));
+    if (chatJid) {
+      return this._db.prepare(`
+        SELECT DISTINCT sender_jid AS senderJid
+        FROM messages
+        WHERE tenant_id = ?
+          AND chat_jid = ?
+          AND sender_jid IS NOT NULL
+          AND sender_jid != ''
+          AND sender != 'You'
+          AND (
+            sender IS NULL OR sender = ''
+            OR sender LIKE 'Contact (%'
+            OR (LENGTH(sender) >= 12 AND sender GLOB '[0-9]*')
+          )
+        LIMIT ?
+      `).all(t, chatJid, lim).map((r) => r.senderJid);
+    }
+    return this._db.prepare(`
+      SELECT DISTINCT sender_jid AS senderJid
+      FROM messages
+      WHERE tenant_id = ?
+        AND sender_jid IS NOT NULL
+        AND sender_jid != ''
+        AND sender != 'You'
+        AND (
+          sender IS NULL OR sender = ''
+          OR sender LIKE 'Contact (%'
+          OR (LENGTH(sender) >= 12 AND sender GLOB '[0-9]*')
+        )
+      LIMIT ?
+    `).all(t, lim).map((r) => r.senderJid);
+  }
+
+  /**
+   * Check if SQLite already knows a human name for this sender from other messages or 1:1 chat.
+   */
+  getResolvedSenderForJid(senderJids) {
+    const jids = (Array.isArray(senderJids) ? senderJids : [senderJids])
+      .map((j) => String(j || '').trim())
+      .filter(Boolean);
+    if (!jids.length) return null;
+    const t = getCurrentTenantId();
+    const ph = jids.map(() => '?').join(',');
+
+    // 1. Check if another message with one of these sender_jids has a resolved human name
+    const msgRow = this._db.prepare(`
+      SELECT sender FROM messages
+      WHERE tenant_id = ?
+        AND sender_jid IN (${ph})
+        AND sender IS NOT NULL
+        AND sender != 'You'
+        AND sender NOT LIKE 'Contact (%'
+        AND NOT (LENGTH(sender) >= 12 AND sender GLOB '[0-9]*')
+      LIMIT 1
+    `).get(t, ...jids);
+    if (msgRow?.sender && isPlausibleHumanChatTitle(msgRow.sender)) {
+      return msgRow.sender;
+    }
+
+    // 2. Check 1:1 chat names for any of these JIDs
+    const chatRow = this._db.prepare(`
+      SELECT chat_name AS chatName FROM messages
+      WHERE tenant_id = ?
+        AND chat_jid IN (${ph})
+        AND chat_name IS NOT NULL
+        AND chat_name NOT LIKE 'Contact (%'
+        AND NOT (LENGTH(chat_name) >= 12 AND chat_name GLOB '[0-9]*')
+      LIMIT 1
+    `).get(t, ...jids);
+    if (chatRow?.chatName && isPlausibleHumanChatTitle(chatRow.chatName)) {
+      return chatRow.chatName;
+    }
+
+    // 3. Check chat_roster
+    const rosterRow = this._db.prepare(`
+      SELECT chat_name AS chatName FROM chat_roster
+      WHERE tenant_id = ?
+        AND chat_jid IN (${ph})
+        AND chat_name IS NOT NULL
+        AND chat_name NOT LIKE 'Contact (%'
+      LIMIT 1
+    `).get(t, ...jids);
+    if (rosterRow?.chatName && isPlausibleHumanChatTitle(rosterRow.chatName)) {
+      return rosterRow.chatName;
+    }
+
+    // 4. Check contact_directory
+    try {
+      const key = deriveTenantContactKey(t);
+      for (const jid of jids) {
+        const phone = normalizePhone(jid.split('@')[0]);
+        if (!phone) continue;
+        const h = hashPhone(phone, key);
+        const contactRow = this._db.prepare(`
+          SELECT display_name_enc FROM contact_directory
+          WHERE tenant_id = ? AND phone_hash = ?
+        `).get(t, h);
+        if (contactRow?.display_name_enc) {
+          const decrypted = decryptName(contactRow.display_name_enc, key);
+          if (decrypted && isPlausibleHumanChatTitle(decrypted)) {
+            return decrypted;
+          }
+        }
+      }
+    } catch (_) {}
+
+    return null;
   }
 
   updateMediaCaption(messageId, caption) {

@@ -5,7 +5,7 @@ import { applyMessageReceipt, applyUnreadUpdates, handleSummaryProgress, mergeSy
 import { loadExpenseRuns } from './expenses.js';
 import { syncIndexChatMenuItem } from './menus.js';
 import { showMemorySavedChip } from './memory.js';
-import { applyIncomingReactionToDom, applyMessageDeletedToDom, applyMessageEditedToDom, applyMessageRevokedToDom } from './messages-render.js';
+import { applyIncomingReactionToDom, applyMessageDeletedToDom, applyMessageEditedToDom, applyMessageRevokedToDom, applyResolvedSenderNamesToDom } from './messages-render.js';
 import { renderChatsFromState, scheduleRefreshDash } from './sidebar.js';
 import { $, eventTouchesChat } from './util.js';
 import { showQr, updateSyncProgress, updateWaUI } from './wa-connection.js';
@@ -50,6 +50,11 @@ function connectWS() {
         void loadExpenseRuns();
       }
       else if (msg.type === 'chat-names-refreshed') { refreshDash(); }
+      else if (msg.type === 'sender-names-resolved') {
+        if (msg.data?.updates?.length) {
+          applyResolvedSenderNamesToDom(msg.data.chatJid, msg.data.updates);
+        }
+      }
       else if (msg.type === 'index-toggle' && msg.data?.chatJid) {
         const ch = store.chatData.find((c) => c.chatJid === msg.data.chatJid);
         if (ch) ch.indexOptedIn = !!msg.data.enabled;

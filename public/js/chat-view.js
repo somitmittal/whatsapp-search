@@ -7,7 +7,7 @@ import { displayChatTitle, formatChatBubbleDateTime, formatDate, isResolvedChatN
 import { mediaDownloadUrl } from './media.js';
 import { activeChatHasLocalMessages } from './menus.js';
 import { openForwardOverlay, promptDeleteMessage } from './message-actions.js';
-import { buildChatMessagesHtml, closeReactionEmojiPickers, mediaIndexStateHtml, postWaReaction, renderMessages, toggleMessageMenu, toggleReactionEmojiPicker } from './messages-render.js';
+import { applyResolvedSenderNamesToDom, buildChatMessagesHtml, closeReactionEmojiPickers, mediaIndexStateHtml, postWaReaction, renderMessages, toggleMessageMenu, toggleReactionEmojiPicker } from './messages-render.js';
 import { closeAllOverlays, setMobileChatOpen, switchPanel } from './overlays.js';
 import { clearSearch, openSearchAssistant } from './search.js';
 import { renderChatsFromState, setSidebarListTab, sidebarTabOf } from './sidebar.js';
@@ -191,6 +191,28 @@ function setCvTab(tab) {
   }
 }
 
+function triggerDeferredSenderResolution(jid, msgs) {
+  if (!jid || !Array.isArray(msgs) || !msgs.length) return;
+  const hasPlaceholder = msgs.some((m) => {
+    const s = m?.sender;
+    return typeof s === 'string' && (s.startsWith('Contact (') || s === 'Unknown' || /^\d{10,20}$/.test(s));
+  });
+  if (!hasPlaceholder) return;
+  fetch(`/api/chats/${encodeURIComponent(jid)}/resolve-senders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: '{}',
+  })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      if (data?.updates && store.activeChat === jid) {
+        applyResolvedSenderNamesToDom(jid, data.updates);
+      }
+    })
+    .catch(() => {});
+}
+
 export async function openChat(jid, focusMessageId = null) {
   closeChatInfo();
   clearReplyTarget();
@@ -273,6 +295,7 @@ export async function openChat(jid, focusMessageId = null) {
     const msgs = msgsRes;
     if (store.activeChat !== jid) return;
     renderMessages(msgs, jid, focusMessageId, { forceScroll: !focusMessageId });
+    triggerDeferredSenderResolution(jid, msgs);
     if (!focusMessageId && msgs.length) {
       const sorted = [...msgs].sort((a, b) => {
         const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
@@ -361,6 +384,7 @@ async function loadOlderChatPage() {
     const frag = buildChatMessagesHtml(sortedAsc, jid, null, store.chatOldestAnchorTs);
     c.insertAdjacentHTML('afterbegin', frag);
     c.scrollTop = c.scrollHeight - oldH + oldTop;
+    triggerDeferredSenderResolution(jid, rows);
     store.chatMessagesOffset += rows.length;
     store.chatOldestAnchorTs = sortedAsc[0]?.timestamp ?? store.chatOldestAnchorTs;
     if (rows.length < CHAT_PAGE) store.chatHasMoreLocal = false;
