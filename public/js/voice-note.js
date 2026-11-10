@@ -326,6 +326,7 @@ function insertAtCursor(el, text) {
 }
 
 export function initVoiceNoteUI() {
+  if (typeof document === 'undefined') return;
   composerMicApi = null;
   wireVoiceNoteComposer();
   wireAskAiDictation();

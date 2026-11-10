@@ -1602,7 +1602,10 @@ export default class WebServer {
         const servePath = playable.path;
         const servedType = playable.contentType
           || (typeFromName !== 'application/octet-stream' ? typeFromName : contentTypeForMediaFile(safe));
-        res.setHeader('Content-Type', servedType);
+        const finalContentType = isVoiceNote && (!servedType || servedType === 'application/octet-stream')
+          ? 'audio/ogg'
+          : servedType;
+        res.setHeader('Content-Type', finalContentType);
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Cache-Control', 'private, max-age=3600');
         if (wantDownload) {

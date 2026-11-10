@@ -40,7 +40,8 @@ fi
 
 # 2. Worktree node_modules verification
 if [[ ! -d "node_modules" ]]; then
-  MAIN_MODULES="$(cd "$REPO_DIR/../.." 2>/dev/null && pwd)/node_modules"
+  MAIN_ROOT="$(cd "$(git rev-parse --git-common-dir 2>/dev/null)/.." 2>/dev/null && pwd)"
+  MAIN_MODULES="$MAIN_ROOT/node_modules"
   if [[ -d "$MAIN_MODULES" ]]; then
     echo "[*] Worktree missing node_modules. Symlinking from main checkout ($MAIN_MODULES)..."
     ln -s "$MAIN_MODULES" "$REPO_DIR/node_modules"

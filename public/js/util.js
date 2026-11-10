@@ -3,7 +3,20 @@ export const $ = s => document.querySelector(s);
 export const $$ = s => document.querySelectorAll(s);
 
 // ── Utils ──────────────────────────────────────────────────────────
-export function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+export function esc(s) {
+  if (!s) return '';
+  if (typeof document !== 'undefined') {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 /** Escape for double-quoted HTML attributes (data-chat-jid, etc.). */
 export function escAttr(s) {

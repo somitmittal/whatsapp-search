@@ -22,7 +22,11 @@ const PLAY_SUFFIX = '.play.m4a';
 const NEEDS_PLAYABLE_COPY = new Set(['ogg', 'oga', 'opus', 'mp4', 'm4a', 'webm']);
 
 function ffmpegBin() {
-  return process.env.FFMPEG_PATH || 'ffmpeg';
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  for (const candidate of ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg']) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return 'ffmpeg';
 }
 
 export function needsPlayableAudioCopy(filePath) {

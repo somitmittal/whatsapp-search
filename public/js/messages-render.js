@@ -65,20 +65,22 @@ export function closeMessageMenus() {
   document.querySelectorAll('.wa-msg-menu:not([hidden])').forEach((menu) => { menu.hidden = true; });
 }
 
-document.addEventListener('click', (event) => {
-  if (event.target?.closest?.('.wa-msg-menu')) closeMessageMenus();
-  if (!event.target?.closest?.('.bubble-toolbar')) {
-    closeReactionEmojiPickers();
-    closeMessageMenus();
-  }
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', (event) => {
+    if (event.target?.closest?.('.wa-msg-menu')) closeMessageMenus();
+    if (!event.target?.closest?.('.bubble-toolbar')) {
+      closeReactionEmojiPickers();
+      closeMessageMenus();
+    }
+  });
 
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') {
-    closeReactionEmojiPickers();
-    closeMessageMenus();
-  }
-});
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      closeReactionEmojiPickers();
+      closeMessageMenus();
+    }
+  });
+}
 
 function closeChatImageViewer() {
   if (!imageViewerEl) return;
@@ -152,22 +154,24 @@ function openChatVideoViewer(source, caption = '') {
   root.setAttribute('aria-hidden', 'false');
 }
 
-document.addEventListener('click', (event) => {
-  const image = event.target?.closest?.('.msg-media-img');
-  if (!image) return;
-  event.preventDefault();
-  const wrap = image.closest('.media-wrap');
-  openChatImageViewer(image.currentSrc || image.src, image.alt, wrap?.querySelector('.media-cap')?.textContent || '');
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', (event) => {
+    const image = event.target?.closest?.('.msg-media-img');
+    if (!image) return;
+    event.preventDefault();
+    const wrap = image.closest('.media-wrap');
+    openChatImageViewer(image.currentSrc || image.src, image.alt, wrap?.querySelector('.media-cap')?.textContent || '');
+  });
 
-/** Expand video into the lightbox (native fullscreen is also enabled via Electron permissions). */
-document.addEventListener('dblclick', (event) => {
-  const video = event.target?.closest?.('.msg-media-vid');
-  if (!video) return;
-  event.preventDefault();
-  const wrap = video.closest('.media-wrap');
-  openChatVideoViewer(video.currentSrc || video.src, wrap?.querySelector('.media-cap')?.textContent || '');
-});
+  /** Expand video into the lightbox (native fullscreen is also enabled via Electron permissions). */
+  document.addEventListener('dblclick', (event) => {
+    const video = event.target?.closest?.('.msg-media-vid');
+    if (!video) return;
+    event.preventDefault();
+    const wrap = video.closest('.media-wrap');
+    openChatVideoViewer(video.currentSrc || video.src, wrap?.querySelector('.media-cap')?.textContent || '');
+  });
+}
 
 /** Classic chat panel + GPT WhatsApp transcript. */
 function msgBlocks(selector = '.msg-block[data-message-id]') {
@@ -433,8 +437,8 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
           </button>
           <span class="vn-track">${bars}</span>
           <span class="vn-time">0:00</span>
+          <audio class="vn-audio" src="${escAttr(mediaUrl)}" preload="metadata"></audio>
         </span>
-        <audio class="vn-audio" src="${escAttr(mediaUrl)}" preload="metadata"></audio>
         ${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}
         ${cap ? `<span class="media-cap">${cap}</span>` : ''}
         ${mediaIndexStateHtml(m)}${mediaDl}
@@ -661,48 +665,92 @@ export function renderMessages(msgs, jid, focusMessageId = null, { forceScroll =
   }
 }
 // --- WhatsApp-style voice note playback (delegated) ---
-function _vnFmt(s) {
+export function _vnFmt(s) {
   if (!isFinite(s) || s < 0) return '0:00';
   const m = Math.floor(s / 60);
   const sec = Math.floor(s % 60);
   return m + ':' + String(sec).padStart(2, '0');
 }
-function _vnNote(audio) { return audio ? audio.closest('.wa-voice-note') : null; }
-function _vnUpdate(note, audio) {
+export function _vnNote(audio) {
+  if (!audio) return null;
+  return audio.closest?.('.wa-voice-note')
+    || (audio.parentElement ? audio.parentElement.querySelector('.wa-voice-note') : null)
+    || (audio.closest?.('.media-wrap') ? audio.closest('.media-wrap').querySelector('.wa-voice-note') : null);
+}
+export function _vnAudio(target) {
+  if (!target) return null;
+  const note = target.closest?.('.wa-voice-note') || target.closest?.('.media-wrap');
+  if (!note) return null;
+  return note.querySelector('.vn-audio')
+    || (note.parentElement ? note.parentElement.querySelector('.vn-audio') : null);
+}
+export function _vnUpdate(note, audio) {
   if (!note || !audio) return;
   const bars = note.querySelectorAll('.vn-bar');
-  const dur = isFinite(audio.duration) ? audio.duration : 0;
+  const dur = isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
   const pct = dur > 0 ? (audio.currentTime / dur) : 0;
   const filled = Math.round(pct * bars.length);
   bars.forEach((b, i) => b.classList.toggle('vn-bar--filled', i < filled));
   const t = note.querySelector('.vn-time');
-  if (t) t.textContent = audio.paused ? _vnFmt(dur) : _vnFmt(audio.currentTime);
+  if (t) t.textContent = audio.paused ? (dur > 0 ? _vnFmt(dur) : '0:00') : _vnFmt(audio.currentTime);
   const btn = note.querySelector('.vn-play');
   if (btn) {
+    btn.dataset.state = audio.paused ? 'paused' : 'playing';
+    btn.setAttribute('aria-label', audio.paused ? 'Play voice note' : 'Pause voice note');
     const play = btn.querySelector('.vn-icon-play');
     const pause = btn.querySelector('.vn-icon-pause');
     if (play) play.style.display = audio.paused ? '' : 'none';
     if (pause) pause.style.display = audio.paused ? 'none' : '';
   }
 }
-document.addEventListener('click', (ev) => {
-  const btn = ev.target && ev.target.closest ? ev.target.closest('.vn-play') : null;
-  if (!btn) return;
-  const note = btn.closest('.wa-voice-note');
-  const audio = note ? note.querySelector('.vn-audio') : null;
-  if (!audio) return;
-  ev.preventDefault();
-  if (audio.paused) { audio.play().catch(() => {}); } else { audio.pause(); }
-}, true);
-['timeupdate', 'loadedmetadata', 'durationchange', 'play', 'pause', 'ended'].forEach((evt) => {
-  document.addEventListener(evt, (ev) => {
-    const audio = ev.target;
-    if (!audio || !audio.classList || !audio.classList.contains('vn-audio')) return;
-    const note = _vnNote(audio);
-    if (evt === 'ended') {
-      audio.currentTime = 0;
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', (ev) => {
+    const track = ev.target && ev.target.closest ? ev.target.closest('.vn-track') : null;
+    if (track) {
+      const note = track.closest('.wa-voice-note');
+      const audio = _vnAudio(note);
+      if (audio && isFinite(audio.duration) && audio.duration > 0) {
+        ev.preventDefault();
+        const rect = track.getBoundingClientRect();
+        const clickX = ev.clientX - rect.left;
+        const ratio = Math.max(0, Math.min(1, clickX / rect.width));
+        audio.currentTime = ratio * audio.duration;
+        _vnUpdate(note, audio);
+        return;
+      }
+    }
+
+    const btn = ev.target && ev.target.closest ? ev.target.closest('.vn-play') : null;
+    if (!btn) return;
+    const note = btn.closest('.wa-voice-note');
+    const audio = _vnAudio(note);
+    if (!audio) return;
+    ev.preventDefault();
+    if (audio.paused) {
+      document.querySelectorAll('.vn-audio').forEach((a) => {
+        if (a !== audio && !a.paused) {
+          a.pause();
+        }
+      });
+      audio.play().catch((err) => {
+        console.warn('Voice note playback failed:', err);
+      });
+    } else {
       audio.pause();
     }
-    _vnUpdate(note, audio);
   }, true);
-});
+  ['timeupdate', 'loadedmetadata', 'durationchange', 'play', 'pause', 'ended', 'error'].forEach((evt) => {
+    document.addEventListener(evt, (ev) => {
+      const audio = ev.target;
+      if (!audio || !audio.classList || !audio.classList.contains('vn-audio')) return;
+      const note = _vnNote(audio);
+      if (evt === 'ended') {
+        audio.currentTime = 0;
+        audio.pause();
+      } else if (evt === 'error') {
+        console.warn('[Audio] playback error on voice note:', audio.error, audio.src);
+      }
+      _vnUpdate(note, audio);
+    }, true);
+  });
+}
