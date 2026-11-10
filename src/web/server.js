@@ -772,6 +772,7 @@ export default class WebServer {
             // history may still stream for minutes. UI state alone is not enough.
             sync: {
               syncing: state === 'SYNCING' || this.isTenantWaHistoryBusy(tid),
+              progress: st.syncStats?.progress ?? null,
               messages: st.syncStats?.totalMessages || 0,
             },
           },
@@ -927,6 +928,37 @@ export default class WebServer {
             });
           }
           return out;
+        });
+      },
+      onLoadDeferredLargeVideos: (chatJid, limit = 10) => {
+        return runWithTenant(tid, () => {
+          const out = [];
+          for (const r of this.db.listDeferredLargeVideoStubs(chatJid || null, limit) || []) {
+            const stub = parseMediaDownloadStub(r.mediaDownloadJson);
+            if (!stub) continue;
+            out.push({
+              msg: stub,
+              row: {
+                messageId: r.messageId,
+                chatJid: r.chatJid,
+                chatName: r.chatName,
+                sender: r.sender,
+                mediaType: r.mediaType,
+                mediaCaption: r.mediaCaption,
+                mediaPath: null,
+                timestamp: r.timestamp,
+              },
+            });
+          }
+          return out;
+        });
+      },
+      onClearDeferredVideoPath: (chatJid, messageId) => {
+        return runWithTenant(tid, () => {
+          if (typeof this.db.clearUnavailableMediaPaths === 'function') {
+            return this.db.clearUnavailableMediaPaths(chatJid, messageId);
+          }
+          return 0;
         });
       },
       onMediaNeedsDownload: (messageId) => runWithTenant(tid, () => this.db.mediaNeedsDownload(messageId)),
@@ -1706,9 +1738,12 @@ export default class WebServer {
         const recentOnly = req.body?.recentOnly === true
           || req.body?.recentOnly === 1
           || String(req.body?.recentOnly || '').toLowerCase() === 'true';
+        const hasExplicitReupload = req.body?.allowPhoneReupload !== undefined && req.body?.allowPhoneReupload !== null;
+        const allowPhoneReupload = hasExplicitReupload
+          ? Boolean(req.body?.allowPhoneReupload)
+          : (!recentOnly || Boolean(messageId));
         let mediaQueued = 0;
         if (wa && typeof wa.prioritizeChatMedia === 'function' && !imported) {
-          const allowPhoneReupload = !recentOnly || Boolean(messageId);
           // Soft open used to mark expired CDN 404s as permanent; clear those so Retry
           // / Load messages can ask the phone and download images that still exist.
           if (allowPhoneReupload && typeof this.db.clearUnavailableMediaPaths === 'function') {
@@ -1718,7 +1753,7 @@ export default class WebServer {
             wa.prioritizeChatMedia(chatJid, {
               messageId,
               recentOnly: recentOnly && !messageId,
-              // Explicit Retry / Load may re-upload; soft open-chat recent pass must not.
+              // Explicit Retry / Load may re-upload; soft open-chat pass should not ping phone unless requested.
               allowPhoneReupload,
             })?.queuedForChat || 0,
           );
@@ -2297,13 +2332,15 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
     // ── WhatsApp Linked-Device Endpoints ─────────────────────────────
     this._app.get('/api/wa/status', (_req, res) => {
-      const st = this._getTenantState(getCurrentTenantId());
+      const tid = getCurrentTenantId();
+      const st = this._getTenantState(tid);
+      const isHistoryBusy = this.isTenantWaHistoryBusy(tid);
       res.json({
         state: st.waState,
         message: st.waMessage,
         hasQr: !!this._currentQr(st),
         sync: {
-          syncing: !!st.syncStats.syncing,
+          syncing: Boolean(st.syncStats.syncing || isHistoryBusy),
           progress: st.syncStats.progress ?? null,
           messages: st.syncStats.totalMessages || 0,
         },

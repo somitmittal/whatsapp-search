@@ -123,6 +123,18 @@
   <!-- Right panel -->
   <div class="right">
 
+    <!-- Chat syncing progress bar at the top -->
+    <div class="top-sync-bar" id="top-sync-bar" role="progressbar" aria-live="polite" style="display:none;">
+      <div class="top-sync-track"><div class="top-sync-fill" id="top-sync-fill"></div></div>
+      <div class="top-sync-row">
+        <div class="top-sync-msg">
+          <svg class="top-sync-spinner" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          <span id="top-sync-text">Chat syncing is still in progress…</span>
+        </div>
+        <span class="top-sync-pct" id="top-sync-pct"></span>
+      </div>
+    </div>
+
     <!-- Model download progress banner -->
     <div class="pull-banner" id="pull-banner">
       <div class="pb-row">

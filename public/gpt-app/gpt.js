@@ -102,6 +102,10 @@ const els = {
   syncPct: $('#gpt-sync-pct'),
   syncFill: $('#gpt-sync-fill'),
   syncDetail: $('#gpt-sync-detail'),
+  topSync: $('#gpt-top-sync-bar'),
+  topSyncFill: $('#gpt-top-sync-fill'),
+  topSyncText: $('#gpt-top-sync-text'),
+  topSyncPct: $('#gpt-top-sync-pct'),
 };
 
 const HIDDEN_MODELS_KEY = 'wgpt.hiddenModels';
@@ -251,26 +255,67 @@ function setMode(mode) {
   syncWaComposerUi();
 }
 
+let _syncDoneHideTimer = null;
 /** WhatsApp Web–style history bar; `progress` is WhatsApp's own 0–100 figure, null when unreported. */
 function renderSyncBar(sync) {
-  if (!els.sync) return;
-  // Once the socket is READY the chat list is usable. Keeping the bar up after that
-  // (including a stale 100% from a late history batch) made opening a chat look hung.
-  const stillLoading = sync?.syncing && store._waState === 'SYNCING';
-  if (!stillLoading) {
-    els.sync.hidden = true;
+  const isSyncing = Boolean(sync?.syncing || store._historySyncActive);
+  const isDone = Boolean(sync?.done) || (!isSyncing && sync?.progress === 100);
+
+  if (isDone) {
+    store._historySyncActive = false;
+    if (els.topSync && !els.topSync.hidden) {
+      if (els.topSyncFill) {
+        els.topSyncFill.classList.remove('indeterminate');
+        els.topSyncFill.style.width = '100%';
+      }
+      if (els.topSyncText) els.topSyncText.textContent = 'Chat sync complete ✓';
+      if (els.topSyncPct) els.topSyncPct.textContent = '100%';
+      clearTimeout(_syncDoneHideTimer);
+      _syncDoneHideTimer = setTimeout(() => {
+        if (els.topSync) els.topSync.hidden = true;
+      }, 2500);
+    }
+    if (els.sync) els.sync.hidden = true;
     return;
   }
-  els.sync.hidden = false;
-  const pct = Number.isFinite(sync.progress) ? Math.round(sync.progress) : null;
-  els.sync.classList.toggle('indeterminate', pct == null);
-  els.syncFill.style.width = pct == null ? '' : `${pct}%`;
-  els.syncPct.textContent = pct == null ? '' : `${pct}%`;
-  els.syncLabel.textContent = 'Loading chats';
-  const n = Number(sync.messages) || 0;
-  els.syncDetail.textContent = n
-    ? `${n.toLocaleString()} messages received · keep your phone connected`
-    : 'Keep your phone connected';
+
+  if (!isSyncing) {
+    if (els.topSync) els.topSync.hidden = true;
+    if (els.sync) els.sync.hidden = true;
+    return;
+  }
+
+  clearTimeout(_syncDoneHideTimer);
+  const pct = Number.isFinite(sync?.progress) ? Math.round(sync.progress) : null;
+  const n = Number(sync?.messages) || 0;
+  const msgText = n > 0
+    ? `Chat syncing is still in progress… (${n.toLocaleString()} messages)`
+    : 'Chat syncing is still in progress…';
+
+  // Top progress bar across topbar
+  if (els.topSync) {
+    els.topSync.hidden = false;
+    if (els.topSyncFill) {
+      els.topSyncFill.classList.toggle('indeterminate', pct == null);
+      els.topSyncFill.style.width = pct == null ? '' : `${pct}%`;
+    }
+    if (els.topSyncText) els.topSyncText.textContent = msgText;
+    if (els.topSyncPct) els.topSyncPct.textContent = pct != null ? `${pct}%` : '';
+  }
+
+  // Sidebar sync bar in drawer
+  if (els.sync) {
+    els.sync.hidden = false;
+    els.sync.classList.toggle('indeterminate', pct == null);
+    if (els.syncFill) els.syncFill.style.width = pct == null ? '' : `${pct}%`;
+    if (els.syncPct) els.syncPct.textContent = pct == null ? '' : `${pct}%`;
+    if (els.syncLabel) els.syncLabel.textContent = 'Loading chats';
+    if (els.syncDetail) {
+      els.syncDetail.textContent = n
+        ? `${n.toLocaleString()} messages received · keep your phone connected`
+        : 'Keep your phone connected';
+    }
+  }
 }
 
 function applyUnreadUpdates(updates) {
@@ -298,8 +343,10 @@ function connectSyncSocket() {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === 'sync-progress') {
-      renderSyncBar({ syncing: !msg.data?.done, progress: msg.data?.progress, messages: msg.data?.messages });
-      if (msg.data?.done) void loadChats();
+      const isDone = Boolean(msg.data?.done);
+      store._historySyncActive = !isDone;
+      renderSyncBar({ syncing: !isDone, progress: msg.data?.progress, messages: msg.data?.messages, done: isDone });
+      if (isDone) void loadChats();
     } else if (msg.type === 'wa-status') {
       void syncWaState();
     } else if (msg.type === 'wa-unread') {
@@ -357,6 +404,9 @@ async function syncWaState() {
     // and its status pill contradicting each other after a dropped connection.
     if (st?.state && st.state !== prev) updateWaUI(st);
     else if (st?.state) store._waState = st.state;
+    if (st?.sync?.syncing != null) {
+      store._historySyncActive = Boolean(st.sync.syncing);
+    }
     renderSyncBar(st?.sync);
   } catch { /* ignore */ }
   if (!state.activeChatJid) return;

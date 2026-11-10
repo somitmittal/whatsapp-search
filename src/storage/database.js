@@ -1804,6 +1804,32 @@ export default class Database {
   }
 
   /**
+   * Pending deferred large video rows that have a download stub and can be fetched when idle.
+   * @param {string | null} [chatJid] omit for every chat
+   * @param {number} [limit] maximum items to return
+   */
+  listDeferredLargeVideoStubs(chatJid = null, limit = 20) {
+    const t = getCurrentTenantId();
+    const jid = chatJid ? String(chatJid).trim() : '';
+    const maxN = Math.max(1, Math.min(200, parseInt(limit, 10) || 20));
+    const sql = `
+      SELECT message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName,
+             sender, media_type AS mediaType, media_caption AS mediaCaption,
+             timestamp, media_download_json AS mediaDownloadJson
+      FROM messages
+      WHERE tenant_id = ? ${jid ? 'AND chat_jid = ?' : ''}
+        AND media_type = 'video'
+        AND media_path = ?
+        AND media_download_json IS NOT NULL AND trim(media_download_json) != ''
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `;
+    return jid
+      ? this._db.prepare(sql).all(t, jid, MEDIA_TOO_LARGE_PATH, maxN)
+      : this._db.prepare(sql).all(t, MEDIA_TOO_LARGE_PATH, maxN);
+  }
+
+  /**
    * Atomically reserve one media download (queued or in-flight) across duplicate Baileys
    * deliveries and workers. A lease expires after 30 minutes so a crash cannot block retries.
    */

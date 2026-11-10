@@ -307,6 +307,7 @@ export function updateWaUI({ state, message, sync }) {
     setDisp($('#sync-progress-panel'), 'none');
     setDisp($('#welcome-default'), '');
     setDisp($('#wqr-loading'), 'none');
+    if (!store._historySyncActive) setDisp($('#top-sync-bar'), 'none');
     store.waSyncByChat = {};
     applyWaSyncBars();
     refreshDash();
@@ -318,6 +319,7 @@ export function updateWaUI({ state, message, sync }) {
   } else if (state === 'SYNCING') {
     setDisp($('#welcome-qr'), 'none');
     setDisp($('#wqr-loading'), 'none');
+    setDisp($('#top-sync-bar'), 'flex');
     if (isEmptyPanel && hasChats) {
       setDisp($('#welcome-default'), '');
       setDisp($('#sync-progress-panel'), 'none');
@@ -329,6 +331,7 @@ export function updateWaUI({ state, message, sync }) {
       setDisp($('#sync-progress-panel'), 'none');
     }
   } else if (state === 'QR_READY' || store._waNeedsRelogin || store._waLoggedOut) {
+    setDisp($('#top-sync-bar'), 'none');
     // Never tear away a chat the user is actively viewing just to show the QR.
     if (wantsLiveSyncUi()) {
       pollForQrWhileDisconnected();
@@ -430,6 +433,16 @@ export function updateSyncProgress(data) {
     if (sidebarFill) { sidebarFill.style.width = '100%'; sidebarFill.style.animation = ''; }
     const sidebarText = $('#sidebar-sync-text');
     if (sidebarText) sidebarText.textContent = 'Sync complete ✓';
+    const topSync = $('#top-sync-bar');
+    const topSyncFill = $('#top-sync-fill');
+    const topSyncText = $('#top-sync-text');
+    const topSyncPct = $('#top-sync-pct');
+    if (topSync) {
+      if (topSyncFill) { topSyncFill.style.width = '100%'; topSyncFill.classList.remove('indeterminate'); }
+      if (topSyncText) topSyncText.textContent = 'Chat sync complete ✓';
+      if (topSyncPct) topSyncPct.textContent = '100%';
+      setTimeout(() => { if (topSync) topSync.style.display = 'none'; }, 2500);
+    }
     clearTimeout(store._syncDoneTimer);
     store._syncDoneTimer = setTimeout(() => {
       store._historySyncActive = false;
@@ -456,6 +469,25 @@ export function updateSyncProgress(data) {
   const msgN = messages ?? 0;
   $('#sync-msgs').textContent = msgN.toLocaleString() + ' messages';
   $('#sync-detail').textContent = total > 0 ? `${completed} of ${total} chats` : 'Receiving history…';
+
+  // Top sync progress bar
+  const topSync = $('#top-sync-bar');
+  const topSyncFill = $('#top-sync-fill');
+  const topSyncText = $('#top-sync-text');
+  const topSyncPct = $('#top-sync-pct');
+  if (topSync) {
+    topSync.style.display = 'flex';
+    if (topSyncFill) {
+      topSyncFill.classList.toggle('indeterminate', !hasTotal);
+      topSyncFill.style.width = hasTotal ? pct + '%' : '';
+    }
+    if (topSyncText) {
+      topSyncText.textContent = msgN > 0
+        ? `Chat syncing is still in progress… (${msgN.toLocaleString()} messages)`
+        : 'Chat syncing is still in progress…';
+    }
+    if (topSyncPct) topSyncPct.textContent = hasTotal ? pct + '%' : '';
+  }
 
   // Sidebar sync bar
   const sidebarFill = $('#sidebar-sync-fill');

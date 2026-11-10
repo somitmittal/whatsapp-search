@@ -212,7 +212,7 @@ export default class WaClient {
     authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete,
     onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction,
     onResolvedDisplayName, onUnreadCounts, onMessageRevoked, onMessageEdited,
-    onChatAvatar, onMessageReceipt, onLoadPendingMediaStubs, onMediaNeedsDownload, onMediaSettled,
+    onChatAvatar, onMessageReceipt, onLoadPendingMediaStubs, onLoadDeferredLargeVideos, onClearDeferredVideoPath, onMediaNeedsDownload, onMediaSettled,
     onClaimMediaDownload, onReleaseMediaDownloadClaim,
   }) {
     this._authDir = authDir || join(config.dataDir, '.baileys_auth');
@@ -228,6 +228,8 @@ export default class WaClient {
     this._onDisconnected = onDisconnected;
     this._onMediaPath   = onMediaPath;
     this._onLoadPendingMediaStubs = onLoadPendingMediaStubs;
+    this._onLoadDeferredLargeVideos = onLoadDeferredLargeVideos;
+    this._onClearDeferredVideoPath = onClearDeferredVideoPath;
     this._onMediaNeedsDownload = onMediaNeedsDownload;
     this._onMediaSettled = onMediaSettled;
     this._onClaimMediaDownload = onClaimMediaDownload;
@@ -2049,9 +2051,9 @@ export default class WaClient {
     console.log(`[WA] Sync complete — ${this._totalMsgs} messages`);
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
     this._sortDeferredMediaQueue();
-    // Drain CDN-only downloads already in memory. Do NOT re-queue the whole archive —
-    // each expired blob asks the phone to re-upload and floods "syncing" notifications.
-    // User Refresh / media Retry on a chat calls prioritizeChatMedia → phone reupload for that chat only.
+    // Re-queue pending media stubs from SQLite for background CDN drain.
+    // allowPhoneReupload remains false so this only fetches from CDN and never pings the phone.
+    this._requeuePersistedPendingMedia(null, null);
     void this._drainMediaQueue();
     try { this._onHistorySyncComplete?.(); } catch (e) {
       console.warn('[WA] onHistorySyncComplete:', e.message);
@@ -2340,7 +2342,7 @@ export default class WaClient {
    *   Phone re-upload (`updateMediaMessage`) notifies the primary device. Only enable
    *   for an explicit user Refresh / Retry on that chat — never for bulk history drain.
    */
-  async _enrichRowWithMedia(msg, row, { allowPhoneReupload = false } = {}) {
+  async _enrichRowWithMedia(msg, row, { allowPhoneReupload = false, isDeferredLargeVideo = false } = {}) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return row;
     const inner = resolveInnerContent(msg.message) || msg.message;
     const mime =
@@ -2357,7 +2359,7 @@ export default class WaClient {
     mkdirSync(dir, { recursive: true });
     const filename = `${row.messageId}.${ext}`;
     const fullPath = join(dir, filename);
-    const isPriority = Boolean(allowPhoneReupload || this._priorityMediaChatJids.includes(row.chatJid));
+    const isPriority = Boolean(allowPhoneReupload || isDeferredLargeVideo || this._priorityMediaChatJids.includes(row.chatJid));
     const videoCap = isPriority ? MAX_VIDEO_BYTES_EXPLICIT : MAX_VIDEO_BYTES_BACKGROUND;
 
     // Stream decrypt → temp file → rename. Directly streams to disk to keep RAM minimal.
@@ -2605,6 +2607,43 @@ export default class WaClient {
         }
       }
     }
+    // Normal queues are empty. Check if there are deferred large videos to drain eventually!
+    if (this._historyDone && typeof this._onLoadDeferredLargeVideos === 'function') {
+      const deferred = this._pullNextDeferredLargeVideoItem();
+      if (deferred) return deferred;
+    }
+    return null;
+  }
+
+  /**
+   * Progressively pull deferred large videos once all lighter media has drained.
+   * Drains at explicit cap (up to 100MB) without blocking other chats or light items.
+   */
+  _pullNextDeferredLargeVideoItem() {
+    if (!this._deferredLargeVideosQueue) this._deferredLargeVideosQueue = [];
+    if (!this._deferredLargeVideosQueue.length) {
+      try {
+        const rows = this._onLoadDeferredLargeVideos(null, 15) || [];
+        for (const item of rows) {
+          if (!item?.msg?.key || !item?.row?.messageId) continue;
+          if (this._queuedMediaIds.has(item.row.messageId)) continue;
+          this._deferredLargeVideosQueue.push(item);
+        }
+      } catch (e) {
+        console.warn('[WA] load deferred large videos:', e?.message || e);
+      }
+    }
+    while (this._deferredLargeVideosQueue.length) {
+      const item = this._deferredLargeVideosQueue.shift();
+      if (item?.row?.messageId) {
+        this._queuedMediaIds.add(item.row.messageId);
+        // Clear terminal sentinel in DB so mediaNeedsDownload passes, and set explicit flag
+        this._onClearDeferredVideoPath?.(item.row.chatJid, item.row.messageId);
+        item.row.mediaPath = null;
+        item.isDeferredLargeVideo = true;
+        return item;
+      }
+    }
     return null;
   }
 
@@ -2612,7 +2651,7 @@ export default class WaClient {
     while (!this._destroyed) {
       const item = this._takeNextMediaQueueItem();
       if (!item) return;
-      const { msg, row } = item;
+      const { msg, row, isDeferredLargeVideo } = item;
       let settledPath = null;
       let claimed = false;
       let reportOutcome = false;
@@ -2625,7 +2664,10 @@ export default class WaClient {
         if (this._onMediaNeedsDownload?.(row.messageId) === false) continue;
         reportOutcome = true;
         const allowPhoneReupload = this._phoneReuploadChatJids.has(row.chatJid);
-        const enriched = await this._enrichRowWithMedia(msg, row, { allowPhoneReupload });
+        const enriched = await this._enrichRowWithMedia(msg, row, {
+          allowPhoneReupload,
+          isDeferredLargeVideo: Boolean(isDeferredLargeVideo),
+        });
         settledPath = enriched.mediaPath || null;
         // Same object may still sit in the unflushed insert batch — carry the path into it.
         if (settledPath) row.mediaPath = settledPath;

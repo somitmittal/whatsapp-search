@@ -43,6 +43,20 @@
     </div>
   </header>
 
+  <!-- Top chat sync progress bar -->
+  <div class="gpt-top-sync-bar" id="gpt-top-sync-bar" role="progressbar" aria-live="polite" hidden>
+    <div class="gpt-top-sync-track">
+      <div class="gpt-top-sync-fill" id="gpt-top-sync-fill"></div>
+    </div>
+    <div class="gpt-top-sync-row">
+      <div class="gpt-top-sync-msg">
+        <svg class="gpt-top-sync-spinner" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+        <span id="gpt-top-sync-text">Chat syncing is still in progress…</span>
+      </div>
+      <span class="gpt-top-sync-pct" id="gpt-top-sync-pct"></span>
+    </div>
+  </div>
+
   <div class="gpt-trial-nudge" id="gpt-trial-nudge" role="status" hidden>
     <p class="gpt-trial-nudge-text" id="gpt-trial-nudge-text"></p>
     <div class="gpt-trial-nudge-actions">
