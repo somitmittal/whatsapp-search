@@ -28,3 +28,7 @@ When concluding an agent session or passing work between worktrees, record the h
 
 ## 5. Next Best Action
 * Exactly what the next agent or human developer should run or inspect next.
+
+## 6. Merge & User Notification Status
+* **Merged to main:** `[Yes / No / In Progress]`
+* **User Informed:** `[Yes / No] (Include summary of changes and test evidence)`
