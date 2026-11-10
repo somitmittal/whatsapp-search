@@ -1026,31 +1026,29 @@ export default class WaClient {
     // After a QR scan Baileys reconnects with saved creds while the flag is still
     // false — treating that as “already synced” skipped the entire archive (empty chats).
     let syncFullHistoryOnce = false;
-    if (priorCfg.acceptHistoryOnce) {
-      syncFullHistoryOnce = true;
-    } else if (!priorCfg.initialHistorySyncDone) {
+    const isInitialSync = !priorCfg.initialHistorySyncDone;
+    const isExplicitResync = Boolean(priorCfg.acceptHistoryOnce) || this._forceFullHistoryOnce === true;
+
+    if (isExplicitResync || isInitialSync) {
       syncFullHistoryOnce = true;
     }
-    // Paced acceptance: user-initiated resyncs always run immediately; automated
-    // zero-touch retries wait out the backoff gap first, then retry automatically.
-    // Nothing is ever refused — the archive is always completed, just not hammered.
-    const forcedByUser = this._forceFullHistoryOnce === true;
+    // Paced acceptance: user-initiated resyncs and initial pairings always run immediately;
+    // automated zero-touch retries wait out the backoff gap first, then retry automatically.
+    // Initial sync and explicit user resyncs must NEVER be held back by backoff.
+    const forcedByUser = this._forceFullHistoryOnce === true || isExplicitResync || isInitialSync;
     const waitingMs = forcedByUser ? 0 : this._fullHistoryRemainingWaitMs(priorCfg);
     if (waitingMs > 0) {
       this._acceptPhoneHistorySync = false;
       syncFullHistoryOnce = false;
       console.warn(`[WA] Holding phone history request ${Math.round(waitingMs / 1000)}s (pacing recent sync attempts — no repeat alert storm)`);
       this._scheduleHistoryRetry(waitingMs);
-    } else if (priorCfg.acceptHistoryOnce) {
+    } else if (isExplicitResync) {
       this._forceFullHistoryOnce = false;
-      const recorded = this._recordFullHistoryRequest(priorCfg);
       this._acceptPhoneHistorySync = true;
       syncFullHistoryOnce = true;
-      saveCfg(this._configFile, { ...recorded, initialHistorySyncDone: false });
       console.log('[WA] Accepting phone history sync (one-shot FULL resync)');
-    } else if (!priorCfg.initialHistorySyncDone) {
+    } else if (isInitialSync) {
       this._forceFullHistoryOnce = false;
-      this._recordFullHistoryRequest(priorCfg);
       this._acceptPhoneHistorySync = true;
       syncFullHistoryOnce = true;
       console.log('[WA] Accepting phone history sync (initial / recovery)');
@@ -1193,6 +1191,10 @@ export default class WaClient {
         console.log(`[WA] ✅ Connected as ${name}`);
         this._onReady?.({ name, phone: this._ownerJid?.split('@')[0] });
         this._setState('SYNCING', 'Loading chat history…');
+        if (this._acceptPhoneHistorySync && this.hasSavedCreds) {
+          const cfg = loadCfg(this._configFile);
+          this._recordFullHistoryRequest(cfg);
+        }
         // Titles first: publish a named chat list before messages stream in. Deliberately
         // not awaited — history ingestion must not wait on it.
         if (this._acceptPhoneHistorySync) void this.hydrateGroupTitlesForUi();
