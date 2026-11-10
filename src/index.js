@@ -36,6 +36,47 @@ function assertJwtOnPublicHost() {
   process.exit(1);
 }
 
+function isTransientNetworkError(err) {
+  if (!err) return false;
+  const msg = String(err.message || '').toLowerCase();
+  const code = String(err.code || err.cause?.code || '').toUpperCase();
+  if (
+    code === 'UND_ERR_SOCKET' ||
+    code === 'UND_ERR_ABORTED' ||
+    code === 'ECONNRESET' ||
+    code === 'EPIPE' ||
+    code === 'ETIMEDOUT'
+  ) {
+    return true;
+  }
+  if (
+    msg.includes('terminated') ||
+    msg.includes('other side closed') ||
+    msg.includes('socket error') ||
+    msg.includes('fetch failed')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+process.on('uncaughtException', (err) => {
+  if (isTransientNetworkError(err)) {
+    console.warn('[Process] Caught transient network/stream error (prevented crash):', err?.message || err);
+    return;
+  }
+  console.error('[Process] Fatal uncaughtException:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  if (isTransientNetworkError(reason)) {
+    console.warn('[Process] Caught transient network/stream rejection (prevented crash):', reason?.message || reason);
+    return;
+  }
+  console.error('[Process] Unhandled promise rejection:', reason);
+});
+
 async function main() {
   assertJwtOnPublicHost();
 

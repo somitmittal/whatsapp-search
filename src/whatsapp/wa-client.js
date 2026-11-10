@@ -55,6 +55,7 @@ import {
   isTerminalMediaPath,
 } from './media-constants.js';
 import { buildMediaDownloadStub } from './media-download-stub.js';
+import { downloadMediaMessageSafe } from './safe-media-download.js';
 import { audioSendContent } from './voice-content.js';
 import {
     extractRenderableTextFromInner,
@@ -2567,7 +2568,7 @@ export default class WaClient {
 
     // Stream decrypt → temp file → rename. Directly streams to disk to keep RAM minimal.
     const downloadToFile = async (message) => {
-      const stream = await downloadMediaMessage(message, 'stream', {}, {
+      const stream = await downloadMediaMessageSafe(message, 'stream', {}, {
         logger: this._mediaLogger,
         ...(allowPhoneReupload
           ? { reuploadRequest: (x) => this._sock.updateMediaMessage(x) }
