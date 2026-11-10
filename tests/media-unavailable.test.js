@@ -79,6 +79,13 @@ describe('media terminal states', () => {
       expect(stub).toBe('{"z":9}');
       db.clearUnavailableMediaPaths(jid, 'k1');
       expect(db.listPendingMediaWithDownloadStub(jid).map((r) => r.messageId)).toEqual(['k1']);
+
+      // Also clears MEDIA_TOO_LARGE_PATH so deferred videos can load on demand
+      db.updateMessageMediaPath('k1', MEDIA_TOO_LARGE_PATH);
+      expect(pathOf('k1')).toBe(MEDIA_TOO_LARGE_PATH);
+      db.clearUnavailableMediaPaths(jid, 'k1');
+      expect(pathOf('k1')).toBeNull();
+      expect(db.listPendingMediaWithDownloadStub(jid).map((r) => r.messageId)).toEqual(['k1']);
     });
   });
 

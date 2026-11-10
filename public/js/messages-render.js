@@ -451,12 +451,13 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
         body = `<span class="media-wrap"><a class="msg-media-doc" href="${escAttr(dlHref)}" download>${label}</a>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : ''}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
       }
     } else if ((m.mediaUnavailable || m.mediaTooLarge) && m.mediaType) {
-      const why = m.mediaTooLarge ? 'too large to download — open on your phone' : 'no longer available on WhatsApp';
-      // Unavailable can be a false CDN expiry mark — offer Retry so the phone can re-upload.
-      const unavailRetry = (!m.mediaTooLarge && mid)
-        ? ` <button type="button" class="media-retry" data-wa-media-retry data-message-id="${escAttr(mid)}">Retry</button>`
+      const isLarge = Boolean(m.mediaTooLarge);
+      const why = isLarge ? 'deferred (large video)' : 'no longer available on WhatsApp';
+      const actionText = isLarge ? 'Load video' : 'Retry';
+      const unavailRetry = mid
+        ? ` <button type="button" class="media-retry" data-wa-media-retry data-message-id="${escAttr(mid)}">${actionText}</button>`
         : '';
-      body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-unavailable">${esc(m.mediaType)} ${why}${unavailRetry}${cap ? ' · ' + cap : ''}</span></span>`;
+      body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-unavailable">${esc(m.mediaType)} · ${why}${unavailRetry}${cap ? ' · ' + cap : ''}</span></span>`;
     } else if (m.mediaPending && m.mediaType && String(m.chatJid || jid).endsWith('@imported')) {
       body = `<span class="media-wrap">${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}<span class="media-badge media-unavailable">${esc(m.mediaType)} not included in the export${cap ? ' · ' + cap : ''}</span></span>`;
     } else if (m.mediaPending && m.mediaType && m.mediaQueued) {

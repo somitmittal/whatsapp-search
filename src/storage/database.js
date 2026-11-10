@@ -18,6 +18,7 @@ import { groupStatusBroadcastRows } from '../status/status-feed.js';
 import { isSafeAvatarFileName } from '../whatsapp/chat-avatars.js';
 import {
   MEDIA_UNAVAILABLE_PATH,
+  MEDIA_TOO_LARGE_PATH,
   isTerminalMediaPath,
 } from '../whatsapp/media-constants.js';
 import { chatListPreview, higherReceipt, normalizeReceiptStatus } from '../whatsapp/message-receipt.js';
@@ -1743,7 +1744,7 @@ export default class Database {
   }
 
   /**
-   * Clear false-positive `__unavailable__` marks so Retry / Load can re-queue downloads.
+   * Clear false-positive `__unavailable__` or deferred `__too_large__` marks so Retry / Load can re-queue downloads.
    * @param {string} chatJid
    * @param {string | null} [messageId] when set, only that message
    */
@@ -1756,14 +1757,14 @@ export default class Database {
       return this._db.prepare(`
         UPDATE messages SET media_path = NULL
         WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?
-          AND media_path = ?
-      `).run(t, jid, mid, MEDIA_UNAVAILABLE_PATH).changes ?? 0;
+          AND (media_path = ? OR media_path = ?)
+      `).run(t, jid, mid, MEDIA_UNAVAILABLE_PATH, MEDIA_TOO_LARGE_PATH).changes ?? 0;
     }
     return this._db.prepare(`
       UPDATE messages SET media_path = NULL
       WHERE tenant_id = ? AND chat_jid = ?
-        AND media_path = ?
-    `).run(t, jid, MEDIA_UNAVAILABLE_PATH).changes ?? 0;
+        AND (media_path = ? OR media_path = ?)
+    `).run(t, jid, MEDIA_UNAVAILABLE_PATH, MEDIA_TOO_LARGE_PATH).changes ?? 0;
   }
 
   /** Store / refresh Baileys media stub while the local file is still missing. */

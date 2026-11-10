@@ -102,7 +102,10 @@ const WA_DRAIN_GAP_MS = config.waMediaDrainGapMs ?? WA_MEDIA_DRAIN_GAP_MS;
 const MEDIA_FOR_INDEX = new Set(['image', 'audio', 'video', 'sticker', 'document']);
 /** Drain order bias: light types first so videos cannot monopolize the shared worker pool. */
 const MEDIA_QUEUE_TYPES = ['image', 'audio', 'sticker', 'document', 'video'];
-const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
+/** Auto-download cap for background video sync (defers very large videos so other messages aren't blocked). */
+const MAX_VIDEO_BYTES_BACKGROUND = 32 * 1024 * 1024; // 32 MiB
+/** Cap for active chat or user-requested video downloads (streams direct to disk). */
+const MAX_VIDEO_BYTES_EXPLICIT = 100 * 1024 * 1024; // 100 MiB
 
 function safeJidDir(jid) {
   return String(jid || 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '_');
@@ -2354,8 +2357,10 @@ export default class WaClient {
     mkdirSync(dir, { recursive: true });
     const filename = `${row.messageId}.${ext}`;
     const fullPath = join(dir, filename);
+    const isPriority = Boolean(allowPhoneReupload || this._priorityMediaChatJids.includes(row.chatJid));
+    const videoCap = isPriority ? MAX_VIDEO_BYTES_EXPLICIT : MAX_VIDEO_BYTES_BACKGROUND;
 
-    // Stream decrypt → temp file → rename. Keeps the 12 MiB video cap without a full Buffer.
+    // Stream decrypt → temp file → rename. Directly streams to disk to keep RAM minimal.
     const downloadToFile = async (message) => {
       const stream = await downloadMediaMessage(message, 'stream', {}, {
         logger: this._mediaLogger,
@@ -2368,8 +2373,8 @@ export default class WaClient {
       const limit = new Transform({
         transform(chunk, _encoding, callback) {
           bytes += chunk.length;
-          if (row.mediaType === 'video' && bytes > MAX_VIDEO_BYTES) {
-            const error = new Error(`video exceeds ${MAX_VIDEO_BYTES} byte limit`);
+          if (row.mediaType === 'video' && bytes > videoCap) {
+            const error = new Error(`video exceeds ${videoCap} byte limit`);
             error.code = 'WA_MEDIA_TOO_LARGE';
             callback(error);
             return;
@@ -2407,7 +2412,7 @@ export default class WaClient {
       return { ...row, mediaPath: fullPath };
     } catch (e) {
       if (e?.code === 'WA_MEDIA_TOO_LARGE') {
-        console.warn(`[WA] skip large video (${MAX_VIDEO_BYTES}+ bytes)`);
+        console.warn(`[WA] defer large video (${row.messageId}, ${Math.round(videoCap / (1024 * 1024))}MB+ limit) — can load on demand`);
         return { ...row, mediaPath: MEDIA_TOO_LARGE_PATH };
       }
       const msgText = String(e?.message || 'media download failed');
