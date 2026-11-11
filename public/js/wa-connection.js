@@ -90,13 +90,11 @@ function applyPendingWaBootstrapUi() {
   if (!wantsLiveSyncUi() || hasIndexedArchive()) return;
   const loggedOutEl = $('#sidebar-logged-out');
   const chatListEl = $('#chat-list');
-  const syncBarEl = $('#sidebar-sync-bar');
   const filterEl = document.querySelector('.sidebar-search');
   const tabsEl = document.querySelector('.sidebar-chat-tabs');
   const stripEl = $('#status-strip-wrap');
   if (loggedOutEl) loggedOutEl.style.display = 'none';
   if (chatListEl) chatListEl.style.display = 'none';
-  if (syncBarEl) syncBarEl.style.display = 'none';
   if (filterEl) filterEl.style.display = 'none';
   if (tabsEl) tabsEl.style.display = 'none';
   if (stripEl) stripEl.hidden = true;
@@ -163,7 +161,6 @@ function markQrRefreshing() {
 export function updateSidebarForWaState() {
   const loggedOutEl = $('#sidebar-logged-out');
   const chatListEl = $('#chat-list');
-  const syncBarEl = $('#sidebar-sync-bar');
   const filterEl = document.querySelector('.sidebar-search');
   const tabsEl = document.querySelector('.sidebar-chat-tabs');
   const stripEl = $('#status-strip-wrap');
@@ -194,7 +191,6 @@ export function updateSidebarForWaState() {
       waPrompt.style.display = '';
       if (emptyIcon) emptyIcon.style.display = '';
     }
-    if (syncBarEl) syncBarEl.style.display = 'none';
     if (filterEl) filterEl.style.display = 'none';
     if (tabsEl) tabsEl.style.display = 'none';
     if (stripEl) stripEl.hidden = true;
@@ -207,10 +203,6 @@ export function updateSidebarForWaState() {
     if (chatListEl) chatListEl.style.display = '';
     if (filterEl) filterEl.style.display = '';
     if (tabsEl) tabsEl.style.display = '';
-
-    if (syncBarEl) {
-      syncBarEl.style.display = (store._waState === 'SYNCING' || store._historySyncActive) ? '' : 'none';
-    }
   }
 }
 
@@ -307,7 +299,6 @@ export function updateWaUI({ state, message, sync }) {
     setDisp($('#sync-progress-panel'), 'none');
     setDisp($('#welcome-default'), '');
     setDisp($('#wqr-loading'), 'none');
-    if (!store._historySyncActive) setDisp($('#top-sync-bar'), 'none');
     store.waSyncByChat = {};
     applyWaSyncBars();
     refreshDash();
@@ -319,7 +310,6 @@ export function updateWaUI({ state, message, sync }) {
   } else if (state === 'SYNCING') {
     setDisp($('#welcome-qr'), 'none');
     setDisp($('#wqr-loading'), 'none');
-    setDisp($('#top-sync-bar'), 'flex');
     if (isEmptyPanel && hasChats) {
       setDisp($('#welcome-default'), '');
       setDisp($('#sync-progress-panel'), 'none');
@@ -331,7 +321,6 @@ export function updateWaUI({ state, message, sync }) {
       setDisp($('#sync-progress-panel'), 'none');
     }
   } else if (state === 'QR_READY' || store._waNeedsRelogin || store._waLoggedOut) {
-    setDisp($('#top-sync-bar'), 'none');
     // Never tear away a chat the user is actively viewing just to show the QR.
     if (wantsLiveSyncUi()) {
       pollForQrWhileDisconnected();
@@ -368,6 +357,11 @@ export function updateWaUI({ state, message, sync }) {
     } else {
       setDisp($('#wqr-loading'), 'none');
     }
+  }
+  if (state === 'QR_READY' || store._waNeedsRelogin || store._waLoggedOut) {
+    applyTopSyncBar({ syncing: false, incomplete: false });
+  } else {
+    applyTopSyncBar(sync || { syncing: store._historySyncActive, incomplete: false });
   }
   applyLiveSyncVisibility();
   updateComposerVisibility();
@@ -415,6 +409,74 @@ export function showQr(dataUrl) {
   if ($('#wqr-status-line')) $('#wqr-status-line').textContent = 'Scan with your phone — refreshes automatically';
 }
 
+let _topSyncHideTimer = null;
+export function applyTopSyncBar(sync) {
+  const topSync = $('#top-sync-bar');
+  if (!topSync) return;
+  const isSyncing = Boolean(sync?.syncing || store._historySyncActive);
+  const isIncomplete = Boolean(sync?.incomplete);
+  const isDone = Boolean(sync?.done) || (!isSyncing && sync?.progress === 100);
+
+  if (isDone) {
+    store._historySyncActive = false;
+    const topSyncFill = $('#top-sync-fill');
+    const topSyncText = $('#top-sync-text');
+    const topSyncPct = $('#top-sync-pct');
+    if (topSync.style.display !== 'none') {
+      topSync.classList.remove('incomplete');
+      if (topSyncFill) {
+        topSyncFill.style.width = '100%';
+        topSyncFill.classList.remove('indeterminate');
+      }
+      if (topSyncText) topSyncText.textContent = 'Chat sync complete ✓';
+      if (topSyncPct) topSyncPct.textContent = '100%';
+      clearTimeout(_topSyncHideTimer);
+      _topSyncHideTimer = setTimeout(async () => {
+        try {
+          const st = await fetch('/api/wa/status', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null));
+          if (st?.sync) {
+            applyTopSyncBar(st.sync);
+            return;
+          }
+        } catch {}
+        if (!store._historySyncActive && topSync) topSync.style.display = 'none';
+      }, 2500);
+      return;
+    }
+    if (!isIncomplete) {
+      topSync.classList.remove('incomplete');
+      topSync.style.display = 'none';
+      return;
+    }
+  }
+
+  if (!isSyncing && !isIncomplete) {
+    clearTimeout(_topSyncHideTimer);
+    topSync.classList.remove('incomplete');
+    topSync.style.display = 'none';
+    return;
+  }
+
+  clearTimeout(_topSyncHideTimer);
+  const pct = isSyncing && Number.isFinite(sync?.progress) ? Math.round(sync.progress) : null;
+  const msgN = Number(sync?.messages) || 0;
+  const msgText = sync?.label || (isSyncing
+    ? (msgN > 0 ? `Chat syncing is still in progress… (${msgN.toLocaleString()} messages)` : 'Chat syncing is still in progress…')
+    : 'WhatsApp sync is incomplete — older messages or media still pending');
+
+  topSync.style.display = 'flex';
+  topSync.classList.toggle('incomplete', !isSyncing && isIncomplete);
+  const topSyncFill = $('#top-sync-fill');
+  const topSyncText = $('#top-sync-text');
+  const topSyncPct = $('#top-sync-pct');
+  if (topSyncFill) {
+    topSyncFill.classList.toggle('indeterminate', isSyncing && pct == null);
+    topSyncFill.style.width = isSyncing ? (pct == null ? '' : `${pct}%`) : '100%';
+  }
+  if (topSyncText) topSyncText.textContent = msgText;
+  if (topSyncPct) topSyncPct.textContent = pct != null ? `${pct}%` : '';
+}
+
 export function updateSyncProgress(data) {
   const { completed, total, messages, byChat, progress } = data || {};
   const done = Boolean(data?.done);
@@ -429,20 +491,7 @@ export function updateSyncProgress(data) {
     if (pctEl) pctEl.textContent = '100%';
     const detail = $('#sync-detail');
     if (detail) detail.textContent = 'Sync complete';
-    const sidebarFill = $('#sidebar-sync-fill');
-    if (sidebarFill) { sidebarFill.style.width = '100%'; sidebarFill.style.animation = ''; }
-    const sidebarText = $('#sidebar-sync-text');
-    if (sidebarText) sidebarText.textContent = 'Sync complete ✓';
-    const topSync = $('#top-sync-bar');
-    const topSyncFill = $('#top-sync-fill');
-    const topSyncText = $('#top-sync-text');
-    const topSyncPct = $('#top-sync-pct');
-    if (topSync) {
-      if (topSyncFill) { topSyncFill.style.width = '100%'; topSyncFill.classList.remove('indeterminate'); }
-      if (topSyncText) topSyncText.textContent = 'Chat sync complete ✓';
-      if (topSyncPct) topSyncPct.textContent = '100%';
-      setTimeout(() => { if (topSync) topSync.style.display = 'none'; }, 2500);
-    }
+    applyTopSyncBar(data?.sync ? { ...data.sync, done: true } : { syncing: false, done: true, progress: 100, messages });
     clearTimeout(store._syncDoneTimer);
     store._syncDoneTimer = setTimeout(() => {
       store._historySyncActive = false;
@@ -470,41 +519,9 @@ export function updateSyncProgress(data) {
   $('#sync-msgs').textContent = msgN.toLocaleString() + ' messages';
   $('#sync-detail').textContent = total > 0 ? `${completed} of ${total} chats` : 'Receiving history…';
 
-  // Top sync progress bar
-  const topSync = $('#top-sync-bar');
-  const topSyncFill = $('#top-sync-fill');
-  const topSyncText = $('#top-sync-text');
-  const topSyncPct = $('#top-sync-pct');
-  if (topSync) {
-    topSync.style.display = 'flex';
-    if (topSyncFill) {
-      topSyncFill.classList.toggle('indeterminate', !hasTotal);
-      topSyncFill.style.width = hasTotal ? pct + '%' : '';
-    }
-    if (topSyncText) {
-      topSyncText.textContent = msgN > 0
-        ? `Chat syncing is still in progress… (${msgN.toLocaleString()} messages)`
-        : 'Chat syncing is still in progress…';
-    }
-    if (topSyncPct) topSyncPct.textContent = hasTotal ? pct + '%' : '';
-  }
-
-  // Sidebar sync bar
-  const sidebarFill = $('#sidebar-sync-fill');
-  const sidebarText = $('#sidebar-sync-text');
-  // Keep the bar visible even after the UI state became READY mid-sync
-  // (updateSidebarForWaState hides it for READY; undo that while sync is active).
-  const sidebarBar = $('#sidebar-sync-bar');
-  if (sidebarBar) sidebarBar.style.display = '';
-  if (sidebarFill) {
-    sidebarFill.style.width = hasTotal ? pct + '%' : '40%';
-    sidebarFill.style.animation = hasTotal ? '' : 'sync-pulse 1.5s ease-in-out infinite';
-  }
-  if (sidebarText) {
-    sidebarText.textContent = hasTotal
-      ? `Syncing chats… ${pct}% (${msgN.toLocaleString()} messages)`
-      : `Syncing chats… ${msgN.toLocaleString()} messages`;
-  }
+  applyTopSyncBar(data?.sync
+    ? { ...data.sync, done: false, messages: msgN, progress: hasProgress ? progress : (hasTotal ? pct : data.sync.progress) }
+    : { syncing: true, incomplete: false, done: false, progress: hasTotal ? pct : null, messages: msgN });
 
   const emptyMain = $('#panel-empty').classList.contains('visible');
   const hasChats = store.chatData && store.chatData.length > 0;
@@ -520,7 +537,7 @@ export function updateSyncProgress(data) {
 }
 
 export function applyWaSyncBars() {
-  // Per-chat sync bars removed; sync progress is shown via the single sidebar-level bar.
+  // Per-chat sync bars removed; sync progress is shown via the single top-level sync bar.
 }
 
 export function initWaConnection() {

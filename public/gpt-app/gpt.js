@@ -22,12 +22,15 @@ import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
 import { refreshActiveChatLinkedJids } from '/js/chat-view.js';
 import { initMenus, priorityLoadChat, showSidebarContextMenu } from '/js/menus.js';
 import {
+  applyResolvedSenderNamesToDom,
   buildChatMessagesHtml,
   captureChatScrollAnchor,
   closeReactionEmojiPickers,
   messagesPaintFingerprint,
   postWaReaction,
   restoreChatScroll,
+  senderNeedsResolution,
+  showMediaRetryNote,
   toggleMessageMenu,
   toggleReactionEmojiPicker,
 } from '/js/messages-render.js';
@@ -97,11 +100,6 @@ const els = {
   modelFilter: $('#gpt-model-filter'),
   modelList: $('#gpt-model-list'),
   modelManage: $('#gpt-model-manage'),
-  sync: $('#gpt-sync'),
-  syncLabel: $('#gpt-sync-label'),
-  syncPct: $('#gpt-sync-pct'),
-  syncFill: $('#gpt-sync-fill'),
-  syncDetail: $('#gpt-sync-detail'),
   topSync: $('#gpt-top-sync-bar'),
   topSyncFill: $('#gpt-top-sync-fill'),
   topSyncText: $('#gpt-top-sync-text'),
@@ -256,14 +254,16 @@ function setMode(mode) {
 }
 
 let _syncDoneHideTimer = null;
-/** WhatsApp Web–style history bar; `progress` is WhatsApp's own 0–100 figure, null when unreported. */
+/** Single top sync bar — active sync/PDO/media drain OR persistent incomplete-sync indicator. */
 function renderSyncBar(sync) {
   const isSyncing = Boolean(sync?.syncing || store._historySyncActive);
+  const isIncomplete = Boolean(sync?.incomplete);
   const isDone = Boolean(sync?.done) || (!isSyncing && sync?.progress === 100);
 
   if (isDone) {
     store._historySyncActive = false;
     if (els.topSync && !els.topSync.hidden) {
+      els.topSync.classList.remove('incomplete');
       if (els.topSyncFill) {
         els.topSyncFill.classList.remove('indeterminate');
         els.topSyncFill.style.width = '100%';
@@ -272,50 +272,97 @@ function renderSyncBar(sync) {
       if (els.topSyncPct) els.topSyncPct.textContent = '100%';
       clearTimeout(_syncDoneHideTimer);
       _syncDoneHideTimer = setTimeout(() => {
-        if (els.topSync) els.topSync.hidden = true;
+        void syncWaState();
       }, 2500);
+      return;
     }
-    if (els.sync) els.sync.hidden = true;
-    return;
+    if (!isIncomplete) {
+      if (els.topSync) {
+        els.topSync.classList.remove('incomplete');
+        els.topSync.hidden = true;
+      }
+      return;
+    }
   }
 
-  if (!isSyncing) {
-    if (els.topSync) els.topSync.hidden = true;
-    if (els.sync) els.sync.hidden = true;
+  if (!isSyncing && !isIncomplete) {
+    clearTimeout(_syncDoneHideTimer);
+    if (els.topSync) {
+      els.topSync.classList.remove('incomplete');
+      els.topSync.hidden = true;
+    }
     return;
   }
 
   clearTimeout(_syncDoneHideTimer);
-  const pct = Number.isFinite(sync?.progress) ? Math.round(sync.progress) : null;
+  const pct = isSyncing && Number.isFinite(sync?.progress) ? Math.round(sync.progress) : null;
   const n = Number(sync?.messages) || 0;
-  const msgText = n > 0
-    ? `Chat syncing is still in progress… (${n.toLocaleString()} messages)`
-    : 'Chat syncing is still in progress…';
+  const msgText = sync?.label || (isSyncing
+    ? (n > 0 ? `Chat syncing is still in progress… (${n.toLocaleString()} messages)` : 'Chat syncing is still in progress…')
+    : 'WhatsApp sync is incomplete — older messages or media still pending');
 
-  // Top progress bar across topbar
   if (els.topSync) {
     els.topSync.hidden = false;
+    els.topSync.classList.toggle('incomplete', !isSyncing && isIncomplete);
     if (els.topSyncFill) {
-      els.topSyncFill.classList.toggle('indeterminate', pct == null);
-      els.topSyncFill.style.width = pct == null ? '' : `${pct}%`;
+      els.topSyncFill.classList.toggle('indeterminate', isSyncing && pct == null);
+      els.topSyncFill.style.width = isSyncing ? (pct == null ? '' : `${pct}%`) : '100%';
     }
     if (els.topSyncText) els.topSyncText.textContent = msgText;
     if (els.topSyncPct) els.topSyncPct.textContent = pct != null ? `${pct}%` : '';
   }
+}
 
-  // Sidebar sync bar in drawer
-  if (els.sync) {
-    els.sync.hidden = false;
-    els.sync.classList.toggle('indeterminate', pct == null);
-    if (els.syncFill) els.syncFill.style.width = pct == null ? '' : `${pct}%`;
-    if (els.syncPct) els.syncPct.textContent = pct == null ? '' : `${pct}%`;
-    if (els.syncLabel) els.syncLabel.textContent = 'Loading chats';
-    if (els.syncDetail) {
-      els.syncDetail.textContent = n
-        ? `${n.toLocaleString()} messages received · keep your phone connected`
-        : 'Keep your phone connected';
+const _senderResolveAt = new Map();
+function triggerDeferredSenderResolution(jid, msgs) {
+  if (!jid || !Array.isArray(msgs) || !msgs.length) return;
+  const needsResolve = msgs.some((m) => m && m.sender !== 'You' && (!m.sender || senderNeedsResolution(m.sender)));
+  if (!needsResolve) return;
+  const now = Date.now();
+  if (now - (_senderResolveAt.get(jid) || 0) < 25_000) return;
+  _senderResolveAt.set(jid, now);
+  fetch(`/api/chats/${encodeURIComponent(jid)}/resolve-senders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: '{}',
+  })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      if (!data?.updates?.length) return;
+      applyResolvedSenderUpdatesToOpenChat(jid, data.updates);
+    })
+    .catch(() => {});
+}
+
+function applyResolvedSenderUpdatesToOpenChat(eventChatJid, updates) {
+  if (!Array.isArray(updates) || !updates.length) return;
+  const activeJid = state.activeChatJid;
+  if (!activeJid) return;
+  const list = state.chatMessages.get(activeJid);
+  if (Array.isArray(list) && list.length) {
+    const byJid = new Map(
+      updates.filter((u) => u?.senderJid && u?.sender).map((u) => [u.senderJid, u.sender]),
+    );
+    const isDirect = !activeJid.endsWith('@g.us')
+      && activeJid !== 'status@broadcast'
+      && !activeJid.endsWith('@broadcast')
+      && !activeJid.endsWith('@imported');
+    const fallbackDirect = isDirect ? updates.find((u) => u?.sender)?.sender : null;
+    for (const m of list) {
+      if (m.sender === 'You') continue;
+      const hit = m.senderJid ? byJid.get(m.senderJid) : null;
+      if (hit) m.sender = hit;
+      else if (isDirect && fallbackDirect) {
+        m.sender = fallbackDirect;
+        if (!m.senderJid && updates[0]?.senderJid) m.senderJid = updates[0].senderJid;
+      }
     }
+    const sorted = [...list].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    els.waView.dataset.paintFp = messagesPaintFingerprint(sorted, activeJid);
   }
+  applyResolvedSenderNamesToDom(eventChatJid || activeJid, updates);
+  scheduleLoadChats();
 }
 
 function applyUnreadUpdates(updates) {
@@ -345,7 +392,10 @@ function connectSyncSocket() {
     if (msg.type === 'sync-progress') {
       const isDone = Boolean(msg.data?.done);
       store._historySyncActive = !isDone;
-      renderSyncBar({ syncing: !isDone, progress: msg.data?.progress, messages: msg.data?.messages, done: isDone });
+      const syncPayload = msg.data?.sync
+        ? { ...msg.data.sync, done: isDone }
+        : { syncing: !isDone, progress: msg.data?.progress, messages: msg.data?.messages, done: isDone };
+      renderSyncBar(syncPayload);
       if (isDone) void loadChats();
     } else if (msg.type === 'wa-status') {
       void syncWaState();
@@ -357,8 +407,18 @@ function connectSyncSocket() {
       if (openChatTouched(msg.data)) scheduleReloadActiveWaMessages({ coalesceMs: 120 });
     } else if (msg.type === 'message-media-ready') {
       if (openChatTouched(msg.data)) scheduleReloadActiveWaMessages({ coalesceMs: 120 });
+    } else if (msg.type === 'sender-names-resolved') {
+      if (msg.data?.refreshActive) {
+        if (state.activeChatJid) scheduleReloadActiveWaMessages({ coalesceMs: 120 });
+        scheduleLoadChats();
+      } else if (msg.data?.updates?.length && openChatTouched(msg.data)) {
+        applyResolvedSenderUpdatesToOpenChat(msg.data.chatJid, msg.data.updates);
+      }
     } else if (msg.type === 'chat-names-refreshed') {
       scheduleLoadChats();
+      if (state.activeChatJid && !state.activeChatJid.endsWith('@g.us')) {
+        scheduleReloadActiveWaMessages({ coalesceMs: 150 });
+      }
     }
   };
   ws.onclose = () => { setTimeout(connectSyncSocket, 3000); };
@@ -434,7 +494,10 @@ async function reloadActiveWaMessages() {
     const pending = prev.filter((m) => m.sender === 'You' && m.messageId && !serverIds.has(m.messageId));
     const merged = pending.length ? [...list, ...pending] : list;
     state.chatMessages.set(jid, merged);
-    if (state.activeChatJid === jid) paintWaMessages(jid, merged);
+    if (state.activeChatJid === jid) {
+      paintWaMessages(jid, merged);
+      triggerDeferredSenderResolution(jid, merged);
+    }
   } catch { /* ignore */ }
 }
 
@@ -1201,7 +1264,10 @@ async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
     const msgs = res.ok ? await res.json() : [];
     const list = Array.isArray(msgs) ? msgs : [];
     state.chatMessages.set(jid, list);
-    if (state.activeChatJid === jid) paintWaMessages(jid, list, { forceScroll: true });
+    if (state.activeChatJid === jid) {
+      paintWaMessages(jid, list, { forceScroll: true });
+      triggerDeferredSenderResolution(jid, list);
+    }
     fetch(`/api/chats/${encodeURIComponent(jid)}/seen`, {
       method: 'POST', headers: authHeaders(), body: '{}',
     }).catch(() => {});
@@ -2358,7 +2424,9 @@ function wire() {
     const mediaRetry = e.target.closest('[data-wa-media-retry]');
     if (mediaRetry) {
       e.stopPropagation();
-      if (!state.activeChatJid || mediaRetry.disabled) return;
+      const activeJid = state.activeChatJid;
+      if (!activeJid || mediaRetry.disabled) return;
+      const origText = mediaRetry.textContent || 'Retry';
       mediaRetry.disabled = true;
       mediaRetry.textContent = 'Retrying…';
       try {
@@ -2366,11 +2434,15 @@ function wire() {
           || mediaRetry.closest('.msg-block')?.dataset?.messageId
           || null;
         // One message only — full-chat media pull is menu → “Load messages & media”.
-        await priorityLoadChat(state.activeChatJid, { alertResult: false, messageId: mid });
+        const result = await priorityLoadChat(activeJid, { alertResult: false, messageId: mid });
+        if (mid) showMediaRetryNote(els.waView, mid, result);
       } catch (err) {
-        mediaRetry.disabled = false;
-        mediaRetry.textContent = 'Retry';
         alert(err.message || 'Could not retry this download');
+      } finally {
+        if (mediaRetry.isConnected) {
+          mediaRetry.disabled = false;
+          mediaRetry.textContent = origText;
+        }
       }
       return;
     }

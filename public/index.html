@@ -71,16 +71,6 @@
     <div id="status-strip-wrap" class="status-strip-wrap" hidden>
       <div id="status-strip" class="status-strip-scroll" role="list" aria-label="Status updates"></div>
     </div>
-    <!-- Sidebar sync progress bar — visible during SYNCING state -->
-    <div id="sidebar-sync-bar" style="display:none;padding:6px 16px 2px;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.5" style="flex-shrink:0;animation:spin 1.2s linear infinite"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
-        <span id="sidebar-sync-text" style="font-size:12px;color:var(--text2);">Syncing chats…</span>
-      </div>
-      <div style="background:var(--border);border-radius:3px;height:3px;overflow:hidden;">
-        <div id="sidebar-sync-fill" style="height:100%;background:#00a884;border-radius:3px;width:0%;transition:width .4s ease;"></div>
-      </div>
-    </div>
 
     <!-- Logged-out overlay — replaces chat list when WA is disconnected -->
     <div id="sidebar-logged-out" style="display:none;padding:40px 24px;text-align:center;">

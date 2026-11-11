@@ -368,28 +368,6 @@ button { font: inherit; color: inherit; }
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
-.gpt-sync[hidden] { display: none; }
-.gpt-sync {
-  padding: 10px 16px 12px; background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0;
-}
-.gpt-sync-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.gpt-sync-label { font-size: 13.5px; font-weight: 500; color: var(--fg); }
-.gpt-sync-pct { font-size: 13px; font-weight: 600; color: var(--accent-2); font-variant-numeric: tabular-nums; }
-.gpt-sync-track {
-  position: relative; height: 4px; margin: 8px 0 6px; border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 16%, var(--line)); overflow: hidden;
-}
-.gpt-sync-fill {
-  height: 100%; width: 0; border-radius: inherit; background: var(--accent);
-  transition: width .4s ease;
-}
-.gpt-sync.indeterminate .gpt-sync-fill {
-  position: absolute; width: 35%; transition: none;
-  animation: gpt-sync-slide 1.4s ease-in-out infinite;
-}
-@keyframes gpt-sync-slide { from { left: -35%; } to { left: 100%; } }
-.gpt-sync-detail { font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
-
 /* ── Top-level Chat Sync Progress Bar ───────────────────────────────── */
 .gpt-top-sync-bar[hidden] { display: none !important; }
 .gpt-top-sync-bar {
@@ -449,6 +427,24 @@ button { font: inherit; color: inherit; }
   color: var(--accent);
   font-variant-numeric: tabular-nums;
   margin-left: 8px;
+}
+.gpt-top-sync-pct:empty { display: none; }
+.gpt-top-sync-bar.incomplete {
+  background: #fffbeb;
+  border-bottom-color: #fde68a;
+}
+.gpt-top-sync-bar.incomplete .gpt-top-sync-track {
+  background: rgba(217, 119, 6, 0.16);
+}
+.gpt-top-sync-bar.incomplete .gpt-top-sync-fill {
+  background: #d97706;
+}
+.gpt-top-sync-bar.incomplete .gpt-top-sync-spinner {
+  animation: none;
+  color: #b45309;
+}
+.gpt-top-sync-bar.incomplete .gpt-top-sync-pct {
+  color: #b45309;
 }
 .gpt-chats .sidebar-chat-tabs {
   display: flex; gap: 6px; padding: 6px 12px 10px; flex-shrink: 0;
@@ -592,11 +588,33 @@ html[data-theme="dark"] .bubble.out { background: #005c4b; }
 html[data-theme="dark"] .bubble .text,
 html[data-theme="dark"] .media-cap { color: #e9edef; }
 html[data-theme="dark"] .bubble .time,
+html[data-theme="dark"] .bubble .sender.sender-direct,
 html[data-theme="dark"] .msg-media-datetime,
 html[data-theme="dark"] .media-badge,
+html[data-theme="dark"] .media-pending,
+html[data-theme="dark"] .media-unavailable,
+html[data-theme="dark"] .media-not-downloaded,
+html[data-theme="dark"] .media-retry-note,
 html[data-theme="dark"] .msg-deleted-label,
 html[data-theme="dark"] .empty-messages-hint,
 html[data-theme="dark"] .gpt-wa-loading { color: #8696a0; }
+html[data-theme="dark"] .media-retry {
+  color: #06cf9c;
+  border-color: rgba(6, 207, 156, 0.45);
+  background: rgba(6, 207, 156, 0.12);
+}
+html[data-theme="dark"] .media-retry:hover:not(:disabled) {
+  background: rgba(6, 207, 156, 0.22);
+  border-color: #06cf9c;
+}
+html[data-theme="dark"] .gpt-top-sync-bar.incomplete {
+  background: rgba(245, 158, 11, 0.1);
+  border-bottom-color: rgba(245, 158, 11, 0.28);
+}
+html[data-theme="dark"] .gpt-top-sync-bar.incomplete .gpt-top-sync-spinner,
+html[data-theme="dark"] .gpt-top-sync-bar.incomplete .gpt-top-sync-pct {
+  color: #fbbf24;
+}
 html[data-theme="dark"] .empty-messages-title { color: #e9edef; }
 html[data-theme="dark"] .bubble .text a.msg-link { color: #53bdeb; }
 html[data-theme="dark"] .bubble-toolbar-reacts {

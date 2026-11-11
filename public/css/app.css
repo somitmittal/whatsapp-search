@@ -489,14 +489,38 @@
     background: var(--panel2, #f0f2f5);
   }
   .msg-media-doc { color: var(--accent, #1a73e8); font-weight: 500; text-decoration: underline; }
-  .media-pending { opacity: 0.85; font-style: italic; }
-  .media-unavailable { opacity: 0.75; font-style: italic; color: var(--text2, #667781); }
-  .media-not-downloaded { color: var(--text2, #667781); }
+  .media-pending { opacity: 0.85; font-style: italic; color: var(--text2, #667781); }
+  .media-unavailable { opacity: 0.85; font-style: italic; color: var(--text2, #667781); }
+  .media-not-downloaded { color: var(--text2, #667781); font-style: italic; }
   .media-retry {
-    border: none; background: none; padding: 0; margin-left: 4px; cursor: pointer;
-    color: var(--teal, #008069); font: inherit; font-weight: 600; text-decoration: underline;
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 2px 9px;
+    border: 1px solid rgba(0, 128, 105, 0.45);
+    border-radius: 999px;
+    background: rgba(0, 168, 132, 0.08);
+    color: var(--teal, #008069);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    font-style: normal;
+    line-height: 1.3;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
   }
-  .media-retry:disabled { opacity: 0.6; cursor: default; text-decoration: none; }
+  .media-retry:hover:not(:disabled) {
+    background: rgba(0, 168, 132, 0.16);
+    border-color: var(--teal, #008069);
+  }
+  .media-retry:disabled { opacity: 0.6; cursor: default; }
+  .media-retry-note {
+    display: block;
+    margin-top: 4px;
+    font-size: 11.5px;
+    font-style: normal;
+    color: var(--text2, #667781);
+  }
   .media-index-state {
     display: inline-block; margin-top: 6px; padding: 3px 7px; border-radius: 5px;
     font-size: 11px; line-height: 1.25; background: rgba(102,119,129,0.12); color: var(--text2);
@@ -1027,6 +1051,7 @@
   .bubble.in { background: var(--msg-in); align-self: flex-start; border-top-left-radius: 0; }
   .bubble.out { background: var(--msg-out); align-self: flex-end; border-top-right-radius: 0; }
   .bubble .sender { font-size: 12.5px; font-weight: 500; margin-bottom: 2px; }
+  .bubble .sender.sender-direct { color: #54656f; }
   .bubble .text { font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
   .bubble .text a.msg-link { color: var(--accent, #1a73e8); text-decoration: underline; overflow-wrap: anywhere; word-break: break-all; }
   .msg-contact-card {
@@ -1935,6 +1960,24 @@
     font-weight: 600;
     color: var(--green, #00a884);
     font-variant-numeric: tabular-nums;
+  }
+  .top-sync-pct:empty { display: none; }
+  .top-sync-bar.incomplete {
+    background: #fffbeb;
+    border-bottom-color: #fde68a;
+  }
+  .top-sync-bar.incomplete .top-sync-track {
+    background: rgba(217, 119, 6, 0.16);
+  }
+  .top-sync-bar.incomplete .top-sync-fill {
+    background: #d97706;
+  }
+  .top-sync-bar.incomplete .top-sync-spinner {
+    animation: none;
+    color: #b45309;
+  }
+  .top-sync-bar.incomplete .top-sync-pct {
+    color: #b45309;
   }
 
   /* ── Model Download Banner ─────────────────── */

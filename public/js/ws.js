@@ -49,10 +49,19 @@ function connectWS() {
       else if (msg.type === 'expense-reconciliation' && $('#overlay-expenses')?.classList.contains('open')) {
         void loadExpenseRuns();
       }
-      else if (msg.type === 'chat-names-refreshed') { refreshDash(); }
+      else if (msg.type === 'chat-names-refreshed') {
+        refreshDash();
+        if (store.activeChat && !store.activeChat.endsWith('@g.us')) {
+          scheduleRefreshOpenChat({ coalesceMs: 150 });
+        }
+      }
       else if (msg.type === 'sender-names-resolved') {
-        if (msg.data?.updates?.length) {
-          applyResolvedSenderNamesToDom(msg.data.chatJid, msg.data.updates);
+        if (msg.data?.refreshActive) {
+          if (store.activeChat) scheduleRefreshOpenChat({ coalesceMs: 120 });
+          refreshDash();
+        } else if (msg.data?.updates?.length && openChatTouched(msg.data)) {
+          applyResolvedSenderNamesToDom(msg.data.chatJid || store.activeChat, msg.data.updates);
+          refreshDash();
         }
       }
       else if (msg.type === 'index-toggle' && msg.data?.chatJid) {

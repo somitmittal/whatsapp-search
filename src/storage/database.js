@@ -29,6 +29,7 @@ import {
   formatPhoneLocalPart,
   isPlausibleHumanChatTitle,
   isPlaceholderSenderName,
+  isUpgradeableSenderName,
   looksLikeLidFallbackContactLabel,
   looksLikeOpaqueNumericId,
   looksLikeUnusableChatTitle,
@@ -1333,7 +1334,37 @@ export default class Database {
     });
     run(contacts || []);
     const updatedChats = this.backfillChatNamesFromContactDirectory();
-    return { inserted, updatedChats };
+    const updatedSenders = this.backfillSenderNamesFromContactDirectory();
+    return { inserted, updatedChats, updatedSenders };
+  }
+
+  _lookupContactDirectoryName(key, tenantId, jid) {
+    if (!jid || typeof jid !== 'string') return null;
+    if (
+      jid.endsWith('@lid')
+      || jid.endsWith('@g.us')
+      || jid.endsWith('@imported')
+      || jid.endsWith('@broadcast')
+      || jid.endsWith('@newsletter')
+      || jid.endsWith('@bot')
+    ) {
+      return null;
+    }
+    const local = jid.split('@')[0].split(':')[0];
+    const digits = normalizePhone(local);
+    if (!digits) return null;
+    const candidates = digits.length > 10 ? [digits, digits.slice(-10)] : [digits];
+    for (const cand of candidates) {
+      const h = hashPhone(key, cand);
+      if (!h) continue;
+      const enc = this._stmtGetContactByHash.get(tenantId, h)?.encName || '';
+      if (!enc) continue;
+      const name = decryptName(key, enc);
+      if (name && isPlausibleHumanChatTitle(name, jid) && !isUpgradeableSenderName(name)) {
+        return name;
+      }
+    }
+    return null;
   }
 
   /**
@@ -1358,17 +1389,47 @@ export default class Database {
     for (const r of rows) {
       const chatJid = r.chatJid;
       if (!chatJid) continue;
-      const digits = normalizePhone(String(chatJid).split('@')[0]);
-      if (!digits) continue;
-      const h = hashPhone(key, digits);
-      const enc = this._stmtGetContactByHash.get(t, h)?.encName || '';
-      if (!enc) continue;
-      const name = decryptName(key, enc);
+      const name = this._lookupContactDirectoryName(key, t, chatJid);
       if (!name) continue;
       const info = upd.run(name, t, chatJid);
       updated += info?.changes || 0;
     }
     if (updated > 0) console.log(`[DB] Backfilled chat_name from contact directory on ${updated} message row(s)`);
+    return updated;
+  }
+
+  /**
+   * Backfill message `sender` column (group & 1:1 chats) from the encrypted phone contact directory
+   * wherever the stored sender is missing, a placeholder, or a formatted phone number.
+   */
+  backfillSenderNamesFromContactDirectory(limitSenders = 2500) {
+    const t = getCurrentTenantId();
+    const key = deriveTenantContactKey(t);
+    const rows = this._db.prepare(`
+      SELECT DISTINCT sender_jid AS senderJid, sender
+      FROM messages
+      WHERE tenant_id = ?
+        AND sender_jid IS NOT NULL
+        AND trim(sender_jid) != ''
+        AND COALESCE(sender, '') != 'You'
+        AND (sender_jid LIKE '%@s.whatsapp.net' OR sender_jid LIKE '%@hosted')
+      LIMIT ?
+    `).all(t, Math.max(1, Math.min(Number(limitSenders) || 2500, 10000)));
+
+    const jids = new Set();
+    for (const r of rows) {
+      if (r.senderJid && isUpgradeableSenderName(r.sender)) {
+        jids.add(r.senderJid);
+      }
+    }
+
+    let updated = 0;
+    for (const senderJid of jids) {
+      const name = this._lookupContactDirectoryName(key, t, senderJid);
+      if (!name) continue;
+      updated += this.backfillSenderName(senderJid, name);
+    }
+    if (updated > 0) console.log(`[DB] Backfilled sender name from contact directory on ${updated} message row(s)`);
     return updated;
   }
 
@@ -1720,7 +1781,8 @@ export default class Database {
 
   /**
    * When we learn a human-readable contact name (or resolved phone number) for a sender JID,
-   * backfill all messages where sender is a placeholder ("Contact (...)", bare LID digits, etc.).
+   * backfill all messages where sender is a placeholder or formatted phone ("Contact (...)",
+   * bare LID digits, "+91 9351552637", etc.) without ever overwriting an existing human name.
    */
   backfillSenderName(senderJids, newSenderName) {
     const name = String(newSenderName || '').trim();
@@ -1731,80 +1793,98 @@ export default class Database {
     if (!jids.length) return 0;
 
     const t = getCurrentTenantId();
-    const isHuman = isPlausibleHumanChatTitle(name) && !looksLikePhoneOnly(name);
+    const isHuman = isPlausibleHumanChatTitle(name) && !isUpgradeableSenderName(name);
     const ph = jids.map(() => '?').join(',');
 
-    let sql;
-    if (isHuman) {
-      sql = `UPDATE messages SET sender = ?
-             WHERE tenant_id = ?
-               AND sender_jid IN (${ph})
-               AND sender != 'You'
-               AND sender IS NOT ?
-               AND (
-                 sender IS NULL OR sender = ''
-                 OR sender LIKE 'Contact (%'
-                 OR sender GLOB '[0-9]*'
-                 OR sender GLOB '+*'
-                 OR LENGTH(sender) >= 12
-               )`;
-    } else {
-      sql = `UPDATE messages SET sender = ?
-             WHERE tenant_id = ?
-               AND sender_jid IN (${ph})
-               AND sender != 'You'
-               AND sender IS NOT ?
-               AND (
-                 sender IS NULL OR sender = ''
-                 OR sender LIKE 'Contact (%'
-                 OR (LENGTH(sender) >= 12 AND sender GLOB '[0-9]*')
-               )`;
+    const existingRows = this._db.prepare(`
+      SELECT DISTINCT sender FROM messages
+      WHERE tenant_id = ?
+        AND (
+          sender_jid IN (${ph})
+          OR (
+            (sender_jid IS NULL OR sender_jid = '')
+            AND chat_jid IN (${ph})
+            AND chat_jid NOT LIKE '%@g.us'
+            AND chat_jid != 'status@broadcast'
+            AND chat_jid NOT LIKE '%@imported'
+          )
+        )
+    `).all(t, ...jids, ...jids);
+
+    const targets = [];
+    for (const r of existingRows) {
+      const oldSender = r?.sender ?? null;
+      if (oldSender === 'You' || oldSender === name) continue;
+      if (isHuman ? isUpgradeableSenderName(oldSender) : isPlaceholderSenderName(oldSender)) {
+        targets.push(oldSender);
+      }
     }
-    const r = this._db.prepare(sql).run(name, t, ...jids, name);
-    return r.changes ?? 0;
+    if (!targets.length) return 0;
+
+    let changes = 0;
+    const updMatch = this._db.prepare(`
+      UPDATE messages SET sender = ?
+      WHERE tenant_id = ?
+        AND (
+          sender_jid IN (${ph})
+          OR (
+            (sender_jid IS NULL OR sender_jid = '')
+            AND chat_jid IN (${ph})
+            AND chat_jid NOT LIKE '%@g.us'
+            AND chat_jid != 'status@broadcast'
+            AND chat_jid NOT LIKE '%@imported'
+          )
+        )
+        AND sender IS ?
+    `);
+    const tx = this._db.transaction((list) => {
+      for (const oldSender of list) {
+        const res = updMatch.run(name, t, ...jids, ...jids, oldSender);
+        changes += res.changes ?? 0;
+      }
+    });
+    tx(targets);
+    return changes;
   }
 
   /**
-   * Returns distinct sender_jids that currently have placeholder sender names.
+   * Returns distinct sender_jids that currently have placeholder or phone-shaped sender names.
    */
   getDistinctPlaceholderSenderJids(chatJid = null, limit = 200) {
     const t = getCurrentTenantId();
-    const lim = Math.max(1, Math.min(Number(limit) || 200, 1000));
-    if (chatJid) {
-      return this._db.prepare(`
-        SELECT DISTINCT sender_jid AS senderJid
-        FROM messages
-        WHERE tenant_id = ?
-          AND chat_jid = ?
-          AND sender_jid IS NOT NULL
-          AND sender_jid != ''
-          AND sender != 'You'
-          AND (
-            sender IS NULL OR sender = ''
-            OR sender LIKE 'Contact (%'
-            OR (LENGTH(sender) >= 12 AND sender GLOB '[0-9]*')
-          )
-        LIMIT ?
-      `).all(t, chatJid, lim).map((r) => r.senderJid);
+    const lim = Math.max(1, Math.min(Number(limit) || 200, 2500));
+    const sql = chatJid
+      ? `SELECT DISTINCT
+           COALESCE(NULLIF(sender_jid, ''), CASE WHEN chat_jid NOT LIKE '%@g.us' AND chat_jid != 'status@broadcast' AND chat_jid NOT LIKE '%@imported' THEN chat_jid ELSE NULL END) AS senderJid,
+           sender
+         FROM messages
+         WHERE tenant_id = ?
+           AND chat_jid = ?
+           AND COALESCE(sender, '') != 'You'`
+      : `SELECT DISTINCT
+           COALESCE(NULLIF(sender_jid, ''), CASE WHEN chat_jid NOT LIKE '%@g.us' AND chat_jid != 'status@broadcast' AND chat_jid NOT LIKE '%@imported' THEN chat_jid ELSE NULL END) AS senderJid,
+           sender
+         FROM messages
+         WHERE tenant_id = ?
+           AND COALESCE(sender, '') != 'You'`;
+    const rows = chatJid
+      ? this._db.prepare(sql).all(t, chatJid)
+      : this._db.prepare(sql).all(t);
+
+    const out = [];
+    const seen = new Set();
+    for (const r of rows) {
+      if (!r?.senderJid || seen.has(r.senderJid)) continue;
+      if (!isUpgradeableSenderName(r.sender)) continue;
+      seen.add(r.senderJid);
+      out.push(r.senderJid);
+      if (out.length >= lim) break;
     }
-    return this._db.prepare(`
-      SELECT DISTINCT sender_jid AS senderJid
-      FROM messages
-      WHERE tenant_id = ?
-        AND sender_jid IS NOT NULL
-        AND sender_jid != ''
-        AND sender != 'You'
-        AND (
-          sender IS NULL OR sender = ''
-          OR sender LIKE 'Contact (%'
-          OR (LENGTH(sender) >= 12 AND sender GLOB '[0-9]*')
-        )
-      LIMIT ?
-    `).all(t, lim).map((r) => r.senderJid);
+    return out;
   }
 
   /**
-   * Check if SQLite already knows a human name for this sender from other messages or 1:1 chat.
+   * Check if SQLite (or contact_directory) already knows a human name for this sender JID.
    */
   getResolvedSenderForJid(senderJids) {
     const jids = (Array.isArray(senderJids) ? senderJids : [senderJids])
@@ -1815,64 +1895,59 @@ export default class Database {
     const ph = jids.map(() => '?').join(',');
 
     // 1. Check if another message with one of these sender_jids has a resolved human name
-    const msgRow = this._db.prepare(`
+    const msgRows = this._db.prepare(`
       SELECT sender FROM messages
       WHERE tenant_id = ?
         AND sender_jid IN (${ph})
         AND sender IS NOT NULL
         AND sender != 'You'
-        AND sender NOT LIKE 'Contact (%'
-        AND NOT (LENGTH(sender) >= 12 AND sender GLOB '[0-9]*')
-      LIMIT 1
-    `).get(t, ...jids);
-    if (msgRow?.sender && isPlausibleHumanChatTitle(msgRow.sender)) {
-      return msgRow.sender;
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 25
+    `).all(t, ...jids);
+    for (const msgRow of msgRows) {
+      if (msgRow?.sender && isPlausibleHumanChatTitle(msgRow.sender) && !isUpgradeableSenderName(msgRow.sender)) {
+        return msgRow.sender;
+      }
     }
 
-    // 2. Check 1:1 chat names for any of these JIDs
-    const chatRow = this._db.prepare(`
-      SELECT chat_name AS chatName FROM messages
+    // 2. Check 1:1 chat names for any of these JIDs (never pull group titles)
+    const chatRows = this._db.prepare(`
+      SELECT chat_name AS chatName, chat_jid AS chatJid FROM messages
       WHERE tenant_id = ?
         AND chat_jid IN (${ph})
+        AND chat_jid NOT LIKE '%@g.us'
         AND chat_name IS NOT NULL
-        AND chat_name NOT LIKE 'Contact (%'
-        AND NOT (LENGTH(chat_name) >= 12 AND chat_name GLOB '[0-9]*')
-      LIMIT 1
-    `).get(t, ...jids);
-    if (chatRow?.chatName && isPlausibleHumanChatTitle(chatRow.chatName)) {
-      return chatRow.chatName;
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 25
+    `).all(t, ...jids);
+    for (const chatRow of chatRows) {
+      if (chatRow?.chatName && isPlausibleHumanChatTitle(chatRow.chatName, chatRow.chatJid) && !isUpgradeableSenderName(chatRow.chatName)) {
+        return chatRow.chatName;
+      }
     }
 
     // 3. Check chat_roster
-    const rosterRow = this._db.prepare(`
-      SELECT chat_name AS chatName FROM chat_roster
+    const rosterRows = this._db.prepare(`
+      SELECT chat_name AS chatName, chat_jid AS chatJid FROM chat_roster
       WHERE tenant_id = ?
         AND chat_jid IN (${ph})
+        AND chat_jid NOT LIKE '%@g.us'
         AND chat_name IS NOT NULL
-        AND chat_name NOT LIKE 'Contact (%'
-      LIMIT 1
-    `).get(t, ...jids);
-    if (rosterRow?.chatName && isPlausibleHumanChatTitle(rosterRow.chatName)) {
-      return rosterRow.chatName;
+      ORDER BY updated_at DESC
+      LIMIT 10
+    `).all(t, ...jids);
+    for (const rosterRow of rosterRows) {
+      if (rosterRow?.chatName && isPlausibleHumanChatTitle(rosterRow.chatName, rosterRow.chatJid) && !isUpgradeableSenderName(rosterRow.chatName)) {
+        return rosterRow.chatName;
+      }
     }
 
-    // 4. Check contact_directory
+    // 4. Check encrypted contact_directory
     try {
       const key = deriveTenantContactKey(t);
       for (const jid of jids) {
-        const phone = normalizePhone(jid.split('@')[0]);
-        if (!phone) continue;
-        const h = hashPhone(phone, key);
-        const contactRow = this._db.prepare(`
-          SELECT display_name_enc FROM contact_directory
-          WHERE tenant_id = ? AND phone_hash = ?
-        `).get(t, h);
-        if (contactRow?.display_name_enc) {
-          const decrypted = decryptName(contactRow.display_name_enc, key);
-          if (decrypted && isPlausibleHumanChatTitle(decrypted)) {
-            return decrypted;
-          }
-        }
+        const hit = this._lookupContactDirectoryName(key, t, jid);
+        if (hit) return hit;
       }
     } catch (_) {}
 
@@ -2053,6 +2128,30 @@ export default class Database {
     return !String(row.mediaPath || '').trim();
   }
 
+  /** True when the row has a persisted Baileys download stub for media retry. */
+  hasMediaDownloadStub(messageId) {
+    const mid = String(messageId || '').trim();
+    if (!mid) return false;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(
+      'SELECT media_download_json AS stub FROM messages WHERE tenant_id = ? AND message_id = ? LIMIT 1',
+    ).get(t, mid);
+    return Boolean(row?.stub && String(row.stub).trim());
+  }
+
+  /** Clear local media_path for a specific row when the file is missing/broken on disk so Retry can re-download. */
+  clearMessageMediaPath(chatJid, messageId) {
+    const jid = String(chatJid || '').trim();
+    const mid = String(messageId || '').trim();
+    if (!jid || !mid) return 0;
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      UPDATE messages SET media_path = NULL
+      WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?
+        AND media_path IS NOT NULL AND trim(media_path) != ''
+    `).run(t, jid, mid).changes ?? 0;
+  }
+
   /**
    * Anchor for an on-demand phone history request that re-delivers the newest pending
    * media row with no stub (`fetchMessageHistory` returns messages *older* than the anchor).
@@ -2063,7 +2162,7 @@ export default class Database {
     if (!jid) return null;
     const t = getCurrentTenantId();
     const pending = this._db.prepare(`
-      SELECT timestamp FROM messages
+      SELECT id, timestamp FROM messages
       WHERE tenant_id = ? AND chat_jid = ?
         AND media_type IS NOT NULL AND trim(media_type) != ''
         AND (media_path IS NULL OR trim(media_path) = '')
@@ -2075,11 +2174,98 @@ export default class Database {
     const row = this._db.prepare(`
       SELECT message_id AS messageId, timestamp,
              CASE WHEN sender = 'You' THEN 1 ELSE 0 END AS fromMe
-      FROM messages WHERE tenant_id = ? AND chat_jid = ? AND timestamp > ?
+      FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+        AND (timestamp > ? OR (timestamp = ? AND id > ?))
       ORDER BY timestamp ASC, id ASC
       LIMIT 1
-    `).get(t, jid, pending.timestamp);
+    `).get(t, jid, pending.timestamp, pending.timestamp, pending.id);
     return row || null;
+  }
+
+  /**
+   * Anchor immediately after `messageId` so an on-demand phone history request
+   * (`fetchMessageHistory`, which returns messages strictly older than anchor) re-delivers `messageId`.
+   */
+  getHistoryAnchorForMessage(chatJid, messageId) {
+    const jid = String(chatJid || '').trim();
+    const mid = String(messageId || '').trim();
+    if (!jid || !mid) return null;
+    const t = getCurrentTenantId();
+    const target = this._db.prepare(`
+      SELECT id, timestamp FROM messages
+      WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?
+      LIMIT 1
+    `).get(t, jid, mid);
+    if (!target) return null;
+    const row = this._db.prepare(`
+      SELECT message_id AS messageId, timestamp,
+             CASE WHEN sender = 'You' THEN 1 ELSE 0 END AS fromMe
+      FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+        AND (timestamp > ? OR (timestamp = ? AND id > ?))
+      ORDER BY timestamp ASC, id ASC
+      LIMIT 1
+    `).get(t, jid, target.timestamp, target.timestamp, target.id);
+    return row || null;
+  }
+
+  /**
+   * Completeness metrics for live WhatsApp sync & media backfill (excludes @imported and low-priority feeds).
+   */
+  getSyncCompletenessStats() {
+    const t = getCurrentTenantId();
+    const liveFilter = `
+      chat_jid NOT LIKE '%@imported'
+      AND chat_jid != 'status@broadcast'
+      AND chat_jid NOT LIKE '%@broadcast'
+      AND chat_jid NOT LIKE '%@newsletter'
+      AND chat_jid NOT LIKE '%@bot'
+    `;
+    const chatsWithMessages = Number(this._db.prepare(`
+      SELECT COUNT(DISTINCT chat_jid) AS c
+      FROM messages
+      WHERE tenant_id = ? AND ${liveFilter}
+    `).get(t)?.c || 0);
+
+    let chatsAwaitingHistory = 0;
+    try {
+      chatsAwaitingHistory = Number(this._db.prepare(`
+        SELECT COUNT(*) AS c
+        FROM chat_roster r
+        WHERE r.tenant_id = ?
+          AND r.chat_jid NOT LIKE '%@imported'
+          AND r.chat_jid != 'status@broadcast'
+          AND r.chat_jid NOT LIKE '%@broadcast'
+          AND r.chat_jid NOT LIKE '%@newsletter'
+          AND r.chat_jid NOT LIKE '%@bot'
+          AND NOT EXISTS (
+            SELECT 1 FROM messages m
+            WHERE m.tenant_id = r.tenant_id AND m.chat_jid = r.chat_jid
+          )
+      `).get(t)?.c || 0);
+    } catch (_) {}
+
+    const mediaRow = this._db.prepare(`
+      SELECT
+        SUM(CASE WHEN media_download_json IS NOT NULL AND trim(media_download_json) != '' THEN 1 ELSE 0 END) AS withStub,
+        SUM(CASE WHEN media_download_json IS NULL OR trim(media_download_json) = '' THEN 1 ELSE 0 END) AS stubless
+      FROM messages
+      WHERE tenant_id = ?
+        AND ${liveFilter}
+        AND media_type IS NOT NULL AND trim(media_type) != ''
+        AND (media_path IS NULL OR trim(media_path) = '')
+    `).get(t);
+
+    const pendingMediaWithStub = Number(mediaRow?.withStub || 0);
+    const pendingMediaStubless = Number(mediaRow?.stubless || 0);
+    return {
+      chatsWithMessages,
+      chatsAwaitingHistory,
+      rosterTotal: chatsWithMessages + chatsAwaitingHistory,
+      pendingMediaWithStub,
+      pendingMediaStubless,
+    };
   }
 
   updateMessageMedia(messageId, mediaType, mediaPath) {
@@ -3367,8 +3553,8 @@ export default class Database {
     if (!messageId) return null;
     const t = getCurrentTenantId();
     return this._db.prepare(`
-      SELECT message_id AS messageId, media_path AS mediaPath, media_type AS mediaType,
-             text, media_caption AS mediaCaption
+      SELECT message_id AS messageId, chat_jid AS chatJid, media_path AS mediaPath,
+             media_type AS mediaType, text, media_caption AS mediaCaption
       FROM messages WHERE tenant_id = ? AND message_id = ?
     `).get(t, messageId);
   }

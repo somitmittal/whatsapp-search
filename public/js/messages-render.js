@@ -396,14 +396,16 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     const out = m.sender === 'You';
     const ts = d ? formatChatBubbleDateTime(d) : '';
     const ticks = out ? receiptTicksHtml(m.receiptStatus) : '';
+    const isDirectChat = !isGroup && jid !== 'status@broadcast' && !String(jid).endsWith('@imported');
+    const effectiveSenderJid = m.senderJid || (isDirectChat ? jid : '');
     let sender = '';
     if (!out && m.sender) {
-      const sjidAttr = m.senderJid ? ` data-sender-jid="${escAttr(m.senderJid)}"` : '';
+      const sjidAttr = effectiveSenderJid ? ` data-sender-jid="${escAttr(effectiveSenderJid)}"` : '';
       if (isGroup || jid === 'status@broadcast') {
         const colors = ['#1fa855','#6b46c1','#d93025','#1a73e8','#e8710a','#9334e6','#0d652d'];
         sender = `<div class="sender"${sjidAttr} style="color:${colors[hash(m.sender) % colors.length]}">${esc(m.sender)}</div>`;
       } else {
-        sender = `<div class="sender"${sjidAttr} style="color:#54656f">${esc(m.sender)}</div>`;
+        sender = `<div class="sender sender-direct"${sjidAttr}>${esc(m.sender)}</div>`;
       }
     }
     const cap = m.mediaCaption ? esc(m.mediaCaption) : '';
@@ -548,9 +550,11 @@ export function messagesPaintFingerprint(msgs, jid = '', focusMessageId = null) 
       m.messageId || '',
       m.text || '',
       m.sender || '',
+      m.senderJid || '',
       m.timestamp || '',
       m.mediaType || '',
       m.mediaPath || '',
+      m.hasMediaFile ? 1 : 0,
       m.mediaCaption || '',
       m.mediaPending ? 1 : 0,
       m.mediaUnavailable ? 1 : 0,
@@ -754,6 +758,42 @@ if (typeof document !== 'undefined') {
       _vnUpdate(note, audio);
     }, true);
   });
+
+  // Replace broken inline images/videos (e.g. missing/corrupt local file) with a clean
+  // "image unavailable" / "video unavailable" badge + Retry button rather than a broken icon.
+  document.addEventListener('error', (ev) => {
+    const media = ev.target;
+    if (!media || !media.classList) return;
+    const isImg = media.classList.contains('msg-media-img');
+    const isVid = media.classList.contains('msg-media-vid');
+    if (!isImg && !isVid) return;
+    if (media.closest?.('.chat-image-viewer')) return;
+    if (media.dataset.mediaErrorHandled === '1') return;
+    media.dataset.mediaErrorHandled = '1';
+
+    const wrap = media.closest?.('.media-wrap');
+    if (!wrap) return;
+    const block = media.closest?.('.msg-block[data-message-id]');
+    const mid = block?.getAttribute('data-message-id') || '';
+    const kindLabel = isVid ? 'video' : 'image';
+
+    const badge = document.createElement('span');
+    badge.className = 'media-badge media-unavailable';
+    badge.textContent = `${kindLabel} unavailable`;
+    if (mid) {
+      badge.appendChild(document.createTextNode(' '));
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'media-retry';
+      retryBtn.setAttribute('data-wa-media-retry', '');
+      retryBtn.setAttribute('data-message-id', mid);
+      retryBtn.textContent = 'Retry';
+      badge.appendChild(retryBtn);
+    }
+
+    wrap.querySelectorAll('.msg-media-actions').forEach((el) => el.remove());
+    media.replaceWith(badge);
+  }, true);
 }
 
 /**
@@ -762,8 +802,15 @@ if (typeof document !== 'undefined') {
  * @param {Array<{ senderJid: string, sender: string }>} updates
  */
 export function applyResolvedSenderNamesToDom(chatJid, updates) {
-  if (!Array.isArray(updates) || !updates.length) return;
+  if (typeof document === 'undefined' || !Array.isArray(updates) || !updates.length) return;
   const colors = ['#1fa855','#6b46c1','#d93025','#1a73e8','#e8710a','#9334e6','#0d652d'];
+  const updateSenderEl = (el, name) => {
+    el.textContent = name;
+    if (!el.classList.contains('sender-direct') && el.closest('.msg-block')?.classList.contains('in')) {
+      el.style.color = colors[hash(name) % colors.length];
+    }
+  };
+
   for (const u of updates) {
     const sjid = u?.senderJid;
     const name = u?.sender;
@@ -772,11 +819,71 @@ export function applyResolvedSenderNamesToDom(chatJid, updates) {
       const selector = `.sender[data-sender-jid="${CSS.escape(sjid)}"]`;
       const els = document.querySelectorAll(`#cv-messages ${selector}, #gpt-wa-view ${selector}`);
       for (const el of els) {
-        el.textContent = name;
-        if (el.closest('.bubble')?.parentElement?.classList.contains('in')) {
-          el.style.color = colors[hash(name) % colors.length];
-        }
+        updateSenderEl(el, name);
       }
     } catch (_) {}
   }
+
+  // Merged 1:1 chats can carry incoming rows with either the LID or PN sender_jid.
+  const isDirectChat = Boolean(
+    chatJid
+    && !String(chatJid).endsWith('@g.us')
+    && chatJid !== 'status@broadcast'
+    && !String(chatJid).endsWith('@broadcast')
+    && !String(chatJid).endsWith('@imported'),
+  );
+  if (isDirectChat && updates[0]?.sender) {
+    const directName = updates.find((u) => u?.sender)?.sender;
+    if (directName) {
+      const directEls = document.querySelectorAll(
+        '#cv-messages .msg-block.in .sender.sender-direct, #gpt-wa-view .msg-block.in .sender.sender-direct',
+      );
+      for (const el of directEls) {
+        updateSenderEl(el, directName);
+      }
+    }
+  }
+}
+
+export function senderNeedsResolution(sender) {
+  const s = typeof sender === 'string' ? sender.trim() : '';
+  if (!s || s === 'You') return false;
+  if (s.startsWith('Contact (') || s === 'Unknown' || s === '~') return true;
+  if (/^\d{7,20}$/.test(s)) return true;
+  if (/^\+?[\d\s().-]{7,}$/.test(s) && !/\p{L}/u.test(s)) return true;
+  return false;
+}
+
+export function formatMediaRetryNote(result) {
+  if (!result) return '';
+  if (result.imported) return 'Imported chat — media is not included in the export.';
+  if (result.history?.requested) {
+    return result.history.purpose === 'media_rehydrate'
+      ? 'Requested from phone — keep WhatsApp online; media will appear automatically.'
+      : 'Asked phone for older history — keep WhatsApp online.';
+  }
+  if (result.history?.error) return result.history.error;
+  if (!result.waConnected) return 'Connect WhatsApp in Settings → Linked Devices to download media.';
+  if ((result.mediaQueued || 0) > 0 || result.mediaInFlight) return 'Downloading media in background…';
+  if (!result.hasStub) return 'Older message has no newer anchor — try “Load older messages from phone” in chat menu.';
+  return 'Retry queued — media may take a moment or have expired on WhatsApp.';
+}
+
+export function showMediaRetryNote(container, messageId, result) {
+  if (!container || !messageId || !result) return;
+  const noteText = formatMediaRetryNote(result);
+  if (!noteText) return;
+  try {
+    const block = container.querySelector(`.msg-block[data-message-id="${CSS.escape(String(messageId))}"]`);
+    if (!block) return;
+    const wrap = block.querySelector('.media-wrap');
+    if (!wrap) return;
+    // Only attach a retry status note if media did not already finish rendering inline.
+    if (!wrap.querySelector('.media-badge')) return;
+    wrap.querySelectorAll('.media-retry-note').forEach((n) => n.remove());
+    const note = document.createElement('span');
+    note.className = 'media-retry-note';
+    note.textContent = noteText;
+    wrap.appendChild(note);
+  } catch (_) {}
 }

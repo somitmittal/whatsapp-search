@@ -173,3 +173,17 @@ export function isPlaceholderSenderName(s) {
   return false;
 }
 
+/**
+ * Returns true if a sender label is a placeholder OR a phone-shaped fallback
+ * (`+91 9351552637`, `+91∙∙∙∙∙∙∙∙01`, `919599814160`) that should be upgraded
+ * whenever a saved/push human contact name is available.
+ */
+export function isUpgradeableSenderName(s) {
+  if (isPlaceholderSenderName(s)) return true;
+  const t = String(s || '').trim();
+  if (looksLikeMaskedPhoneLabel(t)) return true;
+  if (looksLikePhoneDigitsOnly(t)) return true;
+  if (/^\+/.test(t) && !(/\p{L}/u.test(t)) && t.replace(/\D/g, '').length >= 7) return true;
+  return false;
+}
+

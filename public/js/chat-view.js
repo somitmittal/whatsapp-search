@@ -7,7 +7,18 @@ import { displayChatTitle, formatChatBubbleDateTime, formatDate, isResolvedChatN
 import { mediaDownloadUrl } from './media.js';
 import { activeChatHasLocalMessages } from './menus.js';
 import { openForwardOverlay, promptDeleteMessage } from './message-actions.js';
-import { applyResolvedSenderNamesToDom, buildChatMessagesHtml, closeReactionEmojiPickers, mediaIndexStateHtml, postWaReaction, renderMessages, toggleMessageMenu, toggleReactionEmojiPicker } from './messages-render.js';
+import {
+  applyResolvedSenderNamesToDom,
+  buildChatMessagesHtml,
+  closeReactionEmojiPickers,
+  mediaIndexStateHtml,
+  postWaReaction,
+  renderMessages,
+  senderNeedsResolution,
+  showMediaRetryNote,
+  toggleMessageMenu,
+  toggleReactionEmojiPicker,
+} from './messages-render.js';
 import { closeAllOverlays, setMobileChatOpen, switchPanel } from './overlays.js';
 import { clearSearch, openSearchAssistant } from './search.js';
 import { renderChatsFromState, setSidebarListTab, sidebarTabOf } from './sidebar.js';
@@ -191,13 +202,14 @@ function setCvTab(tab) {
   }
 }
 
+const _senderResolveAt = new Map();
 function triggerDeferredSenderResolution(jid, msgs) {
   if (!jid || !Array.isArray(msgs) || !msgs.length) return;
-  const hasPlaceholder = msgs.some((m) => {
-    const s = m?.sender;
-    return typeof s === 'string' && (s.startsWith('Contact (') || s === 'Unknown' || /^\d{10,20}$/.test(s));
-  });
-  if (!hasPlaceholder) return;
+  const hasUnresolved = msgs.some((m) => m && m.sender !== 'You' && (!m.sender || senderNeedsResolution(m.sender)));
+  if (!hasUnresolved) return;
+  const now = Date.now();
+  if (now - (_senderResolveAt.get(jid) || 0) < 25_000) return;
+  _senderResolveAt.set(jid, now);
   fetch(`/api/chats/${encodeURIComponent(jid)}/resolve-senders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -206,7 +218,7 @@ function triggerDeferredSenderResolution(jid, msgs) {
   })
     .then((r) => (r.ok ? r.json() : null))
     .then((data) => {
-      if (data?.updates && store.activeChat === jid) {
+      if (data?.updates?.length && store.activeChat === jid) {
         applyResolvedSenderNamesToDom(jid, data.updates);
       }
     })
@@ -416,6 +428,7 @@ export async function refreshActiveChatMessages() {
       ).then((r) => r.json());
       if (store.activeChat !== jid) return;
       renderMessages(msgs, jid, store.activeFocusMessageId);
+      triggerDeferredSenderResolution(jid, msgs);
     } catch {}
     return;
   }
@@ -424,6 +437,7 @@ export async function refreshActiveChatMessages() {
     const msgs = await fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${lim}&offset=0`).then((r) => r.json());
     if (store.activeChat !== jid) return;
     renderMessages(msgs, jid);
+    triggerDeferredSenderResolution(jid, msgs);
     const sorted = [...msgs].sort((a, b) => {
       const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
       const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
@@ -566,7 +580,9 @@ export function initChatView() {
     const mediaRetry = e.target.closest('[data-wa-media-retry]');
     if (mediaRetry) {
       e.stopPropagation();
-      if (!store.activeChat || mediaRetry.disabled) return;
+      const activeJid = store.activeChat;
+      if (!activeJid || mediaRetry.disabled) return;
+      const origText = mediaRetry.textContent || 'Retry';
       mediaRetry.disabled = true;
       mediaRetry.textContent = 'Retrying…';
       try {
@@ -576,11 +592,15 @@ export function initChatView() {
           || mediaRetry.closest('.msg-block')?.dataset?.messageId
           || null;
         // One message only — full-chat media pull is menu → “Load messages & media”.
-        await priorityLoadChat(store.activeChat, { alertResult: false, messageId: mid });
+        const result = await priorityLoadChat(activeJid, { alertResult: false, messageId: mid });
+        if (mid) showMediaRetryNote($('#cv-messages'), mid, result);
       } catch (err) {
-        mediaRetry.disabled = false;
-        mediaRetry.textContent = 'Retry';
         alert(err.message || 'Could not retry this download');
+      } finally {
+        if (mediaRetry.isConnected) {
+          mediaRetry.disabled = false;
+          mediaRetry.textContent = origText;
+        }
       }
       return;
     }

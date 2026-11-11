@@ -1,6 +1,6 @@
 import { parse } from 'cookie';
 import cookieParser from 'cookie-parser';
-import { existsSync, mkdirSync, readFileSync, renameSync, realpathSync, rmSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, realpathSync, rmSync, statSync, unlinkSync } from 'fs';
 import { createServer } from 'http';
 import { createRequire } from 'module';
 import { randomBytes } from 'node:crypto';
@@ -43,7 +43,7 @@ import {
   downloadFilenameForServedMedia,
 } from './media-filename.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
-import { isPlaceholderSenderName } from '../whatsapp/chat-display-name.js';
+import { isPlaceholderSenderName, isUpgradeableSenderName } from '../whatsapp/chat-display-name.js';
 import { PHONE_HISTORY_DEFAULT_COUNT } from '../whatsapp/history-sync-policy.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
@@ -106,7 +106,8 @@ function sanitizeClientMessage(m, isMediaQueued = null) {
   const o = { ...m };
   const rawPath = String(o.mediaPath || '').trim();
   const terminal = isTerminalMediaPath(rawPath);
-  const hadPath = !!(rawPath && !terminal);
+  const safePath = rawPath && !terminal ? assertPathUnderMediaRoot(rawPath) : null;
+  const hadPath = Boolean(safePath);
   if (hadPath) o.hasMediaFile = true;
   if (isMediaUnavailablePath(rawPath)) o.mediaUnavailable = true;
   if (isMediaTooLargePath(rawPath)) o.mediaTooLarge = true;
@@ -174,6 +175,8 @@ function assertPathUnderMediaRoot(absFilePath) {
     const rel = relative(root, file);
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
     if (!existsSync(file)) return null;
+    const st = statSync(file);
+    if (!st.isFile() || st.size <= 0) return null;
     return file;
   } catch {
     return null;
@@ -241,6 +244,7 @@ export default class WebServer {
      */
     this._tenantState = new Map();
     this._chatNameBroadcastTimers = new Map();
+    this._senderResolveCooldown = new Map();
 
     /** @type {Map<string, { ts: number, onboarding: boolean }>} */
     this._gmailOAuthState = new Map();
@@ -584,6 +588,143 @@ export default class WebServer {
     return stats;
   }
 
+  _getCachedSyncCompleteness(tenantId, { force = false } = {}) {
+    const st = this._getTenantState(tenantId);
+    const now = Date.now();
+    const ttl = this.isTenantWaHistoryBusy(tenantId) ? 2500 : 1500;
+    if (!force && st._syncCompCache && now - (st._syncCompCacheAt || 0) < ttl) {
+      return st._syncCompCache;
+    }
+    let comp = {
+      chatsWithMessages: 0,
+      chatsAwaitingHistory: 0,
+      rosterTotal: 0,
+      pendingMediaWithStub: 0,
+      pendingMediaStubless: 0,
+    };
+    try {
+      comp = runWithTenant(tenantId, () => this.db.getSyncCompletenessStats());
+    } catch (_) {}
+    st._syncCompCache = comp;
+    st._syncCompCacheAt = now;
+    return comp;
+  }
+
+  _buildSyncStatus(tenantId, { forceComp = false } = {}) {
+    const tid = tenantId || LEGACY_TENANT_ID;
+    const st = this._getTenantState(tid);
+    const wa = st.waClient;
+    const isHistoryBusy = this.isTenantWaHistoryBusy(tid);
+    const phoneHistoryInflight = Boolean(
+      typeof wa?.isPhoneHistoryInflight === 'function'
+        ? wa.isPhoneHistoryInflight()
+        : wa?._phoneHistory?.inflight,
+    );
+    const mediaDraining = Boolean(
+      typeof wa?.isMediaDraining === 'function'
+        ? wa.isMediaDraining()
+        : wa?._mediaDraining,
+    );
+    const activeHistorySync = Boolean(
+      st.waState === 'SYNCING'
+      || st.syncStats?.syncing
+      || (wa?.isInitialHistorySync === true)
+      || (isHistoryBusy && !phoneHistoryInflight),
+    );
+    const syncing = Boolean(activeHistorySync || phoneHistoryInflight || mediaDraining);
+
+    const authDir = join(config.dataDir, 'tenants', tid, '.baileys_auth');
+    const waConfigured = Boolean(
+      existsSync(join(authDir, 'creds.json'))
+      || st.waState === 'READY'
+      || st.waState === 'SYNCING',
+    );
+    let initialHistorySyncDone = false;
+    if (wa && typeof wa.isInitialHistorySyncDone === 'function') {
+      initialHistorySyncDone = Boolean(wa.isInitialHistorySyncDone());
+    } else {
+      try {
+        const cfgFile = join(config.dataDir, 'tenants', tid, 'wa-config.json');
+        if (existsSync(cfgFile)) {
+          initialHistorySyncDone = Boolean(JSON.parse(readFileSync(cfgFile, 'utf8'))?.initialHistorySyncDone);
+        }
+      } catch (_) {}
+    }
+
+    const comp = this._getCachedSyncCompleteness(tid, { force: forceComp });
+    const pendingMedia = (comp.pendingMediaWithStub || 0) + (comp.pendingMediaStubless || 0);
+    const hasIncompleteHistory = !initialHistorySyncDone || comp.chatsAwaitingHistory > 0;
+    const hasIncompleteMedia = pendingMedia > 0;
+    const incomplete = Boolean(
+      !syncing
+      && waConfigured
+      && st.waState !== 'QR_READY'
+      && (hasIncompleteHistory || hasIncompleteMedia),
+    );
+
+    const messages = st.syncStats?.totalMessages || 0;
+    let progress = st.syncStats?.progress ?? null;
+    if (!activeHistorySync && phoneHistoryInflight) {
+      progress = null;
+    } else if (incomplete && (progress == null || progress >= 100)) {
+      if (comp.rosterTotal > 0 && comp.chatsAwaitingHistory > 0) {
+        progress = Math.min(99, Math.round((comp.chatsWithMessages / comp.rosterTotal) * 100));
+      } else {
+        progress = null;
+      }
+    }
+
+    let label = null;
+    if (activeHistorySync) {
+      if (progress != null && progress > 0 && progress < 100) {
+        label = `Syncing WhatsApp chats… ${progress}%`;
+      } else if (messages > 0) {
+        label = `Syncing… ${messages.toLocaleString()} msgs`;
+      } else {
+        label = 'Syncing chats & history…';
+      }
+    } else if (phoneHistoryInflight) {
+      label = 'Pulling older messages from phone…';
+    } else if (mediaDraining) {
+      label = comp.pendingMediaWithStub > 0
+        ? `Downloading media… (${comp.pendingMediaWithStub} remaining)`
+        : 'Downloading WhatsApp media…';
+    } else if (incomplete) {
+      if (!initialHistorySyncDone) {
+        if (st.waState === 'DISCONNECTED' || st.waState === 'LOADING') {
+          label = 'Connecting to resume WhatsApp history sync…';
+        } else if (comp.chatsAwaitingHistory > 0) {
+          label = `Sync incomplete · ${comp.chatsAwaitingHistory} chat${comp.chatsAwaitingHistory === 1 ? '' : 's'} awaiting history`;
+        } else {
+          label = 'WhatsApp history sync incomplete — open a chat to pull older messages';
+        }
+      } else if (comp.chatsAwaitingHistory > 0 && pendingMedia > 0) {
+        label = `Sync incomplete · ${comp.chatsAwaitingHistory} chats awaiting history · ${pendingMedia} media pending`;
+      } else if (comp.chatsAwaitingHistory > 0) {
+        label = `Sync incomplete · ${comp.chatsAwaitingHistory} chat${comp.chatsAwaitingHistory === 1 ? '' : 's'} awaiting older history`;
+      } else if (comp.pendingMediaStubless > 0) {
+        label = `Older history incomplete · ${comp.pendingMediaStubless} media awaiting phone history`;
+      } else if (comp.pendingMediaWithStub > 0) {
+        label = `Media sync incomplete · ${comp.pendingMediaWithStub} item${comp.pendingMediaWithStub === 1 ? '' : 's'} pending`;
+      }
+    }
+
+    return {
+      syncing,
+      incomplete,
+      activeHistorySync,
+      phoneHistoryInflight,
+      mediaDraining,
+      initialHistorySyncDone,
+      waConfigured,
+      progress,
+      messages,
+      label,
+      chatsAwaitingHistory: comp.chatsAwaitingHistory,
+      pendingMedia,
+    };
+  }
+
   _originPolicy(req) {
     return {
       isPublicInternet: this._isPublicInternetDeploy(),
@@ -764,18 +905,12 @@ export default class WebServer {
           runWithTenant(tid, () => this._expenseReconciliationService?.recoverPending?.(tid));
         }
         const stats = this._getCachedTotalStats(tid);
+        st._syncCompCache = null;
         this._broadcast({
           type: 'wa-status',
           data: {
             state, message, stats,
-            // Keep the client's "chats are syncing" affordances honest: the UI is
-            // promoted to READY after the first history batch, while the initial
-            // history may still stream for minutes. UI state alone is not enough.
-            sync: {
-              syncing: state === 'SYNCING' || this.isTenantWaHistoryBusy(tid),
-              progress: st.syncStats?.progress ?? null,
-              messages: st.syncStats?.totalMessages || 0,
-            },
+            sync: this._buildSyncStatus(tid, { forceComp: true }),
           },
         }, tid);
       },
@@ -786,10 +921,35 @@ export default class WebServer {
           totalMessages: messages,
           progress,
         };
-        this._broadcast({ type: 'sync-progress', data: { completed, total, messages, progress, done } }, tid);
+        st._syncCompCache = null;
+        this._broadcast({
+          type: 'sync-progress',
+          data: {
+            completed,
+            total,
+            messages,
+            progress,
+            done,
+            sync: this._buildSyncStatus(tid, { forceComp: done }),
+          },
+        }, tid);
+      },
+      onSyncActivityChange: () => {
+        st._syncCompCache = null;
+        const stats = this._getCachedTotalStats(tid);
+        this._broadcast({
+          type: 'wa-status',
+          data: {
+            state: st.waState,
+            message: st.waMessage,
+            stats,
+            sync: this._buildSyncStatus(tid, { forceComp: true }),
+          },
+        }, tid);
       },
       onChatsPreview: (preview) => {
         if (Array.isArray(preview) && preview.length) {
+          st._syncCompCache = null;
           // Persist the roster: previews are the only place we learn about chats that
           // have no messages yet, and browser-side rows are dropped by the next
           // refreshDash() since /api/chats is rebuilt from the messages table.
@@ -831,13 +991,26 @@ export default class WebServer {
         this._scheduleChatNamesBroadcast(tid);
       },
       onResolvedSenderName: (jid, name) => {
-        runWithTenant(tid, () => {
+        if (!jid || !name) return;
+        runWithTenant(tid, async () => {
           try {
-            const updated = this.db.backfillSenderName(jid, name);
-            if (updated > 0) {
+            let targets = [jid];
+            if (typeof waClient.getLinked1on1Jids === 'function') {
+              try {
+                const linked = await waClient.getLinked1on1Jids(jid);
+                if (linked?.length) targets = [...new Set([jid, ...linked])];
+              } catch (_) {}
+            }
+            const updated = this.db.backfillSenderName(targets, name);
+            if (updated > 0 || !isUpgradeableSenderName(name)) {
+              const updates = targets.map((tJid) => ({
+                senderJid: tJid,
+                sender: name,
+                changed: updated,
+              }));
               this._broadcast({
                 type: 'sender-names-resolved',
-                data: { updates: [{ senderJid: jid, sender: name, changed: updated }] },
+                data: { updates },
               }, tid);
             }
           } catch (e) {
@@ -861,6 +1034,7 @@ export default class WebServer {
             }
           }
           if (inserted > 0) {
+            st._syncCompCache = null;
             if (!historyBusy || inserted >= 200) {
               console.log(`[WA] Tenant ${tid} saved ${inserted} new messages`);
             }
@@ -911,6 +1085,7 @@ export default class WebServer {
       },
       onDisconnected: () => console.log(`[WA] Tenant ${tid} connection closed`),
       onMediaPath: (messageId, mediaPath) => {
+        st._syncCompCache = null;
         runWithTenant(tid, () => {
           this.db.updateMessageMediaPath(messageId, mediaPath);
           const chatJid = this.db.getMessageChatJid(messageId);
@@ -981,6 +1156,7 @@ export default class WebServer {
       onClaimMediaDownload: (messageId) => runWithTenant(tid, () => this.db.claimMediaDownload(messageId)),
       onReleaseMediaDownloadClaim: (messageId) => runWithTenant(tid, () => this.db.releaseMediaDownloadClaim(messageId)),
       onMediaSettled: (messageId) => {
+        st._syncCompCache = null;
         runWithTenant(tid, () => {
           const chatJid = this.db.getMessageChatJid(messageId);
           this._broadcast(
@@ -1194,7 +1370,12 @@ export default class WebServer {
         });
         this._sendTo(ws, {
           type: 'wa-status',
-          data: { state: st.waState, message: st.waMessage, stats: this.db.getTotalStats() },
+          data: {
+            state: st.waState,
+            message: st.waMessage,
+            stats: this.db.getTotalStats(),
+            sync: this._buildSyncStatus(ws.tenantId, { forceComp: true }),
+          },
         });
         const qr = this._currentQr(st);
         if (qr) {
@@ -1609,20 +1790,78 @@ export default class WebServer {
           }
         }
         const sanitized = sanitizeMessageList(rows, isQueued);
-        if (wa) {
-          let hasPlaceholder = false;
-          for (const m of sanitized) {
-            if (m.senderJid && m.sender && isPlaceholderSenderName(m.sender)) {
-              const fast = wa.getSenderDisplayNameFast(m.senderJid);
-              if (fast && !isPlaceholderSenderName(fast)) {
-                m.sender = fast;
-              } else {
-                hasPlaceholder = true;
-              }
+        const tid = getCurrentTenantId();
+        const is1on1Chat = !chatJid.endsWith('@g.us')
+          && chatJid !== 'status@broadcast'
+          && !chatJid.endsWith('@imported');
+        const memoResolved = new Map();
+        let needsBgResolve = false;
+
+        for (const m of sanitized) {
+          if (m.sender === 'You') continue;
+          const needsResolve = !m.sender || isUpgradeableSenderName(m.sender);
+          if (!needsResolve) continue;
+          const lookupJid = m.senderJid || (is1on1Chat ? (m.chatJid || chatJid) : null);
+          if (!lookupJid) continue;
+
+          if (memoResolved.has(lookupJid)) {
+            const cachedHit = memoResolved.get(lookupJid);
+            if (cachedHit) {
+              m.sender = cachedHit;
+              if (!m.senderJid) m.senderJid = lookupJid;
+            }
+            if (!cachedHit || isUpgradeableSenderName(cachedHit)) {
+              needsBgResolve = true;
+            }
+            continue;
+          }
+
+          let resolved = null;
+          if (wa && typeof wa.getSenderDisplayNameFast === 'function') {
+            const fast = wa.getSenderDisplayNameFast(lookupJid);
+            if (fast && !isUpgradeableSenderName(fast)) {
+              resolved = fast;
+            } else if (fast && !isPlaceholderSenderName(fast) && isPlaceholderSenderName(m.sender)) {
+              resolved = fast;
             }
           }
-          if (hasPlaceholder) {
-            const tid = getCurrentTenantId();
+          if (!resolved || isUpgradeableSenderName(resolved)) {
+            const stripped = lookupJid.replace(/:[^@]+@/, '@');
+            const candSet = new Set([lookupJid, stripped]);
+            if (is1on1Chat) {
+              for (const u of unique) candSet.add(u);
+            }
+            if (wa && typeof wa._collectKnownLinkedJids === 'function') {
+              try {
+                for (const l of wa._collectKnownLinkedJids(stripped) || []) candSet.add(l);
+              } catch (_) {}
+            }
+            const dbHit = this.db.getResolvedSenderForJid([...candSet]);
+            if (dbHit && !isUpgradeableSenderName(dbHit)) {
+              resolved = dbHit;
+            }
+          }
+
+          memoResolved.set(lookupJid, resolved);
+          if (resolved) {
+            if (!m.sender || isUpgradeableSenderName(m.sender)) {
+              m.sender = resolved;
+            }
+            if (!m.senderJid) m.senderJid = lookupJid;
+            if (!isUpgradeableSenderName(resolved)) {
+              try { this.db.backfillSenderName(lookupJid, resolved); } catch (_) {}
+            }
+          }
+          if (!resolved || isUpgradeableSenderName(resolved)) {
+            needsBgResolve = true;
+          }
+        }
+
+        if (wa && needsBgResolve && typeof wa.resolveChatSenders === 'function') {
+          const cooldownKey = `${tid}:${chatJid}`;
+          const lastAt = this._senderResolveCooldown.get(cooldownKey) || 0;
+          if (Date.now() - lastAt >= 30_000) {
+            this._senderResolveCooldown.set(cooldownKey, Date.now());
             setImmediate(async () => {
               try {
                 await runWithTenant(tid, async () => {
@@ -1675,12 +1914,21 @@ export default class WebServer {
     this._app.get('/api/message-media', async (req, res) => {
       try {
         const messageId = String(req.query.messageId || '').trim();
-        if (!messageId) return res.status(400).json({ error: 'messageId is required' });
+        if (!messageId) {
+          res.setHeader('Cache-Control', 'no-store');
+          return res.status(400).json({ error: 'messageId is required' });
+        }
         const row = this.db.getMessageMediaRecord(messageId);
         const rawPath = row?.mediaPath ? String(row.mediaPath).trim() : '';
-        if (!rawPath) return res.status(404).json({ error: 'No media for this message' });
+        if (!rawPath) {
+          res.setHeader('Cache-Control', 'no-store');
+          return res.status(404).json({ error: 'No media for this message' });
+        }
         const safe = assertPathUnderMediaRoot(rawPath);
-        if (!safe) return res.status(403).json({ error: 'Invalid media path' });
+        if (!safe) {
+          res.setHeader('Cache-Control', 'no-store');
+          return res.status(403).json({ error: 'Invalid media path' });
+        }
         const q = req.query || {};
         const wantDownload =
           q.download === '1' ||
@@ -1710,7 +1958,7 @@ export default class WebServer {
           : servedType;
         res.setHeader('Content-Type', finalContentType);
         res.setHeader('X-Content-Type-Options', 'nosniff');
-        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.setHeader('Cache-Control', 'private, no-cache');
         if (wantDownload) {
           // Phones pick the handler from the filename extension, so it must match
           // the bytes actually served — a transcode of `<id>.mp4`/`<id>.ogg` is an
@@ -1727,9 +1975,17 @@ export default class WebServer {
           // Inline so the chat PDF <iframe> renders instead of prompting download.
           res.setHeader('Content-Disposition', `inline; filename="${fname}"`);
         }
-        return res.sendFile(servePath, { dotfiles: 'allow' });
+        return res.sendFile(servePath, { dotfiles: 'allow' }, (err) => {
+          if (err && !res.headersSent) {
+            res.setHeader('Cache-Control', 'no-store');
+            res.status(404).json({ error: 'Media file missing' });
+          }
+        });
       } catch (err) {
-        return res.status(500).json({ error: err.message });
+        if (!res.headersSent) {
+          res.setHeader('Cache-Control', 'no-store');
+          return res.status(500).json({ error: err.message });
+        }
       }
     });
 
@@ -1813,50 +2069,79 @@ export default class WebServer {
         const allowPhoneReupload = hasExplicitReupload
           ? Boolean(req.body?.allowPhoneReupload)
           : (!recentOnly || Boolean(messageId));
+        let targetChatJid = chatJid;
+        if (messageId) {
+          const rec = this.db.getMessageMediaRecord(messageId);
+          if (rec?.chatJid) targetChatJid = rec.chatJid;
+          const rawPath = String(rec?.mediaPath || '').trim();
+          if (rawPath && !isTerminalMediaPath(rawPath) && !assertPathUnderMediaRoot(rawPath)) {
+            this.db.clearMessageMediaPath(targetChatJid, messageId);
+          }
+        }
+        const hasStub = messageId ? Boolean(this.db.hasMediaDownloadStub?.(messageId)) : true;
         let mediaQueued = 0;
         if (wa && typeof wa.prioritizeChatMedia === 'function' && !imported) {
-          // Soft open used to mark expired CDN 404s as permanent; clear those so Retry
-          // / Load messages can ask the phone and download images that still exist.
-          if (allowPhoneReupload && typeof this.db.clearUnavailableMediaPaths === 'function') {
-            this.db.clearUnavailableMediaPaths(chatJid, messageId);
+          let jidsToPrioritize = [targetChatJid];
+          if (!messageId && typeof wa.getLinked1on1Jids === 'function') {
+            try {
+              const linked = await wa.getLinked1on1Jids(targetChatJid);
+              if (Array.isArray(linked) && linked.length) {
+                jidsToPrioritize = [...new Set([targetChatJid, ...linked].filter(Boolean))];
+              }
+            } catch (_) {}
           }
-          mediaQueued = Number(
-            wa.prioritizeChatMedia(chatJid, {
-              messageId,
-              recentOnly: recentOnly && !messageId,
-              // Explicit Retry / Load may re-upload; soft open-chat pass should not ping phone unless requested.
-              allowPhoneReupload,
-            })?.queuedForChat || 0,
-          );
+          for (const j of jidsToPrioritize) {
+            // Soft open used to mark expired CDN 404s as permanent; clear those so Retry
+            // / Load messages can ask the phone and download images that still exist.
+            if (allowPhoneReupload && typeof this.db.clearUnavailableMediaPaths === 'function') {
+              this.db.clearUnavailableMediaPaths(j, messageId);
+            }
+            mediaQueued += Number(
+              wa.prioritizeChatMedia(j, {
+                messageId,
+                recentOnly: recentOnly && !messageId,
+                // Explicit Retry / Load may re-upload; soft open-chat pass should not ping phone unless requested.
+                allowPhoneReupload,
+              })?.queuedForChat || 0,
+            );
+          }
         }
+        const mediaInFlight = Boolean(messageId && typeof wa?.isMediaQueued === 'function' && wa.isMediaQueued(messageId));
 
-        // Quiet by default: Refresh / media-retry only reshuffle local queues.
-        // Explicit Load older (or requestHistory) is what hits the phone.
-        let history = { requested: false, skipped: requestHistory ? undefined : 'refresh_local_only' };
-        if (
-          requestHistory
+        // Explicit Retry on a stubless message automatically falls back to on-demand
+        // phone history sync when WhatsApp is READY so the missing stub can be rehydrated.
+        const shouldTryPdo = Boolean(
+          (requestHistory || (messageId && !hasStub && !mediaQueued && !mediaInFlight))
           && !imported
           && wa
           && typeof wa.fetchOlderHistoryFromPhone === 'function'
-          && st.waState === 'READY'
-        ) {
-          const guard = wa.canFetchPhoneHistory?.(chatJid);
+          && st.waState === 'READY',
+        );
+        let history = { requested: false, skipped: shouldTryPdo ? undefined : 'refresh_local_only' };
+        if (shouldTryPdo) {
+          const guard = wa.canFetchPhoneHistory?.(targetChatJid);
           if (!guard || guard.ok) {
-            const mediaAnchor = this.db.getHistoryAnchorForStublessPendingMedia(chatJid);
-            const anchorRow = mediaAnchor || this.db.getOldestMessageAnchor(chatJid);
+            const targetMediaAnchor = messageId && !hasStub
+              ? (this.db.getHistoryAnchorForMessage?.(targetChatJid, messageId)
+                || this.db.getHistoryAnchorForStublessPendingMedia(targetChatJid))
+              : this.db.getHistoryAnchorForStublessPendingMedia(targetChatJid);
+            const anchorRow = targetMediaAnchor || (requestHistory ? this.db.getOldestMessageAnchor(targetChatJid) : null);
             if (anchorRow?.messageId) {
               try {
-                const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid, ...anchorRow }, count);
+                const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid: targetChatJid, ...anchorRow }, count);
+                st._syncCompCache = null;
                 history = {
                   requested: true,
                   requestId: requestId ?? null,
-                  purpose: mediaAnchor ? 'media_rehydrate' : 'older_archive',
+                  purpose: targetMediaAnchor ? 'media_rehydrate' : 'older_archive',
                 };
               } catch (err) {
-                history = { requested: false, error: err.message || String(err) };
+                history = { requested: false, error: err.message || String(err), code: err.code };
               }
             } else {
-              history = { requested: false, error: 'no_anchor' };
+              history = requestHistory
+                ? { requested: false, error: 'no_anchor' }
+                : { requested: false, skipped: 'no_newer_anchor' };
             }
           } else {
             history = { requested: false, error: guard.message, code: guard.code };
@@ -1878,6 +2163,10 @@ export default class WebServer {
           chatJid,
           imported,
           mediaQueued,
+          mediaInFlight,
+          hasStub,
+          waState: st.waState,
+          waConnected: Boolean(wa && st.waState === 'READY'),
           history,
         });
       } catch (err) {
@@ -2395,6 +2684,19 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const contacts = req.body?.contacts;
         if (!Array.isArray(contacts)) return res.status(400).json({ error: 'contacts array required' });
         const out = this.db.syncContactDirectory(contacts);
+        const tid = getCurrentTenantId();
+        if (out.updatedChats > 0 || out.updatedSenders > 0) {
+          this._broadcast({
+            type: 'chat-names-refreshed',
+            data: { stats: this._getCachedTotalStats(tid, { force: true }), ...out },
+          }, tid);
+        }
+        if (out.updatedSenders > 0) {
+          this._broadcast({
+            type: 'sender-names-resolved',
+            data: { refreshActive: true, updatedSenders: out.updatedSenders },
+          }, tid);
+        }
         return res.json({ ok: true, ...out });
       } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -2405,16 +2707,11 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     this._app.get('/api/wa/status', (_req, res) => {
       const tid = getCurrentTenantId();
       const st = this._getTenantState(tid);
-      const isHistoryBusy = this.isTenantWaHistoryBusy(tid);
       res.json({
         state: st.waState,
         message: st.waMessage,
         hasQr: !!this._currentQr(st),
-        sync: {
-          syncing: Boolean(st.syncStats.syncing || isHistoryBusy),
-          progress: st.syncStats.progress ?? null,
-          messages: st.syncStats.totalMessages || 0,
-        },
+        sync: this._buildSyncStatus(tid),
       });
     });
 
@@ -2526,7 +2823,16 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         st.waState = 'DISCONNECTED';
         st.waMessage = 'Logged out — rescan QR to reconnect';
         st.extensionConnected = false;
-        this._broadcast({ type: 'wa-status', data: { state: st.waState, message: st.waMessage, stats: this.db.getTotalStats() } }, tid);
+        st._syncCompCache = null;
+        this._broadcast({
+          type: 'wa-status',
+          data: {
+            state: st.waState,
+            message: st.waMessage,
+            stats: this.db.getTotalStats(),
+            sync: this._buildSyncStatus(tid, { forceComp: true }),
+          },
+        }, tid);
         res.json({ ok: true });
       } catch (err) {
         res.status(500).json({ error: err.message });
@@ -2570,6 +2876,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           st.contactSyncPromise = runWithTenant(tid, async () => {
             const rowsUpdated = await st.waClient.refreshPhoneBookNamesInDb(this.db);
             this._broadcast({ type: 'chat-names-refreshed', data: { stats: this.db.getTotalStats(), rowsUpdated } }, tid);
+            if (rowsUpdated > 0) {
+              this._broadcast({ type: 'sender-names-resolved', data: { refreshActive: true, rowsUpdated } }, tid);
+            }
             return rowsUpdated;
           }).finally(() => { st.contactSyncPromise = null; });
         }
@@ -2611,6 +2920,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           });
         }
         const requestId = await wa.fetchOlderHistoryFromPhone({ chatJid, ...anchorRow }, count);
+        st._syncCompCache = null;
 
         // Same priority path as open-chat / “Load messages & media”: put this chat first
         // so pending media + media on the arriving history batch download before other chats.

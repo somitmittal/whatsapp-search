@@ -25,10 +25,12 @@ import {
     isPlausibleHumanChatTitle,
     isPlaceholderSenderName,
     isResolvedHumanChatTitle,
+    isUpgradeableSenderName,
     looksLikeLidFallbackContactLabel,
     looksLikeMaskedPhoneLabel,
     looksLikeOpaqueNumericId,
     looksLikePhoneDigitsOnly,
+    looksLikeUnusableChatTitle,
     looksLikeUrlOrSocialJunk,
     pickBetterChatTitle,
     sanitizePeerSenderName,
@@ -40,6 +42,7 @@ import {
   evaluatePhoneHistoryQuota,
   filterRowsByRetention,
   fullHistoryBackoffSec,
+  HISTORY_SYNC_TYPE_ON_DEMAND,
   PHONE_HISTORY_DEFAULT_COUNT,
   PHONE_HISTORY_INFLIGHT_MS,
   shouldSyncHistoryMessage,
@@ -212,7 +215,7 @@ function replaceLidPlaceholderWithPn(canonJid, chatName) {
 export default class WaClient {
   constructor({
     authDir, configFile, onQr, onReady, onMessages, onChatsPreview, onHistorySyncComplete,
-    onStatus, onProgress, onSearchQuery, onDisconnected, onMediaPath, onReaction,
+    onStatus, onProgress, onSyncActivityChange, onSearchQuery, onDisconnected, onMediaPath, onReaction,
     onResolvedDisplayName, onResolvedSenderName, onUnreadCounts, onMessageRevoked, onMessageEdited,
     onChatAvatar, onMessageReceipt, onLoadPendingMediaStubs, onLoadDeferredLargeVideos, onClearDeferredVideoPath, onMediaNeedsDownload, onMediaSettled,
     onClaimMediaDownload, onReleaseMediaDownloadClaim,
@@ -226,6 +229,7 @@ export default class WaClient {
     this._onHistorySyncComplete = onHistorySyncComplete;
     this._onStatus      = onStatus;
     this._onProgress    = onProgress;
+    this._onSyncActivityChange = onSyncActivityChange;
     this._onSearchQuery = onSearchQuery;
     this._onDisconnected = onDisconnected;
     this._onMediaPath   = onMediaPath;
@@ -259,6 +263,7 @@ export default class WaClient {
     this._chatNames     = new Map();   // jid → display name
     this._lidToPn       = new Map();   // lid jid -> pn jid
     this._pnToLid       = new Map();   // pn jid -> lid jid
+    this._groupMetaFetchedAt = new Map(); // group jid -> ms timestamp
     this._preloadLidMappingsFromAuthDir();
     /** Messages received per chat during current history sync (for UI progress). */
     this._syncByChat    = new Map();
@@ -291,6 +296,8 @@ export default class WaClient {
     this._priorityMediaChatJids = [];
     /** Chats that may ask the phone to re-upload expired CDN media (explicit Retry / Load). */
     this._phoneReuploadChatJids = new Set();
+    /** Individual messages explicitly retried by the user (always eligible for phone re-upload). */
+    this._retryMediaIds = new Set();
     /** In-memory queue/in-flight set for UI `isMediaQueued` + cheap enqueue dedupe. */
     this._queuedMediaIds = new Set();
     this._mediaDraining = false;
@@ -324,6 +331,28 @@ export default class WaClient {
   /** True while saved credentials exist, i.e. we are reconnecting rather than pairing. */
   get hasSavedCreds() {
     return existsSync(join(this._authDir, 'creds.json'));
+  }
+
+  isInitialHistorySyncDone() {
+    return Boolean(loadCfg(this._configFile).initialHistorySyncDone);
+  }
+
+  isMediaDraining() {
+    return Boolean(this._mediaDraining || this._mediaQueueLength() > 0);
+  }
+
+  isPhoneHistoryInflight() {
+    const state = this._phoneHistory;
+    if (!state?.inflight) return false;
+    if (Date.now() >= state.inflight.until) {
+      state.inflight = null;
+      return false;
+    }
+    return true;
+  }
+
+  _notifySyncActivity() {
+    try { this._onSyncActivityChange?.(); } catch (_) {}
   }
 
   _clearInitialHistorySyncFlag() {
@@ -968,8 +997,10 @@ export default class WaClient {
     clearTimeout(this._syncDoneTimer);
     clearTimeout(this._reconnectTimer);
     clearTimeout(this._historyRetryTimer);
+    clearTimeout(this._phoneInflightTimer);
     this._reconnectTimer = null;
     this._historyRetryTimer = null;
+    this._phoneInflightTimer = null;
     for (const queue of this._mediaQueues.values()) queue.length = 0;
     this._queuedMediaIds.clear();
     try { this._sock?.end?.(new Error('destroy')); } catch {}
@@ -1209,7 +1240,7 @@ export default class WaClient {
         }
         // Titles first: publish a named chat list before messages stream in. Deliberately
         // not awaited — history ingestion must not wait on it.
-        if (this._acceptPhoneHistorySync) void this.hydrateGroupTitlesForUi();
+        void this.hydrateGroupTitlesForUi();
         this._historyDone = false;
         this._avatarEpoch += 1;
         this._avatarQueue = [];
@@ -1348,7 +1379,8 @@ export default class WaClient {
     });
 
     // ── History sync (fires in one or more batches) ───────────────────────
-    this._sock.ev.on('messaging-history.set', async ({ chats, messages, contacts, progress }) => {
+    this._sock.ev.on('messaging-history.set', async ({ chats, messages, contacts, progress, syncType }) => {
+      const isOnDemand = Number(syncType) === HISTORY_SYNC_TYPE_ON_DEMAND;
       const reported = Number(progress);
       if (progress != null && Number.isFinite(reported)) {
         // Batches can arrive out of order; never let the bar move backwards.
@@ -1383,7 +1415,7 @@ export default class WaClient {
       }
       this._captureUnreadCounts(chats);
       this._publishChatRoster(chats);
-      console.log(`[WA] History event: ${chats?.length || 0} chats, ${messages?.length || 0} msgs`);
+      console.log(`[WA] History event: ${chats?.length || 0} chats, ${messages?.length || 0} msgs${isOnDemand ? ' (on-demand)' : ''}`);
 
       // Match live `messages.upsert`: do not block history inserts on LID↔PN name backfill.
       void this._backfillLidPnChatNamesFromMessages(messages || []);
@@ -1417,18 +1449,36 @@ export default class WaClient {
         // opens Retry / Load messages & media for that chat (avoids open→download storms).
       }
 
+      const finishOnDemand = () => {
+        if (!isOnDemand) return;
+        const targetChat = this._phoneHistory?.inflight?.chatJid || null;
+        if (this._phoneHistory?.inflight) {
+          this._phoneHistory.inflight = null;
+        }
+        clearTimeout(this._phoneInflightTimer);
+        this._phoneInflightTimer = null;
+        if (this._historyDone) {
+          this._requeuePersistedPendingMedia(targetChat, null);
+          void this._drainMediaQueue().catch(() => {});
+        }
+        this._notifySyncActivity();
+      };
+
       if (rows.length) {
         // `waHistoryKeepDays` <= 0 (default) stores the entire archive the phone sends —
         // this dump is the only bulk source of months-old messages. A positive value
         // sheds rows older than N days instead (load-shedding for very large accounts).
         const { keep: kept, skipped } = filterRowsByRetention(rows, { keepDays: config.waHistoryKeepDays });
         if (kept.length) {
-          this._ingestHistoryRowsChunked(kept);
+          this._ingestHistoryRowsChunked(kept, { onComplete: finishOnDemand });
           console.log(`[WA] History batch queued: ${kept.length} msgs`
             + (skipped ? ` (skipped ${skipped} older than ${config.waHistoryKeepDays}d)` : ''));
         } else {
+          finishOnDemand();
           console.log(`[WA] History batch had ${rows.length} msgs, all outside the ${config.waHistoryKeepDays}d retention window`);
         }
+      } else {
+        finishOnDemand();
       }
 
       // Reset the "done" timer — no more batches for waSyncDoneDelayMs → mark ready
@@ -1477,17 +1527,27 @@ export default class WaClient {
     });
   }
 
-  async _applyDisplayName(jid, label) {
-    if (!jid || !label) return;
+  _setChatNameIfBetter(jid, label) {
+    if (!jid || !label) return null;
     const s = String(label).trim();
-    if (!s || looksLikeUrlOrSocialJunk(s) || looksLikeOpaqueNumericId(s)) return;
-    this._chatNames.set(jid, s);
-    await this._mirrorDisplayNameAcrossJids(jid, s);
-    if (isResolvedHumanChatTitle(s, jid)) {
-      try { this._onResolvedDisplayName?.(jid, s); } catch (_) { /* persist is best-effort */ }
+    if (!s || looksLikeUrlOrSocialJunk(s) || looksLikeOpaqueNumericId(s)) return null;
+    const existing = this._chatNames.get(jid);
+    if (existing && isResolvedHumanChatTitle(existing, jid) && !isResolvedHumanChatTitle(s, jid)) {
+      return existing;
     }
-    if (!isPlaceholderSenderName(s)) {
-      try { this._onResolvedSenderName?.(jid, s); } catch (_) {}
+    this._chatNames.set(jid, s);
+    return s;
+  }
+
+  async _applyDisplayName(jid, label) {
+    const best = this._setChatNameIfBetter(jid, label);
+    if (!best) return;
+    await this._mirrorDisplayNameAcrossJids(jid, best);
+    if (isResolvedHumanChatTitle(best, jid)) {
+      try { this._onResolvedDisplayName?.(jid, best); } catch (_) { /* persist is best-effort */ }
+    }
+    if (!isUpgradeableSenderName(best) && best !== 'You') {
+      try { this._onResolvedSenderName?.(jid, best); } catch (_) {}
     }
   }
 
@@ -1586,7 +1646,10 @@ export default class WaClient {
     for (const p of metadata.participants) {
       const lid = p?.lid ? jidNormalizedUser(p.lid) : null;
       const id = p?.id ? jidNormalizedUser(p.id) : null;
-      const pn = p?.phoneNumber ? jidNormalizedUser(`${p.phoneNumber}@s.whatsapp.net`) : (id && isPnUser(id) ? id : null);
+      const rawPn = p?.phoneNumber ? String(p.phoneNumber).trim() : '';
+      const pn = rawPn
+        ? jidNormalizedUser(rawPn.includes('@') ? rawPn : `${rawPn}@s.whatsapp.net`)
+        : (id && isPnUser(id) ? id : null);
       const actualLid = lid || (id && isLidUser(id) ? id : null);
 
       if (actualLid && pn) {
@@ -1597,76 +1660,132 @@ export default class WaClient {
         }
       }
 
-      const name = p?.notify || p?.name || p?.pushName || p?.username;
+      const name = p?.name || p?.fullName || p?.verifiedName || p?.notify || p?.pushName || p?.username;
       if (name && !isPlaceholderSenderName(name)) {
-        if (actualLid) this._chatNames.set(actualLid, name);
-        if (pn) this._chatNames.set(pn, name);
-        if (db && typeof db.backfillSenderName === 'function') {
+        const savedLid = actualLid ? (this._setChatNameIfBetter(actualLid, name) || name) : null;
+        const savedPn = pn ? (this._setChatNameIfBetter(pn, name) || name) : null;
+        const bestName = [savedLid, savedPn, String(name).trim()]
+          .find((cand) => cand && !isUpgradeableSenderName(cand))
+          || String(name).trim();
+        if (db && typeof db.backfillSenderName === 'function' && bestName && bestName !== 'You') {
           const targets = [actualLid, pn].filter(Boolean);
-          try { db.backfillSenderName(targets, name); } catch (_) {}
+          try { db.backfillSenderName(targets, bestName); } catch (_) {}
         }
       }
     }
+  }
+
+  _collectKnownLinkedJids(norm) {
+    if (!norm) return [];
+    const set = new Set([norm]);
+    if (isLidUser(norm)) {
+      const pn = this._lidToPn.get(norm);
+      if (pn) {
+        set.add(pn);
+        const rev = this._pnToLid.get(pn);
+        if (rev) set.add(rev);
+      }
+    } else if (isPnUser(norm) || norm.endsWith('@hosted')) {
+      const lid = this._pnToLid.get(norm);
+      if (lid) {
+        set.add(lid);
+        const rev = this._lidToPn.get(lid);
+        if (rev) set.add(rev);
+      }
+    }
+    return [...set];
   }
 
   /** Fast synchronous lookup for sender display name (no async/disk overhead). */
   getSenderDisplayNameFast(senderJid) {
     if (!senderJid) return null;
     const norm = jidNormalizedUser(senderJid);
-    const cached = this._chatNames.get(norm);
-    if (cached && !isPlaceholderSenderName(cached)) return cached;
+    const linked = this._collectKnownLinkedJids(norm);
 
-    if (isLidUser(norm)) {
-      const pn = this._lidToPn.get(norm);
-      if (pn) {
-        const pnName = this._chatNames.get(pn);
-        if (pnName && !isPlaceholderSenderName(pnName)) return pnName;
-        return formatPhoneLocalPart(pn.split('@')[0]);
+    // 1. Prefer any non-upgradeable human contact/push name across linked LID <-> PN keys
+    for (const j of linked) {
+      const c = this._chatNames.get(j);
+      if (c && !isUpgradeableSenderName(c) && !looksLikeUnusableChatTitle(c)) return c;
+    }
+
+    // 2. Fallback to any non-placeholder name (e.g. formatted phone) across linked keys
+    for (const j of linked) {
+      const c = this._chatNames.get(j);
+      if (c && !isPlaceholderSenderName(c) && !looksLikeUnusableChatTitle(c)) return c;
+    }
+
+    // 3. Fallback to formatted PN if this is a LID with a known PN mapping
+    for (const j of linked) {
+      if (isPnUser(j) || j.endsWith('@hosted')) {
+        const formatted = formatPhoneLocalPart(j.split('@')[0]);
+        if (formatted) return formatted;
       }
     }
     return null;
   }
 
-  /** Resolves human-readable sender name using Signal LID mapping, pushNames, and SQLite. */
+  /** Resolves human-readable sender name using Signal LID↔PN mapping, pushNames, and SQLite. */
   async resolveSenderDisplayName(senderJid, db = null) {
     if (!senderJid) return null;
     const norm = jidNormalizedUser(senderJid);
 
-    // 1. Fast cache
+    // 1. Fast human hit in cache
     const fast = this.getSenderDisplayNameFast(norm);
-    if (fast && !isPlaceholderSenderName(fast)) return fast;
+    if (fast && !isUpgradeableSenderName(fast)) return fast;
 
-    // 2. Query Baileys signalRepository if LID
-    let pn = this._lidToPn.get(norm);
-    if (!pn && isLidUser(norm) && this._sock?.signalRepository?.lidMapping) {
+    // 2. Query Baileys signalRepository in both directions (LID → PN and PN → LID)
+    const lm = this._sock?.signalRepository?.lidMapping;
+    let pn = isPnUser(norm) || norm.endsWith('@hosted') ? norm : this._lidToPn.get(norm) || null;
+    let lid = isLidUser(norm) ? norm : this._pnToLid.get(norm) || null;
+    if (lm) {
       try {
-        const rawPn = await this._sock.signalRepository.lidMapping.getPNForLID(norm);
-        if (rawPn) {
-          pn = jidNormalizedUser(rawPn);
-          this._lidToPn.set(norm, pn);
-          this._pnToLid.set(pn, norm);
+        if (!pn && lid) {
+          const rawPn = await lm.getPNForLID(lid);
+          if (rawPn) {
+            pn = jidNormalizedUser(rawPn);
+            this._lidToPn.set(lid, pn);
+            this._pnToLid.set(pn, lid);
+          }
+        }
+        if (!lid && pn) {
+          let rawLid = null;
+          if (typeof lm.getLIDForPN === 'function') {
+            rawLid = await lm.getLIDForPN(pn).catch(() => null);
+          }
+          if (!rawLid && typeof lm.getLIDsForPNs === 'function') {
+            const list = await lm.getLIDsForPNs([pn]).catch(() => null);
+            rawLid = list?.[0]?.lid || null;
+          }
+          if (rawLid) {
+            lid = jidNormalizedUser(rawLid);
+            this._pnToLid.set(pn, lid);
+            this._lidToPn.set(lid, pn);
+          }
         }
       } catch (_) {}
     }
 
-    // 3. Check chatNames with pn
-    if (pn) {
-      const pnName = this._chatNames.get(pn);
-      if (pnName && !isPlaceholderSenderName(pnName)) return pnName;
+    // 3. Check cached names across linked JIDs for a human title
+    const candidates = [...new Set([norm, pn, lid].filter(Boolean))];
+    for (const cand of candidates) {
+      const cached = this._chatNames.get(cand);
+      if (cached && !isUpgradeableSenderName(cached) && !looksLikeUnusableChatTitle(cached)) {
+        for (const t of candidates) this._setChatNameIfBetter(t, cached);
+        return cached;
+      }
     }
 
-    // 4. Query DB for known human name
+    // 4. Query SQLite + contact_directory for known human name
     if (db && typeof db.getResolvedSenderForJid === 'function') {
-      const candidates = [norm, pn].filter(Boolean);
       const dbName = db.getResolvedSenderForJid(candidates);
-      if (dbName && !isPlaceholderSenderName(dbName)) {
-        this._chatNames.set(norm, dbName);
-        if (pn) this._chatNames.set(pn, dbName);
+      if (dbName && !isUpgradeableSenderName(dbName)) {
+        for (const t of candidates) this._setChatNameIfBetter(t, dbName);
         return dbName;
       }
     }
 
-    // 5. Fallback to formatted phone number if known
+    // 5. Fallback to cached phone label or formatted PN (still better than Contact (…))
+    if (fast && !isPlaceholderSenderName(fast)) return fast;
     if (pn) {
       const formatted = formatPhoneLocalPart(pn.split('@')[0]);
       if (formatted) return formatted;
@@ -1675,21 +1794,41 @@ export default class WaClient {
     return null;
   }
 
-  /** Batch resolves placeholder sender names in a chat and backfills SQLite. */
+  /** Batch resolves placeholder & phone-only sender names in a chat and backfills SQLite. */
   async resolveChatSenders(chatJid, db) {
     if (!db || typeof db.getDistinctPlaceholderSenderJids !== 'function') return [];
-    const placeholderSenders = db.getDistinctPlaceholderSenderJids(chatJid, 100);
+    const placeholderSenders = db.getDistinctPlaceholderSenderJids(chatJid, 150);
     if (!placeholderSenders.length) return [];
 
+    // Harvest participant display names & LID↔PN links from live group metadata on demand
+    if (isJidGroup(chatJid) && typeof this._sock?.groupMetadata === 'function') {
+      const lastAt = this._groupMetaFetchedAt.get(chatJid) || 0;
+      if (Date.now() - lastAt >= 120_000) {
+        this._groupMetaFetchedAt.set(chatJid, Date.now());
+        try {
+          const meta = await this._sock.groupMetadata(chatJid);
+          if (meta) this._ingestGroupParticipants(meta, db);
+        } catch (_) {}
+      }
+    }
+
     const updates = [];
+    const seenUpdate = new Set();
     for (const sJid of placeholderSenders) {
       try {
         const resolved = await this.resolveSenderDisplayName(sJid, db);
         if (resolved && !isPlaceholderSenderName(resolved)) {
-          const pn = this._lidToPn.get(sJid);
-          const targets = [sJid, pn].filter(Boolean);
+          const norm = jidNormalizedUser(sJid);
+          const targets = this._collectKnownLinkedJids(norm);
           const changed = db.backfillSenderName(targets, resolved);
-          updates.push({ senderJid: sJid, sender: resolved, changed });
+          if (!isUpgradeableSenderName(resolved) || changed > 0) {
+            for (const targetJid of targets) {
+              const key = `${targetJid}\u0000${resolved}`;
+              if (seenUpdate.has(key)) continue;
+              seenUpdate.add(key);
+              updates.push({ senderJid: targetJid, sender: resolved, changed });
+            }
+          }
         }
       } catch (_) {}
     }
@@ -1712,23 +1851,22 @@ export default class WaClient {
         rowsUpdated += await this._propagateChatNameToDb(db, jid, name);
       } catch (_) { /* ignore per-chat */ }
     }
-    // Also backfill placeholder sender names across group messages
+    // Also backfill placeholder & phone-only sender names across group & 1:1 messages
     if (typeof db.getDistinctPlaceholderSenderJids === 'function' && typeof db.backfillSenderName === 'function') {
-      setTimeout(() => {
-        try {
-          const distinctSenders = db.getDistinctPlaceholderSenderJids(null, 500);
-          for (const sJid of distinctSenders) {
-            const resolved = this.getSenderDisplayNameFast(sJid);
+      try {
+        const distinctSenders = db.getDistinctPlaceholderSenderJids(null, 500);
+        for (const sJid of distinctSenders) {
+          try {
+            const resolved = await this.resolveSenderDisplayName(sJid, db);
             if (resolved && !isPlaceholderSenderName(resolved)) {
-              const pn = this._lidToPn.get(sJid);
-              const targets = [sJid, pn].filter(Boolean);
+              const targets = this._collectKnownLinkedJids(jidNormalizedUser(sJid));
               rowsUpdated += db.backfillSenderName(targets, resolved);
             }
-          }
-        } catch (e) {
-          console.warn('[WA] backfill sender names error:', e.message);
+          } catch (_) {}
         }
-      }, 100);
+      } catch (e) {
+        console.warn('[WA] backfill sender names error:', e.message);
+      }
     }
     if (rowsUpdated > 0) {
       console.log(`[WA] Backfilled chat_name / sender on ${rowsUpdated} message row(s) from resolved contact titles`);
@@ -1845,7 +1983,7 @@ export default class WaClient {
         if (pn) {
           const pnNorm = jidNormalizedUser(pn);
           const lidNorm = jidNormalizedUser(jid);
-          this._chatNames.set(pnNorm, label);
+          this._setChatNameIfBetter(pnNorm, label);
           this._lidToPn.set(lidNorm, pnNorm);
           this._pnToLid.set(pnNorm, lidNorm);
         }
@@ -1855,7 +1993,7 @@ export default class WaClient {
         if (lid) {
           const lidNorm = jidNormalizedUser(lid);
           const pnNorm = jidNormalizedUser(jid);
-          this._chatNames.set(lidNorm, label);
+          this._setChatNameIfBetter(lidNorm, label);
           this._pnToLid.set(pnNorm, lidNorm);
           this._lidToPn.set(lidNorm, pnNorm);
         }
@@ -2157,12 +2295,19 @@ export default class WaClient {
    * Insert history in small chunks so SQLite + WebSocket work does not block the Baileys socket
    * (blocking here was causing connectionLost / reconnect loops when many chats loaded at once).
    */
-  _ingestHistoryRowsChunked(rows) {
+  _ingestHistoryRowsChunked(rows, { onComplete = null } = {}) {
     const chunkSize = config.waHistoryChunkSize;
     let offset = 0;
+    let completed = false;
+    const finishChunked = () => {
+      if (completed) return;
+      completed = true;
+      try { onComplete?.(); } catch (_) {}
+    };
     this._pendingHistoryRows += rows.length;
     const drain = () => {
       if (offset >= rows.length) {
+        finishChunked();
         if (this._pendingHistoryRows === 0 && this._finishSyncRequested) {
           this._finishSyncRequested = false;
           this._finishSync();
@@ -2187,9 +2332,12 @@ export default class WaClient {
       }
       this._promoteUiWhileHistoryContinues();
       if (offset < rows.length) setImmediate(drain);
-      else if (this._pendingHistoryRows === 0 && this._finishSyncRequested) {
-        this._finishSyncRequested = false;
-        this._finishSync();
+      else {
+        finishChunked();
+        if (this._pendingHistoryRows === 0 && this._finishSyncRequested) {
+          this._finishSyncRequested = false;
+          this._finishSync();
+        }
       }
     };
     drain();
@@ -2737,6 +2885,7 @@ export default class WaClient {
     const mid = messageId != null ? String(messageId).trim() : '';
     if (jid) this._pushPriorityMediaChat(jid);
     if (jid && allowPhoneReupload) this._phoneReuploadChatJids.add(jid);
+    if (mid && allowPhoneReupload) this._retryMediaIds.add(mid);
     const sinceTs = recentOnly && !mid
       ? Math.floor(Date.now() / 1000) - (config.liveRecentWindowDays * 24 * 60 * 60)
       : null;
@@ -2867,7 +3016,8 @@ export default class WaClient {
         // On-demand history re-delivers messages whose file we may already have.
         if (this._onMediaNeedsDownload?.(row.messageId) === false) continue;
         reportOutcome = true;
-        const allowPhoneReupload = this._phoneReuploadChatJids.has(row.chatJid);
+        const allowPhoneReupload = this._phoneReuploadChatJids.has(row.chatJid)
+          || Boolean(row.messageId && this._retryMediaIds.has(row.messageId));
         const enriched = await this._enrichRowWithMedia(msg, row, {
           allowPhoneReupload,
           isDeferredLargeVideo: Boolean(isDeferredLargeVideo),
@@ -2876,7 +3026,10 @@ export default class WaClient {
         // Same object may still sit in the unflushed insert batch — carry the path into it.
         if (settledPath) row.mediaPath = settledPath;
       } finally {
-        if (row.messageId) this._queuedMediaIds.delete(row.messageId);
+        if (row.messageId) {
+          this._queuedMediaIds.delete(row.messageId);
+          this._retryMediaIds.delete(row.messageId);
+        }
         // Persist path/settled before releasing the lease so another worker cannot race.
         if (claimed) {
           try {
@@ -2898,14 +3051,18 @@ export default class WaClient {
     // Full archive waits until history finishes; prioritized open chats may drain during sync.
     if (!this._historyDone && !this._priorityMediaChatJids.length) return;
     this._mediaDraining = true;
+    this._notifySyncActivity();
     const workers = Math.max(1, config.waMediaDrainConcurrency || 1);
+    let restarted = false;
     try {
       await Promise.all(Array.from({ length: workers }, () => this._mediaDrainWorker()));
     } finally {
       this._mediaDraining = false;
       if (this._historyDone && this._mediaQueueLength() && !this._destroyed) {
+        restarted = true;
         this._drainMediaQueue().catch(() => {});
       }
+      if (!restarted) this._notifySyncActivity();
     }
   }
 
@@ -2968,35 +3125,81 @@ export default class WaClient {
                 : 'sticker')
         : null;
 
-      const senderJid  = msg.key.participant || (msg.key.fromMe ? this._ownerJid : jid);
-      let senderName =
-        msg.pushName ||
-        this._nameFromChatMap(senderJid) ||
-        this._nameFromChatMap(msg.key?.participantAlt) ||
-        this._nameFromChatMap(msg.key?.remoteJidAlt);
-      if (!senderName && senderJid?.endsWith?.('@lid')) {
-        const pn = this._lidToPn.get(senderJid) || this._lidToPn.get(jidNormalizedUser(senderJid));
-        if (pn) senderName = this._nameFromChatMap(pn) || formatPhoneLocalPart(pn.split('@')[0]);
+      const senderJid = msg.key.participant || (msg.key.fromMe ? this._ownerJid : jid);
+      const isGroup = isJidGroup(jid);
+      const pAlt = msg.key?.participantAlt || null;
+      const rAlt = !isGroup ? (msg.key?.remoteJidAlt || null) : null;
+
+      // Record LID <-> PN pair whenever the wire frame provides an alternate JID
+      const altForSender = pAlt || rAlt;
+      if (senderJid && altForSender) {
+        try {
+          const sNorm = jidNormalizedUser(senderJid);
+          const aNorm = jidNormalizedUser(altForSender);
+          if (sNorm && aNorm && sNorm !== aNorm) {
+            if (isLidUser(sNorm) && (isPnUser(aNorm) || aNorm.endsWith('@hosted'))) {
+              this._lidToPn.set(sNorm, aNorm);
+              this._pnToLid.set(aNorm, sNorm);
+            } else if ((isPnUser(sNorm) || sNorm.endsWith('@hosted')) && isLidUser(aNorm)) {
+              this._pnToLid.set(sNorm, aNorm);
+              this._lidToPn.set(aNorm, sNorm);
+            }
+          }
+        } catch (_) {}
+      }
+
+      const rawPush = msg.pushName && !msg.key.fromMe && !isProbablyOwnName(msg.pushName, this._ownerName)
+        ? String(msg.pushName).trim()
+        : null;
+      const candidates = [
+        this._nameFromChatMap(senderJid),
+        pAlt ? this._nameFromChatMap(pAlt) : null,
+        rAlt ? this._nameFromChatMap(rAlt) : null,
+        rawPush,
+      ];
+      let senderName = null;
+      for (const cand of candidates) {
+        if (!cand || isUpgradeableSenderName(cand)) continue;
+        const cleaned = sanitizePeerSenderName(cand, jid);
+        if (cleaned && !isUpgradeableSenderName(cleaned)) {
+          senderName = cleaned;
+          break;
+        }
       }
       if (!senderName) {
-        senderName = senderJid?.split('@')[0] || 'Unknown';
+        const fast = this.getSenderDisplayNameFast(senderJid)
+          || (pAlt ? this.getSenderDisplayNameFast(pAlt) : null)
+          || (rAlt ? this.getSenderDisplayNameFast(rAlt) : null);
+        if (fast) {
+          const cleaned = sanitizePeerSenderName(fast, jid);
+          if (cleaned) senderName = cleaned;
+        }
       }
-      const snClean = sanitizePeerSenderName(senderName, jid);
-      if (snClean) senderName = snClean;
-      else if (senderJid?.endsWith?.('@s.whatsapp.net') || senderJid?.endsWith?.('@hosted')) {
-        senderName = formatPhoneLocalPart(senderJid.split('@')[0]);
-      } else if (senderJid?.endsWith?.('@lid')) {
-        const pn = this._lidToPn.get(senderJid) || this._lidToPn.get(jidNormalizedUser(senderJid));
-        if (pn) senderName = formatPhoneLocalPart(pn.split('@')[0]);
-        else senderName = fallbackTitleForOneOnOneJid(senderJid) || 'Contact';
-      } else {
-        senderName = senderJid?.split('@')[0] || 'Unknown';
+      if (!senderName && rawPush) {
+        senderName = sanitizePeerSenderName(rawPush, jid);
       }
-      let chatName   = this._resolveChatDisplayName(jid, msg);
+      if (!senderName) {
+        if (senderJid?.endsWith?.('@s.whatsapp.net') || senderJid?.endsWith?.('@hosted')) {
+          senderName = formatPhoneLocalPart(senderJid.split('@')[0]);
+        } else if (senderJid?.endsWith?.('@lid')) {
+          const pn = this._lidToPn.get(senderJid) || this._lidToPn.get(jidNormalizedUser(senderJid));
+          if (pn) senderName = formatPhoneLocalPart(pn.split('@')[0]);
+          else senderName = fallbackTitleForOneOnOneJid(senderJid) || 'Contact';
+        } else {
+          senderName = senderJid?.split('@')[0] || 'Unknown';
+        }
+      }
+      if (senderName && !msg.key.fromMe && !isUpgradeableSenderName(senderName) && senderJid) {
+        try {
+          const sNorm = jidNormalizedUser(senderJid);
+          if (sNorm && !isJidGroup(sNorm)) this._setChatNameIfBetter(sNorm, senderName);
+        } catch (_) {}
+      }
+      let chatName = this._resolveChatDisplayName(jid, msg);
       // For 1:1 chats, WhatsApp often only gives a good name via pushName on an incoming message.
       // If the resolved chat title is just a number/placeholder but we have a human sender name, use that.
       if (
-        !isJidGroup(jid)
+        !isGroup
         && senderName
         && senderName !== 'You'
         && isResolvedHumanChatTitle(senderName, jid)
@@ -3060,13 +3263,30 @@ export default class WaClient {
     state.lastSyncAt.set(chatJid, now);
     state.lastGlobalAt = now;
     state.pullsLastHour = [...(state.pullsLastHour || []).filter((t) => t > now - 60 * 60 * 1000), now];
+    clearTimeout(this._phoneInflightTimer);
+    this._phoneInflightTimer = setTimeout(() => {
+      if (this._phoneHistory?.inflight && Date.now() >= this._phoneHistory.inflight.until) {
+        this._phoneHistory.inflight = null;
+        this._notifySyncActivity();
+      }
+    }, PHONE_HISTORY_INFLIGHT_MS + 100);
+    this._phoneInflightTimer.unref?.();
+    this._notifySyncActivity();
     const key = {
       remoteJid: chatJid,
       id: String(messageId),
       fromMe: Boolean(fromMe),
     };
     const n = Math.min(500, Math.max(1, Math.floor(Number(count) || PHONE_HISTORY_DEFAULT_COUNT)));
-    return this._sock.fetchMessageHistory(n, key, ts);
+    try {
+      return await this._sock.fetchMessageHistory(n, key, ts);
+    } catch (err) {
+      if (state.inflight?.chatJid === chatJid) state.inflight = null;
+      clearTimeout(this._phoneInflightTimer);
+      this._phoneInflightTimer = null;
+      this._notifySyncActivity();
+      throw err;
+    }
   }
 
   _ensurePhoneHistoryState() {
