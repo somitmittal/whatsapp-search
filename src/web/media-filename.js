@@ -69,8 +69,8 @@ export function downloadFilenameForServedMedia({
   let dlName = String(fname || 'download.bin');
   const serve = String(servePath || '');
   const original = String(originalPath || '');
-  if (serve && original && serve !== original) {
-    const serveExt = (serve.split('.').pop() || 'bin').toLowerCase();
+  const serveExt = (serve.split('.').pop() || '').toLowerCase();
+  if (serve && serveExt && serveExt !== 'bin' && (serve !== original || (mediaType === 'audio' || mediaType === 'ptt') && serveExt !== 'mp4')) {
     const dot = dlName.lastIndexOf('.');
     dlName = dot > 0 ? `${dlName.slice(0, dot)}.${serveExt}` : `${dlName}.${serveExt}`;
   }

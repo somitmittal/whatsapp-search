@@ -16,7 +16,8 @@ import { scheduleRefreshDash } from './sidebar.js';
 
 const MAX_RECORDING_MS = 10 * 60 * 1000; // WhatsApp audio cap is ~16 MB; 10 min is a safe visual cap
 const REC_MIME_CANDIDATES = [
-  'audio/mp4', // AAC — WhatsApp voice notes accept m4a/aac on every client
+  'audio/ogg;codecs=opus', // Native Ogg Opus when supported (matches WhatsApp PTT directly)
+  'audio/mp4', // Chromium/Safari fallback — Chrome often writes Opus-in-MP4 which backend transcodes
   'audio/webm;codecs=opus',
   'audio/webm',
 ];

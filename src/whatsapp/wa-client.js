@@ -59,7 +59,13 @@ import {
 } from './media-constants.js';
 import { buildMediaDownloadStub } from './media-download-stub.js';
 import { downloadMediaMessageSafe } from './safe-media-download.js';
-import { audioSendContent } from './voice-content.js';
+import {
+  audioSendContent,
+  inferAudioMimeFromFilename,
+  isAudioMime,
+  normalizeAudioMime,
+} from './voice-content.js';
+import { prepareOutboundAudioForWhatsApp, probeMediaStreams } from '../web/audio-transcode.js';
 import {
     extractRenderableTextFromInner,
     isControlOnlyContentType,
@@ -81,9 +87,7 @@ import {
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, clearUnreadCount, unreadCountForChat } from './unread-tracker.js';
 
-const require = createRequire(import.meta.url);
-const {
-  default: makeWASocket,
+import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
@@ -95,7 +99,9 @@ const {
   downloadMediaMessage,
   extractMessageContent,
   getContentType,
-} = require('@whiskeysockets/baileys');
+} from '@whiskeysockets/baileys';
+
+const require = createRequire(import.meta.url);
 const QRCode   = require('qrcode');
 const P        = require('pino');
 
@@ -121,9 +127,14 @@ function extFromMime(mime) {
   if (m.includes('jpeg') || m.includes('jpg')) return 'jpg';
   if (m.includes('png')) return 'png';
   if (m.includes('webp')) return 'webp';
-  if (m.includes('ogg') || m.includes('opus')) return 'ogg';
+  if (m.includes('ogg') || (m.includes('opus') && !m.includes('webm'))) return 'ogg';
   if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
+  if (m.startsWith('audio/') && (m.includes('mp4') || m.includes('m4a') || m.includes('aac'))) return 'm4a';
   if (m.includes('mp4')) return 'mp4';
+  if (m.includes('webm')) return 'webm';
+  if (m.includes('wav')) return 'wav';
+  if (m.includes('flac')) return 'flac';
+  if (m.includes('amr')) return 'amr';
   if (m.includes('pdf')) return 'pdf';
   if (m.includes('spreadsheetml') || m.includes('excel')) return 'xlsx';
   if (m.includes('csv')) return 'csv';
@@ -300,6 +311,8 @@ export default class WaClient {
     this._retryMediaIds = new Set();
     /** In-memory queue/in-flight set for UI `isMediaQueued` + cheap enqueue dedupe. */
     this._queuedMediaIds = new Set();
+    /** Recently persisted outbound media paths keyed by messageId (avoids upsert echo race). */
+    this._recentOutboundMediaPaths = new Map();
     this._mediaDraining = false;
     /** Sidebar profile / group pictures. Filled newest-first and drained after history sync. */
     this._avatarQueue = [];
@@ -541,52 +554,123 @@ export default class WaClient {
     if (!chatJid) throw new Error('chatJid required');
     if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new Error('File is empty');
     const name = String(fileName || 'file').replace(/[\\/\0]/g, '_').slice(0, 120);
-    const mime = String(mimetype || 'application/octet-stream').slice(0, 160);
+    const rawMime = String(mimetype || 'application/octet-stream').slice(0, 160);
+    let effectiveMime = normalizeAudioMime(rawMime) || 'application/octet-stream';
+    const inferredAudioMime = inferAudioMimeFromFilename(name);
+    const lowerExt = (name.split('.').pop() || '').toLowerCase();
+    // Browsers often send missing/generic MIMEs (or video/mp4 / video/webm) for audio files.
+    if (
+      inferredAudioMime
+      && (
+        effectiveMime === 'application/octet-stream'
+        || !effectiveMime
+        || (effectiveMime.startsWith('video/') && lowerExt !== 'mp4')
+      )
+    ) {
+      effectiveMime = inferredAudioMime;
+    }
+    // Audio-only .mp4 / .webm containers (such as prior recordings or downloaded voice notes)
+    // arrive from browsers as video/mp4 or video/webm — reclassify to audio when there is no video track.
+    if (effectiveMime.startsWith('video/')) {
+      const probed = await probeMediaStreams(buffer, { fileName: name });
+      if (probed && probed.hasAudio && !probed.hasVideo) {
+        effectiveMime = effectiveMime.includes('webm') ? 'audio/webm' : 'audio/mp4';
+      }
+    }
+
     const text = String(caption || '').trim().slice(0, 4000) || undefined;
     let content;
     let mediaType = null;
-    if (mime.startsWith('image/')) {
-      content = { image: buffer, mimetype: mime, caption: text };
+    let sendBuffer = buffer;
+    let sendMime = effectiveMime;
+    let extOverride = null;
+    if (effectiveMime.startsWith('image/')) {
+      content = { image: sendBuffer, mimetype: sendMime, caption: text };
       mediaType = 'image';
-    } else if (mime.startsWith('video/')) {
-      content = { video: buffer, mimetype: mime, caption: text };
+    } else if (effectiveMime.startsWith('video/')) {
+      content = { video: sendBuffer, mimetype: sendMime, caption: text };
       mediaType = 'video';
-    } else if (mime.startsWith('audio/') || mime === 'application/ogg') {
-      const built = audioSendContent(buffer, { mimeType: mime, ptt });
+    } else if (isAudioMime(effectiveMime)) {
+      const prepared = await prepareOutboundAudioForWhatsApp(buffer, {
+        mimeType: effectiveMime,
+        fileName: name,
+        ptt,
+      });
+      sendBuffer = prepared.buffer;
+      sendMime = prepared.mimeType;
+      extOverride = prepared.ext;
+      const built = audioSendContent(sendBuffer, {
+        mimeType: sendMime,
+        ptt,
+        seconds: prepared.durationSeconds,
+        waveform: prepared.waveform,
+      });
       if (built.error) throw new Error(built.error);
       content = built.content;
       mediaType = 'audio';
     } else {
-      content = { document: buffer, fileName: name, mimetype: mime, caption: text };
+      content = { document: sendBuffer, fileName: name, mimetype: sendMime, caption: text };
       mediaType = 'document';
     }
     const sent = await this._sock.sendMessage(chatJid, content);
-    this._noteSuccessfulSend(sent);
     // Keep the bytes we just uploaded so Searchable can play/download without
     // waiting on a WhatsApp CDN round-trip (self-chat echoes often skip media).
-    this._persistOutboundMediaFile(sent, chatJid, buffer, { mediaType, mime, fileName: name });
+    const persistedPath = this._writeOutboundMediaFile(sent, chatJid, sendBuffer, {
+      mediaType,
+      mime: sendMime,
+      fileName: name,
+      extOverride,
+    });
+    this._noteSuccessfulSend(sent);
+    if (persistedPath && sent?.key?.id) {
+      this._onMediaPath?.(String(sent.key.id), persistedPath);
+    }
     return sent;
+  }
+
+  _rememberOutboundMediaPath(messageId, fullPath) {
+    if (!messageId || !fullPath) return;
+    const mid = String(messageId);
+    if (this._recentOutboundMediaPaths.size >= 200) {
+      const firstKey = this._recentOutboundMediaPaths.keys().next().value;
+      if (firstKey !== undefined) this._recentOutboundMediaPaths.delete(firstKey);
+    }
+    this._recentOutboundMediaPaths.set(mid, fullPath);
+  }
+
+  _writeOutboundMediaFile(sent, chatJid, buffer, { mediaType, mime, fileName, extOverride } = {}) {
+    try {
+      const messageId = sent?.key?.id ? String(sent.key.id) : '';
+      if (!messageId || !mediaType || !MEDIA_FOR_INDEX.has(mediaType)) return null;
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0) return null;
+      const cleanOverride = extOverride ? String(extOverride).replace(/^\./, '').toLowerCase() : '';
+      const fromName = extname(String(fileName || '')).slice(1).toLowerCase();
+      const ext = cleanOverride
+        || (fromName && fromName !== 'bin' && !(mediaType === 'audio' && fromName === 'mp4') ? fromName : null)
+        || extFromMime(mime)
+        || 'bin';
+      const dir = join(config.mediaDir, safeJidDir(chatJid));
+      mkdirSync(dir, { recursive: true });
+      const fullPath = join(dir, `${messageId}.${ext}`);
+      writeFileSync(fullPath, buffer);
+      this._rememberOutboundMediaPath(messageId, fullPath);
+      return fullPath;
+    } catch (e) {
+      console.warn('[WA] persist outbound media:', e?.message || e);
+      return null;
+    }
   }
 
   /**
    * Write an outbound attach/voice buffer next to inbound media and publish the path.
    * Safe to no-op when the send result has no message id.
    */
-  _persistOutboundMediaFile(sent, chatJid, buffer, { mediaType, mime, fileName } = {}) {
-    try {
-      const messageId = sent?.key?.id ? String(sent.key.id) : '';
-      if (!messageId || !mediaType || !MEDIA_FOR_INDEX.has(mediaType)) return;
-      if (!Buffer.isBuffer(buffer) || buffer.length === 0) return;
-      const fromName = extname(String(fileName || '')).slice(1).toLowerCase();
-      const ext = (fromName && fromName !== 'bin' ? fromName : null) || extFromMime(mime) || 'bin';
-      const dir = join(config.mediaDir, safeJidDir(chatJid));
-      mkdirSync(dir, { recursive: true });
-      const fullPath = join(dir, `${messageId}.${ext}`);
-      writeFileSync(fullPath, buffer);
-      this._onMediaPath?.(messageId, fullPath);
-    } catch (e) {
-      console.warn('[WA] persist outbound media:', e?.message || e);
+  _persistOutboundMediaFile(sent, chatJid, buffer, opts = {}) {
+    const fullPath = this._writeOutboundMediaFile(sent, chatJid, buffer, opts);
+    if (fullPath && sent?.key?.id) {
+      this._onMediaPath?.(String(sent.key.id), fullPath);
     }
+    return fullPath;
   }
 
   /**
@@ -884,12 +968,31 @@ export default class WaClient {
       }));
     }
     if (mediaPath && row.mediaType === 'audio') {
-      return this._noteSuccessfulSend(await this._sock.sendMessage(targetJid, {
-        audio: readFileSync(mediaPath),
-        mimetype: 'audio/ogg; codecs=opus',
+      const prepared = await prepareOutboundAudioForWhatsApp(readFileSync(mediaPath), {
+        fileName: mediaPath,
         ptt: false,
+      });
+      const built = audioSendContent(prepared.buffer, {
+        mimeType: prepared.mimeType,
+        ptt: false,
+        seconds: prepared.durationSeconds,
+      });
+      if (built.error) throw new Error(built.error);
+      const sent = await this._sock.sendMessage(targetJid, {
+        ...built.content,
         contextInfo,
-      }));
+      });
+      const persistedPath = this._writeOutboundMediaFile(sent, targetJid, prepared.buffer, {
+        mediaType: 'audio',
+        mime: prepared.mimeType,
+        fileName: mediaPath,
+        extOverride: prepared.ext,
+      });
+      this._noteSuccessfulSend(sent);
+      if (persistedPath && sent?.key?.id) {
+        this._onMediaPath?.(String(sent.key.id), persistedPath);
+      }
+      return sent;
     }
     if (mediaPath && row.mediaType === 'sticker') {
       return this._noteSuccessfulSend(await this._sock.sendMessage(targetJid, {
@@ -2802,6 +2905,8 @@ export default class WaClient {
   _queueMediaDownload(msg, row) {
     if (!row?.mediaType || !MEDIA_FOR_INDEX.has(row.mediaType) || !this._sock) return;
     if (isTerminalMediaPath(row.mediaPath)) return;
+    if (row.mediaPath && existsSync(row.mediaPath)) return;
+    if (row.messageId && this._recentOutboundMediaPaths.has(String(row.messageId))) return;
     const queue = this._mediaQueues.get(row.mediaType);
     if (!queue) return;
     if (row.messageId && this._queuedMediaIds.has(row.messageId)) return;
@@ -3213,16 +3318,20 @@ export default class WaClient {
         chatName = senderName;
       }
 
+      const messageId = msg.key.id ? String(msg.key.id) : `${msg.messageTimestamp}_${Math.random()}`;
+      const recentOutboundPath = this._recentOutboundMediaPaths.get(messageId);
+      const existingOutboundPath = recentOutboundPath && existsSync(recentOutboundPath) ? recentOutboundPath : null;
+
       return {
-        messageId:    msg.key.id || `${msg.messageTimestamp}_${Math.random()}`,
+        messageId,
         chatJid:      jid,
         chatName,
         sender:       msg.key.fromMe ? 'You' : senderName,
         senderJid:    senderJid || null,
         text:         text || null,
         mediaType,
-        mediaPath:    null,
-        mediaDownloadJson: mediaType ? buildMediaDownloadStub(msg) : null,
+        mediaPath:    existingOutboundPath,
+        mediaDownloadJson: mediaType && !existingOutboundPath ? buildMediaDownloadStub(msg) : null,
         mediaCaption:
           inner.imageMessage?.caption ||
           inner.videoMessage?.caption ||

@@ -1936,44 +1936,49 @@ export default class WebServer {
           String(q.disposition || '').toLowerCase() === 'attachment';
         const nameHint = [row.mediaCaption, row.text].filter(Boolean).join(' ');
         const fname = attachmentFilenameFromMessage(safe, messageId, nameHint);
-        const ext = (fname.split('.').pop() || '').toLowerCase();
-        let typeFromName = contentTypeForMediaFile(`.${ext}`);
-        // WhatsApp AAC voice notes often land on disk as `.mp4` (audio in an MP4
+        const isVoiceNote = row.mediaType === 'audio' || row.mediaType === 'ptt';
+        let typeFromDisk = contentTypeForMediaFile(safe);
+        // WhatsApp AAC/Opus voice notes sometimes land on disk as `.mp4` (audio in an MP4
         // container). The extension alone yields video/mp4, which — with
         // X-Content-Type-Options: nosniff — browsers may refuse in an <audio>
         // element. The DB row knows it is a voice note; trust that.
-        if (typeFromName === 'video/mp4'
-          && (row.mediaType === 'audio' || row.mediaType === 'ptt')) {
+        if (typeFromDisk === 'video/mp4' && isVoiceNote) {
+          typeFromDisk = 'audio/mp4';
+        }
+        const ext = (fname.split('.').pop() || '').toLowerCase();
+        let typeFromName = contentTypeForMediaFile(`.${ext}`);
+        if (typeFromName === 'video/mp4' && isVoiceNote) {
           typeFromName = 'audio/mp4';
         }
         // Only voice notes (DB audio/ptt rows) get playable copies — genuine
         // documents/videos/images must pass through untouched.
-        const isVoiceNote = row.mediaType === 'audio' || row.mediaType === 'ptt';
         const playable = isVoiceNote ? await playableAudioFor(safe) : { path: safe, contentType: null };
         const servePath = playable.path;
         const servedType = playable.contentType
-          || (typeFromName !== 'application/octet-stream' ? typeFromName : contentTypeForMediaFile(safe));
+          || (typeFromDisk !== 'application/octet-stream' ? typeFromDisk : null)
+          || (typeFromName !== 'application/octet-stream' ? typeFromName : null)
+          || 'application/octet-stream';
         const finalContentType = isVoiceNote && (!servedType || servedType === 'application/octet-stream')
           ? 'audio/ogg'
           : servedType;
         res.setHeader('Content-Type', finalContentType);
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Cache-Control', 'private, no-cache');
+        // Phones pick the handler from the filename extension, so it must match
+        // the bytes actually served — a transcode of `<id>.mp4`/`<id>.ogg` is an
+        // `.m4a`, and a mismatched name makes iOS/Android refuse to open it.
+        const servedFilename = downloadFilenameForServedMedia({
+          fname,
+          servePath,
+          originalPath: safe,
+          mediaType: row.mediaType,
+          contentType: finalContentType,
+        });
         if (wantDownload) {
-          // Phones pick the handler from the filename extension, so it must match
-          // the bytes actually served — a transcode of `<id>.mp4`/`<id>.ogg` is an
-          // `.m4a`, and a mismatched name makes iOS/Android refuse to open it.
-          const dlName = downloadFilenameForServedMedia({
-            fname,
-            servePath,
-            originalPath: safe,
-            mediaType: row.mediaType,
-            contentType: servedType,
-          });
-          res.setHeader('Content-Disposition', `attachment; filename="${dlName}"`);
+          res.setHeader('Content-Disposition', `attachment; filename="${servedFilename}"`);
         } else {
           // Inline so the chat PDF <iframe> renders instead of prompting download.
-          res.setHeader('Content-Disposition', `inline; filename="${fname}"`);
+          res.setHeader('Content-Disposition', `inline; filename="${servedFilename}"`);
         }
         return res.sendFile(servePath, { dotfiles: 'allow' }, (err) => {
           if (err && !res.headersSent) {
