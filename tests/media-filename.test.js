@@ -49,4 +49,14 @@ describe('media-filename', () => {
       contentType: 'audio/mpeg',
     })).toBe('track.mp3');
   });
+
+  test('downloadFilenameForServedMedia aligns caption filename extension to actual served audio bytes', () => {
+    expect(downloadFilenameForServedMedia({
+      fname: 'voice-clip.mp4',
+      servePath: '/media/jid/3EB0.mp3',
+      originalPath: '/media/jid/3EB0.mp3',
+      mediaType: 'audio',
+      contentType: 'audio/mpeg',
+    })).toBe('voice-clip.mp3');
+  });
 });
