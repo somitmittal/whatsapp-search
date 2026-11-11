@@ -2027,12 +2027,12 @@ export default class WebServer {
         const chatJid = decodeURIComponent(req.params.chatJid || '');
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const tid = getCurrentTenantId();
-        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this.summaryService?.setPriorityChatForTenant?.(tid, chatJid);
         this._mediaIndexService?.notePriorityChange?.();
         this._embeddingIndexService?.notePriorityChange?.();
         void runWithTenant(tid, async () => {
           try {
-            await this.summaryService.indexPendingDays();
+            await this.summaryService?.indexPendingDays?.();
             await this._embeddingIndexService?.processPending?.(12);
           } catch (err) {
             console.error('[priority-index]', err.message);
@@ -2062,7 +2062,7 @@ export default class WebServer {
           || req.body?.requestHistory === 1
           || String(req.body?.requestHistory || '').toLowerCase() === 'true';
 
-        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this.summaryService?.setPriorityChatForTenant?.(tid, chatJid);
         this._mediaIndexService?.notePriorityChange?.();
         this._embeddingIndexService?.notePriorityChange?.();
 
@@ -2155,7 +2155,7 @@ export default class WebServer {
 
         void runWithTenant(tid, async () => {
           try {
-            await this.summaryService.indexPendingDays();
+            await this.summaryService?.indexPendingDays?.();
             await this._embeddingIndexService?.processPending?.(12);
           } catch (err) {
             console.error('[priority-load]', err.message);
@@ -2929,7 +2929,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
 
         // Same priority path as open-chat / “Load messages & media”: put this chat first
         // so pending media + media on the arriving history batch download before other chats.
-        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this.summaryService?.setPriorityChatForTenant?.(tid, chatJid);
         this._mediaIndexService?.notePriorityChange?.();
         this._embeddingIndexService?.notePriorityChange?.();
         if (typeof this.db.clearUnavailableMediaPaths === 'function') {
@@ -4146,12 +4146,12 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         const chatJid = String(req.body?.chatJid ?? '').trim();
         if (!chatJid) return res.status(400).json({ error: 'chatJid is required' });
         const tid = getCurrentTenantId();
-        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this.summaryService?.setPriorityChatForTenant?.(tid, chatJid);
         this._mediaIndexService?.notePriorityChange?.();
         this._embeddingIndexService?.notePriorityChange?.();
         void runWithTenant(tid, async () => {
           try {
-            await this.summaryService.indexPendingDays();
+            await this.summaryService?.indexPendingDays?.();
             await this._embeddingIndexService?.processPending?.(12);
           } catch (err) {
             console.error('[summaries/priority-chat]', err.message);
@@ -4334,12 +4334,12 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       const tid = getCurrentTenantId();
       this.db.setChatIndexEnabled(chatJid, enabled);
       if (enabled) {
-        this.summaryService.setPriorityChatForTenant(tid, chatJid);
+        this.summaryService?.setPriorityChatForTenant?.(tid, chatJid);
         this._mediaIndexService?.notePriorityChange?.();
         this._embeddingIndexService?.notePriorityChange?.();
         void runWithTenant(tid, async () => {
           try {
-            await this.summaryService.indexPendingDays();
+            await this.summaryService?.indexPendingDays?.();
             this._mediaIndexService?.scheduleProcess?.();
             await this._embeddingIndexService?.processPending?.(12);
           } catch (err) {
