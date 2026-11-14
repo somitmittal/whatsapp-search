@@ -313,6 +313,8 @@ export default class WaClient {
     this._queuedMediaIds = new Set();
     /** Recently persisted outbound media paths keyed by messageId (avoids upsert echo race). */
     this._recentOutboundMediaPaths = new Map();
+    /** In-memory cache of media downloads that failed from CDN (avoids infinite background re-queue loops). */
+    this._failedMediaDownloads = new Map();
     this._mediaDraining = false;
     /** Sidebar profile / group pictures. Filled newest-first and drained after history sync. */
     this._avatarQueue = [];
@@ -1106,6 +1108,7 @@ export default class WaClient {
     this._phoneInflightTimer = null;
     for (const queue of this._mediaQueues.values()) queue.length = 0;
     this._queuedMediaIds.clear();
+    this._failedMediaDownloads.clear();
     try { this._sock?.end?.(new Error('destroy')); } catch {}
     this._sock = null;
     this._setState('DISCONNECTED', 'Stopped');
@@ -2506,8 +2509,11 @@ export default class WaClient {
     this._setState('READY', `${this._totalMsgs.toLocaleString()} messages ready`);
     this._sortDeferredMediaQueue();
     // Re-queue pending media stubs from SQLite for background CDN drain.
+    // Constrain to recent messages so history sync does not re-queue years of expired CDN links.
     // allowPhoneReupload remains false so this only fetches from CDN and never pings the phone.
-    this._requeuePersistedPendingMedia(null, null);
+    const recentSinceTs = Math.floor(Date.now() / 1000)
+      - (config.liveRecentWindowDays * 24 * 60 * 60);
+    this._requeuePersistedPendingMedia(null, null, { sinceTs: recentSinceTs });
     void this._drainMediaQueue();
     try { this._onHistorySyncComplete?.(); } catch (e) {
       console.warn('[WA] onHistorySyncComplete:', e.message);
@@ -2866,6 +2872,7 @@ export default class WaClient {
           throw e1;
         }
       }
+      if (row.messageId) this._failedMediaDownloads.delete(String(row.messageId));
       return { ...row, mediaPath: fullPath };
     } catch (e) {
       if (e?.code === 'WA_MEDIA_TOO_LARGE') {
@@ -2873,11 +2880,36 @@ export default class WaClient {
         return { ...row, mediaPath: MEDIA_TOO_LARGE_PATH };
       }
       const msgText = String(e?.message || 'media download failed');
-      console.warn(`[WA] media download ${row.messageId}:`, msgText.replace(/https?:\/\/\S+/g, '<url>'));
+      const sanitized = msgText.replace(/https?:\/\/\S+/g, '<url>');
+      const isPermanent = isPermanentMediaFailure(e);
+
+      if (row.messageId) {
+        this._failedMediaDownloads.set(String(row.messageId), {
+          chatJid: row.chatJid,
+          failedAt: Date.now(),
+          error: sanitized,
+          statusCode: e?.statusCode ?? e?.status ?? null,
+        });
+        if (this._failedMediaDownloads.size > 5000) {
+          const first = this._failedMediaDownloads.keys().next().value;
+          if (first) this._failedMediaDownloads.delete(first);
+        }
+      }
+
       // Soft open / bulk drain skip phone reupload. Expired CDN URLs often 404 even
       // though the image still exists on WhatsApp — never mark those permanent.
-      if (allowPhoneReupload && isPermanentMediaFailure(e)) {
+      if (allowPhoneReupload && isPermanent) {
+        console.warn(`[WA] media download ${row.messageId}:`, sanitized);
         return { ...row, mediaPath: MEDIA_UNAVAILABLE_PATH };
+      }
+
+      if (allowPhoneReupload || (!sanitized.includes('Failed to fetch stream') && !isPermanent)) {
+        console.warn(`[WA] media download ${row.messageId}:`, sanitized);
+      } else {
+        this._mediaLogger?.debug?.(
+          { messageId: row.messageId, err: sanitized },
+          'background media download skipped (CDN stream unavailable)',
+        );
       }
       return row;
     }
@@ -2991,6 +3023,12 @@ export default class WaClient {
     if (jid) this._pushPriorityMediaChat(jid);
     if (jid && allowPhoneReupload) this._phoneReuploadChatJids.add(jid);
     if (mid && allowPhoneReupload) this._retryMediaIds.add(mid);
+    if (mid) this._failedMediaDownloads.delete(mid);
+    if (jid && allowPhoneReupload) {
+      for (const [failedMid, meta] of this._failedMediaDownloads.entries()) {
+        if (meta?.chatJid === jid) this._failedMediaDownloads.delete(failedMid);
+      }
+    }
     const sinceTs = recentOnly && !mid
       ? Math.floor(Date.now() / 1000) - (config.liveRecentWindowDays * 24 * 60 * 60)
       : null;
@@ -3020,8 +3058,13 @@ export default class WaClient {
     let n = 0;
     for (const item of items) {
       if (!item?.msg?.key || !item?.row?.messageId) continue;
-      if (wantMid && String(item.row.messageId) !== wantMid) continue;
+      const mid = String(item.row.messageId);
+      if (wantMid && mid !== wantMid) continue;
       if (minTs != null && (Number(item.row.timestamp) || 0) < minTs) continue;
+      const isExplicitRetry = Boolean(wantMid || this._retryMediaIds.has(mid) || (chatJid && this._phoneReuploadChatJids.has(chatJid)));
+      if (!isExplicitRetry && this._failedMediaDownloads.has(mid)) {
+        continue;
+      }
       this._queueMediaDownload(item.msg, item.row);
       n += 1;
     }
@@ -3130,6 +3173,9 @@ export default class WaClient {
         settledPath = enriched.mediaPath || null;
         // Same object may still sit in the unflushed insert batch — carry the path into it.
         if (settledPath) row.mediaPath = settledPath;
+        if (settledPath && !isTerminalMediaPath(settledPath) && row.messageId) {
+          this._failedMediaDownloads.delete(String(row.messageId));
+        }
       } finally {
         if (row.messageId) {
           this._queuedMediaIds.delete(row.messageId);
