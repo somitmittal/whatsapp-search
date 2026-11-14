@@ -20,13 +20,15 @@ export function isTerminalMediaPath(path) {
 
 /**
  * WhatsApp answers that *look* like the blob is gone.
- * CDN 404 / NOT_FOUND are also returned for expired media URLs that the phone
+ * CDN 404 / 410 / NOT_FOUND are also returned for expired media URLs that the phone
  * can still re-upload — only treat as permanent after a phone-reupload attempt
  * (see `_enrichRowWithMedia`). GENERAL_ERROR / stream failures stay retryable.
  */
 export function isPermanentMediaFailure(err) {
+  const status = Number(err?.statusCode ?? err?.status ?? err?.output?.statusCode);
+  if (status === 404 || status === 410) return true;
   const m = String(err?.message || err || '');
-  if (/Status code: 404|no media present/i.test(m)) return true;
+  if (/Status code: (?:404|410)|HTTP (?:404|410)|no media present/i.test(m)) return true;
   if (/NOT_FOUND/i.test(m)) return true;
   return false;
 }

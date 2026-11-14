@@ -79,7 +79,7 @@ export async function downloadEncryptedContentSafe(
 
   if (!response.ok) {
     try { await response.body?.cancel(); } catch (_) {}
-    const err = new Error(`Failed to fetch stream from ${downloadUrl}`);
+    const err = new Error(`Failed to fetch stream from ${downloadUrl} (HTTP ${response.status})`);
     err.statusCode = response.status;
     err.status = response.status;
     throw err;

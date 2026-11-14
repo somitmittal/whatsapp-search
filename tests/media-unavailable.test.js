@@ -43,6 +43,15 @@ describe('media terminal states', () => {
   test('only WhatsApp "gone" answers are permanent', () => {
     expect(isPermanentMediaFailure(new Error('Media re-upload failed by device (NOT_FOUND)'))).toBe(true);
     expect(isPermanentMediaFailure(new Error('Status code: 404'))).toBe(true);
+    expect(isPermanentMediaFailure(new Error('Status code: 410'))).toBe(true);
+    expect(isPermanentMediaFailure(new Error('Failed to fetch stream from https://mmg.whatsapp.net/x (HTTP 404)'))).toBe(true);
+    expect(isPermanentMediaFailure(new Error('Failed to fetch stream from https://mmg.whatsapp.net/x (HTTP 410)'))).toBe(true);
+    const errStatus404 = new Error('Failed to fetch stream from https://mmg.whatsapp.net/x');
+    errStatus404.statusCode = 404;
+    expect(isPermanentMediaFailure(errStatus404)).toBe(true);
+    const errStatus410 = new Error('Failed to fetch stream from https://mmg.whatsapp.net/x');
+    errStatus410.statusCode = 410;
+    expect(isPermanentMediaFailure(errStatus410)).toBe(true);
     expect(isPermanentMediaFailure(new Error('Media re-upload failed by device (GENERAL_ERROR)'))).toBe(false);
     expect(isPermanentMediaFailure(new Error('Failed to fetch stream'))).toBe(false);
   });
