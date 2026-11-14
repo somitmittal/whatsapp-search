@@ -10,6 +10,7 @@ const WA_ICONS = {
   chevron: '<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true"><path d="M12 15.5 6.6 10.1 8 8.7l4 4 4-4 1.4 1.4z"/></svg>',
   reply: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M10 8.5V13a1 1 0 0 1-1.7.71l-4.6-4.6a1 1 0 0 1 0-1.41l4.6-4.6A1 1 0 0 1 10 3.8V5.5c5.6.3 9.7 3.7 10.9 9.1.4 1.7.2 3-.2 4.3-.2.6-1 .7-1.4.2-2.4-3.4-5.4-5.6-9.3-6.3z"/></svg>',
   forward: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M14 8.5V13a1 1 0 0 0 1.7.71l4.6-4.6a1 1 0 0 0 0-1.41l-4.6-4.6A1 1 0 0 0 14 3.8V5.5C8.4 5.8 4.3 9.2 3.1 14.6c-.4 1.7-.2 3 .2 4.3.2.6 1 .7 1.4.2 2.4-3.4 5.4-5.6 9.3-6.3z"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>',
   edit: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M14.1 6.3 17.7 9.9 9 18.6l-3.4.7a.7.7 0 0 1-.8-.8l.7-3.4 8.6-8.8zm1.4-1.4a1.6 1.6 0 0 0-2.3 0l-8.8 9a1.6 1.6 0 0 0-.43.8l-.77 3.9a1.7 1.7 0 0 0 2 2l3.9-.77c.3-.1.6-.24.8-.43l9-8.8a1.6 1.6 0 0 0 0-2.3l-3.4-3.4z"/></svg>',
   delete: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M9.5 4h5a1 1 0 0 1 1 1v.5H19a1 1 0 1 1 0 2h-.6l-.7 10.6A2.5 2.5 0 0 1 15.2 20.5H8.8a2.5 2.5 0 0 1-2.5-2.4L5.6 7.5H5a1 1 0 1 1 0-2h3.5V5a1 1 0 0 1 1-1zm.5 2h4v-.5h-4V6zm-3.3 1.5.6 10.75c.03.55.48.75 1 .75h6.4c.52 0 .97-.2 1-.75l.6-10.75H6.7zM10 9.5a.75.75 0 0 1 .75.75v6a.75.75 0 1 1-1.5 0v-6A.75.75 0 0 1 10 9.5zm4 0a.75.75 0 0 1 .75.75v6a.75.75 0 1 1-1.5 0v-6A.75.75 0 0 1 14 9.5z"/></svg>',
   react: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM1.5 12C1.5 6.2 6.2 1.5 12 1.5S22.5 6.2 22.5 12 17.8 22.5 12 22.5 1.5 17.8 1.5 12zM8.4 7.6a4 4 0 0 1 2.9 1.1 1 1 0 1 1-1.3 1.4 2 2 0 0 0-2.9 0L5.7 8.7a4 4 0 0 1 2.7-1.1zm7.2 0a4 4 0 0 1 2.7 1.1l-1.4 1.4a2 2 0 0 0-2.9 0 1 1 0 1 1-1.3-1.4 4 4 0 0 1 2.9-1.1z"/><path d="M12 13.2c2.2 0 4 1.4 4 3.1 0 .9-.5 1.7-1.2 2.2a1 1 0 0 1-.8.1 6.6 6.6 0 0 0-4 0 1 1 0 0 1-.8-.1c-.7-.5-1.2-1.3-1.2-2.2 0-1.7 1.8-3.1 4-3.1z"/></svg>',
@@ -65,8 +66,153 @@ export function closeMessageMenus() {
   document.querySelectorAll('.wa-msg-menu:not([hidden])').forEach((menu) => { menu.hidden = true; });
 }
 
+/** Extracts canonical plain text to copy from a message model. */
+export function extractMessageCopyText(m) {
+  if (!m) return '';
+  if (m.contactPayload) {
+    try {
+      const p = typeof m.contactPayload === 'string' ? JSON.parse(m.contactPayload) : m.contactPayload;
+      if (p?.contacts?.length) {
+        const lines = [];
+        for (const c of p.contacts) {
+          const name = (c.displayName || '').trim();
+          if (name) lines.push(name);
+          if (c.organization) lines.push(`Org: ${c.organization}`);
+          for (const ph of c.phones || []) {
+            const rawPh = String(ph || '').trim();
+            if (rawPh) lines.push(`Phone: ${rawPh}`);
+          }
+          for (const em of c.emails || []) {
+            const rawEm = String(em || '').trim();
+            if (rawEm) lines.push(`Email: ${rawEm}`);
+          }
+        }
+        if (lines.length) return lines.join('\n');
+      }
+    } catch (_) {}
+  }
+  const text = (m.text != null ? String(m.text) : '').trim();
+  const cap = (m.mediaCaption != null ? String(m.mediaCaption) : '').trim();
+  if (text && cap && text !== cap) {
+    return `${cap}\n${text}`;
+  }
+  if (text) return text;
+  if (cap) return cap;
+  if (m.mediaType) return `[${m.mediaType}]`;
+  return '';
+}
+
+/** Resolves copyable text for a message block from button attribute or rendered DOM fallback. */
+export function getMessageBlockCopyText(block, copyBtn = null) {
+  if (copyBtn && copyBtn.hasAttribute('data-copy-text')) {
+    const raw = copyBtn.getAttribute('data-copy-text');
+    if (raw !== null && raw !== '') return raw;
+  }
+  if (!block) return '';
+  const bubble = block.querySelector?.('.bubble') || block;
+  const textEl = bubble.querySelector?.('.text');
+  if (textEl && textEl.innerText?.trim()) return textEl.innerText.trim();
+  const capEl = bubble.querySelector?.('.media-cap');
+  if (capEl && capEl.innerText?.trim()) return capEl.innerText.trim();
+  const contactCard = bubble.querySelector?.('.msg-contact-card');
+  if (contactCard && contactCard.innerText?.trim()) return contactCard.innerText.trim();
+  const docLink = bubble.querySelector?.('.msg-media-doc');
+  if (docLink && docLink.innerText?.trim()) return docLink.innerText.trim();
+  return '';
+}
+
+/** Robust clipboard write with navigator.clipboard and execCommand textarea fallback. */
+export async function copyTextToClipboard(text) {
+  const content = String(text ?? '');
+  if (!content) return false;
+  try {
+    if (typeof navigator !== 'undefined' && navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(content);
+      return true;
+    }
+  } catch (_) {}
+  try {
+    if (typeof document !== 'undefined') {
+      const ta = document.createElement('textarea');
+      ta.value = content;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '-9999px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (ok) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/** WhatsApp-style temporary pill toast confirming message copied. */
+export function showMessageToast(msg) {
+  if (typeof document === 'undefined') return;
+  let toast = document.getElementById('wa-message-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'wa-message-toast';
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    toast.style.cssText = [
+      'position:fixed',
+      'bottom:24px',
+      'left:50%',
+      'transform:translateX(-50%)',
+      'background:#1f2c34',
+      'color:#e9edef',
+      'padding:8px 18px',
+      'border-radius:18px',
+      'font-size:13px',
+      'font-weight:500',
+      'box-shadow:0 4px 14px rgba(0,0,0,0.3)',
+      'z-index:99999',
+      'pointer-events:none',
+      'transition:opacity 0.25s ease, transform 0.25s ease',
+      'opacity:0',
+      'white-space:nowrap',
+    ].join(';');
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.style.transform = 'translateX(-50%) translateY(0)';
+  toast.style.opacity = '1';
+  clearTimeout(toast._hideTimer);
+  toast._hideTimer = setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(-50%) translateY(6px)';
+  }, 2200);
+  if (typeof toast._hideTimer?.unref === 'function') {
+    toast._hideTimer.unref();
+  }
+}
+
+/** Shared click handler for [data-wa-copy] buttons. */
+export async function handleMessageCopyClick(copyBtn, target = null) {
+  const block = target?.closest?.('.msg-block') || copyBtn?.closest?.('.msg-block');
+  closeMessageMenus();
+  const text = getMessageBlockCopyText(block, copyBtn);
+  if (text) {
+    await copyTextToClipboard(text);
+    showMessageToast('Message copied');
+    return true;
+  }
+  showMessageToast('Nothing to copy');
+  return false;
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('click', (event) => {
+    const copyBtn = event.target?.closest?.('[data-wa-copy]');
+    if (copyBtn) {
+      void handleMessageCopyClick(copyBtn, event.target);
+      return;
+    }
     if (event.target?.closest?.('.wa-msg-menu')) closeMessageMenus();
     if (!event.target?.closest?.('.bubble-toolbar')) {
       closeReactionEmojiPickers();
@@ -509,6 +655,8 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     if (liveOk) {
       menu += menuRow('mi-react', 'data-wa-emoji-picker-toggle="1"', WA_ICONS.react, 'React');
     }
+    const copyText = extractMessageCopyText(m);
+    menu += menuRow('mi-copy', `data-wa-copy="1" data-copy-text="${escAttr(copyText)}"`, WA_ICONS.copy, 'Copy message');
     menu += menuRow('mi-ai', `data-wa-ai-search="1" data-ai-preview="${escAttr(previewTxt)}"`, aiSvg, 'AI search');
     if (canForward) {
       menu += menuRow('mi-forward', `data-wa-forward="1" data-forward-preview="${escAttr(previewTxt)}"${replyMetaAttrs}`, WA_ICONS.forward, 'Forward');

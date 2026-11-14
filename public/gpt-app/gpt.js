@@ -26,6 +26,7 @@ import {
   buildChatMessagesHtml,
   captureChatScrollAnchor,
   closeReactionEmojiPickers,
+  handleMessageCopyClick,
   messagesPaintFingerprint,
   postWaReaction,
   restoreChatScroll,
@@ -2444,6 +2445,12 @@ function wire() {
     if (menuBtn) {
       e.stopPropagation();
       toggleMessageMenu(menuBtn);
+      return;
+    }
+    const copyBtn = e.target.closest('[data-wa-copy]');
+    if (copyBtn) {
+      e.stopPropagation();
+      await handleMessageCopyClick(copyBtn, e.target);
       return;
     }
     const mediaRetry = e.target.closest('[data-wa-media-retry]');

@@ -11,6 +11,7 @@ import {
   applyResolvedSenderNamesToDom,
   buildChatMessagesHtml,
   closeReactionEmojiPickers,
+  handleMessageCopyClick,
   mediaIndexStateHtml,
   postWaReaction,
   renderMessages,
@@ -608,6 +609,12 @@ export function initChatView() {
     if (menuBtn) {
       e.stopPropagation();
       toggleMessageMenu(menuBtn);
+      return;
+    }
+    const copyBtn = e.target.closest('[data-wa-copy]');
+    if (copyBtn) {
+      e.stopPropagation();
+      await handleMessageCopyClick(copyBtn, e.target);
       return;
     }
     const aiBtn = e.target.closest('[data-wa-ai-search]');
