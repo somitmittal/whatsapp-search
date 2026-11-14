@@ -1010,7 +1010,11 @@ export default class WebServer {
               }));
               this._broadcast({
                 type: 'sender-names-resolved',
-                data: { updates },
+                data: {
+                  chatJid: jid,
+                  chatTouches: targets.map((tJid) => ({ chatJid: tJid })),
+                  updates,
+                },
               }, tid);
             }
           } catch (e) {

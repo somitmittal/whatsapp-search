@@ -38,14 +38,21 @@ export function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = ((h 
  * reverse). Pass `linkedJids` (from store.activeChatLinkedJids) so those still match.
  */
 export function eventTouchesChat(data, chatJid, linkedJids = null) {
-  if (!chatJid) return false;
+  if (!chatJid || !data) return false;
   const aliases = new Set(
     [chatJid, ...(Array.isArray(linkedJids) ? linkedJids : [])]
       .filter(Boolean)
       .map(String),
   );
-  if (data?.chatJid && aliases.has(String(data.chatJid))) return true;
-  const touches = data?.chatTouches;
-  if (!Array.isArray(touches) || !touches.length) return true; // legacy / import broadcasts
-  return touches.some((t) => t?.chatJid && aliases.has(String(t.chatJid)));
+  if (data.chatJid) {
+    return aliases.has(String(data.chatJid));
+  }
+  const touches = data.chatTouches;
+  if (Array.isArray(touches)) {
+    return touches.length === 0 || touches.some((t) => t?.chatJid && aliases.has(String(t.chatJid)));
+  }
+  if (Array.isArray(data.updates)) {
+    return data.updates.some((u) => u?.senderJid && aliases.has(String(u.senderJid)));
+  }
+  return true;
 }

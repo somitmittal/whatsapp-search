@@ -339,29 +339,54 @@ function applyResolvedSenderUpdatesToOpenChat(eventChatJid, updates) {
   if (!Array.isArray(updates) || !updates.length) return;
   const activeJid = state.activeChatJid;
   if (!activeJid) return;
+  const activeAliases = new Set(
+    [activeJid, ...(Array.isArray(store.activeChatLinkedJids) ? store.activeChatLinkedJids : [])]
+      .filter(Boolean)
+      .map(String),
+  );
+  if (eventChatJid && !activeAliases.has(String(eventChatJid))) {
+    return;
+  }
+  const isDirect = !activeJid.endsWith('@g.us')
+    && activeJid !== 'status@broadcast'
+    && !activeJid.endsWith('@broadcast')
+    && !activeJid.endsWith('@imported');
+
+  const validUpdates = isDirect
+    ? updates.filter((u) => u?.sender && (!u.senderJid || activeAliases.has(String(u.senderJid))))
+    : updates.filter((u) => u?.senderJid && u?.sender);
+
+  if (!validUpdates.length) return;
+
   const list = state.chatMessages.get(activeJid);
   if (Array.isArray(list) && list.length) {
     const byJid = new Map(
-      updates.filter((u) => u?.senderJid && u?.sender).map((u) => [u.senderJid, u.sender]),
+      validUpdates.filter((u) => u?.senderJid && u?.sender).map((u) => [u.senderJid, u.sender]),
     );
-    const isDirect = !activeJid.endsWith('@g.us')
-      && activeJid !== 'status@broadcast'
-      && !activeJid.endsWith('@broadcast')
-      && !activeJid.endsWith('@imported');
-    const fallbackDirect = isDirect ? updates.find((u) => u?.sender)?.sender : null;
+    const directUpdate = isDirect ? validUpdates.find((u) => u?.sender) : null;
+    const fallbackDirect = directUpdate ? directUpdate.sender : null;
+    let modified = false;
+
     for (const m of list) {
       if (m.sender === 'You') continue;
       const hit = m.senderJid ? byJid.get(m.senderJid) : null;
-      if (hit) m.sender = hit;
-      else if (isDirect && fallbackDirect) {
-        m.sender = fallbackDirect;
-        if (!m.senderJid && updates[0]?.senderJid) m.senderJid = updates[0].senderJid;
+      if (hit && m.sender !== hit) {
+        m.sender = hit;
+        modified = true;
+      } else if (isDirect && fallbackDirect && m.sender !== fallbackDirect) {
+        if (!m.senderJid || activeAliases.has(String(m.senderJid))) {
+          m.sender = fallbackDirect;
+          if (!m.senderJid && directUpdate?.senderJid) m.senderJid = directUpdate.senderJid;
+          modified = true;
+        }
       }
     }
-    const sorted = [...list].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-    els.waView.dataset.paintFp = messagesPaintFingerprint(sorted, activeJid);
+    if (modified) {
+      const sorted = [...list].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+      els.waView.dataset.paintFp = messagesPaintFingerprint(sorted, activeJid);
+    }
   }
-  applyResolvedSenderNamesToDom(eventChatJid || activeJid, updates);
+  applyResolvedSenderNamesToDom(eventChatJid || activeJid, validUpdates);
   scheduleLoadChats();
 }
 

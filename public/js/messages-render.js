@@ -805,6 +805,7 @@ export function applyResolvedSenderNamesToDom(chatJid, updates) {
   if (typeof document === 'undefined' || !Array.isArray(updates) || !updates.length) return;
   const colors = ['#1fa855','#6b46c1','#d93025','#1a73e8','#e8710a','#9334e6','#0d652d'];
   const updateSenderEl = (el, name) => {
+    if (el.textContent === name) return;
     el.textContent = name;
     if (!el.classList.contains('sender-direct') && el.closest('.msg-block')?.classList.contains('in')) {
       el.style.color = colors[hash(name) % colors.length];
@@ -832,14 +833,28 @@ export function applyResolvedSenderNamesToDom(chatJid, updates) {
     && !String(chatJid).endsWith('@broadcast')
     && !String(chatJid).endsWith('@imported'),
   );
-  if (isDirectChat && updates[0]?.sender) {
-    const directName = updates.find((u) => u?.sender)?.sender;
-    if (directName) {
-      const directEls = document.querySelectorAll(
-        '#cv-messages .msg-block.in .sender.sender-direct, #gpt-wa-view .msg-block.in .sender.sender-direct',
+  if (isDirectChat && updates.length) {
+    const activeJid = store.activeChat || '';
+    const activeAliases = new Set(
+      [activeJid, ...(Array.isArray(store.activeChatLinkedJids) ? store.activeChatLinkedJids : [])]
+        .filter(Boolean)
+        .map(String),
+    );
+    if (activeAliases.has(String(chatJid))) {
+      const directUpdate = updates.find(
+        (u) => u?.sender && (!u.senderJid || activeAliases.has(String(u.senderJid))),
       );
-      for (const el of directEls) {
-        updateSenderEl(el, directName);
+      const directName = directUpdate?.sender;
+      if (directName) {
+        const directEls = document.querySelectorAll(
+          '#cv-messages .msg-block.in .sender.sender-direct, #gpt-wa-view .msg-block.in .sender.sender-direct',
+        );
+        for (const el of directEls) {
+          const elSjid = el.getAttribute('data-sender-jid') || '';
+          if (!elSjid || activeAliases.has(elSjid)) {
+            updateSenderEl(el, directName);
+          }
+        }
       }
     }
   }
