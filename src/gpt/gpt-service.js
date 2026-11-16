@@ -23,6 +23,7 @@ import {
   skillKey,
 } from '../skills/catalog.js';
 import { createSkillRunner, skillPromptBlock } from '../skills/skill-runner.js';
+import { contextualizeQuery } from './query-decomposer.js';
 import { parseSkillInvocation, skillCommand } from '../skills/parse-invocation.js';
 import { naturalExpenseSkillCommand } from '../skills/expense-inputs.js';
 import { SYSTEM_SKILLS } from '../skills/system-skills.js';
@@ -279,7 +280,21 @@ export default class GptService {
     // Only inject comparisons for chats in scope this turn — not the thread home by default
     // when the user @mentioned other sites.
     const expenseHistory = expenseHistoryBlocks(prior, { chatJids: scopeJids });
-    const [pre] = await Promise.all([this.context.prefetch({ query: text, scopeJids })]);
+    const contextualized = contextualizeQuery(text, {
+      prior,
+      scopeChatName,
+      scopeChatJid: effectiveScopeChatJid,
+      directory: this.directory,
+    });
+    const effectiveQuery = contextualized.effectiveQuery;
+    const [pre] = await Promise.all([
+      this.context.prefetch({
+        query: effectiveQuery,
+        scopeJids,
+        intent: contextualized.intent,
+        provider,
+      }),
+    ]);
     const contextText = [
       turnPins.length
         ? `# Active chats this turn: ${turnPins.map((p) => p.chatName || p.chatJid).join(', ')}`
@@ -307,12 +322,15 @@ export default class GptService {
       ? `\n\n(@mentioned this turn: ${resolvedMentions.map((p) => p.chatName || p.chatJid).join(', ')}. `
         + 'If they asked to reconcile, CALL reconcile with no chat arg so each mentioned site runs.)'
       : '';
+    const agentQuery = contextualized.isRetry
+      ? `${text} (Retrying previous question: "${effectiveQuery}")${mentionHint}`
+      : `${text}${mentionHint}`;
     const result = overview || await runAgent({
       provider,
       system: buildSystemPrompt({ db: this.db, businessContext }),
       history,
       contextText,
-      query: `${text}${mentionHint}`,
+      query: agentQuery,
       toolbox: this.toolbox,
       ctx: {
         status,

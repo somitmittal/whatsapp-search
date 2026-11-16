@@ -2952,6 +2952,52 @@ export default class Database {
   }
 
   /**
+   * Structured media retrieval for queries asking for "latest pdf", "recent images", "documents I sent".
+   * Queries indexed messages directly by mediaType, sender, file extension, and time order.
+   */
+  getRecentMediaMessages({ chatJid = null, mediaType = null, sender = null, fileExt = null, limit = 10 } = {}) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
+    const t = getCurrentTenantId();
+    const linkedJids = chatJid ? this.getLinkedJids(chatJid) : null;
+    const where = ['m.tenant_id = ?'];
+    const args = [t];
+
+    if (linkedJids && linkedJids.length > 0) {
+      const ph = linkedJids.map(() => '?').join(',');
+      where.push(`m.chat_jid IN (${ph})`);
+      args.push(...linkedJids);
+    }
+    if (mediaType) {
+      where.push('m.media_type = ?');
+      args.push(mediaType);
+    }
+    if (sender) {
+      where.push('m.sender = ?');
+      args.push(sender);
+    }
+    if (fileExt) {
+      where.push('(m.text LIKE ? OR m.media_path LIKE ? OR m.media_caption LIKE ?)');
+      const pattern = `%.${fileExt}%`;
+      args.push(pattern, pattern, pattern);
+    }
+
+    args.push(safeLimit);
+    return this._db.prepare(`
+      SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
+             m.chat_name AS chatName, m.sender, m.text,
+             m.media_type AS mediaType, m.media_path AS mediaPath, m.media_caption AS mediaCaption,
+             m.media_ai_index AS mediaAiIndex,
+             m.media_index_status AS mediaIndexStatus, m.media_index_error AS mediaIndexError,
+             m.contact_payload AS contactPayload,
+             m.timestamp, 0.0 AS rank
+      FROM messages m
+      WHERE ${where.join(' AND ')}
+      ORDER BY m.timestamp DESC
+      LIMIT ?
+    `).all(...args);
+  }
+
+  /**
    * Sidebar keyword search: one best message hit per chat (FTS), for merging under
    * title matches in the chat list filter.
    * @returns {Array<{ chatJid: string, chatName: string|null, snippet: string, messageId: string|null, messageTs: number|null, rank: number }>}

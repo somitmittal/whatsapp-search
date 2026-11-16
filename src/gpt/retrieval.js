@@ -20,6 +20,13 @@ export function messageBody(m) {
     for (const b of mediaBits) {
       if (!parts.includes(b)) parts.push(b);
     }
+    const pathStr = String(m?.mediaPath || m?.media_path || '');
+    if (pathStr) {
+      const fileName = pathStr.split('/').pop();
+      if (fileName && !parts.some((p) => p.includes(fileName))) {
+        parts.unshift(fileName);
+      }
+    }
     const mediaTag = m?.mediaType ? `[${m.mediaType}]` : '[media]';
     if (parts.length) {
       return `${mediaTag} ${parts.join(' · ')}`;
@@ -181,6 +188,22 @@ export async function hybridSearch({
     vecPromise,
   ]);
 
+  // 4b. Structured Media Retrieval (for documents/PDFs/images/videos)
+  let structuredHits = [];
+  if (typeof db.getRecentMediaMessages === 'function' && (modality || resolvedIntent?.fileExt)) {
+    try {
+      structuredHits = db.getRecentMediaMessages({
+        chatJid,
+        mediaType: modality || (resolvedIntent?.fileExt ? 'document' : null),
+        sender: outboundOnly ? 'You' : null,
+        fileExt: resolvedIntent?.fileExt || null,
+        limit: Math.min(limit, 10),
+      });
+    } catch (e) {
+      console.warn('[HybridSearch:StructuredMedia]', e.message);
+    }
+  }
+
   // 5. Reciprocal Rank Fusion (RRF) with Intent Boosts
   const score = new Map();
   const rowsById = new Map();
@@ -196,6 +219,15 @@ export async function hybridSearch({
   vec.forEach((v, i) => {
     const rrf = 1 / (RRF_K + i + 1);
     score.set(v.id, (score.get(v.id) || 0) + rrf);
+  });
+
+  structuredHits.forEach((m, i) => {
+    rowsById.set(m.id, m);
+    // If user specifically asked for "latest/recent" or a specific fileExt without text, give top priority
+    const priority = (resolvedIntent?.recency === 'latest' || !queryList.some((q) => q.length > 3))
+      ? (10.0 / (i + 1))
+      : (1.0 / (RRF_K + i + 1));
+    score.set(m.id, (score.get(m.id) || 0) + priority);
   });
 
   const missing = vec.map((v) => v.id).filter((id) => !rowsById.has(id));

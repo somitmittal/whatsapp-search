@@ -87,6 +87,16 @@ export function parseToolCalls(text) {
   }
   if (calls.length > 0) return calls;
 
+  // 3b. XML / pseudo-token tags: <dots_function_call> ... </dots_function_call>
+  const xmlRe = /<(?:dots_function_call|tool_call|function_call)>\s*(\{[\s\S]*?\})\s*<\/(?:dots_function_call|tool_call|function_call)>/gi;
+  while ((match = xmlRe.exec(str)) !== null) {
+    try {
+      const call = normalizeCallObj(JSON.parse(match[1]));
+      if (call) calls.push(call);
+    } catch { /* ignore */ }
+  }
+  if (calls.length > 0) return calls;
+
   // 4. Standalone JSON tool calls (common in Ollama outputs)
   if (str.startsWith('{') || str.startsWith('[') || str.includes('{"tool"') || str.includes('{"name"')) {
     try {
@@ -139,7 +149,7 @@ async function streamStep(provider, messages, { emit, signal }) {
     if (mode === 'tool') return;
     const head = buf.trimStart();
     if (head.length < 4 && !head.includes('\n')) return;
-    mode = /^(CALL|```|\{\s*"(?:tool|name)")/.test(head) ? 'tool' : 'text';
+    mode = /^(CALL|```|<(?:dots_function_call|tool_call|function_call)|\{\s*"(?:tool|name)")/i.test(head) ? 'tool' : 'text';
     if (mode === 'text') emit?.({ type: 'delta', text: buf });
   });
   return { text: String(text || buf).trim(), streamed: mode === 'text' };
@@ -168,6 +178,7 @@ export async function runAgent({
 
   let payload = {};
   let answer = '';
+  let prevCallSig = '';
   for (let step = 0; step <= GPT_LIMITS.maxSteps; step++) {
     if (signal?.aborted) throw new AbortedError();
     const last = step === GPT_LIMITS.maxSteps;
@@ -176,8 +187,18 @@ export async function runAgent({
 
     const { text, streamed } = await streamStep(provider, messages, { emit, signal });
     const calls = last ? [] : parseToolCalls(text);
+    const callSig = JSON.stringify(calls);
+    if (calls.length && callSig === prevCallSig) {
+      messages.push({ role: 'user', content: 'You repeated the same tool calls. Answer now from what you already have.' });
+      const finalStep = await streamStep(provider, messages, { emit, signal });
+      answer = finalStep.text.replace(/<(?:dots_function_call|tool_call|function_call)[\s\S]*?>/gi, '').split('\n').filter((l) => !CALL_RE.test(l)).join('\n').trim();
+      if (!finalStep.streamed && answer) emit?.({ type: 'delta', text: answer });
+      break;
+    }
+    prevCallSig = callSig;
+
     if (!calls.length) {
-      answer = text.split('\n').filter((l) => !CALL_RE.test(l)).join('\n').trim();
+      answer = text.replace(/<(?:dots_function_call|tool_call|function_call)[\s\S]*?>/gi, '').split('\n').filter((l) => !CALL_RE.test(l)).join('\n').trim();
       if (!streamed && answer) emit?.({ type: 'delta', text: answer });
       break;
     }

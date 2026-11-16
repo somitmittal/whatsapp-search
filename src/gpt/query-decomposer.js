@@ -6,16 +6,57 @@
 
 const FILLER_RE = /\b(?:can\s+you\s+)?(?:please\s+)?(?:search\s+(?:for\s+)?|find\s+(?:me\s+)?(?:the\s+)?|look\s+(?:for\s+)?|show\s+me\s+|where\s+(?:is|are|did\s+i|i\s+sent)\s+|tell\s+me\s+about\s+)\b/gi;
 const IMAGE_RE = /\b(?:image|images|screenshot|screenshots|photo|photos|pic|pics|picture|pictures|receipt|receipts|bill|bills|qr|scan)\b/gi;
-const DOC_RE = /\b(?:doc|docs|document|documents|pdf|pdfs|sheet|excel|csv|file|files)\b/gi;
+const DOC_RE = /\b(?:doc|docs|document|documents|pdf|pdfs|sheet|excel|csv|file|files|report|reports|presentation|deck|ppt|pptx)\b/gi;
 const VIDEO_RE = /\b(?:video|videos|clip|clips|recording)\b/gi;
 const AUDIO_RE = /\b(?:audio|voice|voice\s*note|recording|audio\s*file)\b/gi;
 const OUTBOUND_RE = /\b(?:i\s+sent|sent\s+by\s+me|i\s+shared|i\s+uploaded|my\s+message|from\s+me)\b/i;
+const INBOUND_RE = /\b(?:sent\s+to\s+me|received\s+from|shared\s+with\s+me|they\s+sent|she\s+sent|he\s+sent)\b/i;
+const LATEST_RE = /\b(?:latest|recent|last|newest)\b/i;
+const PDF_RE = /\b(?:pdf|pdfs)\b/i;
+const DOCX_RE = /\b(?:doc|docx|word)\b/i;
+const EXCEL_RE = /\b(?:sheet|excel|csv|xls|xlsx)\b/i;
+const RETRY_RE = /^(?:try\s+again|retry|repeat|do\s+it\s+again|once\s+more|again|find\s+again)\b/i;
 
 function cleanFallbackText(query) {
   return String(query || '')
     .replace(FILLER_RE, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Resolves conversational follow-ups (e.g. "try again", "find again", pronouns "her", "him", "this chat").
+ * Production RAG systems contextualize conversational references into a self-contained query before retrieval.
+ */
+export function contextualizeQuery(query, { prior = [], scopeChatName = null, scopeChatJid = null, directory = null } = {}) {
+  const raw = String(query || '').trim();
+  let effective = raw;
+  let isRetry = false;
+
+  if (RETRY_RE.test(raw)) {
+    isRetry = true;
+    const lastUser = [...prior].reverse().find(
+      (m) => m.role === 'user' && !RETRY_RE.test(String(m.content || '').trim()),
+    );
+    if (lastUser && lastUser.content) {
+      effective = String(lastUser.content).trim();
+    }
+  }
+
+  const intent = heuristicDecompose(effective);
+
+  // If scoped to a known chat, resolve pronouns or context
+  if (scopeChatName && !intent.candidateEntities.includes(scopeChatName)) {
+    if (/\b(?:her|him|them|this\s+(?:group|chat)|here)\b/i.test(effective) || isRetry) {
+      intent.candidateEntities.unshift(scopeChatName);
+    }
+  }
+
+  return {
+    effectiveQuery: effective,
+    isRetry,
+    intent,
+  };
 }
 
 /**
@@ -32,13 +73,17 @@ export function heuristicDecompose(query) {
   else if (AUDIO_RE.test(q)) modality = 'audio';
 
   const outboundOnly = OUTBOUND_RE.test(q);
+  const inboundOnly = INBOUND_RE.test(q);
+  const recency = LATEST_RE.test(q) ? 'latest' : null;
+  const fileExt = PDF_RE.test(q) ? 'pdf' : (DOCX_RE.test(q) ? 'docx' : (EXCEL_RE.test(q) ? 'xlsx' : null));
 
-  // Strip modality words from query text so "image", "photo", "pdf" are not searched as literal keywords
+  // Strip modality and recency words so "image", "photo", "pdf", "latest" are not searched as literal keywords
   let strippedText = cleaned;
   if (modality === 'image') strippedText = strippedText.replace(IMAGE_RE, ' ');
   else if (modality === 'document') strippedText = strippedText.replace(DOC_RE, ' ');
   else if (modality === 'video') strippedText = strippedText.replace(VIDEO_RE, ' ');
   else if (modality === 'audio') strippedText = strippedText.replace(AUDIO_RE, ' ');
+  if (recency === 'latest') strippedText = strippedText.replace(LATEST_RE, ' ');
   strippedText = strippedText.replace(/\s+/g, ' ').trim();
 
   const lexicalQueries = new Set();
@@ -85,6 +130,9 @@ export function heuristicDecompose(query) {
     semanticQueries: Array.from(semanticQueries),
     modality,
     outboundOnly,
+    inboundOnly,
+    recency,
+    fileExt,
     candidateEntities,
     expandScopeIfEmpty: true,
   };

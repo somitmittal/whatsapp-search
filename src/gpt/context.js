@@ -27,8 +27,9 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
     GROUNDING_PROMPT_RULES,
     [
       'CONTEXT: WhatsApp messages are given as lines "[m123] date · sender: text" grouped under "## Chat name".',
-      'Media messages (images, screenshots, UPI receipts, bills, PDFs) include offline OCR text and tags such as [image] or [document].',
-      'When the user asks to find or search for images, receipts, payment screenshots, bills, or documents (e.g. "search for the image where I sent 100Rs", "find payment screenshot"), use `search` to look for keywords, amounts, names, or UPI details if not already in context.',
+      'Media messages (images, screenshots, UPI receipts, bills, PDFs) include offline OCR text, filenames, and tags such as [image] or [document].',
+      'ARCHIVE & FILE ACCESS: You have complete, direct access to the user\'s WhatsApp archive, including all messages, media, photos, documents, and PDFs. When messages or media are present in context, use them directly. NEVER state that you cannot access files, browse attachments, or read PDFs.',
+      'When the user asks to find or search for images, receipts, payment screenshots, bills, or documents (e.g. "search for the image where I sent 100Rs", "find latest pdf", "find payment screenshot"), use `search` to look for keywords, filenames, amounts, names, or UPI details if not already in context.',
       'Cite the messages you rely on with their handle, e.g. [m123], right after the claim. Never invent handles.',
       '@mentions on the current user message set which chats are in scope for this turn only.',
       'When no chat is @mentioned, the thread\'s home chat (see "Pinned chats") is the default.',
@@ -38,7 +39,7 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
       'CALL {"tool":"search","args":{"query":"cement delivery","chat":"Site 2"}}',
       'You may issue several CALL lines at once; they run in parallel. Results come back and you continue.',
       'Prefer answering straight away when the context already answers the question.',
-      'For expense reconciliation, retries ("try again"), or other sites, CALL reconcile.',
+      'For expense reconciliation or other sites, CALL reconcile.',
       'When several chats are @mentioned this turn, CALL reconcile once with no chat arg (it runs each mentioned site).',
       'When only one site is needed, CALL reconcile with that chat name.',
       'If the user named a day (e.g. 10th Oct, yesterday), pass it as date in reconcile args so the skill picks that day\'s sheet.',
@@ -173,7 +174,7 @@ export class ContextEngine {
     this.mediaIndexService = mediaIndexService;
   }
 
-  async prefetch({ query, scopeJids = [], provider = null }) {
+  async prefetch({ query, scopeJids = [], provider = null, intent = null }) {
     const budget = GPT_LIMITS.contextTokens;
     const range = detectTimeRange(query);
     const broad = isBroadQuery(query);
@@ -184,14 +185,14 @@ export class ContextEngine {
     const scoped = [...new Set(scopeJids.filter(Boolean))];
 
     const currentChatName = scoped.length === 1 ? this.directory.name(scoped[0]) : null;
-    const intent = await decomposeQuery(query, {
+    const resolvedIntent = intent || await decomposeQuery(query, {
       provider,
       currentChatName,
     }).catch(() => null);
 
     const candidateJids = [];
-    if (Array.isArray(intent?.candidateEntities)) {
-      for (const ent of intent.candidateEntities) {
+    if (Array.isArray(resolvedIntent?.candidateEntities)) {
+      for (const ent of resolvedIntent.candidateEntities) {
         const resolved = this.directory.resolve(ent);
         if (resolved?.chatJid && !scoped.includes(resolved.chatJid) && !candidateJids.includes(resolved.chatJid)) {
           candidateJids.push(resolved.chatJid);
@@ -209,12 +210,12 @@ export class ContextEngine {
       : chatsToSearch.map((jid) => hybridSearch({
         db: this.db,
         embeddings: this.embeddings,
-        query: intent?.cleanedQuery || query,
+        query: resolvedIntent?.cleanedQuery || query,
         chatJid: jid,
         startTs: range?.startTs ?? null,
         endTs: range?.endTs ?? null,
         mediaIndexService: this.mediaIndexService,
-        intent,
+        intent: resolvedIntent,
       }));
     const searchResults = await Promise.all(searches.map((p) => p.catch(() => ({ messages: [] }))));
 
