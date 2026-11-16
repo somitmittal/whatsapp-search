@@ -1502,7 +1502,8 @@ function renderA2UiMediaDeck(sources = []) {
   const cardsHtml = mediaSources.map((s) => {
     const isImage = s.mediaType === 'image' || s.mediaType === 'sticker';
     const isPdf = s.mediaType === 'document' || String(s.text || '').toLowerCase().includes('.pdf');
-    const mediaUrl = s.messageId ? `/api/message-media?messageId=${encodeURIComponent(s.messageId)}` : '';
+    const hasMedia = Boolean(s.hasMediaFile);
+    const mediaUrl = s.messageId && hasMedia ? `/api/message-media?messageId=${encodeURIComponent(s.messageId)}` : '';
 
     let ocrSnippet = s.mediaAiIndex || '';
     if (!ocrSnippet && s.text && s.text.startsWith('[')) {
@@ -1510,7 +1511,7 @@ function renderA2UiMediaDeck(sources = []) {
     }
     const snippetClean = ocrSnippet ? esc(ocrSnippet.slice(0, 160)) : '';
 
-    const previewHtml = isImage && mediaUrl
+    const previewHtml = isImage && hasMedia && mediaUrl
       ? `<div class="a2ui-thumb-wrap">
           <img src="${escAttr(mediaUrl)}" alt="Media preview" class="a2ui-thumb" loading="lazy" />
           <span class="a2ui-badge-pill">OCR Ready</span>
@@ -1523,7 +1524,7 @@ function renderA2UiMediaDeck(sources = []) {
             <line x1="16" y1="17" x2="8" y2="17"></line>
             <polyline points="10 9 9 9 8 9"></polyline>
           </svg>
-          <span class="a2ui-badge-pill">${isPdf ? 'PDF / Doc' : 'Media'}</span>
+          <span class="a2ui-badge-pill">${isPdf ? 'PDF / Doc' : (hasMedia ? 'Media' : 'Pending')}</span>
          </div>`;
 
     return `
@@ -1536,9 +1537,10 @@ function renderA2UiMediaDeck(sources = []) {
           </div>
           ${snippetClean ? `<div class="a2ui-ocr-snippet" title="${escAttr(ocrSnippet)}"><span class="a2ui-ocr-tag">OCR</span> ${snippetClean}</div>` : ''}
           <div class="a2ui-actions">
-            ${isImage && mediaUrl ? `<button type="button" class="a2ui-btn a2ui-btn-view" data-media-url="${escAttr(mediaUrl)}" data-caption="${escAttr(s.chatName || '')}">View Full</button>` : ''}
+            ${isImage && hasMedia && mediaUrl ? `<button type="button" class="a2ui-btn a2ui-btn-view" data-media-url="${escAttr(mediaUrl)}" data-caption="${escAttr(s.chatName || '')}">View Full</button>` : ''}
+            ${!hasMedia && s.messageId ? `<button type="button" class="a2ui-btn a2ui-btn-fetch" data-msg-id="${escAttr(s.messageId)}" data-chat-jid="${escAttr(s.chatJid || '')}">Download</button>` : ''}
             <button type="button" class="a2ui-btn a2ui-btn-jump" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}" data-msg-id="${escAttr(s.messageId || '')}">View in Chat</button>
-            ${mediaUrl ? `<a href="${escAttr(mediaUrl)}" download class="a2ui-btn a2ui-btn-download" title="Download media">Download</a>` : ''}
+            ${hasMedia && mediaUrl ? `<a href="${escAttr(mediaUrl)}" download class="a2ui-btn a2ui-btn-download" title="Download media">Download</a>` : ''}
           </div>
         </div>
       </div>
@@ -2531,8 +2533,30 @@ function wire() {
     if (sendBtn) { await confirmSkillSend(sendBtn); return; }
 
     const a2uiView = e.target.closest('.a2ui-btn-view');
-    if (a2uiView?.dataset.mediaUrl) {
-      openChatImageViewer(a2uiView.dataset.mediaUrl, 'Media preview', a2uiView.dataset.caption || '');
+    if (a2uiView) {
+      const mediaUrl = a2uiView.dataset.mediaUrl;
+      if (!mediaUrl) {
+        alert('Media file is not downloaded yet. View in chat to download.');
+        return;
+      }
+      openChatImageViewer(mediaUrl, 'Media preview', a2uiView.dataset.caption || '');
+      return;
+    }
+
+    const a2uiFetch = e.target.closest('.a2ui-btn-fetch');
+    if (a2uiFetch?.dataset.msgId) {
+      const mid = a2uiFetch.dataset.msgId;
+      const jid = a2uiFetch.dataset.chatJid || state.activeChatJid;
+      a2uiFetch.disabled = true;
+      a2uiFetch.textContent = 'Requesting…';
+      try {
+        await priorityLoadChat(jid, { alertResult: false, messageId: mid, requestHistory: true });
+        a2uiFetch.textContent = 'Requested';
+        setTimeout(() => { a2uiFetch.textContent = 'Download'; a2uiFetch.disabled = false; }, 3000);
+      } catch {
+        a2uiFetch.textContent = 'Failed';
+        setTimeout(() => { a2uiFetch.textContent = 'Download'; a2uiFetch.disabled = false; }, 2000);
+      }
       return;
     }
 

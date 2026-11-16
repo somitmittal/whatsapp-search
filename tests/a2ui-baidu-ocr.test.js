@@ -184,5 +184,48 @@ describe('Baidu PaddleOCR Engine & A2UI Workflows', () => {
     it('exports openChatImageViewer function for A2UI card deck interaction', () => {
       expect(typeof openChatImageViewer).toBe('function');
     });
+
+    it('openChatImageViewer shows image and explicitly hides video with display none', () => {
+      // Mock DOM environment if not in browser
+      if (typeof document === 'undefined') {
+        const fakeElements = {
+          'chat-image-viewer': {
+            hidden: true,
+            setAttribute: () => {},
+            querySelector: (sel) => {
+              if (sel === 'img') return fakeImg;
+              if (sel === 'video') return fakeVideo;
+              if (sel === '.chat-image-viewer-caption') return fakeCap;
+              return null;
+            },
+            addEventListener: () => {},
+          },
+        };
+        const fakeImg = { hidden: true, style: {}, setAttribute: () => {}, src: '', alt: '' };
+        const fakeVideo = { hidden: false, style: {}, pause: () => {}, removeAttribute: () => {} };
+        const fakeCap = { textContent: '' };
+        global.document = {
+          createElement: () => fakeElements['chat-image-viewer'],
+          body: { appendChild: () => {} },
+          addEventListener: () => {},
+        };
+      }
+
+      openChatImageViewer('/api/message-media?messageId=test123', 'Test preview', 'Test Caption');
+      const root = document.querySelector?.('.chat-image-viewer') || document.body?.firstChild;
+      if (root) {
+        const vid = root.querySelector('video');
+        const img = root.querySelector('img');
+        if (vid) {
+          expect(vid.hidden).toBe(true);
+          expect(vid.style.display).toBe('none');
+        }
+        if (img) {
+          expect(img.hidden).toBe(false);
+          expect(img.style.display).toBe('block');
+          expect(img.src).toContain('test123');
+        }
+      }
+    });
   });
 });

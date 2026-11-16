@@ -233,11 +233,18 @@ function closeChatImageViewer() {
   imageViewerEl.hidden = true;
   imageViewerEl.setAttribute('aria-hidden', 'true');
   const image = imageViewerEl.querySelector('img');
-  if (image) image.removeAttribute('src');
+  if (image) {
+    image.removeAttribute('src');
+    image.hidden = true;
+    image.style.display = 'none';
+    image.onerror = null;
+  }
   const video = imageViewerEl.querySelector('video');
   if (video) {
     try { video.pause(); } catch { /* ignore */ }
     video.removeAttribute('src');
+    video.hidden = true;
+    video.style.display = 'none';
     try { video.load(); } catch { /* ignore */ }
   }
 }
@@ -250,7 +257,7 @@ function ensureChatMediaViewer() {
   imageViewerEl.setAttribute('role', 'dialog');
   imageViewerEl.setAttribute('aria-modal', 'true');
   imageViewerEl.setAttribute('aria-label', 'Media preview');
-  imageViewerEl.innerHTML = '<button class="chat-image-viewer-close" type="button" aria-label="Close">×</button><div class="chat-image-viewer-stage"><img alt="" hidden><video class="chat-image-viewer-video" controls playsinline hidden></video></div><div class="chat-image-viewer-caption"></div>';
+  imageViewerEl.innerHTML = '<button class="chat-image-viewer-close" type="button" aria-label="Close">×</button><div class="chat-image-viewer-stage"><img alt="" hidden style="display:none"><video class="chat-image-viewer-video" controls playsinline hidden style="display:none"></video></div><div class="chat-image-viewer-caption"></div>';
   document.body.appendChild(imageViewerEl);
   imageViewerEl.addEventListener('click', (event) => {
     if (event.target === imageViewerEl || event.target.closest('.chat-image-viewer-close')) closeChatImageViewer();
@@ -268,15 +275,27 @@ export function openChatImageViewer(source, alt = '', caption = '') {
   if (video) {
     try { video.pause(); } catch { /* ignore */ }
     video.hidden = true;
+    video.style.display = 'none';
     video.removeAttribute('src');
   }
-  if (image) {
-    image.hidden = false;
-    image.src = source;
-    image.alt = alt || 'Chat image';
-  }
   const captionEl = root.querySelector('.chat-image-viewer-caption');
-  if (captionEl) captionEl.textContent = caption;
+  if (image) {
+    if (source) {
+      image.hidden = false;
+      image.style.display = 'block';
+      image.onerror = () => {
+        if (captionEl) captionEl.textContent = `${caption ? caption + ' · ' : ''}Media file is not available locally. View in chat or download from WhatsApp.`;
+      };
+      image.src = source;
+      image.alt = alt || 'Chat image';
+    } else {
+      image.hidden = true;
+      image.style.display = 'none';
+      image.removeAttribute('src');
+      if (captionEl) captionEl.textContent = `${caption ? caption + ' · ' : ''}Media file not downloaded. View in chat or download from WhatsApp.`;
+    }
+  }
+  if (captionEl && source) captionEl.textContent = caption;
   root.hidden = false;
   root.setAttribute('aria-hidden', 'false');
 }
@@ -291,15 +310,25 @@ function openChatVideoViewer(source, caption = '') {
   const video = root.querySelector('video');
   if (image) {
     image.hidden = true;
+    image.style.display = 'none';
     image.removeAttribute('src');
-  }
-  if (video) {
-    video.hidden = false;
-    video.src = source;
-    video.play?.().catch(() => {});
+    image.onerror = null;
   }
   const captionEl = root.querySelector('.chat-image-viewer-caption');
-  if (captionEl) captionEl.textContent = caption;
+  if (video) {
+    if (source) {
+      video.hidden = false;
+      video.style.display = 'block';
+      video.src = source;
+      video.play?.().catch(() => {});
+    } else {
+      video.hidden = true;
+      video.style.display = 'none';
+      video.removeAttribute('src');
+      if (captionEl) captionEl.textContent = `${caption ? caption + ' · ' : ''}Video file not downloaded. View in chat or download from WhatsApp.`;
+    }
+  }
+  if (captionEl && source) captionEl.textContent = caption;
   root.hidden = false;
   root.setAttribute('aria-hidden', 'false');
 }

@@ -1051,6 +1051,22 @@ html[data-theme="dark"] .btn-cancel { background: #1f2c33; color: #e9edef; }
   color: var(--accent-2);
   font-weight: 600;
 }
+.a2ui-btn-fetch {
+  color: var(--accent-2);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.a2ui-btn-fetch:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.chat-image-viewer-stage [hidden],
+.chat-image-viewer-stage img[hidden],
+.chat-image-viewer-stage video[hidden] {
+  display: none !important;
+}
 
 .gpt-assistant .expense-diff { color: #111b21; }
 
