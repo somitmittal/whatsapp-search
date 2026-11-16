@@ -5,11 +5,28 @@ const RRF_K = 60;
 const DAY = 86_400;
 
 export function messageBody(m) {
-  const t = String(m.text || '').trim();
-  if (t) return t;
-  const bits = [m.mediaCaption, m.mediaAiIndex].filter((x) => x && String(x).trim());
-  if (bits.length) return `[${m.mediaType || 'media'}] ${bits.join(' · ')}`;
-  return `[${m.mediaType || 'media'}]`;
+  const rawText = String(m?.text || '').trim();
+  const isPlaceholder = !rawText || /^\[[\w\s]+\]$/.test(rawText);
+  const mediaBits = [m?.mediaCaption, m?.mediaAiIndex]
+    .map((x) => (x ? String(x).trim() : ''))
+    .filter(Boolean);
+
+  if (m?.mediaType || mediaBits.length || m?.hasMediaFile || m?.mediaPath) {
+    const parts = [];
+    if (!isPlaceholder && rawText) {
+      parts.push(rawText);
+    }
+    for (const b of mediaBits) {
+      if (!parts.includes(b)) parts.push(b);
+    }
+    const mediaTag = m?.mediaType ? `[${m.mediaType}]` : '[media]';
+    if (parts.length) {
+      return `${mediaTag} ${parts.join(' · ')}`;
+    }
+    return mediaTag;
+  }
+
+  return rawText || `[${m?.mediaType || 'media'}]`;
 }
 
 function shortDate(ts) {

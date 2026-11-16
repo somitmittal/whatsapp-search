@@ -261,7 +261,7 @@ function ensureChatMediaViewer() {
   return imageViewerEl;
 }
 
-function openChatImageViewer(source, alt = '', caption = '') {
+export function openChatImageViewer(source, alt = '', caption = '') {
   const root = ensureChatMediaViewer();
   const image = root.querySelector('img');
   const video = root.querySelector('video');
@@ -279,6 +279,10 @@ function openChatImageViewer(source, alt = '', caption = '') {
   if (captionEl) captionEl.textContent = caption;
   root.hidden = false;
   root.setAttribute('aria-hidden', 'false');
+}
+
+if (typeof window !== 'undefined') {
+  window.openChatImageViewer = openChatImageViewer;
 }
 
 function openChatVideoViewer(source, caption = '') {

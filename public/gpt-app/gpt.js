@@ -28,6 +28,7 @@ import {
   closeReactionEmojiPickers,
   handleMessageCopyClick,
   messagesPaintFingerprint,
+  openChatImageViewer,
   postWaReaction,
   restoreChatScroll,
   senderNeedsResolution,
@@ -1442,6 +1443,67 @@ function stepsHtml(steps = [], open = false) {
     <ul>${steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></details>`;
 }
 
+function renderA2UiMediaDeck(sources = []) {
+  if (!sources || !sources.length) return '';
+  const mediaSources = sources.filter((s) => s && (s.mediaType || s.hasMediaFile || s.mediaAiIndex));
+  if (!mediaSources.length) return '';
+
+  const cardsHtml = mediaSources.map((s) => {
+    const isImage = s.mediaType === 'image' || s.mediaType === 'sticker';
+    const isPdf = s.mediaType === 'document' || String(s.text || '').toLowerCase().includes('.pdf');
+    const mediaUrl = s.messageId ? `/api/message-media?messageId=${encodeURIComponent(s.messageId)}` : '';
+
+    let ocrSnippet = s.mediaAiIndex || '';
+    if (!ocrSnippet && s.text && s.text.startsWith('[')) {
+      ocrSnippet = s.text.replace(/^\[[\w\s]+\]\s*/, '');
+    }
+    const snippetClean = ocrSnippet ? esc(ocrSnippet.slice(0, 160)) : '';
+
+    const previewHtml = isImage && mediaUrl
+      ? `<div class="a2ui-thumb-wrap">
+          <img src="${escAttr(mediaUrl)}" alt="Media preview" class="a2ui-thumb" loading="lazy" />
+          <span class="a2ui-badge-pill">OCR Ready</span>
+         </div>`
+      : `<div class="a2ui-thumb-wrap a2ui-doc-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+          <span class="a2ui-badge-pill">${isPdf ? 'PDF / Doc' : 'Media'}</span>
+         </div>`;
+
+    return `
+      <div class="a2ui-media-card" data-ref="${escAttr(String(s.ref || '').replace(/^m/, ''))}" data-msg-id="${escAttr(s.messageId || '')}" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}">
+        ${previewHtml}
+        <div class="a2ui-card-body">
+          <div class="a2ui-card-meta">
+            <span class="a2ui-meta-chat">${esc(s.chatName || s.chatJid || 'Chat')}</span>
+            <span class="a2ui-meta-date">${esc(fmtTs(s.timestamp))}</span>
+          </div>
+          ${snippetClean ? `<div class="a2ui-ocr-snippet" title="${escAttr(ocrSnippet)}"><span class="a2ui-ocr-tag">OCR</span> ${snippetClean}</div>` : ''}
+          <div class="a2ui-actions">
+            ${isImage && mediaUrl ? `<button type="button" class="a2ui-btn a2ui-btn-view" data-media-url="${escAttr(mediaUrl)}" data-caption="${escAttr(s.chatName || '')}">View Full</button>` : ''}
+            <button type="button" class="a2ui-btn a2ui-btn-jump" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}" data-msg-id="${escAttr(s.messageId || '')}">View in Chat</button>
+            ${mediaUrl ? `<a href="${escAttr(mediaUrl)}" download class="a2ui-btn a2ui-btn-download" title="Download media">Download</a>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="a2ui-media-deck-container">
+      <div class="a2ui-deck-header">
+        <span class="a2ui-deck-title">Media & Documents Found (${mediaSources.length})</span>
+      </div>
+      <div class="a2ui-media-deck">${cardsHtml}</div>
+    </div>
+  `;
+}
+
 function assistantHtml(m) {
   const p = m.payload || {};
   const model = p.model?.model ? `<span class="gpt-msg-model" title="${escAttr(`${p.model.provider} · ${p.model.model}`)}">${esc(shortModel(p.model.model))}</span>` : '';
@@ -1451,6 +1513,7 @@ function assistantHtml(m) {
   return `<div class="gpt-msg gpt-assistant">
     ${stepsHtml(p.steps || [], !!(p.stopped || p.error))}
     <div class="gpt-md">${renderMarkdown(m.content, p.refs || {})}</div>
+    ${renderA2UiMediaDeck(p.sources || [])}
     ${interrupted}
     ${p.expenseDiff ? renderExpenseDiff(p.expenseDiff) : ''}
     ${skillChoicesHtml(p.choices, p.followUpPrompt || null)}
@@ -2412,6 +2475,33 @@ function wire() {
     if (choice?.dataset.skillChoice) { void send(choice.dataset.skillChoice); return; }
     const sendBtn = e.target.closest('[data-send-skill-run]');
     if (sendBtn) { await confirmSkillSend(sendBtn); return; }
+
+    const a2uiView = e.target.closest('.a2ui-btn-view');
+    if (a2uiView?.dataset.mediaUrl) {
+      openChatImageViewer(a2uiView.dataset.mediaUrl, 'Media preview', a2uiView.dataset.caption || '');
+      return;
+    }
+
+    const a2uiJump = e.target.closest('.a2ui-btn-jump');
+    if (a2uiJump?.dataset.chatJid) {
+      const jid = a2uiJump.dataset.chatJid;
+      const name = a2uiJump.dataset.chatName || '';
+      const msgId = a2uiJump.dataset.msgId || '';
+      void openChatTab(jid, name).then(() => {
+        if (msgId) {
+          setTimeout(() => {
+            const target = els.waView.querySelector(`[data-message-id="${CSS.escape(msgId)}"], [data-msg-id="${CSS.escape(msgId)}"]`);
+            if (target) {
+              target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+              target.classList.add('flash');
+              setTimeout(() => target.classList.remove('flash'), 1200);
+            }
+          }, 250);
+        }
+      });
+      return;
+    }
+
     const pin = e.target.closest('[data-pin-jid]');
     if (pin?.dataset.pinJid) {
       addPin({ chatJid: pin.dataset.pinJid, chatName: pin.dataset.pinName || pin.dataset.pinJid });
@@ -2430,6 +2520,12 @@ function wire() {
       card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       card.classList.add('flash');
       setTimeout(() => card.classList.remove('flash'), 900);
+    }
+    const mediaCard = msg?.querySelector(`.a2ui-media-card[data-ref="${CSS.escape(c.dataset.ref)}"]`);
+    if (mediaCard) {
+      mediaCard.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      mediaCard.classList.add('flash');
+      setTimeout(() => mediaCard.classList.remove('flash'), 900);
     }
   });
   els.suggest.innerHTML = SUGGESTIONS.map((s) => `<button type="button" class="chip">${esc(s)}</button>`).join('');

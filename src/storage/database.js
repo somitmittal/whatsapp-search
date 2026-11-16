@@ -2824,6 +2824,8 @@ export default class Database {
       'discussed','recently','today','yesterday','sent','said',
     ]);
     const words = String(query)
+      .replace(/(\d+)(rs|inr|rupees)\b/gi, '$1 $2')
+      .replace(/\b(rs|inr)(\d+)/gi, '$1 $2')
       .replace(/[^\w\s]/g, ' ')
       .toLowerCase()
       .split(/\s+/)

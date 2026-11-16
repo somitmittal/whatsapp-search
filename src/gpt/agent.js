@@ -242,5 +242,8 @@ function toSource(m) {
     sender: m.sender || 'Unknown',
     timestamp: m.timestamp,
     mediaType: m.mediaType || null,
+    hasMediaFile: Boolean(m.hasMediaFile || m.mediaPath),
+    mediaCaption: m.mediaCaption || null,
+    mediaAiIndex: m.mediaAiIndex || null,
   };
 }

@@ -26,6 +26,8 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
     GROUNDING_PROMPT_RULES,
     [
       'CONTEXT: WhatsApp messages are given as lines "[m123] date · sender: text" grouped under "## Chat name".',
+      'Media messages (images, screenshots, UPI receipts, bills, PDFs) include offline OCR text and tags such as [image] or [document].',
+      'When the user asks to find or search for images, receipts, payment screenshots, bills, or documents (e.g. "search for the image where I sent 100Rs", "find payment screenshot"), use `search` to look for keywords, amounts, names, or UPI details if not already in context.',
       'Cite the messages you rely on with their handle, e.g. [m123], right after the claim. Never invent handles.',
       '@mentions on the current user message set which chats are in scope for this turn only.',
       'When no chat is @mentioned, the thread\'s home chat (see "Pinned chats") is the default.',

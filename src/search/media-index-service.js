@@ -2,6 +2,7 @@ import { createRequire } from 'module';
 import { readFileSync } from 'fs';
 import { basename, extname } from 'path';
 import config from '../config.js';
+import { defaultPaddleOcr } from '../ocr/paddle-ocr.js';
 
 const require = createRequire(import.meta.url);
 /** Lazy-load pdf-parse (CommonJS) for PDF text extraction — searchable without vision LLM. */
@@ -190,8 +191,16 @@ export default class MediaIndexService {
         console.warn(`[MediaIndex] PDF parse ${messageId}:`, e.message);
       }
     }
+    let ocrText = '';
+    if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
+      try {
+        ocrText = await defaultPaddleOcr.extractText(mediaPath, buffer);
+      } catch (e) {
+        console.warn(`[MediaIndex] Document OCR ${messageId}:`, e.message);
+      }
+    }
     const cap = String(mediaCaption || '').trim();
-    const combined = [cap, fn, body].filter(Boolean).join('\n').trim().slice(0, 12000);
+    const combined = [cap, fn, body, ocrText].filter(Boolean).join('\n').trim().slice(0, 12000);
     this._db.updateMediaIndexResult?.(messageId, { text: combined || fn || cap || '', status: 'indexed' });
     return true;
   }
@@ -225,6 +234,15 @@ export default class MediaIndexService {
       return this._indexDocument(messageId, mediaPath, buffer, job.mediaCaption);
     }
 
+    let ocrText = '';
+    if (mediaType === 'image' || mediaType === 'sticker') {
+      try {
+        ocrText = await defaultPaddleOcr.extractText(mediaPath, buffer);
+      } catch (ocrErr) {
+        console.warn(`[MediaIndex] OCR ${messageId}:`, ocrErr.message);
+      }
+    }
+
     const b64 = buffer.toString('base64');
     const mime = guessMimeForFile(mediaType, mediaPath);
 
@@ -253,13 +271,10 @@ export default class MediaIndexService {
       aiText = String(aiText || '').trim();
     }
 
-    let finalText = (aiText || '').trim();
-    const fb = (fallback || '').trim();
-    if (fb && !finalText.includes(fb.slice(0, Math.min(80, fb.length)))) {
-      finalText = finalText ? `${finalText}\n${fb}` : fb;
-    }
-    finalText = finalText.trim().slice(0, 12000);
+    const parts = [ocrText, aiText, fallback].filter(Boolean);
+    let finalText = parts.join('\n').trim().slice(0, 12000);
 
+    const hasIndexedContent = Boolean(ocrText || aiText);
     if (!finalText) {
       this._db.updateMediaIndexResult?.(messageId, {
         status: unsupported ? 'unsupported' : 'failed',
@@ -268,10 +283,11 @@ export default class MediaIndexService {
       return false;
     }
 
+    const status = hasIndexedContent ? 'indexed' : (unsupported ? 'unsupported' : 'indexed');
     this._db.updateMediaIndexResult?.(messageId, {
       text: finalText,
-      status: unsupported ? 'unsupported' : 'indexed',
-      error: unsupported ? `Only filename/caption metadata is searchable; ${provider?.name || 'current provider'} does not support ${mediaType} indexing.` : null,
+      status,
+      error: (!hasIndexedContent && unsupported) ? `Only filename/caption metadata is searchable; ${provider?.name || 'current provider'} does not support ${mediaType} indexing.` : null,
     });
     return true;
   }
