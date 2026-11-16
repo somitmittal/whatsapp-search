@@ -2704,11 +2704,19 @@ export default class WaClient {
       out.add(n);
       if (isLidUser(jid)) {
         const pn = await lm.getPNForLID(jid);
-        if (pn) out.add(jidNormalizedUser(pn));
+        if (pn) {
+          const normPn = jidNormalizedUser(pn);
+          out.add(normPn);
+          this._db?.saveLidPnMapping?.(jid, normPn);
+        }
       } else if (isPnUser(jid) || jid?.endsWith?.('@hosted')) {
         const lids = await lm.getLIDsForPNs([jid]);
         const lid = lids?.[0]?.lid;
-        if (lid) out.add(jidNormalizedUser(lid));
+        if (lid) {
+          const normLid = jidNormalizedUser(lid);
+          out.add(normLid);
+          this._db?.saveLidPnMapping?.(normLid, jid);
+        }
       }
     } catch (_) {
       /* mapping optional */
@@ -3291,9 +3299,11 @@ export default class WaClient {
             if (isLidUser(sNorm) && (isPnUser(aNorm) || aNorm.endsWith('@hosted'))) {
               this._lidToPn.set(sNorm, aNorm);
               this._pnToLid.set(aNorm, sNorm);
+              this._db?.saveLidPnMapping?.(sNorm, aNorm);
             } else if ((isPnUser(sNorm) || sNorm.endsWith('@hosted')) && isLidUser(aNorm)) {
               this._pnToLid.set(sNorm, aNorm);
               this._lidToPn.set(aNorm, sNorm);
+              this._db?.saveLidPnMapping?.(aNorm, sNorm);
             }
           }
         } catch (_) {}

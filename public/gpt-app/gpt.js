@@ -572,11 +572,36 @@ function openFreshAskDraft(jid, title, seed = '') {
   else els.input.focus();
 }
 
+function resolveChatDisplayName(jid, fallbackName = null) {
+  if (!jid) return fallbackName || '';
+  // 1) Direct match in state.chats
+  const exact = state.chats.find((c) => c.chatJid === jid);
+  if (exact?.chatName && !exact.chatName.includes('@')) return exact.chatName;
+
+  // 2) Active linked JIDs match
+  if (store.activeChatLinkedJids?.length && store.activeChatLinkedJids.includes(jid)) {
+    const fromLinked = state.chats.find((c) => store.activeChatLinkedJids.includes(c.chatJid));
+    if (fromLinked?.chatName && !fromLinked.chatName.includes('@')) return fromLinked.chatName;
+  }
+
+  // 3) Partial or phone-local match across chats
+  const rawClean = String(jid).replace(/@.*$/, '');
+  const byPart = state.chats.find((c) => String(c.chatJid).startsWith(rawClean));
+  if (byPart?.chatName && !byPart.chatName.includes('@')) return byPart.chatName;
+
+  if (fallbackName && !fallbackName.includes('@')) return fallbackName;
+  return displayChatTitle(jid, fallbackName || jid);
+}
+
 function askAiAboutActiveChat(seed = '') {
   const jid = state.activeChatJid;
   if (!jid) return;
-  const title = els.title.textContent
-    || displayChatTitle(jid, state.chats.find((c) => c.chatJid === jid)?.chatName || jid);
+  const chatRow = state.chats.find((c) => c.chatJid === jid)
+    || (store.activeChatLinkedJids?.length ? state.chats.find((c) => store.activeChatLinkedJids.includes(c.chatJid)) : null);
+  const activeHeader = els.title.textContent && !els.title.textContent.includes('@') && !els.title.textContent.startsWith('Ask about')
+    ? els.title.textContent
+    : null;
+  const title = resolveChatDisplayName(jid, chatRow?.chatName || activeHeader);
 
   // 1) Same Ask draft still in the strip → focus it with chat context (sync).
   const draft = state.openTabs.find((t) => t.kind === 'draft' && t.scopeChatJid === jid);
@@ -920,9 +945,7 @@ function openScopedDraft(tab) {
   const row = state.chats.find((c) => c.chatJid === tab.scopeChatJid);
   // tab.name is the tab label ("Ask: <chat>"), not the chat's own name.
   const fromTab = String(tab.name || '').replace(/^Ask:\s*/, '');
-  const title = row?.chatName
-    ? displayChatTitle(tab.scopeChatJid, row.chatName)
-    : (fromTab || displayChatTitle(tab.scopeChatJid, tab.scopeChatJid));
+  const title = resolveChatDisplayName(tab.scopeChatJid, row?.chatName || fromTab);
   state.pins = [{ type: 'chat', chatJid: tab.scopeChatJid, chatName: title, saved: true }];
   clearReplyTarget();
   clearEditTarget();
@@ -1354,8 +1377,8 @@ async function openConversation(id, { pushUrl = true } = {}) {
   renderModelLabel();
   els.title.textContent = data.conversation?.title || 'Chat';
   if (state.scopeChatJid) {
-    const scopeName = state.pins.find((p) => p.chatJid === state.scopeChatJid)?.chatName
-      || displayChatTitle(state.scopeChatJid, state.scopeChatJid);
+    const rawScopeName = state.pins.find((p) => p.chatJid === state.scopeChatJid)?.chatName;
+    const scopeName = resolveChatDisplayName(state.scopeChatJid, rawScopeName);
     els.input.placeholder = `Ask about ${scopeName}…  (@ to add a chat, / for a skill)`;
   } else {
     els.input.placeholder = 'Ask anything, @ a chat, or / a skill';
@@ -1673,9 +1696,12 @@ async function saveProviderKey(provider, apiKey) {
 /* ── Pills + @mentions ────────────────────────────────────────────── */
 
 function renderPills() {
-  els.pills.innerHTML = state.pins.map((p, i) => `
-    <span class="pill" title="${escAttr(p.chatJid)}">@${esc(p.chatName || p.chatJid)}
-      <button type="button" data-unpin="${i}" aria-label="Remove">×</button></span>`).join('');
+  els.pills.innerHTML = state.pins.map((p, i) => {
+    const name = resolveChatDisplayName(p.chatJid, p.chatName);
+    return `
+    <span class="pill" title="${escAttr(p.chatJid)}">@${esc(name || p.chatJid)}
+      <button type="button" data-unpin="${i}" aria-label="Remove">×</button></span>`;
+  }).join('');
   els.pills.hidden = state.pins.length === 0;
 }
 

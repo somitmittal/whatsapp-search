@@ -1,6 +1,6 @@
 import { createRequire } from 'module';
-import { existsSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { dirname, join } from 'path';
 import config from '../config.js';
 import { buildSearchText } from '../search/fact-extract.js';
 import { getCurrentTenantId } from './tenant-context.js';
@@ -353,6 +353,14 @@ export default class Database {
     const cleaned = this._toFtsQuery(query);
     if (!cleaned) return [];
     const t = getCurrentTenantId();
+    const linkedJids = chatJid ? this.getLinkedJids(chatJid) : null;
+    let chatFilterSql = '';
+    let chatArgs = [];
+    if (linkedJids && linkedJids.length > 0) {
+      const ph = linkedJids.map(() => '?').join(',');
+      chatFilterSql = `AND m.chat_jid IN (${ph})`;
+      chatArgs = linkedJids;
+    }
     return this._db.prepare(`
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
              m.chat_name AS chatName, m.sender, m.text,
@@ -362,10 +370,10 @@ export default class Database {
       INNER JOIN messages m ON m.id = messages_fts.rowid
       WHERE m.tenant_id = ?
         AND messages_fts MATCH ?
-        AND (? IS NULL OR m.chat_jid = ?)
+        ${chatFilterSql}
         AND m.timestamp >= ? AND m.timestamp <= ?
       ORDER BY rank LIMIT ?
-    `).all(t, cleaned, chatJid, chatJid, Number(startTs) || 0, Number(endTs) || 4102444800, safeLimit);
+    `).all(t, cleaned, ...chatArgs, Number(startTs) || 0, Number(endTs) || 4102444800, safeLimit);
   }
 
   /**
@@ -444,6 +452,15 @@ export default class Database {
         created_at INTEGER DEFAULT (unixepoch()),
         UNIQUE(chat_jid, thread_start)
       );
+
+      CREATE TABLE IF NOT EXISTS lid_pn_mappings (
+        tenant_id TEXT NOT NULL,
+        lid TEXT NOT NULL,
+        pn_jid TEXT NOT NULL,
+        updated_at INTEGER DEFAULT (unixepoch()),
+        PRIMARY KEY (tenant_id, lid)
+      );
+      CREATE INDEX IF NOT EXISTS idx_lid_pn_mappings_pn ON lid_pn_mappings(tenant_id, pn_jid);
     `);
 
     // Cross-worker / cross-delivery media deduplication. Claims are short-lived leases:
@@ -2857,6 +2874,14 @@ export default class Database {
     const cleaned = this._toFtsQuery(query);
     if (!cleaned) return [];
     const t = getCurrentTenantId();
+    const linkedJids = chatJid ? this.getLinkedJids(chatJid) : null;
+    let chatFilterSql = '';
+    let chatArgs = [];
+    if (linkedJids && linkedJids.length > 0) {
+      const ph = linkedJids.map(() => '?').join(',');
+      chatFilterSql = `AND m.chat_jid IN (${ph})`;
+      chatArgs = linkedJids;
+    }
     return this._db.prepare(`
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
              m.chat_name AS chatName, m.sender, m.text,
@@ -2869,9 +2894,9 @@ export default class Database {
       INNER JOIN messages m ON m.id = messages_fts.rowid
       WHERE m.tenant_id = ?
         AND messages_fts MATCH ?
-        AND (? IS NULL OR m.chat_jid = ?)
+        ${chatFilterSql}
       ORDER BY rank LIMIT ?
-    `).all(t, cleaned, chatJid, chatJid, safeLimit);
+    `).all(t, cleaned, ...chatArgs, safeLimit);
   }
 
   /**
@@ -3474,6 +3499,107 @@ export default class Database {
       ORDER BY timestamp DESC, id DESC
       LIMIT ? OFFSET ?
     `).all(t, ...jids, lim, off);
+  }
+
+  saveLidPnMapping(lid, pnJid) {
+    if (!lid || !pnJid) return false;
+    const l = String(lid).trim();
+    const p = String(pnJid).trim();
+    if (!l || !p || l === p) return false;
+    const t = getCurrentTenantId();
+    try {
+      this._db.prepare(`
+        INSERT INTO lid_pn_mappings (tenant_id, lid, pn_jid, updated_at)
+        VALUES (?, ?, ?, unixepoch())
+        ON CONFLICT(tenant_id, lid) DO UPDATE SET pn_jid = excluded.pn_jid, updated_at = unixepoch()
+      `).run(t, l, p);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  getLinkedJids(chatJid) {
+    if (!chatJid || typeof chatJid !== 'string') return [];
+    const jid = String(chatJid).trim();
+    if (!jid) return [];
+    if (
+      jid.endsWith('@g.us') ||
+      jid.endsWith('@imported') ||
+      jid.endsWith('@broadcast') ||
+      jid.endsWith('@newsletter') ||
+      jid.endsWith('@bot')
+    ) {
+      return [jid];
+    }
+    const t = getCurrentTenantId();
+    const linked = new Set([jid]);
+
+    // 1) Query lid_pn_mappings table
+    try {
+      if (jid.endsWith('@lid')) {
+        const row = this._db.prepare('SELECT pn_jid FROM lid_pn_mappings WHERE tenant_id = ? AND lid = ?').get(t, jid);
+        if (row?.pn_jid) linked.add(row.pn_jid);
+      } else {
+        const rows = this._db.prepare('SELECT lid FROM lid_pn_mappings WHERE tenant_id = ? AND pn_jid = ?').all(t, jid);
+        for (const r of rows) if (r?.lid) linked.add(r.lid);
+      }
+    } catch (_) {}
+
+    // 2) If not in table, check Baileys auth files on disk if available
+    if (linked.size === 1) {
+      try {
+        const cleanId = jid.replace(/@.*$/, '');
+        const dataDir = config.dataDir || 'data';
+        const authDirs = [
+          join(dataDir, 'tenants', t, '.baileys_auth'),
+          join(dataDir, 'baileys_auth_info'),
+        ];
+        for (const ad of authDirs) {
+          if (!existsSync(ad)) continue;
+          if (jid.endsWith('@lid')) {
+            const p = join(ad, `lid-mapping-${cleanId}_reverse.json`);
+            if (existsSync(p)) {
+              const raw = JSON.parse(readFileSync(p, 'utf8'));
+              if (raw) {
+                const pnJid = `${raw}@s.whatsapp.net`;
+                linked.add(pnJid);
+                this.saveLidPnMapping(jid, pnJid);
+                break;
+              }
+            }
+          } else {
+            const p = join(ad, `lid-mapping-${cleanId}.json`);
+            if (existsSync(p)) {
+              const raw = JSON.parse(readFileSync(p, 'utf8'));
+              if (raw) {
+                const lidJid = `${raw}@lid`;
+                linked.add(lidJid);
+                this.saveLidPnMapping(lidJid, jid);
+                break;
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 3) Check chat_avatars as heuristic fallback
+    if (linked.size === 1) {
+      try {
+        if (!jid.endsWith('@lid')) {
+          const row = this._db.prepare('SELECT rel_path FROM chat_avatars WHERE tenant_id = ? AND chat_jid = ?').get(t, jid);
+          const m = row?.rel_path?.match(/^(\d+)_lid\./);
+          if (m) {
+            const lidJid = `${m[1]}@lid`;
+            linked.add(lidJid);
+            this.saveLidPnMapping(lidJid, jid);
+          }
+        }
+      } catch (_) {}
+    }
+
+    return [...linked];
   }
 
   /**

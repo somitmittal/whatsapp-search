@@ -22,10 +22,21 @@ export default class ChatDirectory {
         lastMessageTs: c.lastMessageTs || 0,
       }))
       .sort((a, b) => b.lastMessageTs - a.lastMessageTs);
+    const byJid = new Map();
+    for (const c of chats) {
+      byJid.set(c.chatJid, c);
+      if (typeof this.db.getLinkedJids === 'function') {
+        const linked = this.db.getLinkedJids(c.chatJid);
+        for (const alt of linked) {
+          if (!byJid.has(alt)) byJid.set(alt, c);
+        }
+      }
+    }
+
     const entry = {
       at: Date.now(),
       chats,
-      byJid: new Map(chats.map((c) => [c.chatJid, c])),
+      byJid,
       fuse: new Fuse(chats, { keys: ['chatName'], threshold: 0.4, ignoreLocation: true, minMatchCharLength: 2 }),
     };
     this._cache.set(tenant, entry);
@@ -34,7 +45,16 @@ export default class ChatDirectory {
 
   name(chatJid) {
     if (!chatJid) return null;
-    const known = this.list().byJid.get(chatJid);
+    const dir = this.list();
+    const known = dir.byJid.get(chatJid);
+    if (known && known.chatName && !known.chatName.includes('@')) return known.chatName;
+    if (typeof this.db.getLinkedJids === 'function') {
+      const linked = this.db.getLinkedJids(chatJid);
+      for (const alt of linked) {
+        const lk = dir.byJid.get(alt);
+        if (lk && lk.chatName && !lk.chatName.includes('@')) return lk.chatName;
+      }
+    }
     if (known) return known.chatName;
     return this.db.getQuickChatInfo(chatJid)?.chatName || chatJid;
   }
@@ -47,6 +67,8 @@ export default class ChatDirectory {
   _searchMessageAliases(query, dir, limit) {
     const q = String(query || '').trim();
     if (q.length < 2 || typeof this.db.searchMessages !== 'function') return [];
+    // JIDs must never be tokenized as message text (prevents matching arbitrary group chats)
+    if (/@(s\.whatsapp\.net|lid|g\.us|hosted|imported|broadcast|newsletter|bot)$/i.test(q)) return [];
     let hits = [];
     try { hits = this.db.searchMessages(q, null, 150) || []; } catch { return []; }
     const byJid = new Map();
@@ -69,6 +91,21 @@ export default class ChatDirectory {
     if (!q) return null;
     const dir = this.list();
     if (dir.byJid.has(q)) return dir.byJid.get(q);
+
+    const isJidPattern = /@(s\.whatsapp\.net|lid|g\.us|hosted|imported|broadcast|newsletter|bot)$/i.test(q);
+    if (isJidPattern) {
+      if (typeof this.db.getLinkedJids === 'function') {
+        const linked = this.db.getLinkedJids(q);
+        for (const alt of linked) {
+          if (dir.byJid.has(alt)) return dir.byJid.get(alt);
+        }
+      }
+      const quick = this.db.getQuickChatInfo?.(q);
+      if (quick) return { chatJid: q, chatName: quick.chatName || q, messageCount: 0, lastMessageTs: 0 };
+      // Never fall through to searchMessageAliases or fuzzy search for a technical JID
+      return null;
+    }
+
     const lower = q.toLowerCase();
     const exact = dir.chats.find((c) => c.chatName.toLowerCase() === lower);
     if (exact) return exact;
