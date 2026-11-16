@@ -2823,15 +2823,32 @@ export default class Database {
       'off','over','under','again','further','once','here','there','find','get','tell',
       'discussed','recently','today','yesterday','sent','said',
     ]);
-    const words = String(query)
+    const rawNormalized = String(query)
+      .replace(/\b(?:t\s*&\s*c|t\s+and\s+c|tnc)\b/gi, 'terms conditions')
       .replace(/(\d+)(rs|inr|rupees)\b/gi, '$1 $2')
       .replace(/\b(rs|inr)(\d+)/gi, '$1 $2')
       .replace(/[^\w\s]/g, ' ')
-      .toLowerCase()
+      .toLowerCase();
+    const baseWords = rawNormalized
       .split(/\s+/)
       .filter(w => w.length > 1 && !STOP_WORDS.has(w));
-    if (words.length === 0) return null;
-    return words.map(w => `"${w}" OR ${w}*`).join(' OR ');
+    if (baseWords.length === 0) return null;
+
+    const expandedWords = new Set();
+    for (const w of baseWords) {
+      expandedWords.add(w);
+      if (w.startsWith('the') && w.length > 5) {
+        const stripped = w.slice(3);
+        if (!STOP_WORDS.has(stripped)) expandedWords.add(stripped);
+      } else if (w.length >= 4 && !w.startsWith('the')) {
+        expandedWords.add(`the${w}`);
+      }
+      if (w === 'bingetown') {
+        expandedWords.add('binge');
+        expandedWords.add('town');
+      }
+    }
+    return [...expandedWords].map(w => `"${w}" OR ${w}*`).join(' OR ');
   }
 
   searchSummaries(query, chatJid = null, limit = 10) {
