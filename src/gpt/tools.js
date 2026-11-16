@@ -5,6 +5,7 @@ import {
   packMessages,
   parseDay,
 } from './retrieval.js';
+import { decomposeQuery } from './query-decomposer.js';
 import { skillCommand } from '../skills/parse-invocation.js';
 import { SYSTEM_SKILLS } from '../skills/system-skills.js';
 
@@ -53,7 +54,7 @@ function dayRange(args) {
  * Tool implementations. Each returns `{ text, messages?, payload? }`; `messages` are
  * registered as citable sources for this turn.
  */
-export function createToolbox({ db, embeddings, directory, runSkill = null }) {
+export function createToolbox({ db, embeddings, directory, runSkill = null, mediaIndexService = null, getProvider = null }) {
   const chatOrNull = (ref) => (ref ? directory.resolve(ref) : null);
   const label = (chat, ref) => (chat ? chat.chatName : ref);
 
@@ -64,12 +65,80 @@ export function createToolbox({ db, embeddings, directory, runSkill = null }) {
       const chat = chatOrNull(args.chat);
       if (args.chat && !chat) return { text: `No chat matches "${args.chat}". Try the chats tool.` };
       const { startTs, endTs } = dayRange(args);
-      const { messages } = await hybridSearch({
-        db, embeddings, query, chatJid: chat?.chatJid || null, startTs, endTs,
+
+      const provider = typeof getProvider === 'function' ? getProvider() : null;
+      const intent = await decomposeQuery(query, {
+        provider,
+        currentChatName: chat?.chatName || null,
+      }).catch(() => null);
+
+      let searchRes = await hybridSearch({
+        db,
+        embeddings,
+        query,
+        chatJid: chat?.chatJid || null,
+        startTs,
+        endTs,
+        mediaIndexService,
+        intent,
       });
-      if (!messages.length) return { text: `No messages found for "${query}"${chat ? ` in ${chat.chatName}` : ''}.` };
+
+      let messages = searchRes.messages;
+      let note = '';
+
+      // Intelligent scope fallback: if scoped search yields 0 hits, try entity chats then global
+      if (!messages.length && chat) {
+        let fallbackChat = null;
+        if (Array.isArray(intent?.candidateEntities) && intent.candidateEntities.length) {
+          for (const ent of intent.candidateEntities) {
+            const found = directory.resolve(ent);
+            if (found && found.chatJid !== chat.chatJid) {
+              fallbackChat = found;
+              break;
+            }
+          }
+        }
+
+        if (fallbackChat) {
+          const fbRes = await hybridSearch({
+            db,
+            embeddings,
+            query,
+            chatJid: fallbackChat.chatJid,
+            startTs,
+            endTs,
+            mediaIndexService,
+            intent,
+          });
+          if (fbRes.messages.length) {
+            messages = fbRes.messages;
+            note = `\n(Note: No matches in "${chat.chatName}", but found ${messages.length} relevant message(s) in "${fallbackChat.chatName}")`;
+          }
+        }
+
+        if (!messages.length && intent?.expandScopeIfEmpty !== false) {
+          const globalRes = await hybridSearch({
+            db,
+            embeddings,
+            query,
+            chatJid: null,
+            startTs,
+            endTs,
+            mediaIndexService,
+            intent,
+          });
+          if (globalRes.messages.length) {
+            messages = globalRes.messages;
+            note = `\n(Note: No matches in "${chat.chatName}", but found ${messages.length} relevant message(s) across other chats)`;
+          }
+        }
+      }
+
+      if (!messages.length) {
+        return { text: `No messages found for "${query}"${chat ? ` in ${chat.chatName}` : ''}.` };
+      }
       const packed = packMessages(messages, budget, new Set());
-      return { text: packed.text, messages };
+      return { text: `${packed.text}${note}`, messages };
     },
 
     async read(args, budget) {

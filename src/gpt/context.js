@@ -165,13 +165,14 @@ export function buildChatOverview(chatName, messages = []) {
  * and summaries for broad questions. Packed into a fixed token budget, deduped by message.
  */
 export class ContextEngine {
-  constructor({ db, embeddings, directory }) {
+  constructor({ db, embeddings, directory, mediaIndexService = null }) {
     this.db = db;
     this.embeddings = embeddings;
     this.directory = directory;
+    this.mediaIndexService = mediaIndexService;
   }
 
-  async prefetch({ query, scopeJids = [] }) {
+  async prefetch({ query, scopeJids = [], provider = null }) {
     const budget = GPT_LIMITS.contextTokens;
     const range = detectTimeRange(query);
     const broad = isBroadQuery(query);
@@ -187,10 +188,12 @@ export class ContextEngine {
       ? scoped.map((jid) => hybridSearch({
         db: this.db, embeddings: this.embeddings, query, chatJid: jid,
         startTs: range?.startTs ?? null, endTs: range?.endTs ?? null,
+        mediaIndexService: this.mediaIndexService,
       }))
       : [hybridSearch({
         db: this.db, embeddings: this.embeddings, query,
         startTs: range?.startTs ?? null, endTs: range?.endTs ?? null,
+        mediaIndexService: this.mediaIndexService,
       })];
     const searchResults = await Promise.all(searches.map((p) => p.catch(() => ({ messages: [] }))));
 

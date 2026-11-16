@@ -2624,6 +2624,41 @@ export default class Database {
     `).all(t, t, ...gate.args, ...orderArgs, n);
   }
 
+  /**
+   * On-demand lookup of unindexed media rows in a specific chat for fast Just-In-Time (JIT) OCR.
+   */
+  getUnindexedMediaForChat(chatJid, limit = 8, { sender = null, mediaType = null } = {}) {
+    if (!chatJid) return [];
+    const t = getCurrentTenantId();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 8, 30));
+    let sql = `
+      SELECT id, message_id AS messageId, chat_jid AS chatJid,
+             media_type AS mediaType, media_path AS mediaPath,
+             media_caption AS mediaCaption, text,
+             media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError,
+             timestamp
+      FROM messages
+      WHERE tenant_id = ?
+        AND chat_jid = ?
+        AND media_path IS NOT NULL AND trim(media_path) != ''
+        AND (media_ai_index IS NULL OR trim(media_ai_index) = '' OR media_index_status IN ('pending', 'failed'))
+    `;
+    const params = [t, chatJid];
+    if (sender) {
+      sql += ' AND sender = ?';
+      params.push(sender);
+    }
+    if (mediaType) {
+      sql += ' AND media_type = ?';
+      params.push(mediaType);
+    } else {
+      sql += " AND media_type IN ('image', 'sticker', 'document')";
+    }
+    sql += ' ORDER BY timestamp DESC LIMIT ?';
+    params.push(safeLimit);
+    return this._db.prepare(sql).all(...params);
+  }
+
   getPendingEmbeddingJobs(limit = 12, priorityChatJid = null, modelId = '', opts = {}) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();

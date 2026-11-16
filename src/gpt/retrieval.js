@@ -1,4 +1,5 @@
 import { GPT_LIMITS, estimateTokens } from './limits.js';
+import { heuristicDecompose } from './query-decomposer.js';
 
 /** Reciprocal-rank-fusion constant from Cormack et al. (2009). */
 const RRF_K = 60;
@@ -115,27 +116,102 @@ export function isBroadQuery(query) {
 }
 
 /**
- * Hybrid retrieval: BM25 (FTS5) + MiniLM vectors fused with RRF, then each top hit is
- * expanded with its neighbours so the model sees the surrounding exchange.
+ * Hybrid multi-query retrieval: BM25 (FTS5) across semantic intent variants + MiniLM vectors
+ * fused with RRF, with JIT on-demand media OCR indexing and modality/direction scoring.
  */
-export async function hybridSearch({ db, embeddings, query, chatJid = null, startTs = null, endTs = null, limit = 20 }) {
+export async function hybridSearch({
+  db,
+  embeddings,
+  query,
+  chatJid = null,
+  startTs = null,
+  endTs = null,
+  limit = 20,
+  mediaIndexService = null,
+  intent = null,
+}) {
   const k = Math.max(limit * 2, 10);
   const ranged = startTs != null || endTs != null;
-  const ftsPromise = Promise.resolve().then(() => (ranged
-    ? db.searchMessagesInRange(query, { chatJid, startTs: startTs ?? 0, endTs: endTs ?? undefined, limit: k })
-    : db.searchMessages(query, chatJid, k)));
-  const vecPromise = embeddings
-    ? embeddings.searchSimilar(query, chatJid, k).catch(() => [])
+
+  // Resolve query decomposition / intent
+  const resolvedIntent = intent || (typeof query === 'string' ? heuristicDecompose(query) : null);
+  const modality = resolvedIntent?.modality || null;
+  const outboundOnly = Boolean(resolvedIntent?.outboundOnly);
+
+  // 1. Just-In-Time (JIT) On-Demand Media Indexing
+  if (mediaIndexService && chatJid && (modality === 'image' || modality === 'document')) {
+    try {
+      await mediaIndexService.indexChatMediaOnDemand(chatJid, {
+        limit: 6,
+        sender: outboundOnly ? 'You' : null,
+        mediaType: modality,
+      });
+    } catch (jitErr) {
+      console.warn('[HybridSearch:JIT]', jitErr.message);
+    }
+  }
+
+  // 2. Build multi-query search variants (canonical + lexical + semantic expansions)
+  const variants = new Set();
+  if (typeof query === 'string' && query.trim()) variants.add(query.trim());
+  if (resolvedIntent?.cleanedQuery) variants.add(resolvedIntent.cleanedQuery);
+  if (Array.isArray(resolvedIntent?.lexicalQueries)) {
+    for (const lq of resolvedIntent.lexicalQueries) if (lq) variants.add(lq);
+  }
+  if (Array.isArray(resolvedIntent?.semanticQueries)) {
+    for (const sq of resolvedIntent.semanticQueries) if (sq) variants.add(sq);
+  }
+  // Cap distinct query variants to avoid query explosion
+  const queryList = Array.from(variants).slice(0, 4);
+  if (!queryList.length && typeof query === 'string') queryList.push(query);
+
+  // 3. Parallel FTS5 queries across all variants
+  const ftsPromises = queryList.map((q) => Promise.resolve().then(() => (ranged
+    ? db.searchMessagesInRange(q, { chatJid, startTs: startTs ?? 0, endTs: endTs ?? undefined, limit: k })
+    : db.searchMessages(q, chatJid, k))).catch(() => []));
+
+  // 4. Vector search
+  const vectorQuery = resolvedIntent?.cleanedQuery || (typeof query === 'string' ? query : '');
+  const vecPromise = embeddings && vectorQuery
+    ? embeddings.searchSimilar(vectorQuery, chatJid, k).catch(() => [])
     : Promise.resolve([]);
-  const [fts, vec] = await Promise.all([ftsPromise.catch(() => []), vecPromise]);
 
+  const [allFtsResults, vec] = await Promise.all([
+    Promise.all(ftsPromises),
+    vecPromise,
+  ]);
+
+  // 5. Reciprocal Rank Fusion (RRF) with Intent Boosts
   const score = new Map();
-  fts.forEach((m, i) => score.set(m.id, (score.get(m.id) || 0) + 1 / (RRF_K + i + 1)));
-  vec.forEach((v, i) => score.set(v.id, (score.get(v.id) || 0) + 1 / (RRF_K + i + 1)));
+  const rowsById = new Map();
 
-  const rowsById = new Map(fts.map((m) => [m.id, m]));
+  for (const ftsHits of allFtsResults) {
+    ftsHits.forEach((m, i) => {
+      rowsById.set(m.id, m);
+      const rrf = 1 / (RRF_K + i + 1);
+      score.set(m.id, (score.get(m.id) || 0) + rrf);
+    });
+  }
+
+  vec.forEach((v, i) => {
+    const rrf = 1 / (RRF_K + i + 1);
+    score.set(v.id, (score.get(v.id) || 0) + rrf);
+  });
+
   const missing = vec.map((v) => v.id).filter((id) => !rowsById.has(id));
-  for (const m of db.getMessagesByRowIds(missing)) rowsById.set(m.id, m);
+  if (missing.length) {
+    for (const m of db.getMessagesByRowIds(missing)) rowsById.set(m.id, m);
+  }
+
+  // Apply modality & direction multipliers
+  for (const [id, currentScore] of score.entries()) {
+    const row = rowsById.get(id);
+    if (!row) continue;
+    let multiplier = 1.0;
+    if (modality && row.mediaType === modality) multiplier *= 1.5;
+    if (outboundOnly && row.sender === 'You') multiplier *= 1.3;
+    if (multiplier !== 1.0) score.set(id, currentScore * multiplier);
+  }
 
   const ranked = [...score.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -155,7 +231,7 @@ export async function hybridSearch({ db, embeddings, query, chatJid = null, star
       out.push(m);
     }
   }
-  return { hits: ranked, messages: out };
+  return { hits: ranked, messages: out, intent: resolvedIntent };
 }
 
 export function formatSummaryLine(s) {

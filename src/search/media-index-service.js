@@ -177,6 +177,29 @@ export default class MediaIndexService {
   }
 
   /**
+   * Just-In-Time (JIT) on-demand OCR indexing for a specific chat during search retrieval.
+   * Extracts text from candidate unindexed media rows on-the-fly in milliseconds.
+   */
+  async indexChatMediaOnDemand(chatJid, { limit = 6, sender = null, mediaType = null } = {}) {
+    if (!chatJid || typeof this._db.getUnindexedMediaForChat !== 'function') return 0;
+    const candidates = this._db.getUnindexedMediaForChat(chatJid, limit, { sender, mediaType });
+    if (!candidates.length) return 0;
+    let indexed = 0;
+    for (const job of candidates) {
+      try {
+        const ok = await this._indexOne(job);
+        if (ok) indexed += 1;
+      } catch (err) {
+        console.warn(`[MediaIndex:JIT] ${job.messageId}:`, err.message);
+      }
+    }
+    if (indexed > 0) {
+      console.log(`[MediaIndex:JIT] Indexed ${indexed} candidate media item(s) on-demand for ${chatJid}`);
+    }
+    return indexed;
+  }
+
+  /**
    * PDF and non-PDF docs: extract text where possible; always include basename + caption for FTS.
    */
   async _indexDocument(messageId, mediaPath, buffer, mediaCaption = '') {

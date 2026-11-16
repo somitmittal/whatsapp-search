@@ -212,6 +212,7 @@ export default class WebServer {
       getProvider: () => searchEngine?._provider || null,
       embeddings: embeddingIndexService || null,
       expenseService: expenseReconciliationService || null,
+      mediaIndexService: this._mediaIndexService,
       // "Memory updated" badge for other open tabs/clients.
       onMemorySaved: (payload, tenantId) => this._broadcast({ type: 'memory-saved', data: payload }, tenantId),
     });
