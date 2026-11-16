@@ -48,6 +48,11 @@ const NON_ENTITY_WORDS = new Set([
   'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
   'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september',
   'october', 'november', 'december', 'am', 'pm', 'today', 'tomorrow', 'yesterday',
+  'whatsapp', 'phone', 'mobile', 'media', 'file', 'files', 'image', 'images', 'video', 'videos',
+  'audio', 'document', 'documents', 'photo', 'photos', 'screenshot', 'screenshots', 'receipt',
+  'receipts', 'pdf', 'pdfs', 'link', 'links', 'url', 'urls', 'app', 'apps', 'text', 'caption',
+  'captions', 'history', 'scroll', 'search', 'terms', 'conditions', 't&c', 'tnc', 'tc',
+  'match', 'matches', 'zero', 'found', 'exist', 'exists', 'bhaiyao', 'bhaiya',
 ]);
 
 /** Characters that can sit between a sentence break and its first word. */
@@ -203,8 +208,9 @@ function dropUngroundedSentences(line, index, removed) {
  * @param {string} sourceText the transcript exactly as it was sent to the model
  * @returns {{ text: string, removed: string[] }}
  */
-export function enforceGroundedAnswer(answer, sourceText) {
-  const index = buildGroundingIndex(sourceText);
+export function enforceGroundedAnswer(answer, sourceText, queryText = '') {
+  const combinedSource = queryText ? `${sourceText}\n${queryText}` : sourceText;
+  const index = buildGroundingIndex(combinedSource);
   const removed = [];
   const kept = [];
 

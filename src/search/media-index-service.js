@@ -31,6 +31,7 @@ function isUnsupportedProviderOutput(text) {
   const t = String(text || '').trim();
   if (!t) return true;
   if (t.startsWith('[') && /not supported|not available|use .* for media/i.test(t)) return true;
+  if (/don't see an image|do not see an image|no image (?:provided|attached)|provide the url|upload the image|paste the url|describe this image|assist you in describing/i.test(t)) return true;
   return false;
 }
 

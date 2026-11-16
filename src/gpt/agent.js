@@ -209,14 +209,22 @@ export async function runAgent({
   }
 
   const historyText = history.map((m) => m.content).join('\n');
-  const sourceText = [...transcriptParts, historyText, ...[...sources.values()].map(messageBody)].join('\n');
-  const grounded = enforceGroundedAnswer(answer, sourceText);
+  const userQueries = [query, ...history.filter((m) => m.role === 'user').map((m) => m.content)].join('\n');
+  const chatNames = [...new Set([...sources.values()].map((m) => m.chatName).concat(ctx?.scopeChatName || []))].filter(Boolean).join(' ');
+  const sourceText = [userQueries, chatNames, ...transcriptParts, historyText, ...[...sources.values()].map(messageBody)].join('\n');
+  const grounded = enforceGroundedAnswer(answer, sourceText, userQueries);
   if (grounded.removed.length) {
     console.log(`[GPT] Dropped ${grounded.removed.length} ungrounded fragment(s): ${grounded.removed.slice(0, 5).join(' | ')}`);
   }
   let finalAnswer = grounded.text;
-  if (!/[\p{L}\p{N}]/u.test(finalAnswer)) finalAnswer = NO_GROUNDED_ANSWER;
-  else if (grounded.removed.length) finalAnswer = `${finalAnswer}\n\n${UNGROUNDED_NOTICE}`;
+  if (!/[\p{L}\p{N}]/u.test(finalAnswer)) {
+    finalAnswer = NO_GROUNDED_ANSWER;
+  } else if (grounded.removed.length) {
+    const isNegativeOrMeta = /\b(?:no\s+messages?|zero\s+matches|not\s+found|could\s+not\s+find|none\s+found|does\s+not\s+exist|if\s+you\s+need|you'd\s+need|you\s+would\s+need)\b/i.test(finalAnswer);
+    if (!isNegativeOrMeta) {
+      finalAnswer = `${finalAnswer}\n\n${UNGROUNDED_NOTICE}`;
+    }
+  }
 
   const cited = [...finalAnswer.matchAll(REF_RE)].map((m) => Number(m[1]));
   const unknown = cited.filter((id) => !sources.has(id));

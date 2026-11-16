@@ -2876,7 +2876,7 @@ export default class Database {
       'discussed','recently','today','yesterday','sent','said',
     ]);
     const rawNormalized = String(query)
-      .replace(/\b(?:t\s*&\s*c|t\s+and\s+c|tnc)\b/gi, 'terms conditions')
+      .replace(/\b(?:t\s*&\s*c|t\s+and\s+c|tnc|\btc\b)\b/gi, 'terms conditions')
       .replace(/(\d+)(rs|inr|rupees)\b/gi, '$1 $2')
       .replace(/\b(rs|inr)(\d+)/gi, '$1 $2')
       .replace(/[^\w\s]/g, ' ')
@@ -2900,7 +2900,7 @@ export default class Database {
         expandedWords.add('town');
       }
     }
-    return [...expandedWords].map(w => `"${w}" OR ${w}*`).join(' OR ');
+    return [...expandedWords].map(w => (w.length >= 4 ? `"${w}" OR ${w}*` : `"${w}"`)).join(' OR ');
   }
 
   searchSummaries(query, chatJid = null, limit = 10) {

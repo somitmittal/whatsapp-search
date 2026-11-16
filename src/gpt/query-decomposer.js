@@ -5,10 +5,10 @@
  */
 
 const FILLER_RE = /\b(?:can\s+you\s+)?(?:please\s+)?(?:search\s+(?:for\s+)?|find\s+(?:me\s+)?(?:the\s+)?|look\s+(?:for\s+)?|show\s+me\s+|where\s+(?:is|are|did\s+i|i\s+sent)\s+|tell\s+me\s+about\s+)\b/gi;
-const IMAGE_RE = /\b(?:image|images|screenshot|screenshots|photo|photos|pic|pics|picture|pictures|receipt|receipts|bill|bills|qr|scan)\b/i;
-const DOC_RE = /\b(?:doc|docs|document|documents|pdf|pdfs|sheet|excel|csv|file|files)\b/i;
-const VIDEO_RE = /\b(?:video|videos|clip|clips|recording)\b/i;
-const AUDIO_RE = /\b(?:audio|voice|voice\s*note|recording|audio\s*file)\b/i;
+const IMAGE_RE = /\b(?:image|images|screenshot|screenshots|photo|photos|pic|pics|picture|pictures|receipt|receipts|bill|bills|qr|scan)\b/gi;
+const DOC_RE = /\b(?:doc|docs|document|documents|pdf|pdfs|sheet|excel|csv|file|files)\b/gi;
+const VIDEO_RE = /\b(?:video|videos|clip|clips|recording)\b/gi;
+const AUDIO_RE = /\b(?:audio|voice|voice\s*note|recording|audio\s*file)\b/gi;
 const OUTBOUND_RE = /\b(?:i\s+sent|sent\s+by\s+me|i\s+shared|i\s+uploaded|my\s+message|from\s+me)\b/i;
 
 function cleanFallbackText(query) {
@@ -33,20 +33,40 @@ export function heuristicDecompose(query) {
 
   const outboundOnly = OUTBOUND_RE.test(q);
 
-  // Extract candidate tokens
-  const words = cleaned
-    .replace(/[^\w\s&]/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w.length > 1);
+  // Strip modality words from query text so "image", "photo", "pdf" are not searched as literal keywords
+  let strippedText = cleaned;
+  if (modality === 'image') strippedText = strippedText.replace(IMAGE_RE, ' ');
+  else if (modality === 'document') strippedText = strippedText.replace(DOC_RE, ' ');
+  else if (modality === 'video') strippedText = strippedText.replace(VIDEO_RE, ' ');
+  else if (modality === 'audio') strippedText = strippedText.replace(AUDIO_RE, ' ');
+  strippedText = strippedText.replace(/\s+/g, ' ').trim();
 
   const lexicalQueries = new Set();
   const semanticQueries = new Set();
 
-  if (cleaned) lexicalQueries.add(cleaned);
+  if (strippedText) {
+    lexicalQueries.add(strippedText);
+    if (/\btc\b/i.test(strippedText)) {
+      lexicalQueries.add(strippedText.replace(/\btc\b/gi, 'terms conditions').replace(/\s+/g, ' ').trim());
+    }
+  } else if (cleaned) {
+    lexicalQueries.add(cleaned);
+  }
+
+  const candidateEntities = extractEntityCandidates(q);
 
   // Common synonym expansions
-  if (/\b(?:t\s*&\s*c|t\s+and\s+c|tnc|terms)\b/i.test(q)) {
+  if (/\b(?:t\s*&\s*c|t\s+and\s+c|tnc|\btc\b|terms)\b/i.test(q)) {
     lexicalQueries.add('terms conditions');
+    if (candidateEntities.length) {
+      for (const ent of candidateEntities) {
+        lexicalQueries.add(`${ent} terms conditions`);
+        lexicalQueries.add(`${ent} cancellation`);
+        lexicalQueries.add(`${ent} advance`);
+      }
+    } else {
+      lexicalQueries.add('advance');
+    }
     semanticQueries.add('cancellation policy');
     semanticQueries.add('refundable advance');
     semanticQueries.add('booking rules');
@@ -60,12 +80,12 @@ export function heuristicDecompose(query) {
   }
 
   return {
-    cleanedQuery: cleaned || q,
+    cleanedQuery: strippedText || cleaned || q,
     lexicalQueries: Array.from(lexicalQueries),
     semanticQueries: Array.from(semanticQueries),
     modality,
     outboundOnly,
-    candidateEntities: extractEntityCandidates(q),
+    candidateEntities,
     expandScopeIfEmpty: true,
   };
 }

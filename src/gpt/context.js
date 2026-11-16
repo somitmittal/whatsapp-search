@@ -9,6 +9,7 @@ import {
   isBroadQuery,
   packMessages,
 } from './retrieval.js';
+import { decomposeQuery } from './query-decomposer.js';
 import { TOOL_SPECS } from './tools.js';
 
 export function buildSystemPrompt({ db, businessContext = false, now = new Date() }) {
@@ -182,19 +183,39 @@ export class ContextEngine {
     const overview = broad && !range;
     const scoped = [...new Set(scopeJids.filter(Boolean))];
 
+    const currentChatName = scoped.length === 1 ? this.directory.name(scoped[0]) : null;
+    const intent = await decomposeQuery(query, {
+      provider,
+      currentChatName,
+    }).catch(() => null);
+
+    const candidateJids = [];
+    if (Array.isArray(intent?.candidateEntities)) {
+      for (const ent of intent.candidateEntities) {
+        const resolved = this.directory.resolve(ent);
+        if (resolved?.chatJid && !scoped.includes(resolved.chatJid) && !candidateJids.includes(resolved.chatJid)) {
+          candidateJids.push(resolved.chatJid);
+        }
+      }
+    }
+
+    const chatsToSearch = scoped.length ? [...scoped] : [null];
+    for (const jid of candidateJids) {
+      if (!chatsToSearch.includes(jid)) chatsToSearch.push(jid);
+    }
+
     const searches = overview
       ? []
-      : scoped.length
-      ? scoped.map((jid) => hybridSearch({
-        db: this.db, embeddings: this.embeddings, query, chatJid: jid,
-        startTs: range?.startTs ?? null, endTs: range?.endTs ?? null,
+      : chatsToSearch.map((jid) => hybridSearch({
+        db: this.db,
+        embeddings: this.embeddings,
+        query: intent?.cleanedQuery || query,
+        chatJid: jid,
+        startTs: range?.startTs ?? null,
+        endTs: range?.endTs ?? null,
         mediaIndexService: this.mediaIndexService,
-      }))
-      : [hybridSearch({
-        db: this.db, embeddings: this.embeddings, query,
-        startTs: range?.startTs ?? null, endTs: range?.endTs ?? null,
-        mediaIndexService: this.mediaIndexService,
-      })];
+        intent,
+      }));
     const searchResults = await Promise.all(searches.map((p) => p.catch(() => ({ messages: [] }))));
 
     const timeline = [];
@@ -224,7 +245,19 @@ export class ContextEngine {
       }
     }
 
-    const hits = searchResults.flatMap((r) => r.messages);
+    // Interleave hits across chats so a single chat cannot starve other relevant chats
+    const hitsByChat = searchResults.map((r) => (r.messages || []).map((m) => ({
+      ...m,
+      chatName: m.chatName || this.directory.name(m.chatJid),
+    })));
+
+    const hits = [];
+    const maxLen = Math.max(0, ...hitsByChat.map((arr) => arr.length));
+    for (let i = 0; i < maxLen; i++) {
+      for (const arr of hitsByChat) {
+        if (i < arr.length) hits.push(arr[i]);
+      }
+    }
     if (hits.length && remaining > 0) {
       const packed = packMessages(hits, remaining, seen);
       if (packed.count) {

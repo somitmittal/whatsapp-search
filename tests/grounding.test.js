@@ -96,6 +96,21 @@ describe('enforceGroundedAnswer', () => {
     const { text } = enforceGroundedAnswer(answer, STOCK_TRANSCRIPT);
     expect(text).toBe('**Summary**\nSandeep discussed Cpplus.');
   });
+
+  it('preserves conversational and UI meta terms like WhatsApp without flagging them as ungrounded', () => {
+    const answer = 'If you need the actual files, you would need to scroll in WhatsApp directly.';
+    const { text, removed } = enforceGroundedAnswer(answer, STOCK_TRANSCRIPT);
+    expect(text).toContain('WhatsApp directly');
+    expect(removed).toEqual([]);
+  });
+
+  it('allows referencing entities introduced in the user query without stripping them', () => {
+    const answer = 'No message or image containing Bingetown exists in the chat.';
+    const userQuery = 'search for bingetown tc image';
+    const { text, removed } = enforceGroundedAnswer(answer, STOCK_TRANSCRIPT, userQuery);
+    expect(text).toBe('No message or image containing Bingetown exists in the chat.');
+    expect(removed).toEqual([]);
+  });
 });
 
 describe('dropUnsupportedQuotes', () => {
