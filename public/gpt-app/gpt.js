@@ -1241,7 +1241,8 @@ async function toggleChatAiIndex(jid, enabled) {
   }
 }
 
-function paintWaMessages(jid, msgs, { forceScroll = false } = {}) {
+function paintWaMessages(jid, msgs, { forceScroll = false, focusMessageId = null } = {}) {
+  const focusStr = focusMessageId != null ? String(focusMessageId) : '';
   if (!msgs.length) {
     const awaiting = state.chats.find((c) => c.chatJid === jid)?.awaitingSync;
     els.waView.innerHTML = `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">${
@@ -1249,21 +1250,37 @@ function paintWaMessages(jid, msgs, { forceScroll = false } = {}) {
         ? 'This chat is still waiting for WhatsApp history. Keep the app linked — new and synced messages will appear here.'
         : 'No messages in this chat yet.'
     }</div></div>`;
-    els.waView.dataset.paintFp = messagesPaintFingerprint([], jid);
+    els.waView.dataset.paintFp = messagesPaintFingerprint([], jid, focusMessageId);
     return;
   }
   const sorted = [...msgs].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-  const fp = messagesPaintFingerprint(sorted, jid);
+  const fp = messagesPaintFingerprint(sorted, jid, focusMessageId);
   // Identical live reloads (Baileys re-delivery) must not rebuild DOM — menu hover flickers.
-  if (!forceScroll && els.waView.dataset.paintFp === fp) return;
+  if (!forceScroll && !focusStr && els.waView.dataset.paintFp === fp) return;
   // Live sync / media-ready re-paints must keep scrolled-up readers in place.
-  const anchor = forceScroll ? null : captureChatScrollAnchor(els.waView);
-  els.waView.innerHTML = buildChatMessagesHtml(sorted, jid, null, null);
+  const anchor = focusStr || forceScroll ? null : captureChatScrollAnchor(els.waView);
+  els.waView.innerHTML = buildChatMessagesHtml(sorted, jid, focusMessageId, null);
   els.waView.dataset.paintFp = fp;
-  restoreChatScroll(els.waView, anchor, { force: forceScroll });
+  if (focusStr) {
+    const target = [...els.waView.querySelectorAll('.bubble[data-message-id], .msg-block[data-message-id]')].find(
+      (el) => el.getAttribute('data-message-id') === focusStr,
+    );
+    if (target) {
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      target.classList.add('flash');
+      setTimeout(() => {
+        target.classList.remove('flash');
+        target.classList.remove('msg-focus');
+      }, 2800);
+    } else {
+      els.waView.scrollTop = els.waView.scrollHeight;
+    }
+  } else {
+    restoreChatScroll(els.waView, anchor, { force: forceScroll });
+  }
 }
 
-async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
+async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = null } = {}) {
   if (!jid) return;
   const row = state.chats.find((c) => c.chatJid === jid) || { chatJid: jid };
   const wantTab = sidebarTabOf(row);
@@ -1293,7 +1310,18 @@ async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
   if (pushUrl) history.replaceState(null, '', `/gpt?chat=${encodeURIComponent(jid)}`);
   if (matchMedia('(max-width: 820px)').matches) els.app.classList.add('chats-hidden');
 
-  if (state.chatMessages.has(jid)) {
+  const focusStr = focusMessageId != null ? String(focusMessageId) : '';
+  if (focusStr) {
+    const cached = state.chatMessages.get(jid);
+    const hasFocus = Array.isArray(cached) && cached.some(
+      (m) => String(m.id || m.messageId || m.key?.id) === focusStr,
+    );
+    if (hasFocus) {
+      paintWaMessages(jid, cached, { forceScroll: false, focusMessageId: focusStr });
+    } else {
+      els.waView.innerHTML = '<div class="gpt-wa-loading">Loading message…</div>';
+    }
+  } else if (state.chatMessages.has(jid)) {
     paintWaMessages(jid, state.chatMessages.get(jid), { forceScroll: true });
   } else {
     els.waView.innerHTML = '<div class="gpt-wa-loading">Loading messages…</div>';
@@ -1307,15 +1335,15 @@ async function openChatTab(jid, name = '', { pushUrl = true } = {}) {
     }).catch(() => {});
   }
   try {
-    const res = await fetch(
-      `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${INITIAL_CHAT_MESSAGES_LIMIT}&offset=0`,
-      { headers: authHeaders() },
-    );
+    const msgUrl = focusStr
+      ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(focusStr)}`
+      : `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${INITIAL_CHAT_MESSAGES_LIMIT}&offset=0`;
+    const res = await fetch(msgUrl, { headers: authHeaders() });
     const msgs = res.ok ? await res.json() : [];
     const list = Array.isArray(msgs) ? msgs : [];
     state.chatMessages.set(jid, list);
     if (state.activeChatJid === jid) {
-      paintWaMessages(jid, list, { forceScroll: true });
+      paintWaMessages(jid, list, { forceScroll: !focusStr, focusMessageId: focusStr || null });
       triggerDeferredSenderResolution(jid, list);
     }
     fetch(`/api/chats/${encodeURIComponent(jid)}/seen`, {
@@ -2513,18 +2541,7 @@ function wire() {
       const jid = a2uiJump.dataset.chatJid;
       const name = a2uiJump.dataset.chatName || '';
       const msgId = a2uiJump.dataset.msgId || '';
-      void openChatTab(jid, name).then(() => {
-        if (msgId) {
-          setTimeout(() => {
-            const target = els.waView.querySelector(`[data-message-id="${CSS.escape(msgId)}"], [data-msg-id="${CSS.escape(msgId)}"]`);
-            if (target) {
-              target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-              target.classList.add('flash');
-              setTimeout(() => target.classList.remove('flash'), 1200);
-            }
-          }, 250);
-        }
-      });
+      void openChatTab(jid, name, { focusMessageId: msgId || null });
       return;
     }
 

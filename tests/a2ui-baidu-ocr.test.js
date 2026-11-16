@@ -160,6 +160,24 @@ describe('Baidu PaddleOCR Engine & A2UI Workflows', () => {
         expect(results[0].messageId).toBe(msgId);
       });
     });
+
+    it('expands t&c and compound queries in _toFtsQuery to match terms conditions and sub-words', () => {
+      const q1 = db._toFtsQuery('t&c of bingetown');
+      expect(q1).toContain('"terms"');
+      expect(q1).toContain('"conditions"');
+      expect(q1).toContain('"bingetown"');
+      expect(q1).toContain('"thebingetown"');
+      expect(q1).toContain('"binge"');
+      expect(q1).toContain('"town"');
+
+      const q2 = db._toFtsQuery('t and c');
+      expect(q2).toContain('"terms"');
+      expect(q2).toContain('"conditions"');
+
+      const q3 = db._toFtsQuery('thebingetown');
+      expect(q3).toContain('"thebingetown"');
+      expect(q3).toContain('"bingetown"');
+    });
   });
 
   describe('A2UI exports & lightbox viewer contract', () => {
