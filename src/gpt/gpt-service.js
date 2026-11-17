@@ -80,13 +80,14 @@ function ensureScopePin(db, conversationId, scopeChatJid, scopeChatName, memoryP
 export default class GptService {
   constructor({
     db, getProvider, embeddings = null, expenseService = null, resolveProvider = providerForSelection,
-    onMemorySaved = null, mediaIndexService = null,
+    onMemorySaved = null, mediaIndexService = null, webSearchService = null,
   }) {
     this.db = db;
     this.getProvider = getProvider;
     this._resolveProvider = resolveProvider;
     this._onMemorySaved = onMemorySaved;
     this.mediaIndexService = mediaIndexService;
+    this.webSearchService = webSearchService;
     this.directory = new ChatDirectory(db);
     this.context = new ContextEngine({ db, embeddings, directory: this.directory, mediaIndexService });
     this.expenseService = expenseService;
@@ -98,6 +99,7 @@ export default class GptService {
       runSkill: (opts) => this.skills.run(opts),
       mediaIndexService,
       getProvider,
+      webSearchService,
     });
     this._compacting = new Set();
   }

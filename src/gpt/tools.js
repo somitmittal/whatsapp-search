@@ -8,6 +8,8 @@ import {
 import { decomposeQuery } from './query-decomposer.js';
 import { skillCommand } from '../skills/parse-invocation.js';
 import { SYSTEM_SKILLS } from '../skills/system-skills.js';
+import { validateWebSearchQuery } from './web-search-guard.js';
+import { searchWeb } from './web-search.js';
 
 export const TOOL_SPECS = [
   {
@@ -35,6 +37,11 @@ export const TOOL_SPECS = [
     args: '{"chat"?: name, "date"?: "YYYY-MM-DD or 10 Oct", "file"?: name}',
     about: "dry-run expense reconciliation for a site group (Excel/CSV/Phone-pay PDF in that chat). Pass date when the user named a day (e.g. 10th Oct). Pass chat for one site; omit chat when several chats are @mentioned this turn to reconcile each of them.",
   },
+  {
+    name: 'web_search',
+    args: '{"query": str}',
+    about: 'search the public internet for world facts, public news, documentation, or general information outside WhatsApp. PRIVACY GUARD: never pass private chat messages, contact names, or phone numbers.',
+  },
 ];
 
 const EXPENSE_SKILL = SYSTEM_SKILLS.find((s) => s.slug === 'expense-reconciliation');
@@ -54,7 +61,7 @@ function dayRange(args) {
  * Tool implementations. Each returns `{ text, messages?, payload? }`; `messages` are
  * registered as citable sources for this turn.
  */
-export function createToolbox({ db, embeddings, directory, runSkill = null, mediaIndexService = null, getProvider = null }) {
+export function createToolbox({ db, embeddings, directory, runSkill = null, mediaIndexService = null, getProvider = null, webSearchService = null }) {
   const chatOrNull = (ref) => (ref ? directory.resolve(ref) : null);
   const label = (chat, ref) => (chat ? chat.chatName : ref);
 
@@ -264,6 +271,35 @@ export function createToolbox({ db, embeddings, directory, runSkill = null, medi
           ...(skillSteps.length ? { skillSteps } : {}),
         },
       };
+    },
+
+    async web_search(args, budget, ctx) {
+      const query = String(args?.query || '').trim();
+      if (!query) return { text: 'web_search needs a "query".' };
+
+      // Multi-layer privacy guardrail validation
+      const guardResult = validateWebSearchQuery(query, {
+        directory,
+        contextMessages: ctx?.prefetched || [],
+      });
+
+      if (!guardResult.allowed) {
+        return {
+          text: `Blocked by privacy guardrail: ${guardResult.reason}`,
+          payload: { privacyBlocked: true, reason: guardResult.reason },
+        };
+      }
+
+      ctx?.status?.(`Searching the web for “${guardResult.cleanQuery}”…`);
+
+      try {
+        const searchFn = webSearchService?.search || searchWeb;
+        return await searchFn(guardResult.cleanQuery, { budget });
+      } catch (err) {
+        return {
+          text: `Web search was unable to reach external sources: ${err.message}`,
+        };
+      }
     },
   };
 }
