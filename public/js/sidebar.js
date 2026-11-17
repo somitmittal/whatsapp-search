@@ -319,6 +319,20 @@ export function initSidebar() {
     scheduleChatKeywordFilter(q);
   });
 
+  $('#filter')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const q = ($('#filter') && $('#filter').value || '').trim();
+      if (q) {
+        window.location.href = `/gpt?q=${encodeURIComponent(q)}`;
+      }
+    }
+  });
+
+  $('#btn-sidebar-ask-ai')?.addEventListener('click', () => {
+    const q = ($('#filter') && $('#filter').value || '').trim();
+    window.location.href = q ? `/gpt?q=${encodeURIComponent(q)}` : '/gpt';
+  });
+
   document.querySelectorAll('[data-sidebar-tab]').forEach((btn) => {
     btn.addEventListener('click', () => setSidebarListTab(btn.getAttribute('data-sidebar-tab')));
   });

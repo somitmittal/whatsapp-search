@@ -70,6 +70,8 @@ initDesktopUpdates();
 const $ = (sel) => document.querySelector(sel);
 const els = {
   app: $('#gpt-app'),
+  globalSearchInput: $('#gpt-global-search-input'),
+  globalSearchBtn: $('#gpt-global-search-btn'),
   tabs: $('#gpt-tabs'),
   tabMenu: $('#gpt-tab-menu'),
   threads: $('#gpt-threads'),
@@ -1454,6 +1456,23 @@ function newChat() {
   els.input.focus();
 }
 
+async function executeGlobalAskAiSearch(query) {
+  const q = String(query || '').trim();
+  if (!q) return;
+  newChat();
+  state.turnPins = [];
+  state.pins = [];
+  renderPills();
+  if (els.input) {
+    els.input.value = q;
+    autosize();
+  }
+  if (els.globalSearchInput) {
+    els.globalSearchInput.value = '';
+  }
+  await send();
+}
+
 /* ── Message rendering ────────────────────────────────────────────── */
 
 function sourceCards(sources = []) {
@@ -2340,6 +2359,21 @@ function wire() {
   });
 
   $('#gpt-new').addEventListener('click', newChat);
+
+  const triggerGlobalSearch = () => {
+    const val = (els.globalSearchInput?.value || '').trim();
+    if (!val) return;
+    void executeGlobalAskAiSearch(val);
+  };
+  els.globalSearchInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      triggerGlobalSearch();
+    }
+  });
+  els.globalSearchBtn?.addEventListener('click', () => {
+    triggerGlobalSearch();
+  });
   els.tabs.addEventListener('click', (e) => {
     const close = e.target.closest('[data-close-tab]');
     if (close) { e.stopPropagation(); closeTabMenu(); closeTab(close.dataset.closeTab); return; }
@@ -2761,7 +2795,9 @@ async function boot() {
   await Promise.all([loadThreads(), loadModels(), loadChats()]);
   // Keep classic helpers (title resolution / forward list) in sync with the GPT chat roster.
   store.chatData = state.chats;
-  if (params.get('c')) {
+  if (params.get('q')) {
+    void executeGlobalAskAiSearch(params.get('q'));
+  } else if (params.get('c')) {
     await openConversation(params.get('c'), { pushUrl: false });
   } else if (params.get('chat')) {
     const jid = params.get('chat');

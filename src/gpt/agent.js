@@ -118,7 +118,7 @@ export function parseToolCalls(text) {
 }
 
 function describeCall({ name, args }) {
-  const where = args.chat ? ` in ${args.chat}` : '';
+  const where = args.chat ? ` in ${args.chat}` : ' across all chats';
   switch (name) {
     case 'search': return `Searching “${args.query || ''}”${where}…`;
     case 'read': return `Reading ${args.chat || 'chat'}${args.date ? ` on ${args.date}` : ''}…`;

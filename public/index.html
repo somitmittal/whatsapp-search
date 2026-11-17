@@ -57,9 +57,12 @@
       <span id="wa-banner-text">Tap to connect WhatsApp</span>
     </div>
     <div class="sidebar-search">
-      <div class="search-wrap">
+      <div class="search-wrap" style="position:relative;display:flex;align-items:center;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="search" id="filter" placeholder="Search or start a new chat" autocomplete="off" />
+        <input type="search" id="filter" placeholder="Search or ask AI globally…" autocomplete="off" />
+        <button type="button" id="btn-sidebar-ask-ai" title="Ask AI globally across all chats &amp; media" aria-label="Ask AI globally" style="background:none;border:none;cursor:pointer;padding:4px 6px;color:var(--accent,#00a884);display:flex;align-items:center;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9L12 2z"/></svg>
+        </button>
       </div>
     </div>
     <div class="sidebar-chat-tabs" role="tablist" aria-label="Chat categories">

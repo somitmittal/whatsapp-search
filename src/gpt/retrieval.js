@@ -204,6 +204,16 @@ export async function hybridSearch({
     }
   }
 
+  // 4c. Conversation Chunk Search (session blocks)
+  let chunkHits = [];
+  if (typeof db.searchConversationChunksFts === 'function' && typeof query === 'string' && query.trim()) {
+    try {
+      chunkHits = db.searchConversationChunksFts(query.trim(), chatJid, 5);
+    } catch (e) {
+      console.warn('[HybridSearch:Chunks]', e.message);
+    }
+  }
+
   // 5. Reciprocal Rank Fusion (RRF) with Intent Boosts
   const score = new Map();
   const rowsById = new Map();
@@ -229,6 +239,25 @@ export async function hybridSearch({
       : (1.0 / (RRF_K + i + 1));
     score.set(m.id, (score.get(m.id) || 0) + priority);
   });
+
+  if (chunkHits.length > 0) {
+    const chunkMessageIds = [];
+    for (const ch of chunkHits) {
+      if (Array.isArray(ch.messageIds)) {
+        for (const mid of ch.messageIds) {
+          if (typeof mid === 'number') chunkMessageIds.push(mid);
+        }
+      }
+    }
+    if (chunkMessageIds.length > 0 && typeof db.getMessagesByRowIds === 'function') {
+      const fetched = db.getMessagesByRowIds(chunkMessageIds);
+      for (const m of fetched) {
+        rowsById.set(m.id, m);
+        const rrf = 1.2 / RRF_K;
+        score.set(m.id, (score.get(m.id) || 0) + rrf);
+      }
+    }
+  }
 
   const missing = vec.map((v) => v.id).filter((id) => !rowsById.has(id));
   if (missing.length) {
@@ -263,7 +292,7 @@ export async function hybridSearch({
       out.push(m);
     }
   }
-  return { hits: ranked, messages: out, intent: resolvedIntent };
+  return { hits: ranked, messages: out, chunks: chunkHits, intent: resolvedIntent };
 }
 
 export function formatSummaryLine(s) {

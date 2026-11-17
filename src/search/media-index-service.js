@@ -1,6 +1,7 @@
 import { createRequire } from 'module';
 import { readFileSync } from 'fs';
 import { basename, extname } from 'path';
+import { createHash } from 'node:crypto';
 import config from '../config.js';
 import { defaultPaddleOcr } from '../ocr/paddle-ocr.js';
 
@@ -206,23 +207,38 @@ export default class MediaIndexService {
   async _indexDocument(messageId, mediaPath, buffer, mediaCaption = '') {
     const fn = basename(mediaPath || '');
     const ext = extname(mediaPath || '').toLowerCase();
+    const sha256 = buffer?.length ? createHash('sha256').update(buffer).digest('hex') : null;
+    const cached = sha256 && typeof this._db.getCachedMediaContent === 'function'
+      ? this._db.getCachedMediaContent(sha256)
+      : null;
+
     let body = '';
-    if (ext === '.pdf' && buffer?.length) {
-      try {
-        const data = await parsePdf(buffer);
-        body = String(data?.text || '').replace(/\s+/g, ' ').trim();
-      } catch (e) {
-        console.warn(`[MediaIndex] PDF parse ${messageId}:`, e.message);
-      }
-    }
     let ocrText = '';
-    if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
-      try {
-        ocrText = await defaultPaddleOcr.extractText(mediaPath, buffer);
-      } catch (e) {
-        console.warn(`[MediaIndex] Document OCR ${messageId}:`, e.message);
+
+    if (cached) {
+      body = cached.transcript || '';
+      ocrText = cached.ocrText || '';
+    } else {
+      if (ext === '.pdf' && buffer?.length) {
+        try {
+          const data = await parsePdf(buffer);
+          body = String(data?.text || '').replace(/\s+/g, ' ').trim();
+        } catch (e) {
+          console.warn(`[MediaIndex] PDF parse ${messageId}:`, e.message);
+        }
+      }
+      if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
+        try {
+          ocrText = await defaultPaddleOcr.extractText(mediaPath, buffer);
+        } catch (e) {
+          console.warn(`[MediaIndex] Document OCR ${messageId}:`, e.message);
+        }
+      }
+      if (sha256 && (body || ocrText) && typeof this._db.saveCachedMediaContent === 'function') {
+        this._db.saveCachedMediaContent(sha256, { ocrText, transcript: body, mediaType: 'document' });
       }
     }
+
     const cap = String(mediaCaption || '').trim();
     const combined = [cap, fn, body, ocrText].filter(Boolean).join('\n').trim().slice(0, 12000);
     this._db.updateMediaIndexResult?.(messageId, { text: combined || fn || cap || '', status: 'indexed' });
@@ -258,43 +274,60 @@ export default class MediaIndexService {
       return this._indexDocument(messageId, mediaPath, buffer, job.mediaCaption);
     }
 
+    // SHA-256 Deduplication check (instant 0.1ms cache hit on forwarded media)
+    const sha256 = buffer?.length ? createHash('sha256').update(buffer).digest('hex') : null;
+    const cached = sha256 && typeof this._db.getCachedMediaContent === 'function'
+      ? this._db.getCachedMediaContent(sha256)
+      : null;
+
     let ocrText = '';
-    if (mediaType === 'image' || mediaType === 'sticker') {
-      try {
-        ocrText = await defaultPaddleOcr.extractText(mediaPath, buffer);
-      } catch (ocrErr) {
-        console.warn(`[MediaIndex] OCR ${messageId}:`, ocrErr.message);
-      }
-    }
-
-    const b64 = buffer.toString('base64');
-    const mime = guessMimeForFile(mediaType, mediaPath);
-
     let aiText = '';
 
-    try {
-      if (mediaType === 'audio') {
-        if (provider && typeof provider.transcribeAudio === 'function') {
-          aiText = await provider.transcribeAudio(b64, mime);
+    if (cached) {
+      ocrText = cached.ocrText || '';
+      aiText = cached.transcript || '';
+    } else {
+      if (mediaType === 'image' || mediaType === 'sticker') {
+        try {
+          ocrText = await defaultPaddleOcr.extractText(mediaPath, buffer);
+        } catch (ocrErr) {
+          console.warn(`[MediaIndex] OCR ${messageId}:`, ocrErr.message);
         }
-      } else if (mediaType === 'video') {
-        if (providerSupportsInlineVideoCaption(provider) && typeof provider.caption === 'function') {
+      }
+
+      const b64 = buffer.toString('base64');
+      const mime = guessMimeForFile(mediaType, mediaPath);
+
+      try {
+        if (mediaType === 'audio') {
+          if (provider && typeof provider.transcribeAudio === 'function') {
+            aiText = await provider.transcribeAudio(b64, mime);
+          }
+        } else if (mediaType === 'video') {
+          if (providerSupportsInlineVideoCaption(provider) && typeof provider.caption === 'function') {
+            aiText = await provider.caption(b64, mime);
+          }
+        } else if ((mediaType === 'image' || mediaType === 'sticker') && provider && typeof provider.caption === 'function') {
           aiText = await provider.caption(b64, mime);
         }
-      } else if ((mediaType === 'image' || mediaType === 'sticker') && provider && typeof provider.caption === 'function') {
-        aiText = await provider.caption(b64, mime);
+      } catch (e) {
+        console.warn(`[MediaIndex] LLM ${messageId}:`, e.message);
       }
-    } catch (e) {
-      console.warn(`[MediaIndex] LLM ${messageId}:`, e.message);
+
+      const unsupported = isUnsupportedProviderOutput(aiText);
+      if (unsupported) {
+        aiText = '';
+      } else {
+        aiText = String(aiText || '').trim();
+      }
+
+      // Cache extracted text by SHA-256 hash for instant reuse
+      if (sha256 && (ocrText || aiText) && typeof this._db.saveCachedMediaContent === 'function') {
+        this._db.saveCachedMediaContent(sha256, { ocrText, transcript: aiText, mediaType });
+      }
     }
 
     const unsupported = isUnsupportedProviderOutput(aiText);
-    if (unsupported) {
-      aiText = '';
-    } else {
-      aiText = String(aiText || '').trim();
-    }
-
     const parts = [ocrText, aiText, fallback].filter(Boolean);
     let finalText = parts.join('\n').trim().slice(0, 12000);
 

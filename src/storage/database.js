@@ -74,11 +74,25 @@ function looksLikePhoneOnly(str) {
 }
 
 export default class Database {
-  constructor() {
-    const dir = dirname(config.dbPath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    this._db = new SQLite(config.dbPath);
-    this._db.pragma('journal_mode = WAL');
+  constructor(opts = null) {
+    let targetPath = config.dbPath;
+    if (typeof opts === 'string') {
+      targetPath = opts;
+    } else if (opts && typeof opts === 'object') {
+      if (opts.inMemory) {
+        targetPath = ':memory:';
+      } else if (opts.dbPath) {
+        targetPath = opts.dbPath;
+      }
+    }
+    if (targetPath !== ':memory:') {
+      const dir = dirname(targetPath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    }
+    this._db = new SQLite(targetPath);
+    if (targetPath !== ':memory:') {
+      this._db.pragma('journal_mode = WAL');
+    }
     this._db.pragma('synchronous = NORMAL');
     this._db.pragma('foreign_keys = ON');
     this._db.pragma('cache_size = -64000');
@@ -601,6 +615,7 @@ export default class Database {
     this._migrateChatUnread();
     this._migrateChatCatchup();
     this._migrateChatAvatars();
+    this._migrateConversationChunksAndMediaCache();
     this._rebuildFtsIfEmpty();
   }
 
@@ -730,6 +745,81 @@ export default class Database {
       `);
     } catch (e) {
       console.warn('[DB] chat_avatars:', e.message);
+    }
+  }
+
+  _migrateConversationChunksAndMediaCache() {
+    try {
+      // 1. SHA-256 Media Content Cache (instant 0.1ms hits on forwarded images/audio/PDFs)
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS media_content_cache (
+          sha256 TEXT PRIMARY KEY,
+          ocr_text TEXT,
+          transcript TEXT,
+          media_type TEXT,
+          created_at INTEGER DEFAULT (unixepoch())
+        );
+      `);
+
+      // 2. Conversation Chunks (session blocks bounded by 15-30m idle gap or 30 messages)
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS conversation_chunks (
+          id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL,
+          chat_jid TEXT NOT NULL,
+          chat_name TEXT,
+          start_ts INTEGER NOT NULL,
+          end_ts INTEGER NOT NULL,
+          message_count INTEGER NOT NULL,
+          message_ids_json TEXT,
+          session_text TEXT NOT NULL,
+          created_at INTEGER DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_chunks_tenant_chat ON conversation_chunks(tenant_id, chat_jid);
+        CREATE INDEX IF NOT EXISTS idx_chunks_tenant_ts ON conversation_chunks(tenant_id, start_ts);
+      `);
+
+      // 3. FTS5 Index for Conversation Chunks
+      this._db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS conversation_chunks_fts USING fts5(
+          session_text,
+          chat_name,
+          content='conversation_chunks',
+          content_rowid='rowid'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS trg_chunks_ai AFTER INSERT ON conversation_chunks BEGIN
+          INSERT INTO conversation_chunks_fts(rowid, session_text, chat_name)
+          VALUES (new.rowid, new.session_text, new.chat_name);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_chunks_ad AFTER DELETE ON conversation_chunks BEGIN
+          INSERT INTO conversation_chunks_fts(conversation_chunks_fts, rowid, session_text, chat_name)
+          VALUES('delete', old.rowid, old.session_text, old.chat_name);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_chunks_au AFTER UPDATE ON conversation_chunks BEGIN
+          INSERT INTO conversation_chunks_fts(conversation_chunks_fts, rowid, session_text, chat_name)
+          VALUES('delete', old.rowid, old.session_text, old.chat_name);
+          INSERT INTO conversation_chunks_fts(rowid, session_text, chat_name)
+          VALUES(new.rowid, new.session_text, new.chat_name);
+        END;
+      `);
+
+      // 4. Chunk Vector Embeddings
+      this._db.exec(`
+        CREATE TABLE IF NOT EXISTS chunk_embeddings (
+          chunk_id TEXT NOT NULL,
+          tenant_id TEXT NOT NULL,
+          model TEXT NOT NULL,
+          dim INTEGER NOT NULL,
+          vector BLOB NOT NULL,
+          PRIMARY KEY (chunk_id, model)
+        );
+        CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_tenant ON chunk_embeddings(tenant_id, model);
+      `);
+    } catch (e) {
+      console.warn('[DB] conversation_chunks_and_media_cache migration:', e.message);
     }
   }
 
@@ -1875,11 +1965,28 @@ export default class Database {
   propagateChatDisplayName(chatJid, chatName) {
     if (!chatJid || !chatName || !looksLikeContactDisplayName(chatName, chatJid)) return 0;
     const t = getCurrentTenantId();
-    // Skip rows that already carry the name: each rewrite also reindexes the row in FTS.
-    const r = this._db.prepare(
-      'UPDATE messages SET chat_name = ? WHERE tenant_id = ? AND chat_jid = ? AND chat_name IS NOT ?',
-    ).run(chatName, t, chatJid, chatName);
-    return r.changes ?? 0;
+    const jids = typeof this.getLinkedJids === 'function' ? this.getLinkedJids(chatJid) : [chatJid];
+    let totalChanges = 0;
+    for (const j of jids) {
+      const r = this._db.prepare(
+        'UPDATE messages SET chat_name = ? WHERE tenant_id = ? AND chat_jid = ? AND chat_name IS NOT ?',
+      ).run(chatName, t, j, chatName);
+      totalChanges += (r.changes ?? 0);
+
+      try {
+        this._db.prepare(`
+          INSERT INTO chat_roster (tenant_id, chat_jid, chat_name, updated_at)
+          VALUES (?, ?, ?, unixepoch())
+          ON CONFLICT(tenant_id, chat_jid) DO UPDATE SET
+            chat_name = excluded.chat_name,
+            updated_at = excluded.updated_at
+        `).run(t, j, chatName);
+      } catch (_) {}
+    }
+    if (!String(chatJid).endsWith('@g.us')) {
+      this.backfillSenderName(jids, chatName);
+    }
+    return totalChanges;
   }
 
   /**
@@ -3141,6 +3248,166 @@ export default class Database {
     }));
   }
 
+  // ── Conversation Chunks & SHA-256 Media Cache ──────────────────────
+
+  getCachedMediaContent(sha256) {
+    if (!sha256) return null;
+    return this._db.prepare(`
+      SELECT sha256, ocr_text AS ocrText, transcript, media_type AS mediaType, created_at AS createdAt
+      FROM media_content_cache WHERE sha256 = ?
+    `).get(sha256) || null;
+  }
+
+  saveCachedMediaContent(sha256, { ocrText = null, transcript = null, mediaType = null } = {}) {
+    if (!sha256) return;
+    this._db.prepare(`
+      INSERT INTO media_content_cache (sha256, ocr_text, transcript, media_type, created_at)
+      VALUES (?, ?, ?, ?, unixepoch())
+      ON CONFLICT(sha256) DO UPDATE SET
+        ocr_text = COALESCE(excluded.ocr_text, media_content_cache.ocr_text),
+        transcript = COALESCE(excluded.transcript, media_content_cache.transcript),
+        media_type = COALESCE(excluded.media_type, media_content_cache.media_type)
+    `).run(sha256, ocrText, transcript, mediaType);
+  }
+
+  upsertConversationChunk({
+    id,
+    chatJid,
+    chatName = null,
+    startTs,
+    endTs,
+    messageCount,
+    messageIds = [],
+    sessionText,
+  }) {
+    if (!id || !chatJid || !sessionText) return;
+    const t = getCurrentTenantId();
+    const idsJson = Array.isArray(messageIds) ? JSON.stringify(messageIds) : '[]';
+    this._db.prepare(`
+      INSERT INTO conversation_chunks (
+        id, tenant_id, chat_jid, chat_name, start_ts, end_ts, message_count, message_ids_json, session_text, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+      ON CONFLICT(id) DO UPDATE SET
+        chat_name = excluded.chat_name,
+        start_ts = excluded.start_ts,
+        end_ts = excluded.end_ts,
+        message_count = excluded.message_count,
+        message_ids_json = excluded.message_ids_json,
+        session_text = excluded.session_text
+    `).run(id, t, chatJid, chatName, startTs, endTs, messageCount, idsJson, sessionText);
+  }
+
+  getConversationChunk(id) {
+    if (!id) return null;
+    const t = getCurrentTenantId();
+    const row = this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName, start_ts AS startTs,
+             end_ts AS endTs, message_count AS messageCount, message_ids_json AS messageIdsJson,
+             session_text AS sessionText, created_at AS createdAt
+      FROM conversation_chunks WHERE tenant_id = ? AND id = ?
+    `).get(t, id);
+    if (!row) return null;
+    let messageIds = [];
+    try { messageIds = JSON.parse(row.messageIdsJson || '[]'); } catch (_) {}
+    return { ...row, messageIds };
+  }
+
+  getConversationChunksForChat(chatJid, limit = 50) {
+    if (!chatJid) return [];
+    const t = getCurrentTenantId();
+    const linkedJids = typeof this.getLinkedJids === 'function' ? this.getLinkedJids(chatJid) : [chatJid];
+    const ph = linkedJids.map(() => '?').join(',');
+    const rows = this._db.prepare(`
+      SELECT id, chat_jid AS chatJid, chat_name AS chatName, start_ts AS startTs,
+             end_ts AS endTs, message_count AS messageCount, message_ids_json AS messageIdsJson,
+             session_text AS sessionText, created_at AS createdAt
+      FROM conversation_chunks
+      WHERE tenant_id = ? AND chat_jid IN (${ph})
+      ORDER BY start_ts DESC LIMIT ?
+    `).all(t, ...linkedJids, Math.max(1, Math.min(Number(limit) || 50, 200)));
+    return rows.map((r) => {
+      let messageIds = [];
+      try { messageIds = JSON.parse(r.messageIdsJson || '[]'); } catch (_) {}
+      return { ...r, messageIds };
+    });
+  }
+
+  searchConversationChunksFts(query, chatJid = null, limit = 10) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
+    const cleaned = this._toFtsQuery(query);
+    if (!cleaned) return [];
+    const t = getCurrentTenantId();
+    const linkedJids = chatJid && typeof this.getLinkedJids === 'function' ? this.getLinkedJids(chatJid) : null;
+    let chatFilterSql = '';
+    let chatArgs = [];
+    if (linkedJids && linkedJids.length > 0) {
+      const ph = linkedJids.map(() => '?').join(',');
+      chatFilterSql = `AND c.chat_jid IN (${ph})`;
+      chatArgs = linkedJids;
+    }
+    const rows = this._db.prepare(`
+      SELECT c.id, c.chat_jid AS chatJid, c.chat_name AS chatName,
+             c.start_ts AS startTs, c.end_ts AS endTs, c.message_count AS messageCount,
+             c.message_ids_json AS messageIdsJson, c.session_text AS sessionText,
+             bm25(conversation_chunks_fts) AS rank
+      FROM conversation_chunks_fts
+      INNER JOIN conversation_chunks c ON c.rowid = conversation_chunks_fts.rowid
+      WHERE c.tenant_id = ?
+        AND conversation_chunks_fts MATCH ?
+        ${chatFilterSql}
+      ORDER BY rank LIMIT ?
+    `).all(t, cleaned, ...chatArgs, safeLimit);
+
+    return rows.map((r) => {
+      let messageIds = [];
+      try { messageIds = JSON.parse(r.messageIdsJson || '[]'); } catch (_) {}
+      return { ...r, messageIds };
+    });
+  }
+
+  upsertChunkEmbedding({ chunkId, model, dim, vector }) {
+    if (!chunkId || !model || !vector) return;
+    const t = getCurrentTenantId();
+    const buf = Buffer.isBuffer(vector) ? vector : Buffer.from(vector);
+    this._db.prepare(`
+      INSERT INTO chunk_embeddings (chunk_id, tenant_id, model, dim, vector)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chunk_id, model) DO UPDATE SET
+        dim = excluded.dim,
+        vector = excluded.vector
+    `).run(chunkId, t, model, Number(dim) || 0, buf);
+  }
+
+  getChunkEmbedding(chunkId, model) {
+    if (!chunkId || !model) return null;
+    const t = getCurrentTenantId();
+    return this._db.prepare(`
+      SELECT chunk_id AS chunkId, model, dim, vector
+      FROM chunk_embeddings WHERE tenant_id = ? AND chunk_id = ? AND model = ?
+    `).get(t, chunkId, model) || null;
+  }
+
+  iterateChunkEmbeddings(modelId, chatJid = null) {
+    const t = getCurrentTenantId();
+    const linkedJids = chatJid && typeof this.getLinkedJids === 'function' ? this.getLinkedJids(chatJid) : null;
+    let chatSql = '';
+    let args = [t, modelId];
+    if (linkedJids && linkedJids.length > 0) {
+      const ph = linkedJids.map(() => '?').join(',');
+      chatSql = `AND c.chat_jid IN (${ph})`;
+      args.push(...linkedJids);
+    }
+    return this._db.prepare(`
+      SELECT ce.chunk_id AS chunkId, ce.dim, ce.vector,
+             c.chat_jid AS chatJid, c.chat_name AS chatName, c.start_ts AS startTs, c.end_ts AS endTs,
+             c.session_text AS sessionText, c.message_ids_json AS messageIdsJson
+      FROM chunk_embeddings ce
+      INNER JOIN conversation_chunks c ON c.id = ce.chunk_id AND c.tenant_id = ce.tenant_id
+      WHERE ce.tenant_id = ? AND ce.model = ?
+        ${chatSql}
+    `).all(...args);
+  }
+
   getMessagesForDay(chatJid, dateStr) {
     const t = getCurrentTenantId();
     return this._db.prepare(`
@@ -3306,10 +3573,16 @@ export default class Database {
     ).all(t);
     const lidToPnMap = new Map(lidPnRows.map((r) => [r.lid, r.pn_jid]));
     const rosterTsByChat = new Map();
+    const rosterNameByChat = new Map();
     for (const r of this._db.prepare(
-      'SELECT chat_jid AS chatJid, last_message_ts AS lastMessageTs FROM chat_roster WHERE tenant_id = ?',
+      'SELECT chat_jid AS chatJid, last_message_ts AS lastMessageTs, chat_name AS chatName FROM chat_roster WHERE tenant_id = ?',
     ).all(t)) {
-      if (r.chatJid) rosterTsByChat.set(r.chatJid, r.lastMessageTs || 0);
+      if (r.chatJid) {
+        rosterTsByChat.set(r.chatJid, r.lastMessageTs || 0);
+        if (r.chatName && looksLikeContactDisplayName(r.chatName, r.chatJid)) {
+          rosterNameByChat.set(r.chatJid, r.chatName);
+        }
+      }
     }
     const optedInJids = new Set(this.listIndexOptInJids());
     const avatarByChat = new Map();
@@ -3453,9 +3726,23 @@ export default class Database {
         ? anyChatName
         : null;
 
+      const rosterDirect = rosterNameByChat.get(chatJid);
+      let rosterLinked = null;
+      if (!rosterDirect && typeof this.getLinkedJids === 'function') {
+        const linked = this.getLinkedJids(chatJid);
+        for (const lj of linked) {
+          if (rosterNameByChat.has(lj)) {
+            rosterLinked = rosterNameByChat.get(lj);
+            break;
+          }
+        }
+      }
+      const rosterName = rosterDirect || rosterLinked || null;
+
       let title = isGroup
-        ? (displayChatName || anyChatName || chatJid)
+        ? (displayChatName || rosterName || anyChatName || chatJid)
         : (displayChatName
+          || rosterName
           || bestHumanPeerName
           || usableAny
           || usablePeer
