@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { extname, basename } from 'node:path';
+import { extname, basename, join } from 'node:path';
 
 /**
  * Baidu PaddleOCR (PP-OCRv4 CPU) Engine for WhatsApp Media.
@@ -111,9 +111,18 @@ export class PaddleOcrService {
     if (!fileBuf || fileBuf.length < 32) return '';
 
     const ext = extname(mediaPath || '').toLowerCase();
-    const runner = await this._detectPythonOcr();
 
-    // 1. Try python rapidocr_onnxruntime if available
+    // 0. High-performance offline Apple Vision OCR on macOS
+    if (process.platform === 'darwin') {
+      try {
+        const appleVisionResult = await this._runMacOsVisionOcr(mediaPath);
+        if (appleVisionResult && appleVisionResult.trim().length > 0) {
+          return this._normalizeOcrText(appleVisionResult);
+        }
+      } catch (_) {}
+    }
+
+    const runner = await this._detectPythonOcr();
     if (runner === 'rapidocr') {
       try {
         const pyResult = await this._runPythonRapidOcr(mediaPath);
@@ -131,6 +140,29 @@ export class PaddleOcrService {
     }
 
     return '';
+  }
+
+  /**
+   * Run native Apple Vision OCR binary on macOS
+   */
+  async _runMacOsVisionOcr(mediaPath) {
+    const candidates = [
+      join(process.cwd(), 'bin', 'macos-vision-ocr'),
+      '/tmp/apple_ocr',
+    ];
+    const bin = candidates.find((p) => existsSync(p));
+    if (!bin) return '';
+
+    return new Promise((resolve) => {
+      const proc = spawn(bin, [mediaPath]);
+      let stdout = '';
+      proc.stdout.on('data', (d) => { stdout += d.toString(); });
+      proc.on('close', (code) => {
+        if (code === 0 && stdout.trim()) resolve(stdout.trim());
+        else resolve('');
+      });
+      proc.on('error', () => resolve(''));
+    });
   }
 
   /**

@@ -254,10 +254,30 @@ export async function runAgent({
     finalAnswer = finalAnswer.replace(REF_RE, (full, id) => (sources.has(Number(id)) ? full : ''));
   }
   const citedIds = [...new Set(cited.filter((id) => sources.has(id)))];
+
+  // Accompanying media discovery: if a message is cited, and its sender sent accompanying media
+  // (photo, document, menu, receipt) in the same chat segment within 5 minutes, include that media in sources
+  // so the media card is rendered directly for the user.
+  const extraMedia = [];
+  for (const id of citedIds) {
+    const citedMsg = sources.get(id);
+    if (!citedMsg) continue;
+    for (const other of sources.values()) {
+      if (other && other.id !== id && (other.mediaType || other.hasMediaFile || other.mediaPath) &&
+          other.chatJid === citedMsg.chatJid &&
+          (other.sender === citedMsg.sender || Math.abs(other.timestamp - citedMsg.timestamp) <= 300)) {
+        if (!citedIds.includes(other.id) && !extraMedia.some((m) => m.id === other.id)) {
+          extraMedia.push(other);
+        }
+      }
+    }
+  }
+
+  const allSourceRows = [...citedIds.map((id) => sources.get(id)), ...extraMedia];
   return {
     answer: finalAnswer,
-    sources: citedIds.map((id) => toSource(sources.get(id))),
-    refs: Object.fromEntries(citedIds.map((id) => [id, toSource(sources.get(id))])),
+    sources: allSourceRows.map(toSource),
+    refs: Object.fromEntries(allSourceRows.map((m) => [m.id, toSource(m)])),
     payload,
   };
 }

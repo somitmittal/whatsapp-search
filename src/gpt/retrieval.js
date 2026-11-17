@@ -146,12 +146,12 @@ export async function hybridSearch({
   const outboundOnly = Boolean(resolvedIntent?.outboundOnly);
 
   // 1. Just-In-Time (JIT) On-Demand Media Indexing
-  if (mediaIndexService && chatJid && (modality === 'image' || modality === 'document')) {
+  if (mediaIndexService && chatJid) {
     try {
       await mediaIndexService.indexChatMediaOnDemand(chatJid, {
-        limit: 6,
+        limit: (modality === 'image' || modality === 'document') ? 10 : 5,
         sender: outboundOnly ? 'You' : null,
-        mediaType: modality,
+        mediaType: modality || null,
       });
     } catch (jitErr) {
       console.warn('[HybridSearch:JIT]', jitErr.message);

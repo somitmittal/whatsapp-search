@@ -53,6 +53,7 @@ const NON_ENTITY_WORDS = new Set([
   'receipts', 'pdf', 'pdfs', 'link', 'links', 'url', 'urls', 'app', 'apps', 'text', 'caption',
   'captions', 'history', 'scroll', 'search', 'terms', 'conditions', 't&c', 'tnc', 'tc',
   'match', 'matches', 'zero', 'found', 'exist', 'exists', 'bhaiyao', 'bhaiya',
+  'ocr', 'menu', 'menus', 'ad', 'ads', 'order', 'orders', 'poster', 'posters',
 ]);
 
 /** Characters that can sit between a sentence break and its first word. */

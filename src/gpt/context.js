@@ -30,6 +30,7 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
       'Media messages (images, screenshots, UPI receipts, bills, PDFs) include offline OCR text, filenames, and tags such as [image] or [document].',
       'ARCHIVE & FILE ACCESS: You have complete, direct access to the user\'s WhatsApp archive, including all messages, media, photos, documents, and PDFs. When messages or media are present in context, use them directly. NEVER state that you cannot access files, browse attachments, or read PDFs.',
       'When the user asks to find or search for images, receipts, payment screenshots, bills, or documents (e.g. "search for the image where I sent 100Rs", "find latest pdf", "find payment screenshot"), use `search` to look for keywords, filenames, amounts, names, or UPI details if not already in context.',
+      'MEDIA & CITATIONS: When an answer is supported by media (photos, menus, posters, documents, PDFs) or when a sender posted both text and media, cite both the message and the media handle (e.g. [m123]) so the user can see and open the media card directly in their results.',
       'Cite the messages you rely on with their handle, e.g. [m123], right after the claim. Never invent handles.',
       '@mentions on the current user message set which chats are in scope for this turn only.',
       'When no chat is @mentioned, the thread\'s home chat (see "Pinned chats") is the default.',
@@ -223,8 +224,8 @@ export class ContextEngine {
     const searchResults = await Promise.all(searches.map((p) => p.catch(() => ({ messages: [] }))));
 
     const timeline = [];
-    if (scoped.length && (range || broad)) {
-      const perChat = Math.max(1, Math.floor(GPT_LIMITS.maxMessagesInContext / scoped.length));
+    if (scoped.length) {
+      const perChat = Math.max(1, Math.floor((range || broad ? GPT_LIMITS.maxMessagesInContext : 15) / scoped.length));
       for (const jid of scoped) {
         const rows = range
           ? this.db.getMessagesInRange({ chatJid: jid, startTs: range.startTs, endTs: range.endTs, limit: perChat, newestFirst: true })
