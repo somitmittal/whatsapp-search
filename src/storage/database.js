@@ -102,6 +102,7 @@ export default class Database {
     this._ensureSearchConversationTables();
     this._ensureSkillTables();
     this._ensureMessagesFtsUpdateTriggerScoped();
+    try { this.backfillChatNamesFromResolvedSenders(); } catch (_) {}
   }
 
   /**
@@ -313,17 +314,29 @@ export default class Database {
   getMessagesInRange({ chatJid = null, startTs, endTs, limit = 200, newestFirst = false }) {
     const t = getCurrentTenantId();
     const safe = Math.max(1, Math.min(Number(limit) || 200, MAX_MESSAGES_PAGE));
+    const linkedJids = chatJid ? this.getLinkedJids(chatJid) : null;
+    let chatFilterSql = '';
+    let chatArgs = [];
+    if (linkedJids && linkedJids.length > 0) {
+      const ph = linkedJids.map(() => '?').join(',');
+      chatFilterSql = `AND chat_jid IN (${ph})`;
+      chatArgs = linkedJids;
+    } else if (chatJid) {
+      chatFilterSql = 'AND chat_jid = ?';
+      chatArgs = [chatJid];
+    }
     return this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid,
              chat_name AS chatName, sender, text, media_type AS mediaType,
              media_path AS mediaPath, media_caption AS mediaCaption,
              media_ai_index AS mediaAiIndex, timestamp
       FROM messages
-      WHERE tenant_id = ? AND (? IS NULL OR chat_jid = ?)
+      WHERE tenant_id = ?
+        ${chatFilterSql}
         AND timestamp >= ? AND timestamp <= ?
       ORDER BY timestamp ${newestFirst ? 'DESC' : 'ASC'}, id ${newestFirst ? 'DESC' : 'ASC'}
       LIMIT ?
-    `).all(t, chatJid, chatJid, Number(startTs) || 0, Number(endTs) || 4102444800, safe);
+    `).all(t, ...chatArgs, Number(startTs) || 0, Number(endTs) || 4102444800, safe);
   }
 
   /** A few messages on either side of `messageRowid` in the same chat (uses the chat+timestamp index). */
@@ -1357,17 +1370,28 @@ export default class Database {
 
   _lookupContactDirectoryName(key, tenantId, jid) {
     if (!jid || typeof jid !== 'string') return null;
+    let targetJid = jid;
+    if (targetJid.endsWith('@lid')) {
+      try {
+        const linked = this.getLinkedJids(targetJid);
+        const pn = linked.find((x) => x && (x.endsWith('@s.whatsapp.net') || x.endsWith('@hosted')));
+        if (pn) targetJid = pn;
+        else return null;
+      } catch (_) {
+        return null;
+      }
+    }
     if (
-      jid.endsWith('@lid')
-      || jid.endsWith('@g.us')
-      || jid.endsWith('@imported')
-      || jid.endsWith('@broadcast')
-      || jid.endsWith('@newsletter')
-      || jid.endsWith('@bot')
+      targetJid.endsWith('@lid')
+      || targetJid.endsWith('@g.us')
+      || targetJid.endsWith('@imported')
+      || targetJid.endsWith('@broadcast')
+      || targetJid.endsWith('@newsletter')
+      || targetJid.endsWith('@bot')
     ) {
       return null;
     }
-    const local = jid.split('@')[0].split(':')[0];
+    const local = targetJid.split('@')[0].split(':')[0];
     const digits = normalizePhone(local);
     if (!digits) return null;
     const candidates = digits.length > 10 ? [digits, digits.slice(-10)] : [digits];
@@ -1448,6 +1472,68 @@ export default class Database {
     }
     if (updated > 0) console.log(`[DB] Backfilled sender name from contact directory on ${updated} message row(s)`);
     return updated;
+  }
+
+  /**
+   * Backfill message `chat_name` for 1:1 chats where chat_name is a placeholder "Contact (…)" or missing,
+   * using known sender names or linked phone numbers.
+   */
+  backfillChatNamesFromResolvedSenders() {
+    const t = getCurrentTenantId();
+    const rows = this._db.prepare(`
+      SELECT DISTINCT chat_jid AS chatJid, chat_name AS chatName
+      FROM messages
+      WHERE tenant_id = ?
+        AND (chat_name LIKE 'Contact (%' OR chat_name IS NULL OR chat_name = '')
+        AND chat_jid NOT LIKE '%@g.us'
+    `).all(t);
+    if (!rows.length) return 0;
+
+    let lidToPn = new Map();
+    try {
+      const lidPnRows = this._db.prepare('SELECT lid, pn_jid FROM lid_pn_mappings WHERE tenant_id = ?').all(t);
+      lidToPn = new Map(lidPnRows.map((r) => [r.lid, r.pn_jid]));
+    } catch (_) {}
+
+    const updateStmt = this._db.prepare('UPDATE messages SET chat_name = ? WHERE tenant_id = ? AND chat_jid = ?');
+    let totalUpdated = 0;
+
+    for (const r of rows) {
+      const chatJid = r.chatJid;
+      const senders = this._db.prepare(`
+        SELECT DISTINCT sender FROM messages
+        WHERE tenant_id = ? AND chat_jid = ? AND sender != 'You' AND sender IS NOT NULL
+      `).all(t, chatJid);
+
+      let bestHuman = null;
+      let bestPhone = null;
+
+      for (const s of senders) {
+        const name = s.sender;
+        if (name && isPlausibleHumanChatTitle(name, chatJid) && !looksLikeLidFallbackContactLabel(name) && !looksLikePhoneOnly(name)) {
+          bestHuman = name;
+          break;
+        }
+        if (name && looksLikePhoneOnly(name)) {
+          bestPhone = formatPhoneLocalPart(name);
+        }
+      }
+
+      if (!bestPhone && chatJid.endsWith('@lid')) {
+        const pn = lidToPn.get(chatJid);
+        if (pn) bestPhone = formatPhoneLocalPart(pn.split('@')[0]);
+      }
+
+      const targetTitle = bestHuman || bestPhone;
+      if (targetTitle && targetTitle !== r.chatName) {
+        const info = updateStmt.run(targetTitle, t, chatJid);
+        totalUpdated += info.changes || 0;
+      }
+    }
+    if (totalUpdated > 0) {
+      console.log(`[DB] Backfilled chat_name on ${totalUpdated} message row(s) from resolved senders/numbers`);
+    }
+    return totalUpdated;
   }
 
   // ── While-you-were-away ───────────────────────────────────────────────
@@ -1904,9 +1990,19 @@ export default class Database {
    * Check if SQLite (or contact_directory) already knows a human name for this sender JID.
    */
   getResolvedSenderForJid(senderJids) {
-    const jids = (Array.isArray(senderJids) ? senderJids : [senderJids])
+    const rawJids = (Array.isArray(senderJids) ? senderJids : [senderJids])
       .map((j) => String(j || '').trim())
       .filter(Boolean);
+    if (!rawJids.length) return null;
+    const jidSet = new Set();
+    for (const j of rawJids) {
+      jidSet.add(j);
+      try {
+        const linked = this.getLinkedJids(j);
+        for (const l of linked) if (l) jidSet.add(l);
+      } catch (_) {}
+    }
+    const jids = [...jidSet];
     if (!jids.length) return null;
     const t = getCurrentTenantId();
     const ph = jids.map(() => '?').join(',');
@@ -2737,17 +2833,19 @@ export default class Database {
   iterateMessageEmbeddings(modelId, chatJid = null) {
     const t = getCurrentTenantId();
     const model = String(modelId || '');
-    const sql = chatJid
-      ? `SELECT e.message_rowid AS messageRowid, e.vector AS vector
+    const linkedJids = chatJid ? this.getLinkedJids(chatJid) : null;
+    if (linkedJids && linkedJids.length > 0) {
+      const ph = linkedJids.map(() => '?').join(',');
+      const sql = `SELECT e.message_rowid AS messageRowid, e.vector AS vector
          FROM message_embeddings e
          INNER JOIN messages m ON m.id = e.message_rowid
-         WHERE e.tenant_id = ? AND e.model = ? AND e.dim > 0 AND m.chat_jid = ?`
-      : `SELECT e.message_rowid AS messageRowid, e.vector AS vector
-         FROM message_embeddings e
-         WHERE e.tenant_id = ? AND e.model = ? AND e.dim > 0`;
-    return chatJid
-      ? this._db.prepare(sql).all(t, model, chatJid)
-      : this._db.prepare(sql).all(t, model);
+         WHERE e.tenant_id = ? AND e.model = ? AND e.dim > 0 AND m.chat_jid IN (${ph})`;
+      return this._db.prepare(sql).all(t, model, ...linkedJids);
+    }
+    const sql = `SELECT e.message_rowid AS messageRowid, e.vector AS vector
+       FROM message_embeddings e
+       WHERE e.tenant_id = ? AND e.model = ? AND e.dim > 0`;
+    return this._db.prepare(sql).all(t, model);
   }
 
   getMessagesByRowIds(ids) {
@@ -3203,6 +3301,10 @@ export default class Database {
       'SELECT chat_jid AS chatJid, touched_at AS touchedAt FROM chat_import_touches WHERE tenant_id = ?',
     ).all(t);
     const importTouchedAt = new Map(touchRows.map((r) => [r.chatJid, r.touchedAt]));
+    const lidPnRows = this._db.prepare(
+      'SELECT lid, pn_jid FROM lid_pn_mappings WHERE tenant_id = ?',
+    ).all(t);
+    const lidToPnMap = new Map(lidPnRows.map((r) => [r.lid, r.pn_jid]));
     const rosterTsByChat = new Map();
     for (const r of this._db.prepare(
       'SELECT chat_jid AS chatJid, last_message_ts AS lastMessageTs FROM chat_roster WHERE tenant_id = ?',
@@ -3368,6 +3470,16 @@ export default class Database {
         && (looksLikeLidFallbackContactLabel(title) || looksLikeOpaqueNumericId(title))
       ) {
         title = formatPhoneLocalPart(chatJid.split('@')[0]);
+      }
+      if (
+        !isGroup
+        && chatJid.endsWith('@lid')
+        && (looksLikeLidFallbackContactLabel(title) || looksLikeOpaqueNumericId(title) || !title)
+      ) {
+        const pn = lidToPnMap.get(chatJid) || (peerSenderName && looksLikePhoneOnly(peerSenderName) ? peerSenderName : null);
+        if (pn) {
+          title = formatPhoneLocalPart(pn.split('@')[0]);
+        }
       }
       if (isImportedChatJid(chatJid)) {
         title = prettyImportedChatTitle(title) || title;

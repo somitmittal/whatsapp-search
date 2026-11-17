@@ -32,6 +32,8 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
       'When the user asks to find or search for images, receipts, payment screenshots, bills, or documents (e.g. "search for the image where I sent 100Rs", "find latest pdf", "find payment screenshot"), use `search` to look for keywords, filenames, amounts, names, or UPI details if not already in context.',
       'MEDIA & CITATIONS: When an answer is supported by media (photos, menus, posters, documents, PDFs) or when a sender posted both text and media, cite both the message and the media handle (e.g. [m123]) so the user can see and open the media card directly in their results.',
       'Cite the messages you rely on with their handle, e.g. [m123], right after the claim. Never invent handles.',
+      'SITUATIONAL CONVERSATION GROUNDING: When an "# Active conversation in <Chat>" section is present, it contains the most recent messages in the current thread. Questions about current plans, destinations, meeting spots, departures, arrivals, confirmations, or recent statements (e.g. "where are we heading?", "where are we meeting?", "did you leave?", "what time?", "what did they say?") MUST be answered directly from this active conversation horizon. Do NOT execute keyword searches across the archive for conversational verbs like "heading", "leaving", "meeting", or "going" when the answer is in the recent discussion.',
+      'When scoped to a chat, stay strictly within that conversation and do not cite or bring in messages from unrelated contacts.',
       '@mentions on the current user message set which chats are in scope for this turn only.',
       'When no chat is @mentioned, the thread\'s home chat (see "Pinned chats") is the default.',
       'Expense comparisons in context are labelled with their site — use the matching site; do not mix sites.',
@@ -225,11 +227,14 @@ export class ContextEngine {
 
     const timeline = [];
     if (scoped.length) {
-      const perChat = Math.max(1, Math.floor((range || broad ? GPT_LIMITS.maxMessagesInContext : 15) / scoped.length));
+      const perChat = Math.max(1, Math.floor((range || broad ? GPT_LIMITS.maxMessagesInContext : 25) / scoped.length));
       for (const jid of scoped) {
+        const linkedJids = typeof this.db.getLinkedJids === 'function' ? this.db.getLinkedJids(jid) : [jid];
         const rows = range
           ? this.db.getMessagesInRange({ chatJid: jid, startTs: range.startTs, endTs: range.endTs, limit: perChat, newestFirst: true })
-          : this.db.getMessagesPaginated(jid, perChat, 0);
+          : (typeof this.db.getMessagesPaginatedForJids === 'function'
+              ? this.db.getMessagesPaginatedForJids(linkedJids, perChat, 0)
+              : this.db.getMessagesPaginated(jid, perChat, 0));
         const name = this.directory.name(jid);
         timeline.push(...rows.map((m) => ({ ...m, chatName: m.chatName || name })));
       }
@@ -241,10 +246,13 @@ export class ContextEngine {
     let remaining = budget;
 
     if (timeline.length) {
-      const share = searchResults.some((r) => r.messages.length) ? Math.floor(budget / 2) : budget;
+      const share = searchResults.some((r) => r.messages.length) ? Math.floor(budget * 0.6) : budget;
       const packed = packMessages(timeline, share, seen);
       if (packed.count) {
-        sections.push(`# Recent messages${range ? ` (${range.label})` : ''}\n${packed.text}`);
+        const heading = scoped.length === 1 && currentChatName
+          ? `# Active conversation in ${currentChatName} (Most recent messages)`
+          : `# Recent messages${range ? ` (${range.label})` : ''}`;
+        sections.push(`${heading}\n${packed.text}`);
         remaining -= packed.tokens;
         all.push(...timeline);
       }

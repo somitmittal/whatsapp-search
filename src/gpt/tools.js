@@ -123,7 +123,7 @@ export function createToolbox({ db, embeddings, directory, runSkill = null, medi
           }
         }
 
-        if (!messages.length && intent?.expandScopeIfEmpty !== false) {
+        if (!messages.length && (intent?.isCrossChat === true || args.allChats === true)) {
           const globalRes = await hybridSearch({
             db,
             embeddings,

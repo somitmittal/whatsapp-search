@@ -17,6 +17,7 @@ export const GROUNDING_PROMPT_RULES = [
   '- Copy spellings exactly, even when a word looks misspelt, unfamiliar or wrong.',
   '- Never guess what an unknown word refers to. If you do not know, leave it as-is.',
   '- If the messages do not answer the question, say so plainly instead of filling the gap.',
+  '- SITUATIONAL CONVERSATIONS: When asked situational or immediate questions (e.g. "where are we heading?", "where are we meeting?", "did you leave?", "what time?"), answer from the active recent messages. Do not pull historical keyword matches from unrelated chats.',
 ].join('\n');
 
 /** Note appended when the verifier had to remove something. */

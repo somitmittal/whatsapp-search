@@ -84,7 +84,7 @@ export function prettyImportedChatTitle(name) {
   return t || String(name || '').trim();
 }
 
-export function fallbackTitleForOneOnOneJid(jid) {
+export function fallbackTitleForOneOnOneJid(jid, linkedPhone = null) {
   if (!jid || typeof jid !== 'string') return '';
   const bare = jid.split('@')[0] || '';
   if (jid.endsWith('@imported')) {
@@ -97,6 +97,10 @@ export function fallbackTitleForOneOnOneJid(jid) {
     return formatPhoneLocalPart(bare);
   }
   if (jid.endsWith('@lid')) {
+    if (linkedPhone) {
+      const pBare = String(linkedPhone).split('@')[0];
+      return formatPhoneLocalPart(pBare);
+    }
     const tail = (bare.replace(/\D/g, '').slice(-6) || bare.slice(-6) || '').slice(-8);
     return tail ? `Contact (${tail})` : 'Contact';
   }

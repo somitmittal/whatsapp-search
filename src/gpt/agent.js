@@ -208,6 +208,10 @@ export async function runAgent({
     messages.push({ role: 'assistant', content: calls.map((c) => `CALL ${JSON.stringify({ tool: c.name, args: c.args })}`).join('\n') });
     const budget = Math.floor(GPT_LIMITS.contextTokens / calls.length);
     const results = await Promise.all(calls.map(async (call) => {
+      if (ctx?.scopeChatName && (call.name === 'search' || call.name === 'read' || call.name === 'summaries')) {
+        if (!call.args) call.args = {};
+        if (!call.args.chat) call.args.chat = ctx.scopeChatName;
+      }
       const fn = toolbox[call.name];
       emit?.({ type: 'tool', name: call.name, args: call.args, text: describeCall(call) });
       emit?.({ type: 'status', text: describeCall(call) });

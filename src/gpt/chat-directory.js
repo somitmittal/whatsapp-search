@@ -46,16 +46,17 @@ export default class ChatDirectory {
   name(chatJid) {
     if (!chatJid) return null;
     const dir = this.list();
+    const isQualityName = (n) => n && typeof n === 'string' && !n.includes('@') && !n.startsWith('Contact (');
     const known = dir.byJid.get(chatJid);
-    if (known && known.chatName && !known.chatName.includes('@')) return known.chatName;
+    if (known && isQualityName(known.chatName)) return known.chatName;
     if (typeof this.db.getLinkedJids === 'function') {
       const linked = this.db.getLinkedJids(chatJid);
       for (const alt of linked) {
         const lk = dir.byJid.get(alt);
-        if (lk && lk.chatName && !lk.chatName.includes('@')) return lk.chatName;
+        if (lk && isQualityName(lk.chatName)) return lk.chatName;
       }
     }
-    if (known) return known.chatName;
+    if (known && known.chatName && !known.chatName.includes('@')) return known.chatName;
     return this.db.getQuickChatInfo(chatJid)?.chatName || chatJid;
   }
 
