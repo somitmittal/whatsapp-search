@@ -110,8 +110,8 @@ describe('Human QA E2E: Ingestion Optimization & Anti-Notification Gate', () => 
   });
 
   describe('2. On-Demand Yield Maximization & Anti-Notification Safeguards', () => {
-    test('PHONE_HISTORY_DEFAULT_COUNT is set to 500 (5x yield per notification)', () => {
-      expect(PHONE_HISTORY_DEFAULT_COUNT).toBe(500);
+    test('PHONE_HISTORY_DEFAULT_COUNT is set to 1000 (10x yield per notification)', () => {
+      expect(PHONE_HISTORY_DEFAULT_COUNT).toBe(1000);
     });
 
     test('rate limiter blocks in-flight and cooldown attempts to prevent alert storms on phone', () => {

@@ -3442,7 +3442,7 @@ export default class WaClient {
       id: String(messageId),
       fromMe: Boolean(fromMe),
     };
-    const n = Math.min(500, Math.max(1, Math.floor(Number(count) || PHONE_HISTORY_DEFAULT_COUNT)));
+    const n = Math.min(1000, Math.max(1, Math.floor(Number(count) || PHONE_HISTORY_DEFAULT_COUNT)));
     try {
       return await this._sock.fetchMessageHistory(n, key, ts);
     } catch (err) {

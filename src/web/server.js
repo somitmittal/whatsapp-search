@@ -2062,7 +2062,7 @@ export default class WebServer {
         const st = this._getTenantState(tid);
         const wa = st?.waClient;
         const imported = chatJid.endsWith('@imported');
-        const count = Math.min(500, Math.max(1, parseInt(req.body?.count, 10) || PHONE_HISTORY_DEFAULT_COUNT));
+        const count = Math.min(1000, Math.max(1, parseInt(req.body?.count, 10) || PHONE_HISTORY_DEFAULT_COUNT));
         const requestHistory = req.body?.requestHistory === true
           || req.body?.requestHistory === 1
           || String(req.body?.requestHistory || '').toLowerCase() === 'true';
@@ -2913,7 +2913,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       if (st.waState !== 'READY') return res.status(409).json({ error: 'WhatsApp not ready' });
       const chatJid = String(req.body?.chatJid || '').trim();
       if (!chatJid) return res.status(400).json({ error: 'chatJid required' });
-      const count = Math.min(500, Math.max(1, parseInt(req.body?.count, 10) || PHONE_HISTORY_DEFAULT_COUNT));
+      const count = Math.min(1000, Math.max(1, parseInt(req.body?.count, 10) || PHONE_HISTORY_DEFAULT_COUNT));
       // Anti notification-spam: in-flight lock, per-chat + global cooldowns, hourly cap, sleep pause.
       const guard = wa.canFetchPhoneHistory?.(chatJid);
       if (guard && !guard.ok) {

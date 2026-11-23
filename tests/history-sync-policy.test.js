@@ -136,8 +136,8 @@ describe('evaluatePhoneHistoryQuota', () => {
     expect(r.ok).toBe(false);
     expect(r.code).toBe('HOURLY_CAP');
   });
-  test('PHONE_HISTORY_DEFAULT_COUNT yields 500 messages per notification', () => {
-    expect(PHONE_HISTORY_DEFAULT_COUNT).toBe(500);
+  test('PHONE_HISTORY_DEFAULT_COUNT yields 1000 messages per notification', () => {
+    expect(PHONE_HISTORY_DEFAULT_COUNT).toBe(1000);
   });
 });
 
