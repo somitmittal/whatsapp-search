@@ -7,6 +7,7 @@ import { displayChatTitle, formatChatBubbleDateTime, formatDate, isResolvedChatN
 import { mediaDownloadUrl } from './media.js';
 import { activeChatHasLocalMessages } from './menus.js';
 import { openForwardOverlay, promptDeleteMessage } from './message-actions.js';
+import { openReactionDetailsModal } from './reaction-details-modal.js';
 import {
   applyResolvedSenderNamesToDom,
   buildChatMessagesHtml,
@@ -661,6 +662,22 @@ export function initChatView() {
       e.stopPropagation();
       toggleReactionEmojiPicker(emojiPickerToggle);
       return;
+    }
+    const rxChip = e.target.closest('.rx-chip, .bubble-reactions');
+    if (rxChip) {
+      const block = e.target.closest('.msg-block');
+      if (block?.dataset?.messageId) {
+        e.stopPropagation();
+        closeReactionEmojiPickers();
+        const clickedChip = e.target.closest('.rx-chip');
+        const emoji = clickedChip?.getAttribute('data-reaction-emoji') || '';
+        openReactionDetailsModal({
+          chatJid: block.dataset.storageJid || store.activeChat,
+          messageId: block.dataset.messageId,
+          initialEmoji: emoji,
+        });
+        return;
+      }
     }
     const fwd = e.target.closest('[data-wa-forward]');
     if (fwd) {

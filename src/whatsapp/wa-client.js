@@ -1414,6 +1414,7 @@ export default class WaClient {
           reactionMsgId,
           groupingKey: reactionBody.groupingKey != null ? String(reactionBody.groupingKey) : '',
           reactionKey: u.reaction?.key || null,
+          senderTimestampMs: reactionBody.senderTimestampMs || null,
         });
       }
     });
@@ -3248,6 +3249,7 @@ export default class WaClient {
               groupingKey: r.groupingKey,
               reactionKey: r.key || null,
               text: r.text,
+              senderTimestampMs: r.senderTimestampMs,
             })),
         };
       }

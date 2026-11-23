@@ -28,7 +28,8 @@ const MORE_REACTION_EMOJIS = [
 ];
 
 export function toggleReactionEmojiPicker(button) {
-  const picker = button?.closest('.bubble-toolbar')?.querySelector('.wa-reaction-picker');
+  const block = button?.closest('.msg-block');
+  const picker = block?.querySelector('.wa-reaction-picker');
   if (!picker) return;
   const shouldOpen = picker.hidden;
   closeReactionEmojiPickers();
@@ -56,6 +57,14 @@ export function toggleReactionEmojiPicker(button) {
   }
   picker.hidden = !shouldOpen;
   if (shouldOpen) {
+    const rect = button?.getBoundingClientRect?.();
+    if (rect && rect.top < 280) {
+      picker.style.bottom = 'auto';
+      picker.style.top = 'calc(100% + 4px)';
+    } else {
+      picker.style.top = 'auto';
+      picker.style.bottom = 'calc(100% + 4px)';
+    }
     const searchInput = picker.querySelector('.wa-reaction-search-input');
     if (searchInput) {
       searchInput.value = '';
@@ -469,7 +478,7 @@ function reactionCountsHtml(counts) {
   if (!entries.length) return '';
   const inner = entries.map(([e, n]) => {
     const num = Number(n);
-    return `<span class="rx-chip" data-reaction-emoji="${escAttr(e)}" data-reaction-count="${num}">${esc(e)}${num > 1 ? `<span class="rx-n">${num}</span>` : ''}</span>`;
+    return `<button type="button" class="rx-chip" data-reaction-emoji="${escAttr(e)}" data-reaction-count="${num}" title="View reactions" aria-label="View reactions">${esc(e)}${num > 1 ? `<span class="rx-n">${num}</span>` : ''}</button>`;
   }).join('');
   return `<div class="bubble-reactions" aria-label="Reactions">${inner}</div>`;
 }
@@ -486,12 +495,22 @@ function reactionCountsFromBlock(block) {
   return counts;
 }
 
-function replaceBlockReactionCounts(block, counts) {
-  const previous = block.querySelector('.bubble-reactions');
+export function replaceBlockReactionCounts(block, counts) {
+  const rxBar = block.querySelector('.bubble-reaction-bar');
+  const previous = rxBar ? rxBar.querySelector('.bubble-reactions') : block.querySelector('.bubble-reactions');
   const html = reactionCountsHtml(counts);
-  if (!html) previous?.remove();
-  else if (previous) previous.outerHTML = html;
-  else block.insertAdjacentHTML('beforeend', html);
+  if (!html) {
+    previous?.remove();
+    rxBar?.classList.remove('has-reactions');
+  } else if (previous) {
+    previous.outerHTML = html;
+    rxBar?.classList.add('has-reactions');
+  } else if (rxBar) {
+    rxBar.insertAdjacentHTML('afterbegin', html);
+    rxBar.classList.add('has-reactions');
+  } else {
+    block.insertAdjacentHTML('beforeend', html);
+  }
 }
 
 function findReactionBlock(chatJid, messageId) {
@@ -701,9 +720,6 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     if (canReply) {
       menu += menuRow('mi-reply', `data-wa-reply="1" data-reply-preview="${escAttr(previewTxt)}"${replyMetaAttrs}`, WA_ICONS.reply, 'Reply');
     }
-    if (liveOk) {
-      menu += menuRow('mi-react', 'data-wa-emoji-picker-toggle="1"', WA_ICONS.react, 'React');
-    }
     const copyText = extractMessageCopyText(m);
     menu += menuRow('mi-copy', `data-wa-copy="1" data-copy-text="${escAttr(copyText)}"`, WA_ICONS.copy, 'Copy message');
     menu += menuRow('mi-ai', `data-wa-ai-search="1" data-ai-preview="${escAttr(previewTxt)}"`, aiSvg, 'AI search');
@@ -721,9 +737,14 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
           <button type="button" class="wa-tb wa-msg-menu-toggle" data-wa-menu-toggle="1" title="Message options" aria-label="Message options" aria-haspopup="menu">${WA_ICONS.chevron}</button>
           </div>
           <div class="wa-msg-menu" hidden role="menu" aria-label="Message options">${menu}</div>
-          ${liveOk ? '<div class="wa-reaction-picker" hidden aria-label="Choose a reaction"></div>' : ''}
         </div>` : '';
-    html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxHtml}</div>`;
+    const hasRx = Boolean(rxHtml && rxHtml.trim());
+    const rxBarCls = `bubble-reaction-bar${hasRx ? ' has-reactions' : ''}`;
+    const rxBar = mid && !isDeleted ? `<div class="${rxBarCls}">
+          ${rxHtml}
+          ${liveOk ? `<button type="button" class="bubble-react-trigger" data-wa-emoji-picker-toggle="1" title="React" aria-label="React"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-3.5-9c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm7 0c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg></button><div class="wa-reaction-picker" hidden aria-label="Choose a reaction"></div>` : ''}
+        </div>` : '';
+    html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxBar}</div>`;
   }
   return html;
 }

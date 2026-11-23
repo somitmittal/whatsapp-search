@@ -1030,9 +1030,17 @@ export default class Database {
           message_id TEXT NOT NULL,
           slot_key TEXT NOT NULL,
           last_emoji TEXT NOT NULL,
+          sender_jid TEXT,
+          sender_name TEXT,
+          from_me INTEGER DEFAULT 0,
+          updated_at INTEGER,
           PRIMARY KEY (tenant_id, message_id, slot_key)
         );
       `);
+      try { this._db.exec(`ALTER TABLE wa_reaction_slot ADD COLUMN sender_jid TEXT`); } catch (_) {}
+      try { this._db.exec(`ALTER TABLE wa_reaction_slot ADD COLUMN sender_name TEXT`); } catch (_) {}
+      try { this._db.exec(`ALTER TABLE wa_reaction_slot ADD COLUMN from_me INTEGER DEFAULT 0`); } catch (_) {}
+      try { this._db.exec(`ALTER TABLE wa_reaction_slot ADD COLUMN updated_at INTEGER`); } catch (_) {}
     } catch (e) {
       console.warn('[DB] wa_reaction_slot:', e.message);
     }
@@ -1053,6 +1061,24 @@ export default class Database {
     const t = getCurrentTenantId();
     const newEmoji = emoji != null ? String(emoji).trim() : '';
     const slotKey = reactionParticipantSlotKey(meta.groupingKey, meta.reactionKey);
+    const isFromMe = Boolean(meta.fromMe || meta.reactionKey?.fromMe);
+    let senderJid = meta.senderJid || null;
+    if (!senderJid) {
+      if (isFromMe) {
+        senderJid = 'me';
+      } else if (meta.reactionKey?.participant) {
+        senderJid = meta.reactionKey.participant;
+      } else if (chatJid && !chatJid.endsWith('@g.us')) {
+        senderJid = chatJid;
+      }
+    }
+    let senderName = meta.senderName || null;
+    if (isFromMe) {
+      senderName = 'You';
+    } else if (!senderName && senderJid) {
+      senderName = this.resolveParticipantName(senderJid, chatJid);
+    }
+    const updatedAt = Number(meta.updatedAt) || Math.floor(Date.now() / 1000);
 
     const insDedupe = this._db.prepare(
       'INSERT OR IGNORE INTO wa_reaction_dedupe (tenant_id, reaction_msg_id) VALUES (?, ?)',
@@ -1076,8 +1102,8 @@ export default class Database {
       'DELETE FROM wa_reaction_slot WHERE tenant_id = ? AND message_id = ? AND slot_key = ?',
     );
     const insSlot = this._db.prepare(`
-      INSERT INTO wa_reaction_slot (tenant_id, message_id, slot_key, last_emoji)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO wa_reaction_slot (tenant_id, message_id, slot_key, last_emoji, sender_jid, sender_name, from_me, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const upd = this._db.prepare('UPDATE messages SET reactions_json = ? WHERE id = ?');
 
@@ -1122,7 +1148,7 @@ export default class Database {
         counts[newEmoji] = prev + 1;
         changed = true;
         delSlot.run(t, messageId, slotKey);
-        insSlot.run(t, messageId, slotKey, newEmoji);
+        insSlot.run(t, messageId, slotKey, newEmoji, senderJid, senderName, isFromMe ? 1 : 0, updatedAt);
       } else {
         delSlot.run(t, messageId, slotKey);
         if (oldEmoji) changed = true;
@@ -1145,7 +1171,7 @@ export default class Database {
   /**
    * Replace slot rows for a message (after history sync). Does not touch counts — pair with UPDATE reactions_json.
    * @param {string} messageId
-   * @param {Array<{ groupingKey?: string|null, reactionKey?: object, text?: string|null }>} slots
+   * @param {Array<{ groupingKey?: string|null, reactionKey?: object, text?: string|null, senderTimestampMs?: number|string, senderJid?: string|null, senderName?: string|null, fromMe?: boolean|null }>} slots
    */
   replaceReactionSlotsForMessage(messageId, slots) {
     if (!messageId) return;
@@ -1154,8 +1180,8 @@ export default class Database {
       'DELETE FROM wa_reaction_slot WHERE tenant_id = ? AND message_id = ?',
     );
     const ins = this._db.prepare(`
-      INSERT INTO wa_reaction_slot (tenant_id, message_id, slot_key, last_emoji)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO wa_reaction_slot (tenant_id, message_id, slot_key, last_emoji, sender_jid, sender_name, from_me, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     try {
       delAll.run(t, messageId);
@@ -1163,10 +1189,156 @@ export default class Database {
         const te = s?.text != null ? String(s.text).trim() : '';
         if (!te) continue;
         const sk = reactionParticipantSlotKey(s.groupingKey, s.reactionKey);
-        ins.run(t, messageId, sk, te);
+        const isFromMe = Boolean(s.fromMe || s.reactionKey?.fromMe);
+        const senderJid = s.senderJid || (isFromMe ? 'me' : (s.reactionKey?.participant || null));
+        const senderName = isFromMe ? 'You' : (s.senderName || null);
+        const updatedAt = s.senderTimestampMs
+          ? Math.floor(Number(s.senderTimestampMs) / 1000)
+          : (Number(s.updatedAt) || Math.floor(Date.now() / 1000));
+        ins.run(t, messageId, sk, te, senderJid, senderName, isFromMe ? 1 : 0, updatedAt);
       }
     } catch (e) {
       console.warn('[DB] replaceReactionSlotsForMessage:', e.message);
+    }
+  }
+
+  /**
+   * Resolve a human-friendly name for a participant in a chat.
+   * @param {string} senderJid
+   * @param {string} [chatJid]
+   * @returns {string}
+   */
+  resolveParticipantName(senderJid, chatJid) {
+    if (!senderJid) return 'Participant';
+    if (senderJid === 'me') return 'You';
+    const t = getCurrentTenantId();
+
+    try {
+      const msgSender = this._db.prepare(`
+        SELECT sender FROM messages
+        WHERE tenant_id = ? AND sender_jid = ? AND sender IS NOT NULL AND sender != '' AND sender NOT LIKE 'Contact (%'
+        ORDER BY timestamp DESC LIMIT 1
+      `).get(t, senderJid);
+      if (msgSender?.sender) return msgSender.sender;
+
+      if (chatJid && (senderJid === chatJid || !chatJid.endsWith('@g.us'))) {
+        const chatInfo = this.getQuickChatInfo(chatJid);
+        if (chatInfo?.chatName) return chatInfo.chatName;
+      }
+
+      const anySender = this._db.prepare(`
+        SELECT sender FROM messages
+        WHERE tenant_id = ? AND sender_jid = ? AND sender IS NOT NULL AND sender != ''
+        ORDER BY timestamp DESC LIMIT 1
+      `).get(t, senderJid);
+      if (anySender?.sender) return anySender.sender;
+
+      const rawNumber = senderJid.split('@')[0];
+      if (rawNumber && /^\d+$/.test(rawNumber)) {
+        return `+${rawNumber}`;
+      }
+      return senderJid;
+    } catch (e) {
+      console.warn('[DB] resolveParticipantName:', e.message);
+      return senderJid;
+    }
+  }
+
+  /**
+   * Get detailed participant reaction breakdown for a message.
+   * @param {string} chatJid
+   * @param {string} messageId
+   * @returns {{ ok: boolean, chatJid: string, messageId: string, reactions: Array<{ emoji: string, sender: string, senderJid: string|null, fromMe: boolean, timestamp: number }>, counts: Record<string, number> }}
+   */
+  getMessageReactions(chatJid, messageId) {
+    if (!messageId) return { ok: true, chatJid: chatJid || '', messageId: '', reactions: [], counts: {} };
+    const t = getCurrentTenantId();
+
+    try {
+      const msgRow = this._db.prepare(`
+        SELECT chat_jid AS chatJid, chat_name AS chatName, reactions_json AS reactionsJson, timestamp
+        FROM messages
+        WHERE tenant_id = ? AND message_id = ?
+        LIMIT 1
+      `).get(t, messageId);
+
+      const effectiveChatJid = chatJid || msgRow?.chatJid || '';
+
+      const slots = this._db.prepare(`
+        SELECT slot_key AS slotKey, last_emoji AS emoji,
+               sender_jid AS senderJid, sender_name AS senderName,
+               from_me AS fromMe, updated_at AS updatedAt
+        FROM wa_reaction_slot
+        WHERE tenant_id = ? AND message_id = ? AND last_emoji IS NOT NULL AND last_emoji != ''
+      `).all(t, messageId);
+
+      let reactions = [];
+
+      if (slots && slots.length > 0) {
+        reactions = slots.map((s) => {
+          const isFromMe = Boolean(s.fromMe || s.slotKey === 'dm:1' || s.senderJid === 'me');
+          let senderJid = s.senderJid;
+          if (!senderJid) {
+            if (isFromMe) senderJid = 'me';
+            else if (s.slotKey && s.slotKey.startsWith('p:')) senderJid = s.slotKey.slice(2);
+            else if (s.slotKey === 'dm:0') senderJid = effectiveChatJid;
+          }
+
+          let sender = s.senderName;
+          if (isFromMe) {
+            sender = 'You';
+          } else if (!sender && senderJid) {
+            sender = this.resolveParticipantName(senderJid, effectiveChatJid);
+          } else if (!sender) {
+            sender = msgRow?.chatName || 'Participant';
+          }
+
+          return {
+            emoji: s.emoji,
+            sender,
+            senderJid,
+            fromMe: isFromMe,
+            timestamp: s.updatedAt || msgRow?.timestamp || Math.floor(Date.now() / 1000),
+          };
+        });
+      } else if (msgRow?.reactionsJson) {
+        let parsedCounts = {};
+        try {
+          parsedCounts = JSON.parse(msgRow.reactionsJson);
+        } catch {}
+        if (parsedCounts && typeof parsedCounts === 'object') {
+          for (const [em, cnt] of Object.entries(parsedCounts)) {
+            const num = Number(cnt) || 0;
+            for (let i = 0; i < num; i++) {
+              reactions.push({
+                emoji: em,
+                sender: i === 0 && num === 1 && !effectiveChatJid.endsWith('@g.us') ? (msgRow.chatName || 'Participant') : 'Participant',
+                senderJid: null,
+                fromMe: false,
+                timestamp: msgRow.timestamp || Math.floor(Date.now() / 1000),
+              });
+            }
+          }
+        }
+      }
+
+      const counts = {};
+      for (const r of reactions) {
+        if (r.emoji) {
+          counts[r.emoji] = (counts[r.emoji] || 0) + 1;
+        }
+      }
+
+      return {
+        ok: true,
+        chatJid: effectiveChatJid,
+        messageId,
+        reactions,
+        counts,
+      };
+    } catch (e) {
+      console.warn('[DB] getMessageReactions:', e.message);
+      return { ok: false, chatJid: chatJid || '', messageId, reactions: [], counts: {}, error: e.message };
     }
   }
 

@@ -1180,6 +1180,7 @@ export default class WebServer {
             {
               groupingKey: payload.groupingKey,
               reactionKey: payload.reactionKey,
+              updatedAt: payload.senderTimestampMs ? Math.floor(Number(payload.senderTimestampMs) / 1000) : null,
             },
           );
           if (counts) {
@@ -3238,6 +3239,18 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       }
     });
 
+    this._app.get('/api/wa/reactions', (req, res) => {
+      const messageId = typeof req.query.messageId === 'string' ? req.query.messageId.trim() : '';
+      const chatJid = typeof req.query.chatJid === 'string' ? req.query.chatJid.trim() : '';
+      if (!messageId) return res.status(400).json({ error: 'messageId required' });
+      try {
+        const data = this.db.getMessageReactions(chatJid, messageId);
+        return res.json(data);
+      } catch (err) {
+        return res.status(500).json({ error: err.message || String(err) });
+      }
+    });
+
     this._app.post('/api/wa/react', async (req, res) => {
       const tid = getCurrentTenantId();
       const st = this._getTenantState(tid);
@@ -3254,7 +3267,36 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           return res.status(503).json({ error: 'Reactions not available' });
         }
         await st.waClient.sendEmojiReaction(chatJid, row, emoji);
-        return res.json({ ok: true });
+
+        // Optimistically record the user's reaction in local database and broadcast to UI
+        const reactionMsgId = `me_react_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const counts = this.db.mergeReactionEvent(
+          chatJid,
+          messageId,
+          emoji,
+          reactionMsgId,
+          {
+            reactionKey: { fromMe: true, participant: null },
+            senderName: 'You',
+            fromMe: true,
+            updatedAt: Math.floor(Date.now() / 1000),
+          },
+        );
+        if (counts) {
+          this._broadcast(
+            {
+              type: 'message-reaction',
+              data: {
+                chatJid,
+                messageId,
+                counts,
+              },
+            },
+            tid,
+          );
+        }
+
+        return res.json({ ok: true, counts });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
