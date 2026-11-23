@@ -5,6 +5,7 @@ import { applyMessageEditedToDom } from './messages-render.js';
 import { scheduleRefreshDash } from './sidebar.js';
 import { $, esc, escAttr } from './util.js';
 import { wantsLiveSyncUi } from './wa-connection.js';
+import { ComposerEmojiPanel, setupInlineEmojiAutocomplete } from './emoji-picker.js';
 
 export function shouldHideComposerForJid(jid) {
   if (!jid) return true;
@@ -324,6 +325,22 @@ export async function sendCurrentMessage() {
 export function initComposer() {
   // removed with voice-note UI
   document.getElementById('msg-send')?.addEventListener('click', sendCurrentMessage);
+
+  const msgInput = document.getElementById('msg-text');
+  const emojiBtn = document.getElementById('msg-emoji');
+  const emojiPanelEl = document.getElementById('composer-emoji-picker');
+
+  if (emojiBtn && msgInput && emojiPanelEl) {
+    new ComposerEmojiPanel({
+      containerEl: emojiPanelEl,
+      inputEl: msgInput,
+      toggleBtnEl: emojiBtn,
+    });
+  }
+
+  if (msgInput) {
+    setupInlineEmojiAutocomplete(msgInput);
+  }
 
   const fileInput = document.getElementById('msg-file-input');
   if (fileInput) fileInput.multiple = true;

@@ -741,13 +741,19 @@ html[data-theme="dark"] .wa-picker-quick { border-bottom-color: #2a3942; }
   cursor: pointer; min-height: 44px; white-space: nowrap; background: #00a884; color: #fff; padding: 10px 16px;
 }
 .gpt-wa-composer .chat-composer button.composer-attach,
-.gpt-wa-composer .chat-composer button.composer-mic {
+.gpt-wa-composer .chat-composer button.composer-mic,
+.gpt-wa-composer .chat-composer button.composer-emoji {
   background: #fff; color: #087e68; border: 2px solid #00a884;
   display: inline-flex; align-items: center; justify-content: center;
   flex: 0 0 44px; width: 44px; min-width: 44px; height: 44px; padding: 0; line-height: 1;
 }
+.gpt-wa-composer .chat-composer button.composer-emoji {
+  color: #54656f; border: 1px solid var(--line);
+}
 .gpt-wa-composer .chat-composer button.composer-attach:hover,
 .gpt-wa-composer .chat-composer button.composer-mic:hover { background: #e8edef; }
+.gpt-wa-composer .chat-composer button.composer-emoji:hover,
+.gpt-wa-composer .chat-composer button.composer-emoji.is-active { background: #e8edef; color: #00a884; }
 .gpt-wa-composer .file-attachment-chip {
   padding: 4px 14px; font-size: 12.5px;
 }
@@ -768,6 +774,9 @@ html[data-theme="dark"] .wa-quote-close { color: #aebac1; }
 html[data-theme="dark"] .wa-quote-close:hover { background: #2a3942; color: #e9edef; }
 html[data-theme="dark"] .chat-composer button.composer-mic { color: #8696a0; border-color: #2a3942; }
 html[data-theme="dark"] .chat-composer button.composer-mic:hover { background: #2a3942; color: #00a884; }
+html[data-theme="dark"] .chat-composer button.composer-emoji { color: #8696a0; border-color: #2a3942; background: #202c33; }
+html[data-theme="dark"] .chat-composer button.composer-emoji:hover,
+html[data-theme="dark"] .chat-composer button.composer-emoji.is-active { background: #2a3942; color: #00a884; }
 
 /* Ask AI voice dictation */
 .gpt-mic {

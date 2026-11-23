@@ -52,6 +52,7 @@ import { initWaBootstrap } from '/js/wa-bootstrap.js';
 import { initDesktopUpdates } from '/js/desktop-updates.js';
 import { accountPlanSummary, shouldAutoLogout } from '/js/trial-status.js';
 import { isWaUiReady, updateWaUI } from '/js/wa-connection.js';
+import { setupInlineEmojiAutocomplete } from '/js/emoji-picker.js';
 
 initFetchShim();
 initComposer();
@@ -109,6 +110,8 @@ const els = {
   topSyncText: $('#gpt-top-sync-text'),
   topSyncPct: $('#gpt-top-sync-pct'),
 };
+
+if (dom.input) setupInlineEmojiAutocomplete(dom.input);
 
 const HIDDEN_MODELS_KEY = 'wgpt.hiddenModels';
 const OPEN_TABS_KEY = 'wgpt.openTabs';

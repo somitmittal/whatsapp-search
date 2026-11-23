@@ -3,6 +3,7 @@ import { canSendMessageToJid } from './composer.js';
 import { dateFmt, formatChatBubbleDateTime, formatChatDateSeparator, messageTimestampToDate, receiptTicksHtml } from './format.js';
 import { mediaDownloadUrl, mediaUrlForMessage, messageMediaDownloadAnchor } from './media.js';
 import { $, esc, escAttr, hash } from './util.js';
+import { setupReactionSearch } from './emoji-picker.js';
 
 let imageViewerEl = null;
 /** WhatsApp Web icon paths for the message menu (mirror of WA's own icons). */
@@ -33,8 +34,15 @@ export function toggleReactionEmojiPicker(button) {
   closeReactionEmojiPickers();
   closeMessageMenus();
   if (shouldOpen && !picker.dataset.ready) {
-    // WhatsApp's react sheet: six quick reactions first, then the full grid.
-    picker.innerHTML = `<div class="wa-picker-quick">`
+    // WhatsApp's react sheet: search bar, six quick reactions first, then the full grid.
+    picker.innerHTML = `
+      <div class="wa-reaction-search-wrap">
+        <svg class="wa-emoji-search-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+          <path d="M10 2a8 8 0 0 1 6.32 12.906l4.387 4.387a1 1 0 0 1-1.414 1.414l-4.387-4.387A8 8 0 1 1 10 2zm0 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12z"/>
+        </svg>
+        <input type="text" class="wa-reaction-search-input" placeholder="Search emoji" autocomplete="off" />
+      </div>
+      <div class="wa-picker-quick">`
       + WA_REACTION_QUICK.map((emoji) =>
         `<button type="button" class="wa-tb" data-wa-react="${escAttr(emoji)}" title="React ${escAttr(emoji)}" aria-label="React ${escAttr(emoji)}">${esc(emoji)}</button>`).join('')
       + `<button type="button" class="wa-tb wa-tb-remove-reaction" data-wa-react="" title="Remove your reaction" aria-label="Remove your reaction">-</button>`
@@ -44,8 +52,16 @@ export function toggleReactionEmojiPicker(button) {
         `<button type="button" class="wa-tb" data-wa-react="${escAttr(emoji)}" title="React ${escAttr(emoji)}" aria-label="React ${escAttr(emoji)}">${esc(emoji)}</button>`).join('')
       + `</div>`;
     picker.dataset.ready = '1';
+    setupReactionSearch(picker);
   }
   picker.hidden = !shouldOpen;
+  if (shouldOpen) {
+    const searchInput = picker.querySelector('.wa-reaction-search-input');
+    if (searchInput) {
+      searchInput.value = '';
+      setTimeout(() => searchInput.focus(), 40);
+    }
+  }
 }
 
 export function closeReactionEmojiPickers() {
