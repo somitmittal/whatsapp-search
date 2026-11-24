@@ -117,6 +117,7 @@ export default class Database {
     this._ensureSkillTables();
     this._ensureMessagesFtsUpdateTriggerScoped();
     this._reactionsCache = new Map();
+    this._linkedJidsCache = new Map();
     try { this.backfillChatNamesFromResolvedSenders(); } catch (_) {}
   }
 
@@ -3103,14 +3104,11 @@ export default class Database {
          )`;
     const gate = this._indexEligibilitySql('m.chat_jid');
     const select = `
-      WITH chat_activity AS (
-        SELECT chat_jid, MAX(timestamp) AS chat_last_ts, COUNT(*) AS msg_count
-        FROM messages WHERE tenant_id = ? GROUP BY chat_jid
-      )
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid, m.sender, m.text,
-             m.media_caption AS mediaCaption, m.media_ai_index AS mediaAiIndex, m.timestamp
+             m.media_caption AS mediaCaption, m.media_ai_index AS mediaAiIndex, m.timestamp,
+             COALESCE(r.last_message_ts, m.timestamp) AS chat_last_ts
       FROM messages m
-      INNER JOIN chat_activity a ON a.chat_jid = m.chat_jid
+      LEFT JOIN chat_roster r ON r.tenant_id = m.tenant_id AND r.chat_jid = m.chat_jid
       LEFT JOIN message_embeddings e
         ON e.message_rowid = m.id AND e.model = ?
       WHERE m.tenant_id = ?
@@ -3122,22 +3120,22 @@ export default class Database {
     const vis = sourceScope === 'all' ? this._visibilityOrderSql(waLive, 'm.chat_jid') : '';
     const feed = this._feedOrderSql('m.chat_jid');
     const recentOrder = Number(recentCutoffTs) > 0
-      ? 'CASE WHEN a.chat_last_ts >= ? THEN 0 ELSE 1 END, '
+      ? 'CASE WHEN COALESCE(r.last_message_ts, m.timestamp) >= ? THEN 0 ELSE 1 END, '
       : '';
     const orderArgs = Number(recentCutoffTs) > 0 ? [Number(recentCutoffTs)] : [];
     if (prio) {
       return this._db.prepare(`
         ${select}
         ORDER BY CASE WHEN m.chat_jid = ? THEN 0 ELSE 1 END,
-                 ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
+                 ${vis}${feed}${recentOrder}COALESCE(r.last_message_ts, m.timestamp) DESC, m.timestamp DESC
         LIMIT ?
-      `).all(t, model, t, ...gate.args, prio, ...orderArgs, n);
+      `).all(model, t, ...gate.args, prio, ...orderArgs, n);
     }
     return this._db.prepare(`
       ${select}
-      ORDER BY ${vis}${feed}${recentOrder}a.chat_last_ts DESC, m.timestamp DESC
+      ORDER BY ${vis}${feed}${recentOrder}COALESCE(r.last_message_ts, m.timestamp) DESC, m.timestamp DESC
       LIMIT ?
-    `).all(t, model, t, ...gate.args, ...orderArgs, n);
+    `).all(model, t, ...gate.args, ...orderArgs, n);
   }
 
   upsertMessageEmbedding({ messageRowid, model, dim, vector, sourceHash }) {
@@ -4198,6 +4196,7 @@ export default class Database {
     const p = String(pnJid).trim();
     if (!l || !p || l === p) return false;
     const t = getCurrentTenantId();
+    if (this._linkedJidsCache) this._linkedJidsCache.clear();
     try {
       this._db.prepare(`
         INSERT INTO lid_pn_mappings (tenant_id, lid, pn_jid, updated_at)
@@ -4224,6 +4223,10 @@ export default class Database {
       return [jid];
     }
     const t = getCurrentTenantId();
+    const cacheKey = `${t}:${jid}`;
+    if (this._linkedJidsCache && this._linkedJidsCache.has(cacheKey)) {
+      return this._linkedJidsCache.get(cacheKey);
+    }
     const linked = new Set([jid]);
 
     // 1) Query lid_pn_mappings table
@@ -4290,7 +4293,11 @@ export default class Database {
       } catch (_) {}
     }
 
-    return [...linked];
+    const res = [...linked];
+    if (this._linkedJidsCache) {
+      this._linkedJidsCache.set(cacheKey, res);
+    }
+    return res;
   }
 
   /**
@@ -4315,20 +4322,33 @@ export default class Database {
     const cleanMid = rawMid.replace(/^m/i, '');
 
     let anchor = null;
-    if (jids.length > 0) {
+    if (numId > 0) {
+      if (jids.length > 0) {
+        const ph = jids.map(() => '?').join(',');
+        anchor = this._db.prepare(`
+          SELECT id, timestamp, chat_jid AS chatJid FROM messages
+          WHERE id = ? AND tenant_id = ? AND chat_jid IN (${ph}) LIMIT 1
+        `).get(numId, t, ...jids);
+      }
+      if (!anchor) {
+        anchor = this._db.prepare(`
+          SELECT id, timestamp, chat_jid AS chatJid FROM messages
+          WHERE id = ? AND tenant_id = ? LIMIT 1
+        `).get(numId, t);
+      }
+    }
+    if (!anchor && jids.length > 0) {
       const ph = jids.map(() => '?').join(',');
       anchor = this._db.prepare(`
         SELECT id, timestamp, chat_jid AS chatJid FROM messages
-        WHERE tenant_id = ? AND (message_id = ? OR message_id = ? OR id = ?) AND chat_jid IN (${ph}) LIMIT 1
-      `).get(t, rawMid, cleanMid, numId, ...jids);
+        WHERE tenant_id = ? AND (message_id = ? OR message_id = ?) AND chat_jid IN (${ph}) LIMIT 1
+      `).get(t, rawMid, cleanMid, ...jids);
     }
-
-    // If anchor is not in given JIDs (or JIDs were empty), search tenant-wide by message_id or id
     if (!anchor) {
       anchor = this._db.prepare(`
         SELECT id, timestamp, chat_jid AS chatJid FROM messages
-        WHERE tenant_id = ? AND (message_id = ? OR message_id = ? OR id = ?) LIMIT 1
-      `).get(t, rawMid, cleanMid, numId);
+        WHERE tenant_id = ? AND (message_id = ? OR message_id = ?) LIMIT 1
+      `).get(t, rawMid, cleanMid);
       if (anchor?.chatJid) {
         const foundLinked = typeof this.getLinked1on1Jids === 'function' ? this.getLinked1on1Jids(anchor.chatJid) : [];
         jids = [...new Set([anchor.chatJid, ...foundLinked].filter(Boolean))];
@@ -4389,12 +4409,18 @@ export default class Database {
     const rawMid = String(messageId || '').trim();
     const cleanMid = rawMid.replace(/^m/i, '');
     const numId = Number(cleanMid) || 0;
+    const cols = `id, message_id AS messageId, chat_jid AS chatJid, media_path AS mediaPath,
+             media_type AS mediaType, text, media_caption AS mediaCaption`;
+    if (numId > 0) {
+      const byId = this._db.prepare(`
+        SELECT ${cols} FROM messages WHERE id = ? AND tenant_id = ? LIMIT 1
+      `).get(numId, t);
+      if (byId) return byId;
+    }
     return this._db.prepare(`
-      SELECT id, message_id AS messageId, chat_jid AS chatJid, media_path AS mediaPath,
-             media_type AS mediaType, text, media_caption AS mediaCaption
-      FROM messages WHERE tenant_id = ? AND (message_id = ? OR message_id = ? OR id = ?)
+      SELECT ${cols} FROM messages WHERE tenant_id = ? AND (message_id = ? OR message_id = ?)
       LIMIT 1
-    `).get(t, rawMid, cleanMid, numId);
+    `).get(t, rawMid, cleanMid);
   }
 
   /**

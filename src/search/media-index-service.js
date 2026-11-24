@@ -187,13 +187,19 @@ export default class MediaIndexService {
     const candidates = this._db.getUnindexedMediaForChat(chatJid, limit, { sender, mediaType });
     if (!candidates.length) return 0;
     let indexed = 0;
-    for (const job of candidates) {
-      try {
-        const ok = await this._indexOne(job, { fastOnly: true });
-        if (ok) indexed += 1;
-      } catch (err) {
-        console.warn(`[MediaIndex:JIT] ${job.messageId}:`, err.message);
-      }
+    const CONCURRENCY = 3;
+    for (let i = 0; i < candidates.length; i += CONCURRENCY) {
+      const chunk = candidates.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(chunk.map(async (job) => {
+        try {
+          const ok = await this._indexOne(job, { fastOnly: true });
+          return ok ? 1 : 0;
+        } catch (err) {
+          console.warn(`[MediaIndex:JIT] ${job.messageId}:`, err.message);
+          return 0;
+        }
+      }));
+      indexed += results.reduce((acc, v) => acc + v, 0);
     }
     if (indexed > 0) {
       console.log(`[MediaIndex:JIT] Indexed ${indexed} candidate media item(s) on-demand for ${chatJid}`);

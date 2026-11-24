@@ -185,36 +185,42 @@ export async function hybridSearch({
     ? embeddings.searchSimilar(vectorQuery, chatJid, k).catch(() => [])
     : Promise.resolve([]);
 
-  const [allFtsResults, vec] = await Promise.all([
-    Promise.all(ftsPromises),
-    vecPromise,
-  ]);
-
   // 4b. Structured Media Retrieval (for documents/PDFs/images/videos)
-  let structuredHits = [];
-  if (typeof db.getRecentMediaMessages === 'function' && (modality || resolvedIntent?.fileExt)) {
-    try {
-      structuredHits = db.getRecentMediaMessages({
-        chatJid,
-        mediaType: modality || (resolvedIntent?.fileExt ? 'document' : null),
-        sender: outboundOnly ? 'You' : null,
-        fileExt: resolvedIntent?.fileExt || null,
-        limit: Math.min(limit, 10),
-      });
-    } catch (e) {
-      console.warn('[HybridSearch:StructuredMedia]', e.message);
+  const structuredMediaPromise = Promise.resolve().then(() => {
+    if (typeof db.getRecentMediaMessages === 'function' && (modality || resolvedIntent?.fileExt)) {
+      try {
+        return db.getRecentMediaMessages({
+          chatJid,
+          mediaType: modality || (resolvedIntent?.fileExt ? 'document' : null),
+          sender: outboundOnly ? 'You' : null,
+          fileExt: resolvedIntent?.fileExt || null,
+          limit: Math.min(limit, 10),
+        }) || [];
+      } catch (e) {
+        console.warn('[HybridSearch:StructuredMedia]', e.message);
+      }
     }
-  }
+    return [];
+  });
 
   // 4c. Conversation Chunk Search (session blocks)
-  let chunkHits = [];
-  if (typeof db.searchConversationChunksFts === 'function' && typeof query === 'string' && query.trim()) {
-    try {
-      chunkHits = db.searchConversationChunksFts(query.trim(), chatJid, 5);
-    } catch (e) {
-      console.warn('[HybridSearch:Chunks]', e.message);
+  const chunkSearchPromise = Promise.resolve().then(() => {
+    if (typeof db.searchConversationChunksFts === 'function' && typeof query === 'string' && query.trim()) {
+      try {
+        return db.searchConversationChunksFts(query.trim(), chatJid, 5) || [];
+      } catch (e) {
+        console.warn('[HybridSearch:Chunks]', e.message);
+      }
     }
-  }
+    return [];
+  });
+
+  const [allFtsResults, vec, structuredHits, chunkHits] = await Promise.all([
+    Promise.all(ftsPromises),
+    vecPromise,
+    structuredMediaPromise,
+    chunkSearchPromise,
+  ]);
 
   // 5. Reciprocal Rank Fusion (RRF) with Intent Boosts
   const score = new Map();

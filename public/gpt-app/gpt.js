@@ -1395,7 +1395,7 @@ async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = nu
   }
   try {
     const msgUrl = focusStr
-      ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(cleanFocus)}`
+      ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=200&focusMessageId=${encodeURIComponent(cleanFocus)}`
       : `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${INITIAL_CHAT_MESSAGES_LIMIT}&offset=0`;
     const res = await fetch(msgUrl, { headers: authHeaders() });
     const msgs = res.ok ? await res.json() : [];

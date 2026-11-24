@@ -257,7 +257,24 @@ export async function runAgent({
   if (unknown.length) {
     finalAnswer = finalAnswer.replace(REF_RE, (full, id) => (sources.has(Number(id)) ? full : ''));
   }
-  const citedIds = [...new Set(cited.filter((id) => sources.has(id)))];
+  let citedIds = [...new Set(cited.filter((id) => sources.has(id)))];
+
+  // If the model answered from context but omitted explicit [m...] citation tags,
+  // attribute matching sources by filename/content mentions or top prefetch hit.
+  if (citedIds.length === 0 && finalAnswer !== NO_GROUNDED_ANSWER && sources.size > 0) {
+    const lowerAnswer = finalAnswer.toLowerCase();
+    for (const [id, s] of sources.entries()) {
+      const fn = s.mediaPath ? s.mediaPath.split('/').pop().toLowerCase() : '';
+      const textSample = String(s.text || s.mediaCaption || '').trim().toLowerCase();
+      if ((fn && lowerAnswer.includes(fn)) || (textSample && textSample.length >= 10 && lowerAnswer.includes(textSample.slice(0, 40)))) {
+        citedIds.push(id);
+      }
+    }
+    if (citedIds.length === 0 && Array.isArray(ctx?.prefetched) && ctx.prefetched.length > 0) {
+      const top = ctx.prefetched.find((m) => m && sources.has(m.id));
+      if (top) citedIds.push(top.id);
+    }
+  }
 
   // Accompanying media discovery: if a message is cited, and its sender sent accompanying media
   // (photo, document, menu, receipt) in the same chat segment within 5 minutes, include that media in sources
