@@ -531,13 +531,15 @@
   /* Shrink-wrap media bubbles to the image — avoid empty green/white gutter. */
   .msg-block:has(.msg-media-img),
   .msg-block:has(.msg-media-vid),
-  .msg-block:has(.msg-media-pdf) {
+  .msg-block:has(.msg-media-pdf),
+  .msg-block:has(.msg-media-pdf-container) {
     width: fit-content;
     max-width: min(72%, 340px);
   }
   .msg-block:has(.msg-media-img) .bubble,
   .msg-block:has(.msg-media-vid) .bubble,
-  .msg-block:has(.msg-media-pdf) .bubble {
+  .msg-block:has(.msg-media-pdf) .bubble,
+  .msg-block:has(.msg-media-pdf-container) .bubble {
     width: fit-content;
     max-width: 100%;
   }

@@ -1134,6 +1134,12 @@ html[data-theme="dark"] .btn-cancel { background: #1f2c33; color: #e9edef; }
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
+.a2ui-doc-icon svg {
+  transition: transform 0.18s ease;
+}
+.a2ui-thumb-wrap.a2ui-doc-icon.a2ui-thumb-clickable:hover svg {
+  transform: scale(1.12);
+}
 .a2ui-badge-pill {
   position: absolute;
   bottom: 3px;

@@ -285,6 +285,12 @@ function closeChatImageViewer() {
     video.style.display = 'none';
     try { video.load(); } catch { /* ignore */ }
   }
+  const pdf = imageViewerEl.querySelector('.chat-image-viewer-pdf');
+  if (pdf) {
+    pdf.removeAttribute('src');
+    pdf.hidden = true;
+    pdf.style.display = 'none';
+  }
 }
 
 function ensureChatMediaViewer() {
@@ -295,7 +301,7 @@ function ensureChatMediaViewer() {
   imageViewerEl.setAttribute('role', 'dialog');
   imageViewerEl.setAttribute('aria-modal', 'true');
   imageViewerEl.setAttribute('aria-label', 'Media preview');
-  imageViewerEl.innerHTML = '<button class="chat-image-viewer-close" type="button" aria-label="Close">×</button><div class="chat-image-viewer-stage"><img alt="" hidden style="display:none"><video class="chat-image-viewer-video" controls playsinline hidden style="display:none"></video></div><div class="chat-image-viewer-caption"></div>';
+  imageViewerEl.innerHTML = '<button class="chat-image-viewer-close" type="button" aria-label="Close">×</button><div class="chat-image-viewer-stage"><img alt="" hidden style="display:none"><video class="chat-image-viewer-video" controls playsinline hidden style="display:none"></video><iframe class="chat-image-viewer-pdf" title="PDF preview" hidden style="display:none"></iframe></div><div class="chat-image-viewer-caption"></div>';
   document.body.appendChild(imageViewerEl);
   imageViewerEl.addEventListener('click', (event) => {
     if (event.target === imageViewerEl || event.target.closest('.chat-image-viewer-close')) closeChatImageViewer();
@@ -307,14 +313,24 @@ function ensureChatMediaViewer() {
 }
 
 export function openChatImageViewer(source, alt = '', caption = '') {
+  if (String(source || '').toLowerCase().includes('.pdf') || String(alt || '').toLowerCase().includes('pdf')) {
+    openChatPdfViewer(source, caption || alt);
+    return;
+  }
   const root = ensureChatMediaViewer();
   const image = root.querySelector('img');
   const video = root.querySelector('video');
+  const pdf = root.querySelector('.chat-image-viewer-pdf');
   if (video) {
     try { video.pause(); } catch { /* ignore */ }
     video.hidden = true;
     video.style.display = 'none';
     video.removeAttribute('src');
+  }
+  if (pdf) {
+    pdf.hidden = true;
+    pdf.style.display = 'none';
+    pdf.removeAttribute('src');
   }
   const captionEl = root.querySelector('.chat-image-viewer-caption');
   if (image) {
@@ -338,19 +354,69 @@ export function openChatImageViewer(source, alt = '', caption = '') {
   root.setAttribute('aria-hidden', 'false');
 }
 
+export function openChatPdfViewer(source, caption = '') {
+  const root = ensureChatMediaViewer();
+  const image = root.querySelector('img');
+  const video = root.querySelector('video');
+  const pdf = root.querySelector('.chat-image-viewer-pdf');
+  if (image) {
+    image.hidden = true;
+    image.style.display = 'none';
+    image.removeAttribute('src');
+    image.onerror = null;
+  }
+  if (video) {
+    try { video.pause(); } catch { /* ignore */ }
+    video.hidden = true;
+    video.style.display = 'none';
+    video.removeAttribute('src');
+  }
+  const captionEl = root.querySelector('.chat-image-viewer-caption');
+  if (pdf) {
+    if (source) {
+      pdf.hidden = false;
+      pdf.style.display = 'block';
+      pdf.src = source;
+    } else {
+      pdf.hidden = true;
+      pdf.style.display = 'none';
+      pdf.removeAttribute('src');
+      if (captionEl) captionEl.textContent = `${caption ? caption + ' · ' : ''}PDF file not downloaded. View in chat or download from WhatsApp.`;
+    }
+  }
+  if (captionEl && source) {
+    const cleanCap = esc(caption || 'PDF Document');
+    const dlUrl = source.includes('?') ? `${source}&download=1` : `${source}?download=1`;
+    captionEl.innerHTML = `<span class="viewer-cap-text">${cleanCap}</span>` +
+      `<span class="viewer-actions">` +
+      `<a href="${escAttr(source)}" target="_blank" rel="noopener" class="viewer-btn" title="Open in new tab">Open in new tab ↗</a>` +
+      `<a href="${escAttr(dlUrl)}" download class="viewer-btn" title="Download PDF">Download ↓</a>` +
+      `</span>`;
+  }
+  root.hidden = false;
+  root.setAttribute('aria-hidden', 'false');
+}
+
 if (typeof window !== 'undefined') {
   window.openChatImageViewer = openChatImageViewer;
+  window.openChatPdfViewer = openChatPdfViewer;
 }
 
 function openChatVideoViewer(source, caption = '') {
   const root = ensureChatMediaViewer();
   const image = root.querySelector('img');
   const video = root.querySelector('video');
+  const pdf = root.querySelector('.chat-image-viewer-pdf');
   if (image) {
     image.hidden = true;
     image.style.display = 'none';
     image.removeAttribute('src');
     image.onerror = null;
+  }
+  if (pdf) {
+    pdf.hidden = true;
+    pdf.style.display = 'none';
+    pdf.removeAttribute('src');
   }
   const captionEl = root.querySelector('.chat-image-viewer-caption');
   if (video) {
@@ -373,6 +439,16 @@ function openChatVideoViewer(source, caption = '') {
 
 if (typeof document !== 'undefined') {
   document.addEventListener('click', (event) => {
+    const pdfContainer = event.target?.closest?.('.msg-media-pdf-container');
+    if (pdfContainer) {
+      event.preventDefault();
+      const url = pdfContainer.dataset.pdfUrl;
+      if (url) {
+        openChatPdfViewer(url, pdfContainer.dataset.caption || 'PDF Document');
+      }
+      return;
+    }
+
     const image = event.target?.closest?.('.msg-media-img');
     if (!image) return;
     event.preventDefault();
@@ -763,7 +839,9 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
       const isPdf = joint.includes('.pdf');
       const label = esc((m.mediaCaption || m.text || 'Document').trim() || 'Document');
       if (isPdf) {
-        body = `<span class="media-wrap"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${cap ? `<span class="media-cap">${cap}</span>` : `<span class="media-cap">${label}</span>`}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
+        const rawCap = (m.mediaCaption || m.text || label || 'PDF Document').trim();
+        const pdfCap = cap ? cap : `<span class="media-cap">${label}</span>`;
+        body = `<span class="media-wrap"><div class="msg-media-pdf-container" data-pdf-url="${escAttr(mediaUrl)}" data-caption="${escAttr(rawCap)}" title="Click to enlarge PDF"><iframe class="msg-media-pdf" src="${escAttr(mediaUrl)}" title="PDF"></iframe><div class="msg-media-pdf-overlay"><span class="msg-media-pdf-badge"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg><span>Click to enlarge</span></span></div></div>${ts ? `<span class="msg-media-datetime">${esc(ts)}</span>` : ''}${pdfCap}${mediaIndexStateHtml(m)}${mediaDl}</span>`;
       } else {
         // Non-PDF docs (xlsx/csv/docx): force download — inline open often fails or shows garbage.
         const dlHref = mediaDownloadUrl(mid) || mediaUrl;

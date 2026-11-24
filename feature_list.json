@@ -55,6 +55,13 @@
       "description": "Eval harness test suite in tests/runtime-harness.test.js benchmarking tool parsing, grounding, and nudges",
       "verify_cmd": "bash scripts/verify.sh tests/runtime-harness.test.js",
       "status": "passing"
+    },
+    {
+      "id": "ui-pdf-enlarge-lightbox",
+      "category": "ui-media",
+      "description": "Click to enlarge PDF documents in chat messages and Ask AI cards into the full lightbox viewer with open-in-tab and download actions",
+      "verify_cmd": "bash scripts/verify.sh tests/pdf-enlarge-lightbox.test.js",
+      "status": "passing"
     }
   ]
 }

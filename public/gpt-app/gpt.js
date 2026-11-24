@@ -30,6 +30,7 @@ import {
   handleMessageCopyClick,
   messagesPaintFingerprint,
   openChatImageViewer,
+  openChatPdfViewer,
   postWaReaction,
   restoreChatScroll,
   senderNeedsResolution,
@@ -1594,12 +1595,13 @@ function renderA2UiMediaDeck(sources = []) {
     }
     const snippetClean = ocrSnippet ? esc(ocrSnippet.slice(0, 160)) : '';
 
+    const canEnlarge = hasMedia && mediaUrl && (isImage || isPdf);
     const previewHtml = isImage && hasMedia && mediaUrl
-      ? `<div class="a2ui-thumb-wrap a2ui-thumb-clickable" data-media-url="${escAttr(mediaUrl)}" data-caption="${escAttr(s.chatName || '')}" title="Click to enlarge image">
+      ? `<div class="a2ui-thumb-wrap a2ui-thumb-clickable" data-media-url="${escAttr(mediaUrl)}" data-media-type="image" data-caption="${escAttr(s.chatName || '')}" title="Click to enlarge image">
           <img src="${escAttr(mediaUrl)}" alt="Media preview" class="a2ui-thumb" loading="lazy" decoding="async" />
           <span class="a2ui-badge-pill">OCR Ready</span>
          </div>`
-      : `<div class="a2ui-thumb-wrap a2ui-doc-icon${hasMedia && mediaUrl && isImage ? ' a2ui-thumb-clickable' : ''}" ${hasMedia && mediaUrl && isImage ? `data-media-url="${escAttr(mediaUrl)}" data-caption="${escAttr(s.chatName || '')}" title="Click to enlarge image"` : ''}>
+      : `<div class="a2ui-thumb-wrap a2ui-doc-icon${canEnlarge ? ' a2ui-thumb-clickable' : ''}" ${canEnlarge ? `data-media-url="${escAttr(mediaUrl)}" data-media-type="${isPdf ? 'pdf' : 'doc'}" data-caption="${escAttr(s.chatName || s.text || 'Document')}" title="Click to enlarge ${isPdf ? 'PDF' : 'document'}"` : ''}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
             <polyline points="14 2 14 8 20 8"></polyline>
@@ -1607,7 +1609,7 @@ function renderA2UiMediaDeck(sources = []) {
             <line x1="16" y1="17" x2="8" y2="17"></line>
             <polyline points="10 9 9 9 8 9"></polyline>
           </svg>
-          <span class="a2ui-badge-pill">${isPdf ? 'PDF / Doc' : (hasMedia ? 'Media' : 'Pending')}</span>
+          <span class="a2ui-badge-pill">${isPdf ? 'PDF' : (hasMedia ? 'Media' : 'Pending')}</span>
          </div>`;
 
     const itemMsgId = s.messageId || String(s.ref || '').replace(/^m/, '');
@@ -2641,8 +2643,14 @@ function wire() {
     const a2uiThumb = e.target.closest('.a2ui-thumb-clickable');
     if (a2uiThumb) {
       const mediaUrl = a2uiThumb.dataset.mediaUrl;
+      const mediaType = a2uiThumb.dataset.mediaType;
+      const caption = a2uiThumb.dataset.caption || '';
       if (mediaUrl) {
-        openChatImageViewer(mediaUrl, 'Media preview', a2uiThumb.dataset.caption || '');
+        if (mediaType === 'pdf' || mediaUrl.toLowerCase().includes('.pdf')) {
+          openChatPdfViewer(mediaUrl, caption);
+        } else {
+          openChatImageViewer(mediaUrl, 'Media preview', caption);
+        }
         return;
       }
     }
@@ -2654,7 +2662,12 @@ function wire() {
         alert('Media file is not downloaded yet. View in chat to download.');
         return;
       }
-      openChatImageViewer(mediaUrl, 'Media preview', a2uiView.dataset.caption || '');
+      const caption = a2uiView.dataset.caption || '';
+      if (a2uiView.dataset.mediaType === 'pdf' || mediaUrl.toLowerCase().includes('.pdf')) {
+        openChatPdfViewer(mediaUrl, caption);
+      } else {
+        openChatImageViewer(mediaUrl, 'Media preview', caption);
+      }
       return;
     }
 
