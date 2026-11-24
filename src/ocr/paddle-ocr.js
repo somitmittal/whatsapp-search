@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { extname, basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Baidu PaddleOCR (PP-OCRv4 CPU) Engine for WhatsApp Media.
@@ -147,6 +148,7 @@ export class PaddleOcrService {
    */
   async _runMacOsVisionOcr(mediaPath) {
     const candidates = [
+      fileURLToPath(new URL('../../bin/macos-vision-ocr', import.meta.url)),
       join(process.cwd(), 'bin', 'macos-vision-ocr'),
       '/tmp/apple_ocr',
     ];
@@ -269,11 +271,11 @@ if result:
     const unique = [...new Set(lines)];
     let result = unique.join(' · ');
 
-    // Detect payment receipts & UPI context
-    const isPayment = /\b(transaction|paid to|debited|upi|phonepe|gpay|paytm|receipt|payment|bill|utr)\b/i.test(result);
-    if (isPayment) {
-      // 1. Convert OCR misreadings of Indian Rupee symbol (F, {, ?) before digits to ₹
-      result = result.replace(/\b[F{?₹](\d{1,7}(?:\.\d{1,2})?)\b/g, '₹$1');
+    // Detect payment receipts, menus & price lists
+    const isPaymentOrMenu = /\b(transaction|paid to|debited|upi|phonepe|gpay|paytm|receipt|payment|bill|utr|menu|salon|spa|rate|price|charges|manicure|pedicure|facial|haircut)\b/i.test(result);
+    if (isPaymentOrMenu) {
+      // 1. Convert OCR misreadings of Indian Rupee symbol (₽, £, ?, €, §, *, <, R, F, {) before digits to ₹
+      result = result.replace(/(?:[₽£?€§*<RF{₹]\s*|rs\.?\s*)([0-9]{2,7}(?:\.[0-9]{1,2})?)\b/gi, '₹$1');
 
       // 2. Resolve OCR artifact where rupee symbol was read as leading 2:
       // e.g. both '₹284' and '2284' appear on the same receipt

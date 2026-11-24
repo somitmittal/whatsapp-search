@@ -5,7 +5,7 @@ import { messageBody } from './retrieval.js';
 
 const CALL_RE = /^\s*CALL\s+(\{.*\})\s*$/;
 const REF_RE = /\[m(\d+)\]/g;
-const KNOWN_TOOLS = new Set(['search', 'read', 'chats', 'summaries', 'reconcile', 'web_search']);
+const KNOWN_TOOLS = new Set(['search', 'read', 'chats', 'summaries', 'reconcile', 'web_search', 'inspect_document']);
 
 export class AbortedError extends Error {
   constructor() { super('aborted'); this.name = 'AbortedError'; }
@@ -126,6 +126,7 @@ function describeCall({ name, args }) {
     case 'summaries': return `Scanning summaries${where}…`;
     case 'reconcile': return `Reconciling expenses${where}…`;
     case 'web_search': return `Searching the web for “${args.query || ''}”…`;
+    case 'inspect_document': return `Inspecting document ${args.file || args.message || ''}${where}…`;
     default: return `Running ${name}…`;
   }
 }
