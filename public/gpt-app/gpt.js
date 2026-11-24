@@ -2034,6 +2034,9 @@ async function send(textOverride = null) {
   autosize();
   els.empty.hidden = true;
 
+  if (els.thread.children.length === 1 && els.thread.firstElementChild?.classList.contains('gpt-error')) {
+    els.thread.innerHTML = '';
+  }
   // @mentions apply to this message only (unsaved pills). The thread home chat stays as saved scope.
   const mentions = state.pins.filter((p) => !p.saved).map((p) => ({ type: 'chat', chatJid: p.chatJid, chatName: p.chatName }));
   els.thread.insertAdjacentHTML('beforeend', userHtml({ content: text, payload: { mentions } }));
@@ -2086,7 +2089,7 @@ async function send(textOverride = null) {
       body: JSON.stringify({
         message: text,
         conversationId: state.conversationId || undefined,
-        createConversationIfMissing: isNewConversation,
+        createConversationIfMissing: true,
         scopeChatJid: state.scopeChatJid || undefined,
         mentions,
         ...(state.modelDirty ? { model: state.model } : {}),

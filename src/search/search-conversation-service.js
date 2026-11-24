@@ -229,11 +229,9 @@ export default class SearchConversationService {
     status('Thinking…');
 
     let conversation = conversationId ? this.db.getSearchConversation(conversationId) : null;
-    if (conversationId && !conversation) throw new Error('Conversation not found');
-
     if (!conversation) {
       conversation = this.db.createSearchConversation({
-        id: randomUUID(),
+        id: conversationId || randomUUID(),
         title: titleFromQuery(text),
         chatJid: chatJid || null,
       });

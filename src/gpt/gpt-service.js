@@ -230,12 +230,45 @@ export default class GptService {
         scopeChatJid, mentions, model, emit, signal,
       });
     }
+    let conversation = conversationId ? this.db.getSearchConversation(conversationId) : null;
+    const isNew = !conversation;
+    if (!conversation) {
+      conversation = this.db.createSearchConversation({ id: conversationId || randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
+    }
+    const effectiveScopeChatJid = scopeChatJid || conversation.chatJid || null;
+    const scopeChatName = effectiveScopeChatJid ? this.directory.name(effectiveScopeChatJid) : null;
+    // Let the tab persist the conversation before context gathering or a skill run
+    // starts. The user may switch tabs while that work is still in progress.
+    emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: isNew || createConversationIfMissing });
+
     // `model` undefined → keep the thread's choice; null → back to Auto; object → explicit pick.
-    const existingModel = conversationId ? this.db.getConversationModel(conversationId) : null;
+    const existingModel = this.db.getConversationModel(conversation.id);
     const selection = model === undefined ? existingModel : model;
     const resolved = await this._resolveProvider(this.db, selection, this.getProvider());
     const provider = resolved.provider;
-    if (!provider) throw new Error('No AI provider configured — pick a model from the picker or Settings.');
+
+    const memory = this.db.getConversationMemory(conversation.id);
+    const resolvedMentions = resolveMentionPins(mentions, this.directory);
+    const turnPins = turnScopePins(effectiveScopeChatJid, scopeChatName, resolvedMentions);
+    ensureScopePin(this.db, conversation.id, effectiveScopeChatJid, scopeChatName, memory.pins);
+
+    if (model !== undefined && JSON.stringify(existingModel) !== JSON.stringify(resolved.selection)) {
+      this.db.setConversationModel(conversation.id, resolved.selection);
+    }
+
+    const prior = this.db.listSearchMessages(conversation.id);
+    this.db.addSearchMessage({
+      id: randomUUID(), conversationId: conversation.id, role: 'user', content: text,
+      payload: { scopeChatJid: effectiveScopeChatJid, mentions: resolvedMentions },
+    });
+
+    if (!provider) {
+      this._saveInterruptedTurn(conversation.id, {
+        error: 'No AI provider configured — pick a model from the picker or Settings.',
+      });
+      throw new Error('No AI provider configured — pick a model from the picker or Settings.');
+    }
+
     const steps = [];
     let partial = '';
     const sink = emit;
@@ -247,30 +280,6 @@ export default class GptService {
     };
     const status = (line) => emit?.({ type: 'status', text: line });
     status('Gathering context…');
-
-    let conversation = conversationId ? this.db.getSearchConversation(conversationId) : null;
-    if (conversationId && !conversation && !createConversationIfMissing) throw new Error('Conversation not found');
-    if (!conversation) {
-      conversation = this.db.createSearchConversation({ id: conversationId || randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
-    }
-    const effectiveScopeChatJid = scopeChatJid || conversation.chatJid || null;
-    const scopeChatName = effectiveScopeChatJid ? this.directory.name(effectiveScopeChatJid) : null;
-    // Let the tab persist the conversation before context gathering or a skill run
-    // starts. The user may switch tabs while that work is still in progress.
-    emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: !conversationId || createConversationIfMissing });
-    if (model !== undefined && JSON.stringify(existingModel) !== JSON.stringify(resolved.selection)) {
-      this.db.setConversationModel(conversation.id, resolved.selection);
-    }
-    const memory = this.db.getConversationMemory(conversation.id);
-    const resolvedMentions = resolveMentionPins(mentions, this.directory);
-    const turnPins = turnScopePins(effectiveScopeChatJid, scopeChatName, resolvedMentions);
-    ensureScopePin(this.db, conversation.id, effectiveScopeChatJid, scopeChatName, memory.pins);
-
-    const prior = this.db.listSearchMessages(conversation.id);
-    this.db.addSearchMessage({
-      id: randomUUID(), conversationId: conversation.id, role: 'user', content: text,
-      payload: { scopeChatJid: effectiveScopeChatJid, mentions: resolvedMentions },
-    });
 
     const resolveExpenseProvider = async () => {
       const next = await this._resolveProvider(this.db, selection, this.getProvider());
@@ -421,7 +430,7 @@ export default class GptService {
       sink?.(event);
     };
     let conversation = conversationId ? this.db.getSearchConversation(conversationId) : null;
-    if (conversationId && !conversation && !createConversationIfMissing) throw new Error('Conversation not found');
+    const isNew = !conversation;
     if (!conversation) {
       conversation = this.db.createSearchConversation({ id: conversationId || randomUUID(), title: titleFrom(text), chatJid: scopeChatJid });
     }
@@ -429,7 +438,7 @@ export default class GptService {
     const scopeChatName = effectiveScopeChatJid ? this.directory.name(effectiveScopeChatJid) : null;
     // Slash commands can take long enough for the user to navigate away. Publish
     // the durable ID first so the draft tab is recoverable even if its stream closes.
-    emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: !conversationId || createConversationIfMissing });
+    emit?.({ type: 'conversation', conversationId: conversation.id, newConversation: isNew || createConversationIfMissing });
     const existingModel = this.db.getConversationModel(conversation.id);
     const selection = model === undefined ? existingModel : model;
     const resolveExpenseProvider = async () => {

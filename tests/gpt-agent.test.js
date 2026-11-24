@@ -415,8 +415,53 @@ describe('GptService', () => {
     });
   });
 
-  test('rejects a turn with no provider configured', async () => {
+  test('rejects a turn with no provider configured and persists interrupted turn', async () => {
+    const unconfiguredId = 'conv-no-provider';
     const svc = new GptService({ db, getProvider: () => null });
-    await expect(runWithTenant(TENANT, () => svc.handleTurn({ message: 'hi' }))).rejects.toThrow(/provider/i);
+    await expect(runWithTenant(TENANT, () => svc.handleTurn({
+      conversationId: unconfiguredId,
+      message: 'did the cement arrive?',
+    }))).rejects.toThrow(/provider/i);
+
+    // Verify the conversation, user message, and error placeholder were persisted
+    const saved = runWithTenant(TENANT, () => svc.getConversation(unconfiguredId));
+    expect(saved).not.toBeNull();
+    expect(saved.conversation.id).toBe(unconfiguredId);
+    expect(saved.messages.length).toBe(2);
+    expect(saved.messages[0].role).toBe('user');
+    expect(saved.messages[0].content).toBe('did the cement arrive?');
+    expect(saved.messages[1].role).toBe('assistant');
+    expect(saved.messages[1].payload.error).toMatch(/provider/i);
+
+    // Verify turn 2 on that same conversation works when a provider is configured
+    const provider = scriptedProvider(['Cement was delivered at 9am.']);
+    const readySvc = new GptService({ db, getProvider: () => provider });
+    const turn2 = await runWithTenant(TENANT, () => readySvc.handleTurn({
+      conversationId: unconfiguredId,
+      message: 'try now',
+      createConversationIfMissing: false,
+    }));
+    expect(turn2.answer).toContain('Cement was');
+    const updated = runWithTenant(TENANT, () => readySvc.getConversation(unconfiguredId));
+    expect(updated.messages.length).toBe(4);
+    expect(updated.messages[2].role).toBe('user');
+    expect(updated.messages[2].content).toBe('try now');
+    expect(updated.messages[3].role).toBe('assistant');
+  });
+
+  test('auto-creates conversation when client provides non-existent conversationId', async () => {
+    const clientAssignedId = 'client-uuid-12345';
+    const provider = scriptedProvider(['Hello! How can I help you today?']);
+    const svc = new GptService({ db, getProvider: () => provider });
+    const turn = await runWithTenant(TENANT, () => svc.handleTurn({
+      conversationId: clientAssignedId,
+      createConversationIfMissing: false,
+      message: 'hello there',
+    }));
+    expect(turn.conversationId).toBe(clientAssignedId);
+    expect(turn.answer).toContain('How can I help you');
+    const conv = runWithTenant(TENANT, () => svc.getConversation(clientAssignedId));
+    expect(conv).not.toBeNull();
+    expect(conv.conversation.id).toBe(clientAssignedId);
   });
 });

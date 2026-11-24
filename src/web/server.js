@@ -2588,7 +2588,7 @@ export default class WebServer {
       try {
         const { memoryPromise, ...chatResult } = await this._gpt.handleTurn({
           conversationId: req.body?.conversationId ? String(req.body.conversationId) : null,
-          createConversationIfMissing: req.body?.createConversationIfMissing === true,
+          createConversationIfMissing: true,
           message,
           scopeChatJid: req.body?.scopeChatJid || null,
           mentions: Array.isArray(req.body?.mentions) ? req.body.mentions : [],
