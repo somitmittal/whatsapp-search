@@ -65,6 +65,15 @@ export function toggleReactionEmojiPicker(button) {
       picker.style.top = 'auto';
       picker.style.bottom = 'calc(100% + 4px)';
     }
+    if (rect && typeof window !== 'undefined') {
+      if (rect.left + 310 > window.innerWidth) {
+        picker.style.left = 'auto';
+        picker.style.right = '0';
+      } else if (rect.right - 310 < 0) {
+        picker.style.right = 'auto';
+        picker.style.left = '0';
+      }
+    }
     const searchInput = picker.querySelector('.wa-reaction-search-input');
     if (searchInput) {
       searchInput.value = '';
@@ -239,7 +248,7 @@ if (typeof document !== 'undefined') {
       return;
     }
     if (event.target?.closest?.('.wa-msg-menu')) closeMessageMenus();
-    if (!event.target?.closest?.('.bubble-toolbar')) {
+    if (!event.target?.closest?.('.bubble-toolbar, .bubble-reaction-bar, .wa-reaction-picker, [data-wa-emoji-picker-toggle]')) {
       closeReactionEmojiPickers();
       closeMessageMenus();
     }

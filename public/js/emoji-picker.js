@@ -303,6 +303,13 @@ export function setupReactionSearch(pickerEl, { onSelect = null } = {}) {
   if (!pickerEl || pickerEl.dataset.searchReady) return;
   pickerEl.dataset.searchReady = '1';
 
+  // Prevent clicks inside picker (except reaction emoji buttons) from closing or bubbling
+  pickerEl.addEventListener('click', (e) => {
+    if (!e.target?.closest?.('[data-wa-react]')) {
+      e.stopPropagation();
+    }
+  });
+
   const searchInput = pickerEl.querySelector('.wa-reaction-search-input');
   const grid = pickerEl.querySelector('.wa-picker-grid');
   if (!searchInput || !grid) return;

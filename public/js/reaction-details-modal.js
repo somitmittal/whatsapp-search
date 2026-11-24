@@ -46,6 +46,9 @@ function ensureModalElements() {
     overlay.setAttribute('role', 'dialog');
     overlay.setAttribute('aria-modal', 'true');
     overlay.setAttribute('aria-labelledby', 'wa-reaction-modal-title');
+    overlay.hidden = true;
+    overlay.style.display = 'none';
+    overlay.style.pointerEvents = 'none';
     overlay.innerHTML = `
       <div class="wa-reaction-modal-card">
         <div class="wa-reaction-modal-header">
@@ -83,6 +86,8 @@ export function closeReactionDetailsModal() {
   if (overlay) {
     overlay.classList.remove('open');
     overlay.hidden = true;
+    overlay.style.display = 'none';
+    overlay.style.pointerEvents = 'none';
   }
   activeModalState = null;
 }
@@ -206,6 +211,8 @@ export async function openReactionDetailsModal({ chatJid, messageId, initialEmoj
   activeModalState = { chatJid, messageId };
 
   overlay.hidden = false;
+  overlay.style.display = 'flex';
+  overlay.style.pointerEvents = 'auto';
   overlay.classList.add('open');
 
   const tabsWrap = overlay.querySelector('.wa-reaction-modal-tabs');
