@@ -411,7 +411,69 @@ button { font: inherit; color: inherit; }
 }
 .gpt-chats .gpt-icon { color: var(--fg-3); }
 .gpt-chats .gpt-icon:hover { background: var(--panel); color: var(--fg); }
-.gpt-chats .chat-list { flex: 1; min-height: 0; background: var(--panel); }
+.gpt-chats .chat-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  background: var(--panel);
+}
+.gpt-wa-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--line);
+  background: #fff3cd;
+  color: #856404;
+  flex-shrink: 0;
+}
+.gpt-wa-banner.warn {
+  background: #fff3cd;
+  color: #856404;
+}
+.gpt-wa-banner.danger {
+  background: #f8d7da;
+  color: #842029;
+}
+.gpt-wa-banner.info {
+  background: var(--panel-2);
+  color: var(--fg-2);
+}
+.gpt-wa-banner-btn {
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.gpt-wa-banner-btn:hover {
+  filter: brightness(0.9);
+}
+.gpt-sidebar-qr-btn {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 7px 16px;
+  border-radius: 20px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.gpt-sidebar-qr-btn:hover {
+  background: var(--accent-2);
+}
 .gpt-chats .sidebar-search { background: var(--panel-2); }
 .gpt-chats .sidebar-search .search-wrap svg { color: var(--fg-3); }
 .gpt-chats .sidebar-search input {

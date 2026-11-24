@@ -120,9 +120,12 @@ const els = {
   topSyncFill: $('#gpt-top-sync-fill'),
   topSyncText: $('#gpt-top-sync-text'),
   topSyncPct: $('#gpt-top-sync-pct'),
+  waBanner: $('#gpt-wa-banner'),
+  waBannerText: $('#gpt-wa-banner-text'),
+  waBannerBtn: $('#gpt-wa-banner-btn'),
 };
 
-if (dom.input) setupInlineEmojiAutocomplete(dom.input);
+if (els.input) setupInlineEmojiAutocomplete(els.input);
 
 const HIDDEN_MODELS_KEY = 'wgpt.hiddenModels';
 const OPEN_TABS_KEY = 'wgpt.openTabs';
@@ -511,6 +514,7 @@ async function syncWaState() {
       store._historySyncActive = Boolean(st.sync.syncing);
     }
     renderSyncBar(st?.sync);
+    renderWaBanner(st);
   } catch { /* ignore */ }
   if (!state.activeChatJid) return;
   syncWaComposerUi();
@@ -1194,12 +1198,37 @@ async function loadChats() {
   renderChats();
 }
 
+function renderWaBanner(st) {
+  if (!els.waBanner) return;
+  const stateVal = st?.state || store._waState;
+  if (stateVal === 'READY' || (!stateVal && isWaUiReady())) {
+    els.waBanner.style.display = 'none';
+  } else if (stateVal === 'QR_READY') {
+    els.waBanner.style.display = 'flex';
+    els.waBanner.className = 'gpt-wa-banner warn';
+    if (els.waBannerText) els.waBannerText.textContent = 'Scan QR code to connect WhatsApp';
+    if (els.waBannerBtn) els.waBannerBtn.textContent = 'Scan QR';
+  } else if (store._waNeedsRelogin || (stateVal === 'DISCONNECTED' && /logged out|rescan/i.test(st?.message || ''))) {
+    els.waBanner.style.display = 'flex';
+    els.waBanner.className = 'gpt-wa-banner danger';
+    if (els.waBannerText) els.waBannerText.textContent = 'WhatsApp disconnected';
+    if (els.waBannerBtn) els.waBannerBtn.textContent = 'Reconnect';
+  } else if (stateVal && stateVal !== 'READY') {
+    els.waBanner.style.display = 'flex';
+    els.waBanner.className = 'gpt-wa-banner info';
+    if (els.waBannerText) els.waBannerText.textContent = st?.message || `WhatsApp: ${stateVal}…`;
+    if (els.waBannerBtn) els.waBannerBtn.textContent = 'View';
+  } else {
+    els.waBanner.style.display = 'none';
+  }
+}
+
 function gptSidebarEmptyHtml() {
   if (store.sidebarListTab === 'imported') {
-    return 'No imported chats yet.<br><span style="opacity:.85;font-size:13px">Tap <strong>+</strong> to import a WhatsApp export.</span>';
+    return 'No imported chats yet.<br><span style="opacity:.85;font-size:13px">Tap <strong>Import chats</strong> to import a WhatsApp export.</span>';
   }
   if (!isWaUiReady()) {
-    return 'WhatsApp isn’t linked.<br><span style="opacity:.85;font-size:13px">Open Settings → Linked Devices to scan the QR code.</span>';
+    return 'WhatsApp isn’t linked.<br><button type="button" class="gpt-sidebar-qr-btn" id="gpt-btn-link-wa">Link WhatsApp (Scan QR)</button>';
   }
   return 'No WhatsApp chats synced yet.<br><span style="opacity:.85;font-size:13px">They appear here as sync progresses.</span>';
 }
@@ -2536,7 +2565,12 @@ function wire() {
     renderChats();
     scheduleChatKeywordFilter(els.chatFilter?.value || '');
   });
+  els.waBannerBtn?.addEventListener('click', () => openSettings(true, 'linked-devices'));
   els.chatList.addEventListener('click', (e) => {
+    if (e.target.closest('#gpt-btn-link-wa')) {
+      openSettings(true, 'linked-devices');
+      return;
+    }
     const toggle = e.target.closest('.chat-ai-toggle');
     if (toggle) {
       e.preventDefault();

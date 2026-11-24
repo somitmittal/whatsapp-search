@@ -14,6 +14,8 @@
       } catch (_) {}
     })();
   </script>
+  <link rel="stylesheet" href="/css/chat-list.css">
+  <link rel="stylesheet" href="/css/chat-messages.css">
   <link rel="stylesheet" href="/gpt-app/gpt.css">
   <link rel="stylesheet" href="/css/settings-overlay.css">
 </head>
@@ -299,6 +301,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input type="search" id="gpt-chat-filter" placeholder="Search chats" autocomplete="off">
         </div>
+      </div>
+      <div id="gpt-wa-banner" class="gpt-wa-banner" style="display:none;" role="alert">
+        <span id="gpt-wa-banner-text">Scan QR code to connect WhatsApp</span>
+        <button type="button" class="gpt-wa-banner-btn" id="gpt-wa-banner-btn">Scan QR</button>
       </div>
       <div class="sidebar-chat-tabs" role="tablist" aria-label="Chat categories">
         <button type="button" class="sidebar-tab active" data-sidebar-tab="imported" role="tab" aria-selected="true">Imported<span class="sidebar-tab-count" data-tab-count="imported"></span></button>
