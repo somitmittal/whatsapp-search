@@ -1,3 +1,7 @@
+import { createRequire } from 'module';
+import { existsSync, readFileSync } from 'fs';
+import { basename, extname } from 'path';
+import { defaultPaddleOcr } from '../ocr/paddle-ocr.js';
 import { GPT_LIMITS } from './limits.js';
 import {
   formatSummaryLine,
@@ -41,6 +45,11 @@ export const TOOL_SPECS = [
     name: 'web_search',
     args: '{"query": str}',
     about: 'search the public internet for world facts, public news, documentation, or general information outside WhatsApp. PRIVACY GUARD: never pass private chat messages, contact names, or phone numbers.',
+  },
+  {
+    name: 'inspect_document',
+    args: '{"message"?: "m123", "chat"?: name, "file"?: name}',
+    about: 'inspect and read the complete extracted text, pricing tables, or menu from an attached PDF, document, menu, or receipt from a message handle (e.g. m123) or filename',
   },
 ];
 
@@ -300,6 +309,100 @@ export function createToolbox({ db, embeddings, directory, runSkill = null, medi
           text: `Web search was unable to reach external sources: ${err.message}`,
         };
       }
+    },
+
+    async inspect_document(args, budget, ctx) {
+      const msgRef = String(args?.message || args?.m || '').trim();
+      const fileRef = String(args?.file || args?.fileName || args?.query || '').trim();
+      const chat = chatOrNull(args?.chat || ctx?.scopeChatName);
+
+      let targetMsg = null;
+      if (msgRef) {
+        const m = msgRef.match(/(\d+)/);
+        if (m) {
+          const id = Number(m[1]);
+          targetMsg = (ctx?.prefetched || []).find((row) => row.id === id)
+            || db.getMessagesByRowIds([id])?.[0]
+            || null;
+        }
+      }
+
+      if (!targetMsg && (fileRef || chat)) {
+        if (fileRef) {
+          const candidates = db.searchMessages(fileRef, chat?.chatJid || null, 5);
+          targetMsg = candidates.find((c) => (c.mediaPath || c.media_path) || c.mediaType === 'document' || c.media_type === 'document') || candidates[0];
+        }
+        if (!targetMsg && chat?.chatJid && typeof db.getRecentMediaMessages === 'function') {
+          const recentDocs = db.getRecentMediaMessages({ chatJid: chat.chatJid, mediaType: 'document', limit: 3 });
+          targetMsg = recentDocs[0];
+        }
+      }
+
+      if (!targetMsg) {
+        return { text: `No matching document message found${msgRef ? ` for ${msgRef}` : ''}. Try the search tool to find the message first.` };
+      }
+
+      const filePath = targetMsg.mediaPath || targetMsg.media_path;
+      const mediaCap = targetMsg.mediaCaption || targetMsg.media_caption;
+      const fn = basename(filePath || mediaCap || 'document');
+      let content = targetMsg.mediaAiIndex || targetMsg.media_ai_index || '';
+
+      if (!filePath || !existsSync(filePath)) {
+        if (content && content.length > 30) {
+          return {
+            text: `## Document Content: ${fn} ([m${targetMsg.id}])\n\n${content}`,
+            messages: [targetMsg],
+          };
+        }
+        return { text: `Document file for [m${targetMsg.id}] (${fn}) is not available on disk to inspect.` };
+      }
+
+      const isJustFilename = !content || content.trim() === fn || !/[a-zA-Z]{3,}.*[a-zA-Z]{3,}/.test(content);
+      if (isJustFilename) {
+        ctx?.status?.(`Extracting text and tables from ${fn}…`);
+        try {
+          const buffer = readFileSync(filePath);
+          const ext = extname(filePath).toLowerCase();
+          let extracted = '';
+          if (ext === '.pdf') {
+            try {
+              const require = createRequire(import.meta.url);
+              const parsePdf = require('pdf-parse');
+              const data = await parsePdf(buffer, { max: 20 });
+              extracted = String(data?.text || '').trim();
+            } catch (_) {}
+          } else if (['.txt', '.csv', '.json', '.md'].includes(ext)) {
+            extracted = buffer.toString('utf8').trim();
+          }
+
+          if (!extracted || extracted.length < 50) {
+            extracted = await defaultPaddleOcr.extractText(filePath, buffer);
+          }
+          if (extracted && extracted.length > 20) {
+            content = extracted;
+            const messageId = targetMsg.messageId || targetMsg.message_id;
+            if (messageId && typeof db.updateMediaIndexResult === 'function') {
+              db.updateMediaIndexResult(messageId, { text: extracted, status: 'indexed' });
+            }
+            targetMsg.mediaAiIndex = extracted;
+            targetMsg.media_ai_index = extracted;
+          }
+        } catch (err) {
+          console.warn('[inspect_document] Extraction failed:', err.message);
+        }
+      }
+
+      if (!content || content.trim() === fn) {
+        return {
+          text: `## Document: ${fn} ([m${targetMsg.id}])\n\nNo readable text or pricing could be extracted from this document.`,
+          messages: [targetMsg],
+        };
+      }
+
+      return {
+        text: `## Document Content: ${fn} ([m${targetMsg.id}])\n\n${content}`,
+        messages: [targetMsg],
+      };
     },
   };
 }

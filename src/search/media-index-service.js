@@ -235,7 +235,7 @@ export default class MediaIndexService {
           console.warn(`[MediaIndex] PDF parse ${messageId}:`, e.message);
         }
       }
-      if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
+      if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext) || (ext === '.pdf' && (!body || body.length < 50))) {
         try {
           ocrText = await defaultPaddleOcr.extractText(mediaPath, buffer);
         } catch (e) {

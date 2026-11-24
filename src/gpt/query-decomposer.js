@@ -132,6 +132,45 @@ export function heuristicDecompose(query) {
     semanticQueries.add('booking rules');
   }
 
+  // Salon, Spa, Wellness & Beauty taxonomy expansions
+  if (/\b(?:manicure|pedicure|nails?|nail\s*art|nail\s*extension|cuticle)\b/i.test(q)) {
+    lexicalQueries.add('manicure');
+    lexicalQueries.add('pedicure');
+    lexicalQueries.add('nail care');
+    lexicalQueries.add('nail services');
+    lexicalQueries.add('hands & feet');
+    lexicalQueries.add('hands feet');
+    semanticQueries.add('nail care manicure pedicure services');
+    semanticQueries.add('hands and feet salon rate card');
+  }
+
+  if (/\b(?:haircut|hair\s*wash|blow-?dry|hair\s*spa|keratin|beard|shaving|hair\s*colour)\b/i.test(q)) {
+    lexicalQueries.add('hair styling');
+    lexicalQueries.add('hair care');
+    lexicalQueries.add('haircut');
+    semanticQueries.add('hair styling and hair care salon services');
+  }
+
+  if (/\b(?:waxing|threading|bleach|facial|massage|head\s*massage|body\s*massage)\b/i.test(q)) {
+    lexicalQueries.add('waxing');
+    lexicalQueries.add('threading');
+    lexicalQueries.add('hair removal');
+    lexicalQueries.add('massage');
+    semanticQueries.add('beauty and salon grooming services');
+  }
+
+  // Rate cards, pricing, tariff, and menus
+  if (/\b(?:price|prices|rate|rates|cost|costing|charges?|tariff|menu|rate\s*card)\b/i.test(q)) {
+    lexicalQueries.add('price');
+    lexicalQueries.add('rate card');
+    lexicalQueries.add('menu');
+    lexicalQueries.add('tariff');
+    semanticQueries.add('price list menu rate card');
+    if (!modality && /\b(?:menu|rate\s*card|price\s*list|pdf|brochure)\b/i.test(q)) {
+      modality = 'document';
+    }
+  }
+
   // Compound brand/venue handling
   if (/\bbingetown\b/i.test(q) || /\bbinge\s*town\b/i.test(q)) {
     lexicalQueries.add('thebingetown');
@@ -188,7 +227,12 @@ export async function decomposeQuery(query, { provider = null, currentChatName =
   }
 
   const prompt = `You are a search query understanding engine for a WhatsApp archive assistant.
-Analyze the user's natural language request and extract the search intent, keywords, synonyms, and filters.
+Analyze the user's natural language request and extract the search intent, keywords, synonyms, parent/umbrella categories, and filters.
+
+Guidelines:
+- Parent & Domain Categories: If the query mentions specific items or services (e.g. "manicure", "pedicure", "haircut", "gym", "catering"), include their parent categories, section headers, and domain synonyms in lexicalQueries and semanticQueries (e.g. for "manicure" or "pedicure", include "nail care", "nail services", "hands and feet", "salon menu"; for "haircut", include "hair styling", "salon").
+- Pricing & Rate Lists: If asking about prices, rates, cost, or available services, include document and menu terms like "rate card", "price list", "menu", "charges".
+- Modality: Set to "document" if looking for menus, rate cards, price lists, brochures, or policies; "image" for receipts or photos; or null for general messages.
 
 Current active chat context: "${currentChatName || 'None'}"
 User Query: "${rawQuery}"
@@ -196,8 +240,8 @@ User Query: "${rawQuery}"
 Respond ONLY with a JSON object in this exact format (no markdown, no explanation):
 {
   "cleanedQuery": "<core search phrase without conversational filler like 'search for' or 'where I sent'>",
-  "lexicalQueries": ["<exact words, brand names, URLs, or variations, e.g. 'thebingetown', 'binge town'>"],
-  "semanticQueries": ["<conceptual synonyms, e.g. for 't&c' use 'cancellation policy', 'refundable advance', 'terms'>"],
+  "lexicalQueries": ["<exact words, section headers, brand names, URLs, or variations, e.g. 'nail care', 'manicure', 'rate card'>"],
+  "semanticQueries": ["<conceptual synonyms, e.g. for 'manicure' use 'nail care hands and feet salon services', 'cancellation policy'>"],
   "modality": "<'image' | 'document' | 'video' | 'audio' | null>",
   "outboundOnly": <true if user says 'where I sent' or 'my message', false otherwise>,
   "candidateEntities": ["<names of people, businesses, services, or groups mentioned>"],
