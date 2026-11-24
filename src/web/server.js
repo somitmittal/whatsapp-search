@@ -3760,7 +3760,10 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       try {
         const { provider, apiKey, model, confirmPull } = req.body;
 
-        if (provider) this.db.setSetting('llm_provider', provider);
+        if (provider) {
+          this.db.setSetting('llm_provider', provider);
+          this.db.setSetting('llm_user_selected', '1');
+        }
         if (Object.prototype.hasOwnProperty.call(req.body, 'apiKey')) {
           this.db.setSetting('llm_api_key', apiKey ?? '');
         }
@@ -3978,6 +3981,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         }
 
         this.db.setSetting('llm_provider', 'ollama');
+        this.db.setSetting('llm_user_selected', '1');
         this.db.setSetting('llm_model', safe.model);
         applyOllamaMemorySettings(this.db, safe);
         clearProviderCache();
@@ -4425,8 +4429,17 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
   }
 
   start() {
-    return new Promise((resolve) => {
-      this._server.listen(config.webPort, config.webHost, () => {
+    return new Promise((resolve, reject) => {
+      const onError = (err) => {
+        this._server.removeListener('listening', onListening);
+        if (err.code === 'EADDRINUSE') {
+          console.error(`\n[Server] Port ${config.webPort} is already in use by another process.`);
+          console.error(`[Server] Stop the existing process or set PORT=${config.webPort + 1} and retry.\n`);
+        }
+        reject(err);
+      };
+      const onListening = () => {
+        this._server.removeListener('error', onError);
         const publicUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${config.webPort}`;
         console.log(`\nListening on ${config.webHost}:${config.webPort}`);
         console.log(`Web UI: ${publicUrl}\n`);
@@ -4444,7 +4457,10 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
           console.warn('[WA] Auto-start skipped:', err.message);
         }
         resolve();
-      });
+      };
+      this._server.once('error', onError);
+      this._server.once('listening', onListening);
+      this._server.listen(config.webPort, config.webHost);
     });
   }
 

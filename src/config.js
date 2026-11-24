@@ -93,21 +93,21 @@ const config = {
   defaultTenantId: (process.env.DEFAULT_TENANT_ID || 'legacy-default').trim(),
   /**
    * Defaults when settings table has no row yet (first run / new DB).
-   * Local desktop: Ollama with llama3.2:3b.
+   * Local desktop: Unconfigured by default — user selects their preferred provider in Settings/Onboarding.
    * Render / cloud: Groq search + Ollama Cloud summaries + Gemini media (keys via env).
    */
-  defaultSearchProvider: process.env.LLM_PROVIDER || (onRender ? 'groq' : 'ollama'),
+  defaultSearchProvider: process.env.LLM_PROVIDER || (onRender ? 'groq' : ''),
   defaultSearchModel:
-    process.env.LLM_MODEL || process.env.GROQ_MODEL || (onRender ? 'llama-3.3-70b-versatile' : 'llama3.2:3b'),
-  defaultSummaryProvider: process.env.SUMMARY_PROVIDER || (onRender ? 'ollama_cloud' : 'ollama'),
-  defaultSummaryModel: process.env.SUMMARY_MODEL || (onRender ? 'gpt-oss:20b' : 'llama3.2:3b'),
+    process.env.LLM_MODEL || process.env.GROQ_MODEL || (onRender ? 'llama-3.3-70b-versatile' : ''),
+  defaultSummaryProvider: process.env.SUMMARY_PROVIDER || (onRender ? 'ollama_cloud' : ''),
+  defaultSummaryModel: process.env.SUMMARY_MODEL || (onRender ? 'gpt-oss:20b' : ''),
   /**
    * Vision + audio transcription for FTS media indexing (`media_ai_index`).
-   * Separate from Search — local Ollama on desktop; Gemini on Render when keys are set.
+   * Separate from Search — Gemini on Render when keys are set; unconfigured by default on local desktop.
    */
-  defaultMediaIndexProvider: (process.env.MEDIA_INDEX_PROVIDER || (onRender ? 'gemini' : 'ollama')).trim(),
+  defaultMediaIndexProvider: (process.env.MEDIA_INDEX_PROVIDER || (onRender ? 'gemini' : '')).trim(),
   defaultMediaIndexModel:
-    (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || (onRender ? 'gemini-3.8-flash' : 'llama3.2:3b')).trim(),
+    (process.env.MEDIA_INDEX_MODEL || process.env.GEMINI_MODEL || (onRender ? 'gemini-3.8-flash' : '')).trim(),
 
   /**
    * Baileys history dump. Default `true` so the complete archive across all chats is synced.

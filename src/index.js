@@ -112,19 +112,19 @@ async function main() {
   runWithTenant(defaultTenantId, () => applyLlmDefaultsIfUnset(db));
 
   const { savedProvider, savedKey } = runWithTenant(defaultTenantId, () => ({
-    savedProvider: db.getSetting('llm_provider') || config.defaultSearchProvider,
+    savedProvider: (db.getSetting('llm_provider') || config.defaultSearchProvider || '').trim(),
     savedKey: effectiveSearchApiKey(db),
   }));
-  let savedModel = runWithTenant(defaultTenantId, () => db.getSetting('llm_model') || config.defaultSearchModel);
+  let savedModel = runWithTenant(defaultTenantId, () => (db.getSetting('llm_model') || config.defaultSearchModel || '').trim());
 
   if (savedProvider === 'ollama') {
     const { canSpawnLocalOllama } = await import('./llm/deployment-env.js');
     if (canSpawnLocalOllama()) {
       const { resolveSafeOllamaModel, applyOllamaMemorySettings, resolveStartupOllamaModel, listLocalOllamaModels } = await import('./llm/ollama-recommend.js');
-      const safe = resolveSafeOllamaModel(savedModel);
+      const safe = resolveSafeOllamaModel(savedModel || 'llama3.2:3b');
       const localModels = await listLocalOllamaModels();
       const startup = resolveStartupOllamaModel({
-        requestedModel: savedModel,
+        requestedModel: savedModel || 'llama3.2:3b',
         localModels,
         budgetGb: safe.budgetGb,
       });
@@ -145,9 +145,13 @@ async function main() {
   }
 
   let provider = null;
-  try {
-    provider = await createProvider(savedProvider, savedKey, savedModel || undefined);
-  } catch (err) {
+  if (savedProvider) {
+    try {
+      provider = await createProvider(savedProvider, savedKey, savedModel || undefined);
+    } catch (err) {
+      console.log(`LLM provider "${savedProvider}" failed to init: ${err.message}. Configure one in Settings at http://localhost:3000`);
+    }
+  } else {
     console.log('No LLM configured yet. Configure one in Settings at http://localhost:3000');
   }
 
@@ -343,7 +347,7 @@ async function main() {
 
   const shutdown = async () => {
     console.log('\nShutting down...');
-    clearInterval(summaryInterval);
+    if (typeof summaryInterval !== 'undefined') clearInterval(summaryInterval);
     clearInterval(mediaIndexInterval);
     clearInterval(embeddingIndexInterval);
     await webServer.destroyAllWhatsAppClients();
