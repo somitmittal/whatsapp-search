@@ -34,25 +34,59 @@ export function cosineSimilarity(a, b) {
 
 /**
  * Keep the best `k` rows by cosine similarity. `rows` is scanned once.
+ * Optimizations: precomputes query norm, filters with minScore threshold,
+ * and defers sorting until capacity is reached.
  * @param {Float32Array} query
  * @param {Array<{ vector: Float32Array, id: number }>} rows
  * @param {number} k
  */
 export function topKByCosine(query, rows, k) {
   const limit = Math.max(1, k);
+  if (!query?.length || !rows?.length) return [];
+
+  let qNormSq = 0;
+  for (let i = 0; i < query.length; i++) {
+    qNormSq += query[i] * query[i];
+  }
+  const qNorm = Math.sqrt(qNormSq);
+  if (!qNorm) return [];
+
+  const qLen = query.length;
   /** @type {Array<{ id: number, score: number }>} */
   const best = [];
-  for (const row of rows) {
-    const score = cosineSimilarity(query, row.vector);
+  let minScore = -Infinity;
+
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r];
+    const vec = row?.vector;
+    if (!vec || vec.length !== qLen) continue;
+
+    let dot = 0;
+    let bNormSq = 0;
+    for (let i = 0; i < qLen; i++) {
+      const qVal = query[i];
+      const bVal = vec[i];
+      dot += qVal * bVal;
+      bNormSq += bVal * bVal;
+    }
+    const denom = qNorm * Math.sqrt(bNormSq);
+    const score = denom ? dot / denom : 0;
+
     if (best.length < limit) {
       best.push({ id: row.id, score });
-      best.sort((a, b) => a.score - b.score);
+      if (best.length === limit) {
+        best.sort((a, b) => a.score - b.score);
+        minScore = best[0].score;
+      }
       continue;
     }
-    if (score > best[0].score) {
+
+    if (score > minScore) {
       best[0] = { id: row.id, score };
       best.sort((a, b) => a.score - b.score);
+      minScore = best[0].score;
     }
   }
+
   return best.sort((a, b) => b.score - a.score);
 }

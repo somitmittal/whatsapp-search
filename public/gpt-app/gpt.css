@@ -616,9 +616,12 @@ button { font: inherit; color: inherit; }
 .gpt-app.mode-chat .gpt-scroll { overflow: hidden; }
 .gpt-app.mode-chat .gpt-thread,
 .gpt-app.mode-chat .gpt-empty { display: none !important; }
+.gpt-wa-view[hidden],
+.messages-area[hidden] { display: none !important; }
 .gpt-app.mode-chat .gpt-wa-view[hidden] { display: none !important; }
 .gpt-app.mode-chat .gpt-wa-view:not([hidden]) { display: flex; flex: 1; min-height: 0; }
-.gpt-app.mode-gpt .gpt-wa-view { display: none !important; }
+.gpt-app.mode-gpt .gpt-wa-view,
+.gpt-app:not(.mode-chat) .gpt-wa-view { display: none !important; }
 .gpt-app.mode-chat #gpt-composer-wrap { display: none !important; }
 .gpt-app.mode-gpt #gpt-wa-composer { display: none !important; }
 .gpt-app.mode-chat #gpt-wa-composer:not([hidden]) {

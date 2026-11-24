@@ -154,7 +154,7 @@ export default class EmbeddingIndexService {
     }
     if (!qvec?.length) return [];
 
-    const rows = chatJid ? this._loadVectors(chatJid) : this._cachedAllVectors();
+    const rows = this._cachedVectors(chatJid);
     return topKByCosine(qvec, rows.filter((r) => r.vector.length === qvec.length), k);
   }
 
@@ -167,13 +167,19 @@ export default class EmbeddingIndexService {
     return rows;
   }
 
-  /** Whole-archive vectors stay unpacked in memory until the next embedding write. */
-  _cachedAllVectors() {
+  /** Vectors stay unpacked in memory until the next embedding write. Caches scoped & archive-wide. */
+  _cachedVectors(chatJid = null) {
     const tenant = getCurrentTenantId();
-    const hit = this._vectorCache.get(tenant);
+    const key = `${tenant}:${chatJid || '*'}`;
+    const hit = this._vectorCache.get(key);
     if (hit && hit.version === this._writeVersion) return hit.rows;
-    const rows = this._loadVectors(null);
-    this._vectorCache.set(tenant, { version: this._writeVersion, rows });
+    const rows = this._loadVectors(chatJid);
+    this._vectorCache.set(key, { version: this._writeVersion, rows });
     return rows;
+  }
+
+  /** Backward-compatible helper for whole-archive cached vectors. */
+  _cachedAllVectors() {
+    return this._cachedVectors(null);
   }
 }
