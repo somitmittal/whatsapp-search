@@ -1624,7 +1624,17 @@ export default class WebServer {
 
     // GPT is the primary UI — redirect before static so public/index.html is not served at /.
     this._app.get('/', (_req, res) => res.redirect(302, '/gpt'));
-    this._app.use(express.static(config.publicDir, { index: false }));
+    this._app.use(express.static(config.publicDir, {
+      index: false,
+      maxAge: 3600000,
+      setHeaders: (res, filePath) => {
+        if (/\.(css|js|svg|png|jpg|webp|woff2?)$/i.test(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
+        } else if (filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    }));
 
     // ── Status ────────────────────────────────────────────────────────
     this._app.get('/api/app-config', (_req, res) => {

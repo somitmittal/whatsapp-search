@@ -1595,11 +1595,11 @@ function renderA2UiMediaDeck(sources = []) {
     const snippetClean = ocrSnippet ? esc(ocrSnippet.slice(0, 160)) : '';
 
     const previewHtml = isImage && hasMedia && mediaUrl
-      ? `<div class="a2ui-thumb-wrap">
-          <img src="${escAttr(mediaUrl)}" alt="Media preview" class="a2ui-thumb" loading="lazy" />
+      ? `<div class="a2ui-thumb-wrap a2ui-thumb-clickable" data-media-url="${escAttr(mediaUrl)}" data-caption="${escAttr(s.chatName || '')}" title="Click to enlarge image">
+          <img src="${escAttr(mediaUrl)}" alt="Media preview" class="a2ui-thumb" loading="lazy" decoding="async" />
           <span class="a2ui-badge-pill">OCR Ready</span>
          </div>`
-      : `<div class="a2ui-thumb-wrap a2ui-doc-icon">
+      : `<div class="a2ui-thumb-wrap a2ui-doc-icon${hasMedia && mediaUrl && isImage ? ' a2ui-thumb-clickable' : ''}" ${hasMedia && mediaUrl && isImage ? `data-media-url="${escAttr(mediaUrl)}" data-caption="${escAttr(s.chatName || '')}" title="Click to enlarge image"` : ''}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
             <polyline points="14 2 14 8 20 8"></polyline>
@@ -1622,10 +1622,11 @@ function renderA2UiMediaDeck(sources = []) {
           </div>
           ${snippetClean ? `<div class="a2ui-ocr-snippet" title="${escAttr(ocrSnippet)}"><span class="a2ui-ocr-tag">OCR</span> ${snippetClean}</div>` : ''}
           <div class="a2ui-actions">
-            ${isImage && hasMedia && mediaUrl ? `<button type="button" class="a2ui-btn a2ui-btn-view" data-media-url="${escAttr(mediaUrl)}" data-caption="${escAttr(s.chatName || '')}">View Full</button>` : ''}
-            ${!hasMedia && s.messageId ? `<button type="button" class="a2ui-btn a2ui-btn-fetch" data-msg-id="${escAttr(s.messageId)}" data-chat-jid="${escAttr(s.chatJid || '')}">Download</button>` : ''}
             <button type="button" class="a2ui-btn a2ui-btn-jump" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}" data-msg-id="${escAttr(itemMsgId)}">View in Chat</button>
-            ${hasMedia && mediaUrl ? `<a href="${escAttr(mediaUrl)}" download class="a2ui-btn a2ui-btn-download" title="Download media">Download</a>` : ''}
+            ${hasMedia && mediaUrl
+              ? `<a href="${escAttr(mediaUrl)}" download class="a2ui-btn a2ui-btn-download" title="Download media">Download</a>`
+              : (s.messageId ? `<button type="button" class="a2ui-btn a2ui-btn-fetch" data-msg-id="${escAttr(s.messageId)}" data-chat-jid="${escAttr(s.chatJid || '')}">Download</button>` : '')
+            }
           </div>
         </div>
       </div>
@@ -2636,6 +2637,15 @@ function wire() {
     if (choice?.dataset.skillChoice) { void send(choice.dataset.skillChoice); return; }
     const sendBtn = e.target.closest('[data-send-skill-run]');
     if (sendBtn) { await confirmSkillSend(sendBtn); return; }
+
+    const a2uiThumb = e.target.closest('.a2ui-thumb-clickable');
+    if (a2uiThumb) {
+      const mediaUrl = a2uiThumb.dataset.mediaUrl;
+      if (mediaUrl) {
+        openChatImageViewer(mediaUrl, 'Media preview', a2uiThumb.dataset.caption || '');
+        return;
+      }
+    }
 
     const a2uiView = e.target.closest('.a2ui-btn-view');
     if (a2uiView) {

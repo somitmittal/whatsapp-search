@@ -290,17 +290,41 @@ export async function hybridSearch({
 
   const out = [];
   const seen = new Set();
+  const directHitIds = new Set(ranked.map((h) => h?.id));
+  const dedupeNeighborText = new Set();
+
   for (const hit of ranked) {
     const around = GPT_LIMITS.neighborRadius
       ? db.getChatNeighbors(hit.chatJid, hit.timestamp, hit.id, GPT_LIMITS.neighborRadius)
       : [];
     for (const m of [hit, ...around]) {
       if (seen.has(m.id)) continue;
+      const isDirect = directHitIds.has(m.id);
+      // Filter out redundant/boilerplate short neighbor chatter (e.g. repeated "ok", "yes", emoji)
+      if (!isDirect) {
+        const tNorm = String(m.text || '').trim().toLowerCase();
+        if (tNorm.length > 0 && tNorm.length < 40) {
+          if (dedupeNeighborText.has(tNorm)) continue;
+          dedupeNeighborText.add(tNorm);
+        }
+      }
       seen.add(m.id);
       out.push(m);
     }
   }
-  return { hits: ranked, messages: out, chunks: chunkHits, intent: resolvedIntent };
+
+  // Cap neighbor context to a focused budget (top 45 messages) while preserving all direct hits
+  let finalMessages = out;
+  if (out.length > 45) {
+    const directHits = out.filter((m) => directHitIds.has(m.id));
+    const neighbors = out.filter((m) => !directHitIds.has(m.id));
+    const remainingSlots = Math.max(10, 45 - directHits.length);
+    finalMessages = [...directHits, ...neighbors.slice(0, remainingSlots)].sort(
+      (a, b) => (a.timestamp || 0) - (b.timestamp || 0)
+    );
+  }
+
+  return { hits: ranked, messages: finalMessages, chunks: chunkHits, intent: resolvedIntent };
 }
 
 export function formatSummaryLine(s) {

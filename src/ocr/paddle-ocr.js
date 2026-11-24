@@ -174,8 +174,23 @@ export class PaddleOcrService {
         '-c',
         `from rapidocr_onnxruntime import RapidOCR
 import sys
+p = "${mediaPath.replace(/"/g, '\\"')}"
+inp = p
+try:
+    from PIL import Image
+    import numpy as np
+    img = Image.open(p)
+    w, h = img.size
+    max_dim = 1600
+    if max(w, h) > max_dim:
+        scale = max_dim / float(max(w, h))
+        img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+    inp = np.array(img.convert('RGB'))
+except Exception:
+    inp = p
+
 engine = RapidOCR()
-result, _ = engine("${mediaPath.replace(/"/g, '\\"')}")
+result, _ = engine(inp)
 if result:
     print("\\n".join([line[1] for line in result]))
 `,
