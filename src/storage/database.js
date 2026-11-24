@@ -960,7 +960,9 @@ export default class Database {
       if (!cols.some((c) => c.name === 'tenant_id')) return;
       this._db.exec(`
         CREATE INDEX IF NOT EXISTS idx_messages_tenant_chat_ts
-        ON messages(tenant_id, chat_jid, timestamp)
+        ON messages(tenant_id, chat_jid, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_messages_tenant_chat_ts_id
+        ON messages(tenant_id, chat_jid, timestamp DESC, id DESC);
       `);
     } catch (e) {
       console.warn('[DB] idx_messages_tenant_chat_ts:', e.message);
@@ -1594,6 +1596,21 @@ export default class Database {
     this._stmtGetContactByHash = this._db.prepare(
       'SELECT enc_name AS encName FROM contact_directory WHERE tenant_id = ? AND phone_hash = ?',
     );
+    this._stmtChatPreview = this._db.prepare(`
+      SELECT text, sender, media_type AS mediaType, receipt_status AS receiptStatus, message_id AS messageId
+      FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
+    `);
+    this._stmtChatTitleCandidates = this._db.prepare(`
+      SELECT chat_name AS chatName, sender
+      FROM messages
+      WHERE tenant_id = ? AND chat_jid = ?
+        AND ((chat_name IS NOT NULL AND chat_name != '') OR (sender IS NOT NULL AND sender != '' AND sender != 'You'))
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 5
+    `);
   }
 
   // ── Contacts (hashed at rest) ─────────────────────────────────────────
@@ -3770,17 +3787,25 @@ export default class Database {
       return { hasAvatar: true, avatarRev: a.fetchedAt || 0 };
     };
     const previewByChat = new Map();
-    for (const r of this._db.prepare(`
-      SELECT chat_jid AS chatJid, text, sender, media_type AS mediaType,
-             receipt_status AS receiptStatus, message_id AS messageId
-      FROM (
-        SELECT chat_jid, text, sender, media_type, receipt_status, message_id,
-               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC, id DESC) AS rn
-        FROM messages WHERE tenant_id = ?
-      ) WHERE rn = 1
-    `).all(t)) {
-      if (r.chatJid) previewByChat.set(r.chatJid, r);
+    const titlesByChat = new Map();
+
+    const allJids = new Set([
+      ...aggRows.map((r) => r.chatJid),
+      ...rosterTsByChat.keys(),
+    ]);
+
+    for (const jid of allJids) {
+      if (!jid) continue;
+      if (this._stmtChatPreview) {
+        const p = this._stmtChatPreview.get(t, jid);
+        if (p) previewByChat.set(jid, p);
+      }
+      if (this._stmtChatTitleCandidates) {
+        const rows = this._stmtChatTitleCandidates.all(t, jid);
+        if (rows && rows.length) titlesByChat.set(jid, rows);
+      }
     }
+
     const previewFields = (chatJid) => {
       const p = previewByChat.get(chatJid);
       if (!p) {
@@ -3804,66 +3829,6 @@ export default class Database {
         lastMessageReceipt: p.sender === 'You' ? normalizeReceiptStatus(p.receiptStatus) : null,
       };
     };
-
-    const goodNameRows = this._db.prepare(`
-      SELECT chat_jid AS chatJid, chat_name AS chatName, sender
-      FROM (
-        SELECT chat_jid, chat_name, sender,
-               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
-        FROM messages WHERE tenant_id = ?
-          AND chat_name IS NOT NULL AND chat_name != ''
-          AND chat_name NOT LIKE 'Contact (%'
-          AND NOT (LENGTH(chat_name) <= 25 AND chat_name GLOB '[0-9-]*')
-      ) WHERE rn <= 3
-    `).all(t);
-
-    const fallbackNameRows = this._db.prepare(`
-      SELECT chat_jid AS chatJid, chat_name AS chatName, sender
-      FROM (
-        SELECT chat_jid, chat_name, sender,
-               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
-        FROM messages WHERE tenant_id = ?
-          AND chat_name IS NOT NULL AND chat_name != ''
-      ) WHERE rn = 1
-    `).all(t);
-
-    const peerRows = this._db.prepare(`
-      SELECT chat_jid AS chatJid, sender
-      FROM (
-        SELECT chat_jid, sender,
-               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
-        FROM messages WHERE tenant_id = ?
-          AND sender IS NOT NULL AND sender != '' AND sender != 'You'
-          AND NOT (LENGTH(sender) <= 20 AND sender GLOB '[0-9]*')
-      ) WHERE rn <= 2
-    `).all(t);
-
-    const fallbackPeerRows = this._db.prepare(`
-      SELECT chat_jid AS chatJid, sender
-      FROM (
-        SELECT chat_jid, sender,
-               ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC) AS rn
-        FROM messages WHERE tenant_id = ?
-          AND sender IS NOT NULL AND sender != '' AND sender != 'You'
-      ) WHERE rn = 1
-    `).all(t);
-
-    const titlesByChat = new Map();
-    const addRow = (jid, row) => {
-      if (!titlesByChat.has(jid)) titlesByChat.set(jid, []);
-      titlesByChat.get(jid).push(row);
-    };
-    for (const r of goodNameRows) addRow(r.chatJid, r);
-    for (const r of fallbackNameRows) {
-      if (!titlesByChat.has(r.chatJid)) addRow(r.chatJid, r);
-    }
-    for (const r of peerRows) addRow(r.chatJid, { chatJid: r.chatJid, chatName: null, sender: r.sender });
-    for (const r of fallbackPeerRows) {
-      const existing = titlesByChat.get(r.chatJid) || [];
-      if (!existing.some(e => e.sender && e.sender !== 'You')) {
-        addRow(r.chatJid, { chatJid: r.chatJid, chatName: null, sender: r.sender });
-      }
-    }
 
     const resolveTitle = (chatJid, rows) => {
       const isGroup = chatJid.endsWith('@g.us');

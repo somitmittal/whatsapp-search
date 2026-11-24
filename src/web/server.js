@@ -1969,7 +1969,7 @@ export default class WebServer {
           : servedType;
         res.setHeader('Content-Type', finalContentType);
         res.setHeader('X-Content-Type-Options', 'nosniff');
-        res.setHeader('Cache-Control', 'private, no-cache');
+        res.setHeader('Cache-Control', 'private, max-age=86400, stale-while-revalidate=604800');
         // Phones pick the handler from the filename extension, so it must match
         // the bytes actually served — a transcode of `<id>.mp4`/`<id>.ogg` is an
         // `.m4a`, and a mismatched name makes iOS/Android refuse to open it.

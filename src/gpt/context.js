@@ -9,7 +9,7 @@ import {
   isBroadQuery,
   packMessages,
 } from './retrieval.js';
-import { decomposeQuery } from './query-decomposer.js';
+import { decomposeQuery, heuristicDecompose } from './query-decomposer.js';
 import { TOOL_SPECS } from './tools.js';
 
 export function buildSystemPrompt({ db, businessContext = false, now = new Date() }) {
@@ -191,10 +191,7 @@ export class ContextEngine {
     const scoped = [...new Set(scopeJids.filter(Boolean))];
 
     const currentChatName = scoped.length === 1 ? this.directory.name(scoped[0]) : null;
-    const resolvedIntent = intent || await decomposeQuery(query, {
-      provider,
-      currentChatName,
-    }).catch(() => null);
+    const resolvedIntent = intent || heuristicDecompose(query);
 
     const candidateJids = [];
     if (Array.isArray(resolvedIntent?.candidateEntities)) {

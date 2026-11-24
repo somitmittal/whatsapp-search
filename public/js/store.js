@@ -45,6 +45,8 @@ export const store = {
   awaySummarySnapshot: null,
   /** @type {Record<string, { pct: number, show: boolean }>} */
   summaryProgressByJid: {},
+  /** In-memory message transcript cache for instant (0ms) chat switching. */
+  _chatMessageCache: new Map(),
   /** Per-chat message counts during WhatsApp history sync (from server). */
   waSyncByChat: {},
   /** Whether DB holds a user API key (GET /api/settings — raw keys are never sent). */

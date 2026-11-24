@@ -294,6 +294,11 @@ export async function openChat(jid, focusMessageId = null) {
       }).catch(() => {}),
     );
   }
+  // Instant (0ms) render from memory cache if available for this chat
+  const cachedEntry = !focusMessageId && store._chatMessageCache ? store._chatMessageCache.get(jid) : null;
+  if (cachedEntry && Array.isArray(cachedEntry.msgs) && cachedEntry.msgs.length) {
+    renderMessages(cachedEntry.msgs, jid, null, { forceScroll: true });
+  }
   try {
     const msgUrl = focusMessageId
       ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(focusMessageId)}`
@@ -308,7 +313,15 @@ export async function openChat(jid, focusMessageId = null) {
     ]);
     const msgs = msgsRes;
     if (store.activeChat !== jid) return;
-    renderMessages(msgs, jid, focusMessageId, { forceScroll: !focusMessageId });
+    if (!store._chatMessageCache) store._chatMessageCache = new Map();
+    if (!focusMessageId && msgs.length) {
+      store._chatMessageCache.set(jid, { msgs, ts: Date.now() });
+      if (store._chatMessageCache.size > 30) {
+        const oldestKey = store._chatMessageCache.keys().next().value;
+        store._chatMessageCache.delete(oldestKey);
+      }
+    }
+    renderMessages(msgs, jid, focusMessageId, { forceScroll: !focusMessageId && !cachedEntry });
     triggerDeferredSenderResolution(jid, msgs);
     if (!focusMessageId && msgs.length) {
       const sorted = [...msgs].sort((a, b) => {
@@ -438,6 +451,9 @@ export async function refreshActiveChatMessages() {
     const lim = Math.max(store.chatMessagesOffset || INITIAL_CHAT_MESSAGES_LIMIT, INITIAL_CHAT_MESSAGES_LIMIT);
     const msgs = await fetch(`/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${lim}&offset=0`).then((r) => r.json());
     if (store.activeChat !== jid) return;
+    if (store._chatMessageCache && Array.isArray(msgs)) {
+      store._chatMessageCache.set(jid, { msgs, ts: Date.now() });
+    }
     renderMessages(msgs, jid);
     triggerDeferredSenderResolution(jid, msgs);
     const sorted = [...msgs].sort((a, b) => {

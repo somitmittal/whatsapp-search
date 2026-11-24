@@ -189,7 +189,7 @@ export default class MediaIndexService {
     let indexed = 0;
     for (const job of candidates) {
       try {
-        const ok = await this._indexOne(job);
+        const ok = await this._indexOne(job, { fastOnly: true });
         if (ok) indexed += 1;
       } catch (err) {
         console.warn(`[MediaIndex:JIT] ${job.messageId}:`, err.message);
@@ -245,7 +245,7 @@ export default class MediaIndexService {
     return true;
   }
 
-  async _indexOne(job) {
+  async _indexOne(job, { fastOnly = false } = {}) {
     const provider = this._activeProvider();
     const { messageId, mediaType, mediaPath } = job;
     const fallback = buildFallbackMediaIndex(job);
@@ -298,20 +298,22 @@ export default class MediaIndexService {
       const b64 = buffer.toString('base64');
       const mime = guessMimeForFile(mediaType, mediaPath);
 
-      try {
-        if (mediaType === 'audio') {
-          if (provider && typeof provider.transcribeAudio === 'function') {
-            aiText = await provider.transcribeAudio(b64, mime);
-          }
-        } else if (mediaType === 'video') {
-          if (providerSupportsInlineVideoCaption(provider) && typeof provider.caption === 'function') {
+      if (!fastOnly) {
+        try {
+          if (mediaType === 'audio') {
+            if (provider && typeof provider.transcribeAudio === 'function') {
+              aiText = await provider.transcribeAudio(b64, mime);
+            }
+          } else if (mediaType === 'video') {
+            if (providerSupportsInlineVideoCaption(provider) && typeof provider.caption === 'function') {
+              aiText = await provider.caption(b64, mime);
+            }
+          } else if ((mediaType === 'image' || mediaType === 'sticker') && provider && typeof provider.caption === 'function') {
             aiText = await provider.caption(b64, mime);
           }
-        } else if ((mediaType === 'image' || mediaType === 'sticker') && provider && typeof provider.caption === 'function') {
-          aiText = await provider.caption(b64, mime);
+        } catch (e) {
+          console.warn(`[MediaIndex] LLM ${messageId}:`, e.message);
         }
-      } catch (e) {
-        console.warn(`[MediaIndex] LLM ${messageId}:`, e.message);
       }
 
       const unsupported = isUnsupportedProviderOutput(aiText);

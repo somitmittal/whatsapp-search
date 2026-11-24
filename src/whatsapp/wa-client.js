@@ -1642,6 +1642,7 @@ export default class WaClient {
     if (existing && isResolvedHumanChatTitle(existing, jid) && !isResolvedHumanChatTitle(s, jid)) {
       return existing;
     }
+    if (this._resolvedContactTitles) this._resolvedContactTitles.delete(jid);
     this._chatNames.set(jid, s);
     return s;
   }
@@ -2583,6 +2584,10 @@ export default class WaClient {
    */
   async _resolveContactTitleFromCache(jid) {
     if (!jid) return null;
+    if (!this._resolvedContactTitles) this._resolvedContactTitles = new Map();
+    if (this._resolvedContactTitles.has(jid)) {
+      return this._resolvedContactTitles.get(jid);
+    }
     let cachedName = this._nameFromChatMap(jid);
     const lm = this._sock?.signalRepository?.lidMapping;
     if (!cachedName && lm) {
@@ -2597,8 +2602,9 @@ export default class WaClient {
         }
       } catch (_) {}
     }
-    if (cachedName && isResolvedHumanChatTitle(cachedName, jid)) return cachedName;
-    return null;
+    const resolved = cachedName && isResolvedHumanChatTitle(cachedName, jid) ? cachedName : null;
+    this._resolvedContactTitles.set(jid, resolved);
+    return resolved;
   }
 
   /**

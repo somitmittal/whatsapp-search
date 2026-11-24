@@ -204,7 +204,7 @@ async function main() {
     getProvider: () => mediaIndexProvider,
     getPriorityChatJid: () => summaryService.getPriorityChatForTenant(getCurrentTenantId()),
     isWaLive,
-    shouldDefer: () => isWaHistoryBusy() || summaryService.isBusy() || !summaryService.hasCaughtUp(),
+    shouldDefer: isWaHistoryBusy,
   });
 
   async function reloadMediaIndexProvider() {
@@ -318,15 +318,8 @@ async function main() {
     return runWithTenant(defaultTenantId, () => (db.listIndexOptInJids?.() || []).length > 0);
   }
 
-  let summaryInterval = setInterval(async () => {
-    try {
-      if (webServer.isTenantWaHistoryBusy(defaultTenantId)) return;
-      if (!hasIndexWork()) return;
-      await runWithTenant(defaultTenantId, async () => {
-        await summaryService.indexPendingDays();
-      });
-    } catch { /* */ }
-  }, 300_000);
+  // Background daily-summary polling disabled to keep Ollama/LLMs 100% idle and responsive for user Ask AI.
+  // Summaries can still be generated on-demand via manual user action if needed.
 
   let mediaIndexInterval = setInterval(async () => {
     try {
