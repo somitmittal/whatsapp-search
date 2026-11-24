@@ -4,7 +4,7 @@ import config from '../src/config.js';
 import WebServer from '../src/web/server.js';
 import EventEmitter from 'events';
 
-describe('No default Ollama on desktop startup', () => {
+describe('Default Ollama on desktop startup', () => {
   let origProvider;
   let origModel;
 
@@ -22,7 +22,7 @@ describe('No default Ollama on desktop startup', () => {
     else delete process.env.LLM_MODEL;
   });
 
-  test('applyLlmDefaultsIfUnset does not set Ollama on desktop when unconfigured', () => {
+  test('applyLlmDefaultsIfUnset defaults to Ollama llama3.2:3b on desktop when unconfigured', () => {
     const settings = {};
     const db = {
       getSetting: (k) => settings[k],
@@ -31,34 +31,12 @@ describe('No default Ollama on desktop startup', () => {
 
     applyLlmDefaultsIfUnset(db);
 
-    expect(settings.llm_provider).toBeFalsy();
-    expect(settings.llm_model).toBeFalsy();
-    expect(settings.summary_provider).toBeFalsy();
-    expect(settings.summary_model).toBeFalsy();
-  });
-
-  test('cleanupUnselectedOllamaDefault clears legacy auto-defaulted Ollama when llm_user_selected is not 1', () => {
-    const settings = {
-      llm_provider: 'ollama',
-      llm_model: 'llama3.2:3b',
-      summary_provider: 'ollama',
-      summary_model: 'llama3.2:3b',
-      media_index_provider: 'ollama',
-      media_index_model: 'llama3.2:3b',
-    };
-    const db = {
-      getSetting: (k) => settings[k],
-      setSetting: (k, v) => { settings[k] = v; },
-    };
-
-    cleanupUnselectedOllamaDefault(db);
-
-    expect(settings.llm_provider).toBe('');
-    expect(settings.llm_model).toBe('');
-    expect(settings.summary_provider).toBe('');
-    expect(settings.summary_model).toBe('');
-    expect(settings.media_index_provider).toBe('');
-    expect(settings.media_index_model).toBe('');
+    expect(settings.llm_provider).toBe('ollama');
+    expect(settings.llm_model).toBe('llama3.2:3b');
+    expect(settings.summary_provider).toBe('ollama');
+    expect(settings.summary_model).toBe('llama3.2:3b');
+    expect(settings.media_index_provider).toBe('ollama');
+    expect(settings.media_index_model).toBe('llama3.2:3b');
   });
 
   test('cleanupUnselectedOllamaDefault preserves Ollama when user explicitly selected it', () => {

@@ -147,8 +147,11 @@ function buildServerEnv() {
     DEFAULT_TENANT_ID: 'legacy-default',
     // Desktop: local Ollama by default, import-first flow
     LLM_PROVIDER: process.env.LLM_PROVIDER || 'ollama',
+    LLM_MODEL: process.env.LLM_MODEL || 'llama3.2:3b',
     SUMMARY_PROVIDER: process.env.SUMMARY_PROVIDER || 'ollama',
+    SUMMARY_MODEL: process.env.SUMMARY_MODEL || 'llama3.2:3b',
     MEDIA_INDEX_PROVIDER: process.env.MEDIA_INDEX_PROVIDER || 'ollama',
+    MEDIA_INDEX_MODEL: process.env.MEDIA_INDEX_MODEL || 'llama3.2:3b',
     // Unload idle model quickly — avoids RAM spikes when app is in background
     OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || '60',
     OLLAMA_NUM_PARALLEL: process.env.OLLAMA_NUM_PARALLEL || '2',

@@ -19,31 +19,17 @@ export function applyLlmDefaultsIfUnset(db) {
   if (config.defaultSummaryModel && !db.getSetting('summary_model')) {
     db.setSetting('summary_model', config.defaultSummaryModel);
   }
+  if (config.defaultMediaIndexProvider && !db.getSetting('media_index_provider')) {
+    db.setSetting('media_index_provider', config.defaultMediaIndexProvider);
+  }
+  if (config.defaultMediaIndexModel && !db.getSetting('media_index_model')) {
+    db.setSetting('media_index_model', config.defaultMediaIndexModel);
+  }
   migrateAwayFromLocalOllama(db);
-  cleanupUnselectedOllamaDefault(db);
 }
 
-/**
- * Remove legacy auto-defaulted Ollama settings unless the user explicitly selected Ollama
- * or set LLM_PROVIDER in the environment.
- */
-export function cleanupUnselectedOllamaDefault(db) {
-  if (process.env.LLM_PROVIDER) return;
-  if (db.getSetting('llm_user_selected') === '1') return;
-
-  if (db.getSetting('llm_provider') === 'ollama') {
-    db.setSetting('llm_provider', '');
-    db.setSetting('llm_model', '');
-  }
-  if (db.getSetting('summary_provider') === 'ollama') {
-    db.setSetting('summary_provider', '');
-    db.setSetting('summary_model', '');
-  }
-  if (db.getSetting('media_index_provider') === 'ollama') {
-    db.setSetting('media_index_provider', '');
-    db.setSetting('media_index_model', '');
-  }
-}
+/** Legacy cleanup hook — no-op now that Ollama 3B is the default. */
+export function cleanupUnselectedOllamaDefault(_db) {}
 
 /** Render cannot run `ollama serve` — switch stored local-Ollama settings to cloud defaults. */
 export function migrateAwayFromLocalOllama(db) {
