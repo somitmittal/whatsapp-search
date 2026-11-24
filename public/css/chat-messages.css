@@ -903,3 +903,95 @@ html[data-theme="dark"] .wa-reaction-modal-empty {
 .wa-inline-emoji-glyph { font-size: 18px; }
 .wa-inline-emoji-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ── Quoted Message Preview inside Bubbles ── */
+.wa-quote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 4px 8px 4px 0;
+  border-radius: 6px;
+  background: rgba(11, 20, 26, 0.05);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.wa-quote-bar {
+  width: 4px;
+  align-self: stretch;
+  flex-shrink: 0;
+  border-radius: 0 3px 3px 0;
+  background: #06cf9c;
+}
+.wa-quote-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.wa-quote-thumb-placeholder {
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+.wa-quote-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.wa-quote-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: #06cf9c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wa-quote-text {
+  font-size: 12.5px;
+  color: #54656f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.msg-quote-inline {
+  margin-bottom: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+.msg-quote-inline:hover {
+  background: rgba(11, 20, 26, 0.09);
+}
+.bubble.out .msg-quote-inline {
+  background: rgba(0, 0, 0, 0.06);
+}
+.bubble.out .msg-quote-inline:hover {
+  background: rgba(0, 0, 0, 0.11);
+}
+.bubble.out .msg-quote-inline .wa-quote-bar {
+  background: #00a884;
+}
+.bubble.out .msg-quote-inline .wa-quote-head {
+  color: #00a884;
+}
+html[data-theme="dark"] .wa-quote {
+  background: rgba(255, 255, 255, 0.07);
+}
+html[data-theme="dark"] .wa-quote-text {
+  color: #aebac1;
+}
+html[data-theme="dark"] .msg-quote-inline:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+html[data-theme="dark"] .bubble.out .msg-quote-inline {
+  background: rgba(0, 0, 0, 0.22);
+}
+html[data-theme="dark"] .bubble.out .msg-quote-inline:hover {
+  background: rgba(0, 0, 0, 0.32);
+}
+
+

@@ -439,6 +439,26 @@ function openChatVideoViewer(source, caption = '') {
 
 if (typeof document !== 'undefined') {
   document.addEventListener('click', (event) => {
+    const quoteEl = event.target?.closest?.('.msg-quote-inline');
+    if (quoteEl) {
+      const qMid = quoteEl.dataset.quotedMid;
+      if (qMid) {
+        event.preventDefault();
+        event.stopPropagation();
+        const targetBlock = document.querySelector(`.msg-block[data-message-id="${CSS.escape(qMid)}"]`);
+        if (targetBlock) {
+          targetBlock.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          targetBlock.classList.add('flash');
+          setTimeout(() => targetBlock.classList.remove('flash'), 1200);
+        } else if (typeof window !== 'undefined' && typeof window.openChatTab === 'function' && store?.activeChat) {
+          window.openChatTab(store.activeChat, '', { focusMessageId: qMid });
+        } else if (typeof window !== 'undefined' && typeof window.openChat === 'function' && store?.activeChat) {
+          window.openChat(store.activeChat, qMid);
+        }
+      }
+      return;
+    }
+
     const pdfContainer = event.target?.closest?.('.msg-media-pdf-container');
     if (pdfContainer) {
       event.preventDefault();
@@ -548,6 +568,34 @@ function renderContactCardHtml(m) {
     blocks += `<div class="msg-contact-entry">${rows.join('')}</div>`;
   }
   return `<div class="msg-contact-card" role="region" aria-label="Contact card">${blocks}</div>`;
+}
+
+/** WhatsApp-style quoted reply inside a message bubble. */
+export function renderQuotedPreviewHtml(quotedPayload) {
+  if (!quotedPayload) return '';
+  let q = quotedPayload;
+  if (typeof q === 'string') {
+    try { q = JSON.parse(q); } catch { return ''; }
+  }
+  if (!q || typeof q !== 'object' || !q.messageId) return '';
+  const head = q.sender || 'Reply';
+  const isImg = q.mediaType === 'image';
+  const isVid = q.mediaType === 'video';
+  const isDoc = q.mediaType === 'document';
+  const isAudio = q.mediaType === 'audio';
+  const isSticker = q.mediaType === 'sticker';
+  let mediaLabel = '';
+  if (isImg) mediaLabel = 'Photo';
+  else if (isVid) mediaLabel = 'Video';
+  else if (isDoc) mediaLabel = 'Document';
+  else if (isAudio) mediaLabel = 'Voice note';
+  else if (isSticker) mediaLabel = 'Sticker';
+  else if (q.mediaType) mediaLabel = `[${q.mediaType}]`;
+
+  const text = q.text || mediaLabel || '';
+  const thumb = q.thumbData || '';
+
+  return `<div class="wa-quote msg-quote-inline" data-quoted-mid="${escAttr(q.messageId)}" title="Jump to quoted message" role="button" tabindex="0"><span class="wa-quote-bar" aria-hidden="true"></span>${thumb ? `<img class="wa-quote-thumb" src="${escAttr(thumb)}" alt="" />` : (isImg ? `<span class="wa-quote-thumb-placeholder">📷</span>` : '')}<div class="wa-quote-body"><span class="wa-quote-head">${esc(head)}</span><span class="wa-quote-text">${isImg && !q.text ? '📷 ' : ''}${esc(text)}</span></div></div>`;
 }
 
 function parseReactionCounts(raw) {
@@ -880,6 +928,7 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
       body = `<span class="msg-deleted-label">This message was deleted</span>`;
     }
     const previewTxt = (m.text || m.mediaCaption || (m.mediaType ? `[${m.mediaType}]` : '')).trim().slice(0, 160);
+    const quoteHtml = isDeleted ? '' : renderQuotedPreviewHtml(m.quotedPayload);
     const rxHtml = isDeleted ? '' : reactionCountsHtml(m.reactionsJson);
     const aiSvg = '<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z"/></svg>';
     const liveOk = canSendMessageToJid(jid);
@@ -923,7 +972,7 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
           ${rxHtml}
           ${liveOk ? `<button type="button" class="bubble-react-trigger" data-wa-emoji-picker-toggle="1" title="React" aria-label="React"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-3.5-9c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm7 0c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg></button><div class="wa-reaction-picker" hidden aria-label="Choose a reaction"></div>` : ''}
         </div>` : '';
-    html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr}${dataId} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}${dataId}>${sender}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxBar}</div>`;
+    html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr}${dataId} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}${dataId}>${sender}${quoteHtml}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxBar}</div>`;
   }
   return html;
 }
@@ -959,6 +1008,7 @@ export function messagesPaintFingerprint(msgs, jid = '', focusMessageId = null) 
       m.mediaQueued ? 1 : 0,
       m.receiptStatus || '',
       m.reactionsJson || '',
+      m.quotedPayload || '',
       m.chatJid || '',
     ].join('\x1f'));
   }

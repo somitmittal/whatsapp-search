@@ -744,3 +744,7 @@ export function initChatView() {
     }
   });
 }
+
+if (typeof window !== 'undefined') {
+  window.openChat = openChat;
+}

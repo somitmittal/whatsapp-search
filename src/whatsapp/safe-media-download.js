@@ -1,5 +1,6 @@
 import Crypto from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
+import { peelNestedMessage } from './message-content.js';
 import {
   DEF_MEDIA_HOST,
   extractMessageContent,
@@ -162,7 +163,9 @@ export async function downloadMediaMessageSafe(
   ctx = {},
 ) {
   const downloadMsg = async (targetMsg) => {
-    const mContent = extractMessageContent(targetMsg?.message);
+    const raw = targetMsg?.message;
+    const peeled = peelNestedMessage(raw) || raw;
+    const mContent = extractMessageContent(peeled) || peeled;
     if (!mContent) {
       const err = new Error('No message present');
       err.statusCode = 400;

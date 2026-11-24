@@ -362,7 +362,7 @@ export default class Database {
     if (!n) return [];
     const cols = `id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
       media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
-      media_ai_index AS mediaAiIndex, timestamp`;
+      media_ai_index AS mediaAiIndex, quoted_payload AS quotedPayload, timestamp`;
     const before = this._db.prepare(`
       SELECT ${cols} FROM messages
       WHERE tenant_id = ? AND chat_jid = ? AND (timestamp < ? OR (timestamp = ? AND id < ?))
@@ -609,6 +609,7 @@ export default class Database {
     this._migrateActionSuggestionsColumn();
     this._migrateReactionsJsonAndDedupe();
     this._migrateContactPayloadColumn();
+    this._migrateQuotedPayloadColumn();
     this._migrateMediaDownloadJsonColumn();
     this._migrateReceiptStatusColumn();
     this._migrateChatImportTouches();
@@ -991,6 +992,18 @@ export default class Database {
       }
     } catch (e) {
       console.warn('[DB] contact_payload column:', e.message);
+    }
+  }
+
+  _migrateQuotedPayloadColumn() {
+    try {
+      const cols = this._db.prepare('PRAGMA table_info(messages)').all();
+      if (!cols.some((c) => c.name === 'quoted_payload')) {
+        this._db.exec('ALTER TABLE messages ADD COLUMN quoted_payload TEXT');
+        console.log('[DB] Added messages.quoted_payload');
+      }
+    } catch (e) {
+      console.warn('[DB] quoted_payload column:', e.message);
     }
   }
 
@@ -1565,11 +1578,11 @@ export default class Database {
       INSERT OR IGNORE INTO messages (
         tenant_id, message_id, chat_jid, chat_name, sender, sender_jid,
         text, media_type, media_path, media_caption, media_ai_index, timestamp, reactions_json, contact_payload,
-        media_download_json, receipt_status
+        media_download_json, receipt_status, quoted_payload
       ) VALUES (
         @tenantId, @messageId, @chatJid, @chatName, @sender, @senderJid,
         @text, @mediaType, @mediaPath, @mediaCaption, @mediaAiIndex, @timestamp, @reactionsJson, @contactPayload,
-        @mediaDownloadJson, @receiptStatus
+        @mediaDownloadJson, @receiptStatus, @quotedPayload
       )
     `);
     this._stmtSelectIdByMessageId = this._db.prepare(
@@ -2048,7 +2061,7 @@ export default class Database {
   insertMessage({
     messageId, chatJid, chatName = null, sender = null, senderJid = null,
     text = null, mediaType = null, mediaPath = null, mediaCaption = null, mediaAiIndex = null, timestamp,
-    reactionsJson = null, contactPayload = null, mediaDownloadJson = null, receiptStatus = null,
+    reactionsJson = null, contactPayload = null, mediaDownloadJson = null, receiptStatus = null, quotedPayload = null,
   }) {
     const tenantId = getCurrentTenantId();
     const info = this._stmtInsertMessage.run({
@@ -2060,6 +2073,7 @@ export default class Database {
       contactPayload,
       mediaDownloadJson: mediaDownloadJson ?? null,
       receiptStatus: normalizeReceiptStatus(receiptStatus),
+      quotedPayload: quotedPayload ?? null,
     });
     if (info.changes > 0) return Number(info.lastInsertRowid);
     if (messageId && mediaDownloadJson) {
@@ -2094,6 +2108,7 @@ export default class Database {
           contactPayload: row.contactPayload ?? null,
           mediaDownloadJson: row.mediaDownloadJson ?? null,
           receiptStatus: normalizeReceiptStatus(row.receiptStatus),
+          quotedPayload: row.quotedPayload ?? null,
         });
         const hasRx = row.reactionsJson != null || row.reactionSlots !== undefined;
         if (info.changes > 0 && row.messageId) {
@@ -4156,7 +4171,7 @@ export default class Database {
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
              media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError,
              reactions_json AS reactionsJson, contact_payload AS contactPayload,
-             receipt_status AS receiptStatus,
+             receipt_status AS receiptStatus, quoted_payload AS quotedPayload,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE tenant_id = ? AND chat_jid = ?
       ORDER BY timestamp DESC, id DESC
@@ -4182,7 +4197,7 @@ export default class Database {
              media_caption AS mediaCaption, media_ai_index AS mediaAiIndex,
              media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError,
              reactions_json AS reactionsJson, contact_payload AS contactPayload,
-             receipt_status AS receiptStatus,
+             receipt_status AS receiptStatus, quoted_payload AS quotedPayload,
              timestamp, indexed_at AS indexedAt
       FROM messages WHERE tenant_id = ? AND chat_jid IN (${ph})
       ORDER BY timestamp DESC, id DESC
@@ -4433,7 +4448,7 @@ export default class Database {
     const t = getCurrentTenantId();
     const cols = `message_id AS messageId, chat_jid AS chatJid, sender, sender_jid AS senderJid,
              text, media_type AS mediaType, media_caption AS mediaCaption, media_path AS mediaPath,
-             timestamp`;
+             quoted_payload AS quotedPayload, timestamp`;
     const row = this._db.prepare(`
       SELECT ${cols}
       FROM messages WHERE tenant_id = ? AND chat_jid = ? AND message_id = ?

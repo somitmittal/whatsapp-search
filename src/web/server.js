@@ -3096,15 +3096,21 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
         return res.status(409).json({ error: 'WhatsApp not ready' });
       }
       const chatJid = String(req.body?.chatJid || '').trim();
+      const quotedMessageId = typeof req.body?.quotedMessageId === 'string' ? req.body.quotedMessageId.trim() : '';
       if (!chatJid) return res.status(400).json({ error: 'chatJid required' });
       if (!req.file?.buffer?.length) return res.status(400).json({ error: 'No file uploaded' });
       try {
+        let quotedRow = null;
+        if (quotedMessageId) {
+          quotedRow = this.db.getMessageForActions(chatJid, quotedMessageId);
+        }
         const sent = await st.waClient.sendFile(chatJid, req.file.buffer, {
           fileName: req.file.originalname,
           mimetype: req.file.mimetype,
           caption: req.body?.caption,
           // `ptt=1` marks audio as a WhatsApp voice note (push-to-talk).
           ptt: String(req.body?.ptt || '') === '1',
+          quotedRow,
         });
         return res.json({ ok: true, messageId: sent?.key?.id || null });
       } catch (err) {

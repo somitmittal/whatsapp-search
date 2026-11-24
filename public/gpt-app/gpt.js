@@ -1424,6 +1424,7 @@ async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = nu
   syncWaComposerUi();
   document.getElementById('msg-text')?.focus?.();
 }
+if (typeof window !== 'undefined') window.openChatTab = openChatTab;
 
 async function openConversation(id, { pushUrl = true } = {}) {
   let data;

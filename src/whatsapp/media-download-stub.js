@@ -3,6 +3,8 @@
  * Full history event objects are too large / ephemeral to keep; only key + media node.
  */
 
+import { peelNestedMessage } from './message-content.js';
+
 const MEDIA_NODE_KEYS = [
   'imageMessage',
   'videoMessage',
@@ -37,8 +39,9 @@ function mapDeep(input, fn) {
 /** @param {object} msg Baileys WAMessage */
 export function buildMediaDownloadStub(msg) {
   const key = msg?.key;
-  const message = msg?.message;
-  if (!key?.remoteJid || !key?.id || !message || typeof message !== 'object') return null;
+  const rawMessage = msg?.message;
+  if (!key?.remoteJid || !key?.id || !rawMessage || typeof rawMessage !== 'object') return null;
+  const message = peelNestedMessage(rawMessage) || rawMessage;
   let mediaNode = null;
   for (const k of MEDIA_NODE_KEYS) {
     if (message[k]) {

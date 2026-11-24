@@ -177,6 +177,9 @@ async function uploadFileToChat(file, jid, caption = '') {
   form.append('file', file, file.name);
   form.append('chatJid', jid);
   if (caption) form.append('caption', caption);
+  if (store.replyTarget?.messageId) {
+    form.append('quotedMessageId', store.replyTarget.messageId);
+  }
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/wa/send-file');

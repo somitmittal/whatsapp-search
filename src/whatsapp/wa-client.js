@@ -552,7 +552,7 @@ export default class WaClient {
     }));
   }
 
-  async sendFile(chatJid, buffer, { fileName = 'file', mimetype = 'application/octet-stream', caption = '', ptt = false } = {}) {
+  async sendFile(chatJid, buffer, { fileName = 'file', mimetype = 'application/octet-stream', caption = '', ptt = false, quotedRow = null } = {}) {
     if (!this._sock) throw new Error('WhatsApp not connected');
     if (!chatJid) throw new Error('chatJid required');
     if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new Error('File is empty');
@@ -615,7 +615,11 @@ export default class WaClient {
       content = { document: sendBuffer, fileName: name, mimetype: sendMime, caption: text };
       mediaType = 'document';
     }
-    const sent = await this._sock.sendMessage(chatJid, content);
+    let quoted = null;
+    if (quotedRow) {
+      quoted = this._buildQuotedProto(quotedRow, chatJid);
+    }
+    const sent = await this._sock.sendMessage(chatJid, content, quoted ? { quoted } : undefined);
     // Keep the bytes we just uploaded so Searchable can play/download without
     // waiting on a WhatsApp CDN round-trip (self-chat echoes often skip media).
     const persistedPath = this._writeOutboundMediaFile(sent, chatJid, sendBuffer, {
@@ -1091,9 +1095,121 @@ export default class WaClient {
     if (!snippet) {
       snippet = row.mediaType ? `[${row.mediaType}]` : '\u200b';
     }
+    if (row.mediaType === 'image') {
+      return {
+        key,
+        message: { imageMessage: { caption: snippet !== '[image]' ? snippet : '' } },
+      };
+    }
     return {
       key,
       message: { conversation: snippet.slice(0, 1024) },
+    };
+  }
+
+  _buildQuotedPayloadFromInner(inner, fallbackChatJid, msg) {
+    if (!inner || typeof inner !== 'object') return null;
+    let contextInfo = null;
+    for (const k of Object.keys(inner)) {
+      const val = inner[k];
+      if (val && typeof val === 'object' && val.contextInfo) {
+        contextInfo = val.contextInfo;
+        break;
+      }
+    }
+    if (!contextInfo && inner.contextInfo) {
+      contextInfo = inner.contextInfo;
+    }
+    if (!contextInfo || !contextInfo.stanzaId) return null;
+
+    const stanzaId = String(contextInfo.stanzaId);
+    const participant = contextInfo.participant ? String(contextInfo.participant) : null;
+    const qMsg = contextInfo.quotedMessage;
+
+    let sender = null;
+    if (participant) {
+      if (this._ownerJid && (participant === this._ownerJid || jidNormalizedUser(participant) === jidNormalizedUser(this._ownerJid))) {
+        sender = 'You';
+      } else {
+        sender = (typeof this.getSenderDisplayNameFast === 'function' ? this.getSenderDisplayNameFast(participant) : null)
+          || (typeof this._nameFromChatMap === 'function' ? this._nameFromChatMap(participant) : null)
+          || (participant.includes('@') ? formatPhoneLocalPart(participant.split('@')[0]) : null)
+          || 'Contact';
+      }
+    } else if (msg?.key?.fromMe) {
+      sender = 'You';
+    }
+
+    if (!qMsg) {
+      return {
+        messageId: stanzaId,
+        sender,
+        senderJid: participant,
+      };
+    }
+
+    const peeledQ = peelNestedMessage(qMsg);
+    const qContent = extractMessageContent(peeledQ) || peeledQ;
+    let text = extractTextFromInner(qContent) || '';
+    let mediaType = null;
+    let thumbData = null;
+
+    if (qContent?.imageMessage) {
+      mediaType = 'image';
+      if (!text && qContent.imageMessage.caption) text = qContent.imageMessage.caption;
+      if (qContent.imageMessage.jpegThumbnail) {
+        const rawThumb = qContent.imageMessage.jpegThumbnail;
+        const buf = Buffer.isBuffer(rawThumb)
+          ? rawThumb
+          : typeof rawThumb === 'string'
+            ? Buffer.from(rawThumb, 'base64')
+            : Buffer.from(rawThumb);
+        if (buf.length > 0) {
+          thumbData = `data:image/jpeg;base64,${buf.toString('base64')}`;
+        }
+      }
+    } else if (qContent?.videoMessage) {
+      mediaType = 'video';
+      if (!text && qContent.videoMessage.caption) text = qContent.videoMessage.caption;
+      if (qContent.videoMessage.jpegThumbnail) {
+        const rawThumb = qContent.videoMessage.jpegThumbnail;
+        const buf = Buffer.isBuffer(rawThumb)
+          ? rawThumb
+          : typeof rawThumb === 'string'
+            ? Buffer.from(rawThumb, 'base64')
+            : Buffer.from(rawThumb);
+        if (buf.length > 0) {
+          thumbData = `data:image/jpeg;base64,${buf.toString('base64')}`;
+        }
+      }
+    } else if (qContent?.documentMessage) {
+      mediaType = 'document';
+      if (!text) text = qContent.documentMessage.fileName || qContent.documentMessage.caption || 'Document';
+    } else if (qContent?.audioMessage) {
+      mediaType = 'audio';
+      if (!text) text = qContent.audioMessage.ptt ? 'Voice message' : 'Audio';
+    } else if (qContent?.stickerMessage) {
+      mediaType = 'sticker';
+      if (qContent.stickerMessage.pngThumbnail) {
+        const rawThumb = qContent.stickerMessage.pngThumbnail;
+        const buf = Buffer.isBuffer(rawThumb)
+          ? rawThumb
+          : typeof rawThumb === 'string'
+            ? Buffer.from(rawThumb, 'base64')
+            : Buffer.from(rawThumb);
+        if (buf.length > 0) {
+          thumbData = `data:image/png;base64,${buf.toString('base64')}`;
+        }
+      }
+    }
+
+    return {
+      messageId: stanzaId,
+      sender,
+      senderJid: participant,
+      text: text ? String(text).slice(0, 300) : null,
+      mediaType,
+      thumbData,
     };
   }
 
@@ -3423,6 +3539,7 @@ export default class WaClient {
       const messageId = msg.key.id ? String(msg.key.id) : `${msg.messageTimestamp}_${Math.random()}`;
       const recentOutboundPath = this._recentOutboundMediaPaths.get(messageId);
       const existingOutboundPath = recentOutboundPath && existsSync(recentOutboundPath) ? recentOutboundPath : null;
+      const quotedPayload = this._buildQuotedPayloadFromInner(inner, jid, msg);
 
       return {
         messageId,
@@ -3444,6 +3561,7 @@ export default class WaClient {
         timestamp:    Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
         receiptStatus: msg.key.fromMe ? normalizeReceiptStatus(msg.status) : null,
         contactPayload,
+        quotedPayload: quotedPayload ? JSON.stringify(quotedPayload) : null,
         ...(rxPayload || {}),
       };
     } catch { return null; }
