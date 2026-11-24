@@ -1259,9 +1259,15 @@ function renderChats() {
   renderSidebarTabCounts();
   if (!rows.length) {
     els.chatList.innerHTML = `<div class="sidebar-empty">${gptSidebarEmptyHtml()}</div>`;
+    delete els.chatList.dataset.fp;
     return;
   }
-  els.chatList.innerHTML = rows.slice(0, 500).map((c) => chatRowHtml(c)).join('');
+  const topRows = rows.slice(0, 150);
+  const fp = `${tab}|${q}|${topRows.map((c) => `${c.chatJid}:${c.lastMessageTs}:${c.unreadCount || 0}`).join(',')}`;
+  if (els.chatList.dataset.fp !== fp) {
+    els.chatList.innerHTML = topRows.map((c) => chatRowHtml(c)).join('');
+    els.chatList.dataset.fp = fp;
+  }
   els.chatList.querySelectorAll('.chat-item').forEach((el) => {
     el.classList.toggle('active', el.dataset.jid === state.activeChatJid);
   });

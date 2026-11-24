@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, realpathSync, rmSync, 
 import { createServer } from 'http';
 import { createRequire } from 'module';
 import { randomBytes } from 'node:crypto';
+import { gzip } from 'node:zlib';
 import { basename, isAbsolute, join, relative, resolve } from 'path';
 import { isJwtAuthEnabled } from '../auth/jwt-util.js';
 import { getSessionIdFromRequest, setSessionCookie, UserSessionService } from '../auth/user-session.js';
@@ -1473,6 +1474,53 @@ export default class WebServer {
       next();
     });
     this._app.use(cookieParser());
+    // Transparent response gzip compression for JSON / text payloads > 1KB
+    this._app.use((req, res, next) => {
+      const acceptEncoding = req.headers['accept-encoding'] || '';
+      if (!acceptEncoding.includes('gzip')) return next();
+
+      const originalSend = res.send.bind(res);
+      res.send = (body) => {
+        if (res.headersSent) return originalSend(body);
+        if (req.method === 'HEAD' || res.statusCode === 204 || res.statusCode === 304) {
+          return originalSend(body);
+        }
+        if (res.getHeader('content-encoding')) {
+          return originalSend(body);
+        }
+
+        let buffer;
+        if (typeof body === 'string') {
+          buffer = Buffer.from(body);
+        } else if (Buffer.isBuffer(body)) {
+          buffer = body;
+        } else if (body && typeof body === 'object') {
+          try {
+            buffer = Buffer.from(JSON.stringify(body));
+            if (!res.getHeader('content-type')) {
+              res.setHeader('content-type', 'application/json; charset=utf-8');
+            }
+          } catch {
+            return originalSend(body);
+          }
+        }
+
+        if (!buffer || buffer.length < 1024) {
+          return originalSend(body);
+        }
+
+        gzip(buffer, (err, compressed) => {
+          if (err || res.headersSent) {
+            return originalSend(body);
+          }
+          res.setHeader('content-encoding', 'gzip');
+          res.setHeader('content-length', compressed.length);
+          res.removeHeader('etag');
+          return res.end(compressed);
+        });
+      };
+      next();
+    });
     // Stripe signature verification needs the raw body — before express.json().
     this._controlPlane = getControlPlaneStore(config.controlPlaneDbPath);
     registerStripeWebhookRoute(this._app, this._controlPlane);

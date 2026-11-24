@@ -2,7 +2,7 @@
 export const CHAT_PAGE = 80;
 
 /** First open: load enough for a usable view; scroll-up loads older pages. */
-export const INITIAL_CHAT_MESSAGES_LIMIT = 500;
+export const INITIAL_CHAT_MESSAGES_LIMIT = 150;
 
 export const SEARCH_INPUT_PLACEHOLDER_DEFAULT = 'Ask AI anything about your chats...';
 

@@ -296,6 +296,7 @@ export default class WaClient {
     this._destroyed     = false;
     this._pendingBatch  = [];
     this._flushTimer    = null;
+    this._liveFlushTimer = null;
     // Per-type queues so a slow video cannot sit ahead of small images in a single FIFO.
     // Shared worker budget below preserves the configured concurrency.
     this._mediaQueues = new Map(MEDIA_QUEUE_TYPES.map((type) => [type, []]));
@@ -1099,6 +1100,8 @@ export default class WaClient {
   async destroy() {
     this._destroyed = true;
     clearTimeout(this._flushTimer);
+    clearTimeout(this._liveFlushTimer);
+    this._liveFlushTimer = null;
     clearTimeout(this._syncDoneTimer);
     clearTimeout(this._reconnectTimer);
     clearTimeout(this._historyRetryTimer);
@@ -1411,7 +1414,20 @@ export default class WaClient {
       }
       if (rows.length) {
         this._enqueueBatch(rows);
-        if (type !== 'append' || rows.length <= 20) this._flushPendingBatch();
+        if (type !== 'append') {
+          // Debounce rapid live message bursts (e.g. active group chat traffic) by 40ms to avoid single-row WAL lock thrash,
+          // while flushing immediately if queue builds up (>= 25 items).
+          if (this._pendingBatch.length >= 25) {
+            this._flushPendingBatch();
+          } else if (!this._liveFlushTimer) {
+            this._liveFlushTimer = setTimeout(() => {
+              this._liveFlushTimer = null;
+              this._flushPendingBatch();
+            }, 40);
+          }
+        } else if (rows.length <= 20) {
+          this._flushPendingBatch();
+        }
         this._promoteUiWhileHistoryContinues();
       }
       // Name cross-linking can touch the Signal store; it must not delay the DB-visible row.
@@ -2590,6 +2606,8 @@ export default class WaClient {
     if (!this._pendingBatch.length) return;
     clearTimeout(this._flushTimer);
     this._flushTimer = null;
+    clearTimeout(this._liveFlushTimer);
+    this._liveFlushTimer = null;
     this._onMessages?.(this._pendingBatch.splice(0));
   }
 

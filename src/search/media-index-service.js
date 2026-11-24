@@ -6,10 +6,12 @@ import config from '../config.js';
 import { defaultPaddleOcr } from '../ocr/paddle-ocr.js';
 
 const require = createRequire(import.meta.url);
-/** Lazy-load pdf-parse (CommonJS) for PDF text extraction — searchable without vision LLM. */
-function parsePdf(buffer) {
+/** Lazy-load pdf-parse (CommonJS) for PDF text extraction — searchable without vision LLM.
+ * Caps parsing to the first `maxPages` (default 20) to prevent event-loop freezing on massive documents.
+ */
+function parsePdf(buffer, maxPages = 20) {
   const fn = require('pdf-parse');
-  return fn(buffer);
+  return fn(buffer, { max: maxPages });
 }
 
 function guessMimeForFile(mediaType, filePath) {
