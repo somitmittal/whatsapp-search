@@ -249,17 +249,21 @@ function renderChats(chats) {
   }
   const tpl = document.createElement('template');
   const nodes = chats.map((ch) => {
-    const html = chatRowHtml(ch);
-    const cached = store._chatRowCache.get(ch.chatJid);
-    let el = cached && cached.html === html ? cached.el : null;
-    if (!el) {
-      tpl.innerHTML = html;
-      el = tpl.content.firstElementChild;
-      store._chatRowCache.set(ch.chatJid, { html, el });
+    try {
+      const html = chatRowHtml(ch);
+      const cached = store._chatRowCache.get(ch.chatJid);
+      let el = cached && cached.html === html ? cached.el : null;
+      if (!el) {
+        tpl.innerHTML = html;
+        el = tpl.content.firstElementChild;
+        if (el) store._chatRowCache.set(ch.chatJid, { html, el });
+      }
+      if (el) el.classList.toggle('active', store.activeChat === ch.chatJid);
+      return el;
+    } catch {
+      return null;
     }
-    el.classList.toggle('active', store.activeChat === ch.chatJid);
-    return el;
-  });
+  }).filter(Boolean);
   const wanted = new Set(nodes);
   for (const child of [...c.children]) {
     if (!wanted.has(child)) child.remove();

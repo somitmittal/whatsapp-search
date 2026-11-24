@@ -44,8 +44,13 @@ html[data-theme="dark"] {
 .overlay-panel {
   display: none; position: fixed; inset: 0; background: var(--set-bg);
   z-index: 210; flex-direction: column;
+  pointer-events: none;
 }
-.overlay-panel.open { display: flex; }
+.overlay-panel:not(.open) {
+  display: none !important;
+  pointer-events: none !important;
+}
+.overlay-panel.open { display: flex; pointer-events: auto; }
 
 /* GPT-style header (no teal bar) */
 .overlay-header {

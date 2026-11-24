@@ -651,8 +651,13 @@
     position: fixed; inset: 0; z-index: 10060;
     background: rgba(11, 20, 26, 0.92);
     display: none; flex-direction: column; align-items: center; justify-content: center;
+    pointer-events: none;
   }
-  .avatar-viewer.open { display: flex; }
+  .avatar-viewer:not(.open) {
+    display: none !important;
+    pointer-events: none !important;
+  }
+  .avatar-viewer.open { display: flex; pointer-events: auto; }
   .avatar-viewer-top {
     position: absolute; top: 0; left: 0; right: 0;
     display: flex; align-items: center; gap: 12px;
@@ -763,8 +768,13 @@
   .confirm-overlay {
     display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(0,0,0,0.35); z-index: 100; align-items: center; justify-content: center;
+    pointer-events: none;
   }
-  .confirm-overlay.open { display: flex; }
+  .confirm-overlay:not(.open) {
+    display: none !important;
+    pointer-events: none !important;
+  }
+  .confirm-overlay.open { display: flex; pointer-events: auto; }
   .confirm-box {
     background: #fff; border-radius: 12px; padding: 24px 28px; max-width: 360px; width: 90%;
     box-shadow: 0 8px 32px rgba(0,0,0,0.2);
@@ -1431,9 +1441,15 @@
     z-index: 1000;
     align-items: center;
     justify-content: center;
+    pointer-events: none;
+  }
+  .wa-reaction-modal-overlay:not(.open) {
+    display: none !important;
+    pointer-events: none !important;
   }
   .wa-reaction-modal-overlay.open {
     display: flex;
+    pointer-events: auto;
   }
   .wa-reaction-modal-card {
     background: #fff;

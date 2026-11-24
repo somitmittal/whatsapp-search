@@ -297,7 +297,11 @@ export async function openChat(jid, focusMessageId = null) {
   // Instant (0ms) render from memory cache if available for this chat
   const cachedEntry = !focusMessageId && store._chatMessageCache ? store._chatMessageCache.get(jid) : null;
   if (cachedEntry && Array.isArray(cachedEntry.msgs) && cachedEntry.msgs.length) {
-    renderMessages(cachedEntry.msgs, jid, null, { forceScroll: true });
+    try {
+      renderMessages(cachedEntry.msgs, jid, null, { forceScroll: true });
+    } catch (err) {
+      console.warn('[openChat] cache render error:', err);
+    }
   }
   try {
     const msgUrl = focusMessageId
@@ -321,7 +325,11 @@ export async function openChat(jid, focusMessageId = null) {
         store._chatMessageCache.delete(oldestKey);
       }
     }
-    renderMessages(msgs, jid, focusMessageId, { forceScroll: !focusMessageId && !cachedEntry });
+    try {
+      renderMessages(msgs, jid, focusMessageId, { forceScroll: !focusMessageId && !cachedEntry });
+    } catch (err) {
+      console.error('[openChat] renderMessages error:', err);
+    }
     triggerDeferredSenderResolution(jid, msgs);
     if (!focusMessageId && msgs.length) {
       const sorted = [...msgs].sort((a, b) => {
@@ -454,7 +462,11 @@ export async function refreshActiveChatMessages() {
     if (store._chatMessageCache && Array.isArray(msgs)) {
       store._chatMessageCache.set(jid, { msgs, ts: Date.now() });
     }
-    renderMessages(msgs, jid);
+    try {
+      renderMessages(msgs, jid);
+    } catch (err) {
+      console.error('[refreshActiveChatMessages] renderMessages error:', err);
+    }
     triggerDeferredSenderResolution(jid, msgs);
     const sorted = [...msgs].sort((a, b) => {
       const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;

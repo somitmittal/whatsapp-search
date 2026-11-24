@@ -26,32 +26,42 @@ import { initOllamaSetup } from './ollama-setup.js';
 import { initOnboarding } from './onboarding.js';
 import { initDesktopUpdates } from './desktop-updates.js';
 
-initFetchShim();
-initConstants();
-initOverlays();
-initSingleTabLock();
-initMenus();
-initGmail();
-initExpenses();
-initWs();
-initWaConnection();
-initWaBootstrap();
-initMessageActions();
-initContacts();
-initSidebar();
-initStatusFeed();
-initAvatars();
-initChatView();
-initAwaySummary();
-initSearch();
-initComposer();
-initBusiness();
-initImport();
-initSettings();
-initSkillsSettings();
-initOllamaSetup();
-initOnboarding();
-initDesktopUpdates();
+const inits = [
+  ['fetchShim', initFetchShim],
+  ['constants', initConstants],
+  ['overlays', initOverlays],
+  ['singleTabLock', initSingleTabLock],
+  ['menus', initMenus],
+  ['gmail', initGmail],
+  ['expenses', initExpenses],
+  ['ws', initWs],
+  ['waConnection', initWaConnection],
+  ['waBootstrap', initWaBootstrap],
+  ['messageActions', initMessageActions],
+  ['contacts', initContacts],
+  ['sidebar', initSidebar],
+  ['statusFeed', initStatusFeed],
+  ['avatars', initAvatars],
+  ['chatView', initChatView],
+  ['awaySummary', initAwaySummary],
+  ['search', initSearch],
+  ['composer', initComposer],
+  ['business', initBusiness],
+  ['import', initImport],
+  ['settings', initSettings],
+  ['skillsSettings', initSkillsSettings],
+  ['ollamaSetup', initOllamaSetup],
+  ['onboarding', initOnboarding],
+  ['desktopUpdates', initDesktopUpdates],
+];
+
+for (const [name, fn] of inits) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`[app.js] init failed for ${name}:`, err);
+  }
+}
 
 const deepLink = new URLSearchParams(location.search);
 if (deepLink.get('chat')) {

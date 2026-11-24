@@ -55,19 +55,29 @@ import { accountPlanSummary, shouldAutoLogout } from '/js/trial-status.js';
 import { isWaUiReady, updateWaUI } from '/js/wa-connection.js';
 import { setupInlineEmojiAutocomplete } from '/js/emoji-picker.js';
 
-initFetchShim();
-initComposer();
-initMessageActions();
-initMenus();
-initOverlays();
-initSettings();
-initSkillsSettings();
-initBusiness();
-initExpenses();
-initGmail();
-initImport();
-initWaBootstrap();
-initDesktopUpdates();
+const gptInits = [
+  ['fetchShim', initFetchShim],
+  ['composer', initComposer],
+  ['messageActions', initMessageActions],
+  ['menus', initMenus],
+  ['overlays', initOverlays],
+  ['settings', initSettings],
+  ['skillsSettings', initSkillsSettings],
+  ['business', initBusiness],
+  ['expenses', initExpenses],
+  ['gmail', initGmail],
+  ['import', initImport],
+  ['waBootstrap', initWaBootstrap],
+  ['desktopUpdates', initDesktopUpdates],
+];
+
+for (const [name, fn] of gptInits) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`[gpt.js] init failed for ${name}:`, err);
+  }
+}
 
 const $ = (sel) => document.querySelector(sel);
 const els = {

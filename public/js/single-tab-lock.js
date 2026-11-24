@@ -2,6 +2,18 @@ import { refreshDash } from './dashboard.js';
 
 export function initSingleTabLock() {
   (function singleTabLock() {
+    // Desktop (Electron) app is always a dedicated single window — never lock or block interactions
+    if (window.desktopApp?.isDesktop === true || new URLSearchParams(window.location.search).get('desktop') === '1') {
+      const ov = document.getElementById('tab-lock-overlay');
+      if (ov) {
+        ov.classList.remove('open');
+        ov.hidden = true;
+        ov.style.display = 'none';
+        ov.style.pointerEvents = 'none';
+      }
+      return;
+    }
+
     const KEY = 'wa_search_active_tab_v1';
     const TAB_ID_KEY = 'wa_search_tab_id_v1';
     const HEARTBEAT_MS = 1200;
@@ -32,11 +44,22 @@ export function initSingleTabLock() {
       const ov = document.getElementById('tab-lock-overlay');
       if (!ov) return;
       ov.classList.toggle('open', !!show);
+      if (!show) {
+        ov.hidden = true;
+        ov.style.display = 'none';
+        ov.style.pointerEvents = 'none';
+      } else {
+        ov.hidden = false;
+        ov.style.display = 'flex';
+        ov.style.pointerEvents = 'auto';
+      }
     }
+
+    // Ensure overlay starts dismissed so it never intercepts clicks by default
+    showLockOverlay(false);
+
     /**
      * Only refresh the lock if this tab still owns it (or lock is missing/stale).
-     * Blind overwrites used to let the previous tab reclaim ownership ~every 1.2s after "Use here",
-     * which re-showed the overlay and made the new tab look broken or hung.
      */
     function tickHeartbeat() {
       if (!isOwner) return;
@@ -83,6 +106,12 @@ export function initSingleTabLock() {
         }
         return;
       }
+      // If document is currently visible and active, automatically claim ownership
+      // instead of freezing the user's interactive session
+      if (document.visibilityState === 'visible' && document.hasFocus?.()) {
+        becomeOwner();
+        return;
+      }
       relinquish();
       showLockOverlay(true);
     }
@@ -91,13 +120,26 @@ export function initSingleTabLock() {
     check();
     setInterval(check, 1500);
 
+    // Auto-acquire when tab gains focus or visibility so active user is never blocked
+    window.addEventListener('focus', () => {
+      becomeOwner();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') becomeOwner();
+    });
+
     window.addEventListener('storage', (e) => {
       if (e.key !== KEY || e.newValue == null) return;
       try {
         const cur = JSON.parse(e.newValue);
         if (cur && cur.tabId && cur.tabId !== tabId && isOwner) {
-          relinquish();
-          showLockOverlay(true);
+          // If the tab is actively focused by the user, keep/reclaim ownership
+          if (document.visibilityState === 'visible' && document.hasFocus?.()) {
+            becomeOwner();
+          } else {
+            relinquish();
+            showLockOverlay(true);
+          }
         }
       } catch { /* ignore */ }
     });
@@ -105,9 +147,12 @@ export function initSingleTabLock() {
     bc?.addEventListener('message', (e) => {
       const m = e.data || {};
       if (m.type === 'owner' && m.tabId && m.tabId !== tabId) {
-        // Another tab took over
-        if (isOwner) relinquish();
-        showLockOverlay(true);
+        if (document.visibilityState === 'visible' && document.hasFocus?.()) {
+          becomeOwner();
+        } else {
+          if (isOwner) relinquish();
+          showLockOverlay(true);
+        }
       }
     });
 
@@ -116,8 +161,13 @@ export function initSingleTabLock() {
       try { void refreshDash(); } catch { /* refreshDash defined later; ignore if unavailable */ }
     });
     document.getElementById('tab-lock-back')?.addEventListener('click', () => {
-      // Keep overlay; user can close the tab.
-      showLockOverlay(true);
+      // Dismiss overlay so user can still browse local cache/archive without getting frozen
+      showLockOverlay(false);
+    });
+    document.getElementById('tab-lock-overlay')?.addEventListener('click', (e) => {
+      if (e.target?.id === 'tab-lock-overlay') {
+        showLockOverlay(false);
+      }
     });
   })();
 }
