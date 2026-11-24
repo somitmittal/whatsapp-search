@@ -1377,6 +1377,26 @@ export default class WaClient {
         const jid = msg.key.remoteJid;
         if (!jid || !msg.message) continue;
 
+        // Catch reactionMessage frames in upsert (fallback in case messages.reaction was not emitted)
+        const inner = resolveInnerContent(msg.message);
+        if (inner?.reactionMessage) {
+          const rx = inner.reactionMessage;
+          const target = rx.key;
+          const emoji = rx.text != null ? String(rx.text) : '';
+          const reactionMsgId = msg.key?.id ? String(msg.key.id) : '';
+          if (target?.remoteJid && target?.id && reactionMsgId) {
+            this._onReaction?.({
+              chatJid: target.remoteJid,
+              messageId: String(target.id),
+              emoji,
+              reactionMsgId,
+              groupingKey: rx.groupingKey != null ? String(rx.groupingKey) : '',
+              reactionKey: msg.key || null,
+              senderTimestampMs: rx.senderTimestampMs || null,
+            });
+          }
+        }
+
         const row = this._msgToRow(msg);
         if (!row) continue;
         // Save searchable text immediately. Media is intentionally queued behind the

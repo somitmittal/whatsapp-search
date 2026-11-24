@@ -37,6 +37,31 @@ function getAvatarInitials(name) {
 
 let activeModalState = null;
 
+const reactionDetailsCache = new Map();
+const REACTION_CACHE_TTL_MS = 60_000;
+const MAX_CACHE_ENTRIES = 120;
+
+export function invalidateReactionDetailsCache(chatJid, messageId) {
+  if (!messageId) return;
+  const m = String(messageId);
+  if (chatJid) reactionDetailsCache.delete(`${chatJid}\0${m}`);
+  reactionDetailsCache.delete(`\0${m}`);
+  // Also clean any keys containing the message id
+  for (const k of reactionDetailsCache.keys()) {
+    if (k.endsWith(`\0${m}`)) reactionDetailsCache.delete(k);
+  }
+}
+
+export function cacheReactionDetails(chatJid, messageId, data) {
+  if (!messageId || !data) return;
+  const key = `${chatJid || ''}\0${messageId}`;
+  if (reactionDetailsCache.size >= MAX_CACHE_ENTRIES) {
+    const oldest = reactionDetailsCache.keys().next().value;
+    reactionDetailsCache.delete(oldest);
+  }
+  reactionDetailsCache.set(key, { data, ts: Date.now() });
+}
+
 function ensureModalElements() {
   let overlay = document.getElementById('wa-reaction-details-modal');
   if (!overlay) {
@@ -183,6 +208,7 @@ function renderModalContent(overlay, data, selectedEmoji = 'all') {
       e.stopPropagation();
       if (!activeModalState) return;
       const { chatJid, messageId } = activeModalState;
+      invalidateReactionDetailsCache(chatJid, messageId);
       closeReactionDetailsModal();
       try {
         await postWaReaction(chatJid, messageId, '');
@@ -215,23 +241,36 @@ export async function openReactionDetailsModal({ chatJid, messageId, initialEmoj
   overlay.style.pointerEvents = 'auto';
   overlay.classList.add('open');
 
-  const tabsWrap = overlay.querySelector('.wa-reaction-modal-tabs');
-  const listWrap = overlay.querySelector('.wa-reactor-list');
-  if (tabsWrap) tabsWrap.innerHTML = '<span class="wa-reaction-tab active">Reactions</span>';
-  if (listWrap) listWrap.innerHTML = '<div class="wa-reaction-modal-loading">Loading reactions…</div>';
+  const cacheKey = `${chatJid || ''}\0${messageId}`;
+  const cached = reactionDetailsCache.get(cacheKey) || reactionDetailsCache.get(`\0${messageId}`);
+  const isFresh = Boolean(cached && (Date.now() - cached.ts < REACTION_CACHE_TTL_MS));
+
+  if (isFresh && cached.data) {
+    // Instant zero-latency render from memory cache
+    renderModalContent(overlay, cached.data, initialEmoji || 'all');
+  } else {
+    const tabsWrap = overlay.querySelector('.wa-reaction-modal-tabs');
+    const listWrap = overlay.querySelector('.wa-reactor-list');
+    if (tabsWrap) tabsWrap.innerHTML = '<span class="wa-reaction-tab active">Reactions</span>';
+    if (listWrap) listWrap.innerHTML = '<div class="wa-reaction-modal-loading">Loading reactions…</div>';
+  }
 
   try {
     const res = await fetch(`/api/wa/reactions?chatJid=${encodeURIComponent(chatJid || '')}&messageId=${encodeURIComponent(messageId)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    cacheReactionDetails(chatJid, messageId, data);
     if (!overlay.classList.contains('open') || activeModalState?.messageId !== messageId) {
       return; // Closed or navigated while fetching
     }
     renderModalContent(overlay, data, initialEmoji || 'all');
   } catch (err) {
-    console.warn('[WA] openReactionDetailsModal error:', err.message);
-    if (overlay.classList.contains('open')) {
-      if (listWrap) listWrap.innerHTML = `<div class="wa-reaction-modal-empty">Failed to load reactions: ${esc(err.message)}</div>`;
+    if (!isFresh) {
+      console.warn('[WA] openReactionDetailsModal error:', err.message);
+      if (overlay.classList.contains('open')) {
+        const listWrap = overlay.querySelector('.wa-reactor-list');
+        if (listWrap) listWrap.innerHTML = `<div class="wa-reaction-modal-empty">Failed to load reactions: ${esc(err.message)}</div>`;
+      }
     }
   }
 }

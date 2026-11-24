@@ -22,6 +22,7 @@ import { mountMemoryWidget, showMemorySavedChip } from '/js/memory.js';
 import { refreshActiveChatLinkedJids } from '/js/chat-view.js';
 import { initMenus, priorityLoadChat, showSidebarContextMenu } from '/js/menus.js';
 import {
+  applyIncomingReactionToDom,
   applyResolvedSenderNamesToDom,
   buildChatMessagesHtml,
   captureChatScrollAnchor,
@@ -207,6 +208,7 @@ const state = {
   accountStatus: null,
   trialNudgeDismissed: false,
 };
+if (typeof window !== 'undefined') window.__gptState = state;
 
 // A stream belongs to its conversation, not to whichever tab is currently visible.
 const activeStreams = new Map();
@@ -460,6 +462,8 @@ function connectSyncSocket() {
       } else if (msg.data?.updates?.length && openChatTouched(msg.data)) {
         applyResolvedSenderUpdatesToOpenChat(msg.data.chatJid, msg.data.updates);
       }
+    } else if (msg.type === 'message-reaction' && msg.data) {
+      applyIncomingReactionToDom(msg.data);
     } else if (msg.type === 'chat-names-refreshed') {
       scheduleLoadChats();
       if (state.activeChatJid && !state.activeChatJid.endsWith('@g.us')) {

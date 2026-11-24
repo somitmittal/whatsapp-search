@@ -4,6 +4,8 @@ import { dateFmt, formatChatBubbleDateTime, formatChatDateSeparator, messageTime
 import { mediaDownloadUrl, mediaUrlForMessage, messageMediaDownloadAnchor } from './media.js';
 import { $, esc, escAttr, hash } from './util.js';
 import { setupReactionSearch } from './emoji-picker.js';
+import { getRecentEmojis, recordRecentEmoji } from './emoji-data.js';
+import { invalidateReactionDetailsCache } from './reaction-details-modal.js';
 
 let imageViewerEl = null;
 /** WhatsApp Web icon paths for the message menu (mirror of WA's own icons). */
@@ -35,7 +37,9 @@ export function toggleReactionEmojiPicker(button) {
   closeReactionEmojiPickers();
   closeMessageMenus();
   if (shouldOpen && !picker.dataset.ready) {
-    // WhatsApp's react sheet: search bar, six quick reactions first, then the full grid.
+    const recents = getRecentEmojis();
+    const quickFavorites = [...new Set([...(recents.slice(0, 6)), ...WA_REACTION_QUICK])].slice(0, 6);
+    // WhatsApp's react sheet: search bar, quick reactions first, then the full grid.
     picker.innerHTML = `
       <div class="wa-reaction-search-wrap">
         <svg class="wa-emoji-search-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
@@ -44,7 +48,7 @@ export function toggleReactionEmojiPicker(button) {
         <input type="text" class="wa-reaction-search-input" placeholder="Search emoji" autocomplete="off" />
       </div>
       <div class="wa-picker-quick">`
-      + WA_REACTION_QUICK.map((emoji) =>
+      + quickFavorites.map((emoji) =>
         `<button type="button" class="wa-tb" data-wa-react="${escAttr(emoji)}" title="React ${escAttr(emoji)}" aria-label="React ${escAttr(emoji)}">${esc(emoji)}</button>`).join('')
       + `<button type="button" class="wa-tb wa-tb-remove-reaction" data-wa-react="" title="Remove your reaction" aria-label="Remove your reaction">-</button>`
       + `</div>`
@@ -494,6 +498,81 @@ function reactionCountsHtml(counts) {
 
 const ownReactionByMessage = new Map();
 
+function loadOwnReactions() {
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const raw = sessionStorage.getItem('wa_own_reactions');
+      if (raw) {
+        const obj = JSON.parse(raw);
+        for (const [k, v] of Object.entries(obj)) {
+          if (k && v) ownReactionByMessage.set(k, String(v));
+        }
+      }
+    }
+  } catch (_) {}
+}
+function saveOwnReactions() {
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const entries = [...ownReactionByMessage.entries()].slice(-200);
+      sessionStorage.setItem('wa_own_reactions', JSON.stringify(Object.fromEntries(entries)));
+    }
+  } catch (_) {}
+}
+loadOwnReactions();
+
+/**
+ * Synchronize reaction counts & own user reaction across memory caches
+ * so chat switching and tab navigation never lose reactions.
+ */
+export function updateCachedMessageReactions(chatJid, messageId, counts, userReaction = undefined) {
+  if (!messageId) return;
+  const countsJson = counts ? JSON.stringify(counts) : null;
+  const midStr = String(messageId);
+  const targetNorm = chatJid ? String(chatJid).replace(/:[^@]+@/, '@') : '';
+
+  // 1. Update store._chatMessageCache (classic UI transcript cache)
+  try {
+    if (store && store._chatMessageCache) {
+      for (const [cj, entry] of store._chatMessageCache.entries()) {
+        const cjNorm = String(cj || '').replace(/:[^@]+@/, '@');
+        if (!chatJid || cj === chatJid || (targetNorm && cjNorm === targetNorm)) {
+          if (Array.isArray(entry?.msgs)) {
+            const target = entry.msgs.find((m) => String(m.messageId) === midStr);
+            if (target) {
+              target.reactionsJson = countsJson;
+              if (userReaction !== undefined) target.userReaction = userReaction;
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 2. Update window.__gptState.chatMessages (GPT app chat tabs cache)
+  try {
+    if (typeof window !== 'undefined' && window.__gptState?.chatMessages) {
+      for (const [cj, msgs] of window.__gptState.chatMessages.entries()) {
+        const cjNorm = String(cj || '').replace(/:[^@]+@/, '@');
+        if (!chatJid || cj === chatJid || (targetNorm && cjNorm === targetNorm)) {
+          if (Array.isArray(msgs)) {
+            const target = msgs.find((m) => String(m.messageId) === midStr);
+            if (target) {
+              target.reactionsJson = countsJson;
+              if (userReaction !== undefined) target.userReaction = userReaction;
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 3. Invalidate details modal cache
+  try {
+    invalidateReactionDetailsCache(chatJid, messageId);
+  } catch (_) {}
+}
+
 function reactionCountsFromBlock(block) {
   const counts = {};
   block.querySelectorAll('.bubble-reactions .rx-chip').forEach((chip) => {
@@ -534,6 +613,7 @@ export function applyIncomingReactionToDom(data) {
   if (!messageId || !counts || typeof counts !== 'object') return;
   const block = findReactionBlock(chatJid, messageId);
   if (block) replaceBlockReactionCounts(block, counts);
+  updateCachedMessageReactions(chatJid, messageId, counts);
 }
 
 export async function postWaReaction(chatJid, messageId, emoji) {
@@ -552,8 +632,15 @@ export async function postWaReaction(chatJid, messageId, emoji) {
     if (effectiveEmoji) optimistic[effectiveEmoji] = (Number(optimistic[effectiveEmoji]) || 0) + 1;
     replaceBlockReactionCounts(block, optimistic);
   }
-  if (effectiveEmoji) ownReactionByMessage.set(key, effectiveEmoji);
-  else ownReactionByMessage.delete(key);
+  if (effectiveEmoji) {
+    ownReactionByMessage.set(key, effectiveEmoji);
+    recordRecentEmoji(effectiveEmoji);
+  } else {
+    ownReactionByMessage.delete(key);
+  }
+  saveOwnReactions();
+  updateCachedMessageReactions(chatJid, messageId, before ? { ...before } : null, effectiveEmoji);
+
   try {
     const r = await fetch('/api/wa/react', {
       method: 'POST',
@@ -565,7 +652,9 @@ export async function postWaReaction(chatJid, messageId, emoji) {
   } catch (error) {
     if (priorOwn) ownReactionByMessage.set(key, priorOwn);
     else ownReactionByMessage.delete(key);
+    saveOwnReactions();
     if (block && before) replaceBlockReactionCounts(block, before);
+    updateCachedMessageReactions(chatJid, messageId, before, priorOwn);
     throw error;
   }
 }

@@ -116,6 +116,7 @@ export default class Database {
     this._ensureSearchConversationTables();
     this._ensureSkillTables();
     this._ensureMessagesFtsUpdateTriggerScoped();
+    this._reactionsCache = new Map();
     try { this.backfillChatNamesFromResolvedSenders(); } catch (_) {}
   }
 
@@ -1048,6 +1049,14 @@ export default class Database {
     }
   }
 
+  /** Invalidate in-memory reaction details cache. */
+  invalidateMessageReactionsCache(tenantId, messageId) {
+    if (!this._reactionsCache || !messageId) return;
+    const t = tenantId || getCurrentTenantId();
+    this._reactionsCache.delete(`${t}:${messageId}`);
+    this._reactionsCache.delete(`:${messageId}`);
+  }
+
   /**
    * Merge one reaction ack into `messages.reactions_json` (flat emoji → count).
    * Uses per-participant slots so emoji changes and removals adjust counts correctly.
@@ -1159,6 +1168,7 @@ export default class Database {
       if (!changed) return null;
 
       upd.run(JSON.stringify(counts), row.id);
+      this.invalidateMessageReactionsCache(t, messageId);
       return counts;
     });
 
@@ -1199,6 +1209,7 @@ export default class Database {
           : (Number(s.updatedAt) || Math.floor(Date.now() / 1000));
         ins.run(t, messageId, sk, te, senderJid, senderName, isFromMe ? 1 : 0, updatedAt);
       }
+      this.invalidateMessageReactionsCache(t, messageId);
     } catch (e) {
       console.warn('[DB] replaceReactionSlotsForMessage:', e.message);
     }
@@ -1255,6 +1266,13 @@ export default class Database {
   getMessageReactions(chatJid, messageId) {
     if (!messageId) return { ok: true, chatJid: chatJid || '', messageId: '', reactions: [], counts: {} };
     const t = getCurrentTenantId();
+    const cacheKey = `${t}:${messageId}`;
+    if (this._reactionsCache?.has(cacheKey)) {
+      const cached = this._reactionsCache.get(cacheKey);
+      if (cached && (Date.now() - cached.ts < 30_000)) {
+        return { ...cached.data };
+      }
+    }
 
     try {
       const msgRow = this._db.prepare(`
@@ -1331,13 +1349,23 @@ export default class Database {
         }
       }
 
-      return {
+      const result = {
         ok: true,
         chatJid: effectiveChatJid,
         messageId,
         reactions,
         counts,
       };
+
+      if (this._reactionsCache) {
+        if (this._reactionsCache.size > 500) {
+          const oldest = this._reactionsCache.keys().next().value;
+          this._reactionsCache.delete(oldest);
+        }
+        this._reactionsCache.set(cacheKey, { data: result, ts: Date.now() });
+      }
+
+      return result;
     } catch (e) {
       console.warn('[DB] getMessageReactions:', e.message);
       return { ok: false, chatJid: chatJid || '', messageId, reactions: [], counts: {}, error: e.message };
@@ -1368,6 +1396,7 @@ export default class Database {
           .prepare('UPDATE messages SET reactions_json = NULL WHERE tenant_id = ? AND message_id = ?')
           .run(t, messageId);
       }
+      this.invalidateMessageReactionsCache(t, messageId);
     } catch (e) {
       console.warn('[DB] applySyncedMessageReactions:', e.message);
     }
@@ -4385,6 +4414,9 @@ export default class Database {
     const r = this._db.prepare(sql).run(
       placeholder, t, messageId, chatJid || null, chatJid || null,
     );
+    if (r.changes > 0) {
+      this.invalidateMessageReactionsCache(t, messageId);
+    }
     return r.changes > 0;
   }
 

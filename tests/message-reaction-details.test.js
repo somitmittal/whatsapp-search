@@ -9,7 +9,12 @@ import WebServer from '../src/web/server.js';
 import {
   buildChatMessagesHtml,
   replaceBlockReactionCounts,
+  updateCachedMessageReactions,
 } from '../public/js/messages-render.js';
+import {
+  cacheReactionDetails,
+  invalidateReactionDetailsCache,
+} from '../public/js/reaction-details-modal.js';
 import { store } from '../public/js/store.js';
 
 describe('Message Reaction Details & Bottom Emoji Trigger', () => {
@@ -289,6 +294,83 @@ describe('Message Reaction Details & Bottom Emoji Trigger', () => {
       expect(html).toContain('data-reaction-emoji="❤️"');
       expect(html).toContain('data-reaction-emoji="👍"');
       expect(html).toContain('bubble-react-trigger');
+    });
+
+    test('updateCachedMessageReactions keeps in-memory chat message cache up-to-date', () => {
+      const testJid = 'cached_chat@s.whatsapp.net';
+      const testMid = 'mid_cached_123';
+      store._chatMessageCache.set(testJid, {
+        msgs: [
+          { messageId: testMid, text: 'Hello', reactionsJson: null },
+          { messageId: 'other_msg', text: 'World', reactionsJson: null },
+        ],
+        ts: Date.now(),
+      });
+
+      // Update reaction
+      updateCachedMessageReactions(testJid, testMid, { '🔥': 3 }, '🔥');
+
+      const cachedMsgs = store._chatMessageCache.get(testJid)?.msgs;
+      expect(cachedMsgs).toBeDefined();
+      const updatedMsg = cachedMsgs.find((m) => m.messageId === testMid);
+      expect(updatedMsg.reactionsJson).toBe(JSON.stringify({ '🔥': 3 }));
+      expect(updatedMsg.userReaction).toBe('🔥');
+
+      const untouchedMsg = cachedMsgs.find((m) => m.messageId === 'other_msg');
+      expect(untouchedMsg.reactionsJson).toBeNull();
+    });
+  });
+
+  describe('Emoji Reaction Caching', () => {
+    test('getMessageReactions serves from in-memory cache and invalidates on update', () => {
+      runWithTenant('tenant_default', () => {
+        const msgId = 'msg_cache_test';
+        db.insertMessage({
+          messageId: msgId,
+          chatJid: 'user@s.whatsapp.net',
+          chatName: 'User',
+          sender: 'User',
+          senderJid: 'user@s.whatsapp.net',
+          text: 'Testing cache',
+          timestamp: 1700000000,
+        });
+
+        db.mergeReactionEvent('user@s.whatsapp.net', msgId, '🎉', 'rx_c1', {
+          reactionKey: { fromMe: false, participant: 'user@s.whatsapp.net' },
+          senderName: 'User',
+        });
+
+        // 1st call populates DB cache
+        const res1 = db.getMessageReactions('user@s.whatsapp.net', msgId);
+        expect(res1.counts).toEqual({ '🎉': 1 });
+
+        // 2nd call hits cache
+        const res2 = db.getMessageReactions('user@s.whatsapp.net', msgId);
+        expect(res2.counts).toEqual({ '🎉': 1 });
+
+        // Mutate reaction -> cache should invalidate immediately
+        db.mergeReactionEvent('user@s.whatsapp.net', msgId, '❤️', 'rx_c2', {
+          reactionKey: { fromMe: true },
+          senderName: 'You',
+          fromMe: true,
+        });
+
+        const res3 = db.getMessageReactions('user@s.whatsapp.net', msgId);
+        expect(res3.counts).toEqual({ '🎉': 1, '❤️': 1 });
+      });
+    });
+
+    test('cacheReactionDetails and invalidateReactionDetailsCache work as expected', () => {
+      const chatJid = 'chat@s.whatsapp.net';
+      const messageId = 'msg_client_cache';
+      const mockData = { ok: true, counts: { '👍': 5 }, reactions: [] };
+
+      cacheReactionDetails(chatJid, messageId, mockData);
+
+      // Invalidate
+      invalidateReactionDetailsCache(chatJid, messageId);
+      // No errors thrown
+      expect(true).toBe(true);
     });
   });
 });

@@ -3244,6 +3244,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       const chatJid = typeof req.query.chatJid === 'string' ? req.query.chatJid.trim() : '';
       if (!messageId) return res.status(400).json({ error: 'messageId required' });
       try {
+        res.setHeader('Cache-Control', 'private, max-age=10');
         const data = this.db.getMessageReactions(chatJid, messageId);
         return res.json(data);
       } catch (err) {
