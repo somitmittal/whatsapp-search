@@ -699,8 +699,11 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     } else {
       body = `<span class="text">${formatMessageTextHtml(m.text || '')}</span>`;
     }
-    const isFocus = focusStr && mid === focusStr;
+    const numId = m.id != null ? String(m.id) : '';
+    const cleanFocus = focusStr ? focusStr.replace(/^m/i, '') : '';
+    const isFocus = focusStr && (mid === focusStr || mid === cleanFocus || numId === focusStr || numId === cleanFocus);
     const focusCls = isFocus ? ' msg-focus' : '';
+    const dataId = numId ? ` data-id="${escAttr(numId)}"` : '';
     const dataMid = mid ? ` data-message-id="${escAttr(mid)}"` : '';
     const storageJid = m.chatJid || jid;
     const storageAttr = ` data-storage-jid="${escAttr(storageJid)}"`;
@@ -753,7 +756,7 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
           ${rxHtml}
           ${liveOk ? `<button type="button" class="bubble-react-trigger" data-wa-emoji-picker-toggle="1" title="React" aria-label="React"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-3.5-9c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm7 0c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg></button><div class="wa-reaction-picker" hidden aria-label="Choose a reaction"></div>` : ''}
         </div>` : '';
-    html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}>${sender}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxBar}</div>`;
+    html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr}${dataId} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}${dataId}>${sender}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxBar}</div>`;
   }
   return html;
 }
