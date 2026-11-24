@@ -23,7 +23,9 @@ export function messageBody(m) {
     const pathStr = String(m?.mediaPath || m?.media_path || '');
     if (pathStr) {
       const fileName = pathStr.split('/').pop();
-      if (fileName && !parts.some((p) => p.includes(fileName))) {
+      // Keep meaningful filenames (e.g. documents, PDFs, descriptive names), omit internal hex hashes
+      const isRandomHex = /^[0-9a-fA-F_-]{16,}\.[a-zA-Z0-9]+$/.test(fileName || '');
+      if (fileName && !isRandomHex && !parts.some((p) => p.includes(fileName))) {
         parts.unshift(fileName);
       }
     }

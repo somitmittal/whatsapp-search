@@ -1770,11 +1770,16 @@ export default class WebServer {
       const offset = parseInt(req.query.offset, 10) || 0;
       const focusMessageId = typeof req.query.focusMessageId === 'string' ? req.query.focusMessageId.trim() : '';
       let jids = [chatJid];
+      if (typeof this.db?.getLinked1on1Jids === 'function') {
+        const dbLinked = this.db.getLinked1on1Jids(chatJid);
+        if (dbLinked?.length) jids.push(...dbLinked);
+      }
       const wa = this._getTenantState(getCurrentTenantId())?.waClient;
       const isQueued = typeof wa?.isMediaQueued === 'function' ? (id) => wa.isMediaQueued(id) : null;
       try {
         if (wa && typeof wa.getLinked1on1Jids === 'function') {
-          jids = await wa.getLinked1on1Jids(chatJid);
+          const waLinked = await wa.getLinked1on1Jids(chatJid);
+          if (waLinked?.length) jids.push(...waLinked);
         }
       } catch (_) {
         /* single jid */
@@ -1783,11 +1788,7 @@ export default class WebServer {
       try {
         let rows;
         if (focusMessageId) {
-          if (unique.length <= 1) {
-            rows = this.db.getMessagesAroundMessageId(chatJid, focusMessageId, limit);
-          } else {
-            rows = this.db.getMessagesAroundMessageIdForJids(unique, focusMessageId, limit);
-          }
+          rows = this.db.getMessagesAroundMessageIdForJids(unique, focusMessageId, limit);
         } else {
           if (unique.length <= 1) {
             rows = this.db.getMessagesPaginated(chatJid, limit, offset);

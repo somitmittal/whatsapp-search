@@ -1311,16 +1311,21 @@ function paintWaMessages(jid, msgs, { forceScroll = false, focusMessageId = null
   els.waView.innerHTML = buildChatMessagesHtml(sorted, jid, focusMessageId, null);
   els.waView.dataset.paintFp = fp;
   if (focusStr) {
-    const target = [...els.waView.querySelectorAll('.bubble[data-message-id], .msg-block[data-message-id]')].find(
-      (el) => el.getAttribute('data-message-id') === focusStr,
+    const cleanFocus = focusStr.replace(/^m/i, '');
+    const target = [...els.waView.querySelectorAll('.bubble, .msg-block')].find(
+      (el) => {
+        const mid = el.getAttribute('data-message-id') || '';
+        const numId = el.getAttribute('data-id') || '';
+        return mid === focusStr || mid === cleanFocus || numId === focusStr || numId === cleanFocus;
+      },
     );
     if (target) {
       target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      target.classList.add('flash');
+      target.classList.add('flash', 'msg-focus');
       setTimeout(() => {
         target.classList.remove('flash');
         target.classList.remove('msg-focus');
-      }, 2800);
+      }, 3500);
     } else {
       els.waView.scrollTop = els.waView.scrollHeight;
     }
@@ -1360,10 +1365,15 @@ async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = nu
   if (matchMedia('(max-width: 820px)').matches) els.app.classList.add('chats-hidden');
 
   const focusStr = focusMessageId != null ? String(focusMessageId) : '';
+  const cleanFocus = focusStr ? focusStr.replace(/^m/i, '') : '';
   if (focusStr) {
     const cached = state.chatMessages.get(jid);
     const hasFocus = Array.isArray(cached) && cached.some(
-      (m) => String(m.id || m.messageId || m.key?.id) === focusStr,
+      (m) => {
+        const mid = String(m.messageId || m.key?.id || '');
+        const numId = String(m.id || '');
+        return mid === focusStr || mid === cleanFocus || numId === focusStr || numId === cleanFocus;
+      },
     );
     if (hasFocus) {
       paintWaMessages(jid, cached, { forceScroll: false, focusMessageId: focusStr });
@@ -1385,7 +1395,7 @@ async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = nu
   }
   try {
     const msgUrl = focusStr
-      ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(focusStr)}`
+      ? `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=8000&focusMessageId=${encodeURIComponent(cleanFocus)}`
       : `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${INITIAL_CHAT_MESSAGES_LIMIT}&offset=0`;
     const res = await fetch(msgUrl, { headers: authHeaders() });
     const msgs = res.ok ? await res.json() : [];
@@ -1527,10 +1537,11 @@ function sourceCards(sources = []) {
   const who = [...new Set(sources.map((s) => s.chatName).filter(Boolean))].slice(0, 2).join(', ');
   return `<details class="gpt-sources-wrap"><summary>${sources.length} source${sources.length === 1 ? '' : 's'}${who ? ` · ${esc(who)}` : ''}</summary>
     <div class="gpt-sources">${sources.map((s, i) => `
-    <button type="button" class="gpt-source" data-ref="${escAttr(String(s.ref || '').replace(/^m/, ''))}" data-pin-jid="${escAttr(s.chatJid || '')}" data-pin-name="${escAttr(s.chatName || '')}">
+    <button type="button" class="gpt-source" data-ref="${escAttr(String(s.ref || '').replace(/^m/, ''))}" data-msg-id="${escAttr(s.messageId || '')}" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}" title="View in chat">
       <span class="n">${i + 1}</span>
       <span class="meta">${esc(s.sender)} · ${esc(s.chatName || '')} · ${esc(fmtTs(s.timestamp))}</span>
       <span class="txt">${esc(String(s.text || '').slice(0, 180))}</span>
+      <span class="gpt-source-jump-hint">View in chat →</span>
     </button>`).join('')}</div></details>`;
 }
 
@@ -1593,8 +1604,10 @@ function renderA2UiMediaDeck(sources = []) {
           <span class="a2ui-badge-pill">${isPdf ? 'PDF / Doc' : (hasMedia ? 'Media' : 'Pending')}</span>
          </div>`;
 
+    const itemMsgId = s.messageId || String(s.ref || '').replace(/^m/, '');
+
     return `
-      <div class="a2ui-media-card" data-ref="${escAttr(String(s.ref || '').replace(/^m/, ''))}" data-msg-id="${escAttr(s.messageId || '')}" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}">
+      <div class="a2ui-media-card" data-ref="${escAttr(String(s.ref || '').replace(/^m/, ''))}" data-msg-id="${escAttr(itemMsgId)}" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}">
         ${previewHtml}
         <div class="a2ui-card-body">
           <div class="a2ui-card-meta">
@@ -1605,7 +1618,7 @@ function renderA2UiMediaDeck(sources = []) {
           <div class="a2ui-actions">
             ${isImage && hasMedia && mediaUrl ? `<button type="button" class="a2ui-btn a2ui-btn-view" data-media-url="${escAttr(mediaUrl)}" data-caption="${escAttr(s.chatName || '')}">View Full</button>` : ''}
             ${!hasMedia && s.messageId ? `<button type="button" class="a2ui-btn a2ui-btn-fetch" data-msg-id="${escAttr(s.messageId)}" data-chat-jid="${escAttr(s.chatJid || '')}">Download</button>` : ''}
-            <button type="button" class="a2ui-btn a2ui-btn-jump" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}" data-msg-id="${escAttr(s.messageId || '')}">View in Chat</button>
+            <button type="button" class="a2ui-btn a2ui-btn-jump" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}" data-msg-id="${escAttr(itemMsgId)}">View in Chat</button>
             ${hasMedia && mediaUrl ? `<a href="${escAttr(mediaUrl)}" download class="a2ui-btn a2ui-btn-download" title="Download media">Download</a>` : ''}
           </div>
         </div>
@@ -2651,6 +2664,15 @@ function wire() {
       const jid = a2uiJump.dataset.chatJid;
       const name = a2uiJump.dataset.chatName || '';
       const msgId = a2uiJump.dataset.msgId || '';
+      void openChatTab(jid, name, { focusMessageId: msgId || null });
+      return;
+    }
+
+    const gptSrc = e.target.closest('.gpt-source');
+    if (gptSrc?.dataset.chatJid) {
+      const jid = gptSrc.dataset.chatJid;
+      const name = gptSrc.dataset.chatName || '';
+      const msgId = gptSrc.dataset.msgId || gptSrc.dataset.ref || '';
       void openChatTab(jid, name, { focusMessageId: msgId || null });
       return;
     }

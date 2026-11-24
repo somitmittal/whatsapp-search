@@ -3322,6 +3322,34 @@ export default class Database {
         expandedWords.add('binge');
         expandedWords.add('town');
       }
+      if (w === 'pay' || w === 'paid' || w === 'payment') {
+        expandedWords.add('pay');
+        expandedWords.add('paid');
+        expandedWords.add('payment');
+      }
+      if (w === 'rule' || w === 'rules') {
+        expandedWords.add('rule');
+        expandedWords.add('rules');
+      }
+      if (w === 'plumber' || w === 'plumbing') {
+        expandedWords.add('plumber');
+        expandedWords.add('plumbing');
+      }
+      if (w === 'electrician' || w === 'electricity') {
+        expandedWords.add('electrician');
+        expandedWords.add('electricity');
+        expandedWords.add('electrical');
+      }
+      if (w === 'photo' || w === 'photos' || w === 'pic' || w === 'pics') {
+        expandedWords.add('photo');
+        expandedWords.add('photos');
+        expandedWords.add('pic');
+      }
+      if (w === 'doc' || w === 'docs' || w === 'document') {
+        expandedWords.add('doc');
+        expandedWords.add('docs');
+        expandedWords.add('document');
+      }
     }
     return [...expandedWords].map(w => (w.length >= 4 ? `"${w}" OR ${w}*` : `"${w}"`)).join(' OR ');
   }
@@ -4269,21 +4297,9 @@ export default class Database {
    * Loads a window of messages so `messageId` appears near the middle (for “jump to source”).
    */
   getMessagesAroundMessageId(chatJid, messageId, limit = 200) {
-    const safeLimit = Math.min(Math.max(Number(limit) || 200, 40), MAX_MESSAGES_PAGE);
-    const half = Math.floor(safeLimit / 2);
-    const t = getCurrentTenantId();
-    const anchor = this._db.prepare(
-      'SELECT id, timestamp FROM messages WHERE tenant_id = ? AND chat_jid = ? AND message_id = ? LIMIT 1',
-    ).get(t, chatJid, messageId);
-    if (!anchor) return this.getMessagesPaginated(chatJid, safeLimit, 0);
-
-    const rankRow = this._db.prepare(`
-      SELECT COUNT(*) AS c FROM messages
-      WHERE tenant_id = ? AND chat_jid = ? AND (timestamp > ? OR (timestamp = ? AND id > ?))
-    `).get(t, chatJid, anchor.timestamp, anchor.timestamp, anchor.id);
-    const newerCount = rankRow?.c ?? 0;
-    const offset = Math.max(0, newerCount - half);
-    return this.getMessagesPaginated(chatJid, safeLimit, offset);
+    const linked = typeof this.getLinked1on1Jids === 'function' ? this.getLinked1on1Jids(chatJid) : [];
+    const jids = [...new Set([chatJid, ...linked].filter(Boolean))];
+    return this.getMessagesAroundMessageIdForJids(jids, messageId, limit);
   }
 
   /**
@@ -4292,23 +4308,50 @@ export default class Database {
   getMessagesAroundMessageIdForJids(chatJids, messageId, limit = 200) {
     const safeLimit = Math.min(Math.max(Number(limit) || 200, 40), MAX_MESSAGES_PAGE);
     const half = Math.floor(safeLimit / 2);
-    const jids = [...new Set((chatJids || []).filter(Boolean))];
-    if (jids.length === 0) return [];
-    if (jids.length === 1) return this.getMessagesAroundMessageId(jids[0], messageId, safeLimit);
+    let jids = [...new Set((chatJids || []).filter(Boolean))];
     const t = getCurrentTenantId();
-    const ph = jids.map(() => '?').join(',');
-    const anchor = this._db.prepare(`
-      SELECT id, timestamp FROM messages
-      WHERE tenant_id = ? AND message_id = ? AND chat_jid IN (${ph}) LIMIT 1
-    `).get(t, messageId, ...jids);
-    if (!anchor) return this.getMessagesPaginatedForJids(jids, safeLimit, 0);
+    const rawMid = String(messageId || '').trim();
+    const numId = Number(rawMid.replace(/^m/i, '')) || 0;
+    const cleanMid = rawMid.replace(/^m/i, '');
+
+    let anchor = null;
+    if (jids.length > 0) {
+      const ph = jids.map(() => '?').join(',');
+      anchor = this._db.prepare(`
+        SELECT id, timestamp, chat_jid AS chatJid FROM messages
+        WHERE tenant_id = ? AND (message_id = ? OR message_id = ? OR id = ?) AND chat_jid IN (${ph}) LIMIT 1
+      `).get(t, rawMid, cleanMid, numId, ...jids);
+    }
+
+    // If anchor is not in given JIDs (or JIDs were empty), search tenant-wide by message_id or id
+    if (!anchor) {
+      anchor = this._db.prepare(`
+        SELECT id, timestamp, chat_jid AS chatJid FROM messages
+        WHERE tenant_id = ? AND (message_id = ? OR message_id = ? OR id = ?) LIMIT 1
+      `).get(t, rawMid, cleanMid, numId);
+      if (anchor?.chatJid) {
+        const foundLinked = typeof this.getLinked1on1Jids === 'function' ? this.getLinked1on1Jids(anchor.chatJid) : [];
+        jids = [...new Set([anchor.chatJid, ...foundLinked].filter(Boolean))];
+      }
+    }
+
+    if (!anchor) {
+      if (jids.length === 1) return this.getMessagesPaginated(jids[0], safeLimit, 0);
+      return this.getMessagesPaginatedForJids(jids, safeLimit, 0);
+    }
+
+    const targetJids = jids.length > 0 ? jids : [anchor.chatJid];
+    const ph = targetJids.map(() => '?').join(',');
     const rankRow = this._db.prepare(`
       SELECT COUNT(*) AS c FROM messages
       WHERE tenant_id = ? AND chat_jid IN (${ph}) AND (timestamp > ? OR (timestamp = ? AND id > ?))
-    `).get(t, ...jids, anchor.timestamp, anchor.timestamp, anchor.id);
+    `).get(t, ...targetJids, anchor.timestamp, anchor.timestamp, anchor.id);
     const newerCount = rankRow?.c ?? 0;
     const offset = Math.max(0, newerCount - half);
-    return this.getMessagesPaginatedForJids(jids, safeLimit, offset);
+    if (targetJids.length === 1) {
+      return this.getMessagesPaginated(targetJids[0], safeLimit, offset);
+    }
+    return this.getMessagesPaginatedForJids(targetJids, safeLimit, offset);
   }
 
   getMediaMessages(chatJid = null, mediaType = null, limit = 50) {
@@ -4343,11 +4386,15 @@ export default class Database {
   getMessageMediaRecord(messageId) {
     if (!messageId) return null;
     const t = getCurrentTenantId();
+    const rawMid = String(messageId || '').trim();
+    const cleanMid = rawMid.replace(/^m/i, '');
+    const numId = Number(cleanMid) || 0;
     return this._db.prepare(`
-      SELECT message_id AS messageId, chat_jid AS chatJid, media_path AS mediaPath,
+      SELECT id, message_id AS messageId, chat_jid AS chatJid, media_path AS mediaPath,
              media_type AS mediaType, text, media_caption AS mediaCaption
-      FROM messages WHERE tenant_id = ? AND message_id = ?
-    `).get(t, messageId);
+      FROM messages WHERE tenant_id = ? AND (message_id = ? OR message_id = ? OR id = ?)
+      LIMIT 1
+    `).get(t, rawMid, cleanMid, numId);
   }
 
   /**

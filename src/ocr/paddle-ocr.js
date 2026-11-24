@@ -254,6 +254,22 @@ if result:
     const unique = [...new Set(lines)];
     let result = unique.join(' · ');
 
+    // Detect payment receipts & UPI context
+    const isPayment = /\b(transaction|paid to|debited|upi|phonepe|gpay|paytm|receipt|payment|bill|utr)\b/i.test(result);
+    if (isPayment) {
+      // 1. Convert OCR misreadings of Indian Rupee symbol (F, {, ?) before digits to ₹
+      result = result.replace(/\b[F{?₹](\d{1,7}(?:\.\d{1,2})?)\b/g, '₹$1');
+
+      // 2. Resolve OCR artifact where rupee symbol was read as leading 2:
+      // e.g. both '₹284' and '2284' appear on the same receipt
+      const amounts = [...result.matchAll(/₹(\d{1,7}(?:\.\d{1,2})?)/g)].map((m) => m[1]);
+      for (const amt of amounts) {
+        if (amt && amt.length >= 2) {
+          result = result.replace(new RegExp(`(?<!\\d)2${amt}(?!\\d)`, 'g'), `₹${amt}`);
+        }
+      }
+    }
+
     // Normalize Indian currency symbols so FTS matches both "100 Rs", "Rs 100", "100Rs", and "₹100"
     const amountMatch = result.match(/(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)/i) ||
                         result.match(/\b([\d,]+(?:\.\d{1,2})?)\s*(?:rs|rupees|inr)\b/i) ||

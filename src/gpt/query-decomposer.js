@@ -100,6 +100,21 @@ export function heuristicDecompose(query) {
 
   const candidateEntities = extractEntityCandidates(q);
 
+  // Payment / billing / transaction synonym expansions
+  if (/\b(?:pay|paid|payment|paying|bill|receipt|transfer|upi|sent\s+money|recharge|transaction|amount|spent|cost)\b/i.test(q)) {
+    lexicalQueries.add('paid');
+    lexicalQueries.add('payment');
+    lexicalQueries.add('receipt');
+    lexicalQueries.add('transaction');
+    lexicalQueries.add('upi');
+    semanticQueries.add('payment transaction receipt');
+    semanticQueries.add('paid amount details');
+    if (!modality && /\b(?:receipt|bill|screenshot|qr|upi|pay|paid|transaction)\b/i.test(q)) {
+      // Often UPI or payment confirmations are shared as screenshots
+      modality = 'image';
+    }
+  }
+
   // Common synonym expansions
   if (/\b(?:t\s*&\s*c|t\s+and\s+c|tnc|\btc\b|terms)\b/i.test(q)) {
     lexicalQueries.add('terms conditions');
