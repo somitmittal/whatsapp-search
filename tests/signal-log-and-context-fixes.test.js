@@ -42,19 +42,36 @@ describe('libsignal session key log suppression', () => {
 });
 
 describe('follow-up query contextualization & mention prompt hygiene', () => {
-  test('contextualizeQuery carries prior topic into elliptical follow-ups like "can u check in"', () => {
-    const res = contextualizeQuery('can u check in', {
-      prior: [
-        { role: 'user', content: 'can u check latest gold price' },
-        { role: 'assistant', content: 'Unable to find it in recent chats.' },
-      ],
-      scopeChatName: 'Atul Kumar Garg',
-    });
+  test('contextualizeQuery generally carries prior topic into arbitrary underspecified follow-ups', () => {
+    const prior = [
+      { role: 'user', content: 'can u check latest gold price' },
+      { role: 'assistant', content: 'Unable to find it in recent chats.' },
+    ];
 
-    expect(res.isRetry).toBe(false);
-    expect(res.isFollowUp).toBe(true);
-    expect(res.effectiveQuery).toBe('can u check latest gold price');
-    expect(res.intent.candidateEntities).toContain('Atul Kumar Garg');
+    for (const followUp of [
+      'can u check in',
+      'what about him?',
+      'did they send it?',
+      'any update?',
+      'same for this',
+      '',
+    ]) {
+      const res = contextualizeQuery(followUp, { prior, scopeChatName: 'Atul Kumar Garg' });
+      expect(res.isRetry).toBe(false);
+      expect(res.isFollowUp).toBe(true);
+      expect(res.effectiveQuery).toBe('can u check latest gold price');
+      expect(res.intent.candidateEntities).toContain('Atul Kumar Garg');
+    }
+
+    const withModifier = contextualizeQuery('what about October?', {
+      prior: [{ role: 'user', content: 'latest invoice total' }],
+    });
+    expect(withModifier.isFollowUp).toBe(true);
+    expect(withModifier.effectiveQuery).toBe('latest invoice total october');
+
+    const broadStandalone = contextualizeQuery('what is this group about?', { prior });
+    expect(broadStandalone.isFollowUp).toBe(false);
+    expect(broadStandalone.effectiveQuery).toBe('what is this group about?');
   });
 
   test('buildSystemPrompt omits reconcile/site boilerplate unless relevant', () => {

@@ -16,7 +16,47 @@ const PDF_RE = /\b(?:pdf|pdfs)\b/i;
 const DOCX_RE = /\b(?:doc|docx|word)\b/i;
 const EXCEL_RE = /\b(?:sheet|excel|csv|xls|xlsx)\b/i;
 const RETRY_RE = /^(?:try\s+again|retry|repeat|do\s+it\s+again|once\s+more|again|find\s+again)\b/i;
-const FOLLOWUP_CHECK_RE = /^(?:(?:can|could|will|would)\s+(?:u|you)\s+)?(?:please\s+|pls\s+)?(?:check|look|search|find|see|ask|try)\s*(?:in|into|inside|there|here|this|that|it)?[?!.]*$/i;
+
+const FOLLOWUP_STOP_WORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'if', 'so', 'yet', 'nor',
+  'i', 'me', 'my', 'mine', 'we', 'us', 'our', 'u', 'you', 'your', 'yours',
+  'he', 'him', 'his', 'she', 'her', 'hers', 'it', 'its', 'they', 'them', 'their',
+  'this', 'that', 'these', 'those', 'there', 'here', 'where', 'when', 'who', 'whom',
+  'what', 'which', 'how', 'why',
+  'is', 'am', 'are', 'was', 'were', 'be', 'been', 'being',
+  'do', 'does', 'did', 'done', 'doing',
+  'have', 'has', 'had', 'having',
+  'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+  'in', 'into', 'inside', 'on', 'onto', 'at', 'to', 'for', 'from', 'with', 'by', 'of', 'about', 'over',
+  'please', 'pls', 'plz', 'kindly', 'just', 'only', 'also', 'too', 'now', 'then', 'still', 'else',
+  'any', 'some', 'same', 'more', 'other', 'another', 'both', 'each', 'all',
+  'check', 'look', 'search', 'find', 'see', 'ask', 'tell', 'show', 'give', 'get', 'send', 'sent', 'try',
+  'update', 'updates', 'news', 'info', 'details', 'answer', 'reply',
+]);
+
+const ELLIPTICAL_LEAD_RE = /^(?:what\s+about|how\s+about|what\s+of|and\s+(?:what\s+about|for|in|with)|same\s+(?:for|in|with)|check\s+(?:in|with|for)|look\s+(?:in|into))\b/i;
+const BROAD_CHAT_QUESTION_RE = /\b(?:summarize|summary|overview|recap|this\s+(?:chat|group)|about\s+this)\b/i;
+
+function extractMeaningfulTokens(text) {
+  const cleaned = String(text || '')
+    .replace(/@[\w.+-]+/g, ' ')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ');
+  return cleaned
+    .split(/\s+/)
+    .filter((w) => w && w.length > 1 && !FOLLOWUP_STOP_WORDS.has(w));
+}
+
+function isUnderspecifiedFollowUp(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return true;
+  if (BROAD_CHAT_QUESTION_RE.test(text)) return false;
+  const words = text.split(/\s+/).filter(Boolean);
+  const meaningful = extractMeaningfulTokens(text);
+  if (meaningful.length === 0) return true;
+  if (ELLIPTICAL_LEAD_RE.test(text) && words.length <= 6 && meaningful.length <= 2) return true;
+  return false;
+}
 
 function cleanFallbackText(query) {
   return String(query || '')
@@ -35,16 +75,20 @@ export function contextualizeQuery(query, { prior = [], scopeChatName = null, sc
   let isRetry = false;
   let isFollowUp = false;
 
-  if (RETRY_RE.test(raw) || FOLLOWUP_CHECK_RE.test(raw)) {
+  if (RETRY_RE.test(raw) || (prior.length > 0 && isUnderspecifiedFollowUp(raw))) {
     isRetry = RETRY_RE.test(raw);
     isFollowUp = !isRetry;
     const lastUser = [...prior].reverse().find((m) => {
       if (m.role !== 'user') return false;
       const c = String(m.content || '').trim();
-      return c && !RETRY_RE.test(c) && !FOLLOWUP_CHECK_RE.test(c);
+      return c && !RETRY_RE.test(c) && !isUnderspecifiedFollowUp(c);
     });
     if (lastUser && lastUser.content) {
-      effective = String(lastUser.content).trim();
+      const priorTopic = String(lastUser.content).trim();
+      const extraTokens = extractMeaningfulTokens(raw);
+      effective = !isRetry && extraTokens.length > 0
+        ? `${priorTopic} ${extraTokens.join(' ')}`
+        : priorTopic;
     } else {
       isFollowUp = false;
     }
