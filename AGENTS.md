@@ -49,6 +49,7 @@ Nothing gets merged to `main` without full end-to-end testing and passing the **
 
 **End-to-End (E2E) Flow Verification:**
 * For UI, API, or Electron changes: start the local server (`npm start`) or app (`npm run electron`) from the worktree and verify the complete user flow end-to-end.
+* Follow [docs/agents/e2e-testing-guidelines.md](docs/agents/e2e-testing-guidelines.md) (`.cursor/rules/e2e-user-testing.mdc`) to verify **both speed and accuracy** across chat/contact loading, interactive buttons/controls, and Ask AI scoping/grounding/OCR search.
 * Check against regressions listed in [docs/agents/anti-regressions.md](docs/agents/anti-regressions.md).
 * If a change cannot be fully tested with live services (e.g. needs live WhatsApp pairing), mock or simulate the integration, explicitly stating what was tested end-to-end and what remains manual.
 
@@ -83,6 +84,7 @@ Once all three layers and end-to-end tests have passed:
 Do not load unnecessary context into your prompt upfront. Read these modular guides only when touching their respective domains:
 
 * **[Architecture & Layout](docs/agents/architecture.md):** High-level view of Electron, Express server, SQLite storage, WhatsApp Baileys integration, and GPT agents.
+* **[E2E User Testing Guidelines](docs/agents/e2e-testing-guidelines.md):** Speed + accuracy rubric for verifying chat/contact loading, UI button responsiveness, and Ask AI scoping/grounding/OCR search (`.cursor/rules/e2e-user-testing.mdc`).
 * **[Anti-Regression Checklist](docs/agents/anti-regressions.md):** **MANDATORY CHECKLIST** before merging. Details previous regressions:
   - Ask AI composer overlay & clickability (`.cursor/rules/ask-ai-composer-clickable.mdc`)
   - WhatsApp chat list (`GET /api/chats`) vs. Ask AI threads (`GET /api/gpt/conversations`)

@@ -1,0 +1,23 @@
+---
+description: End-to-end user testing guidelines prioritizing both speed and accuracy across chats, contacts, UI controls, and Ask AI
+alwaysApply: true
+---
+
+# E2E User Testing Guidelines (Speed + Accuracy)
+
+Before marking any UI, search, chat, or Ask AI task done, verify the live flow as a demanding end user—**never accept "fast but wrong" or "accurate but slow."**
+
+Full checklist: `docs/agents/e2e-testing-guidelines.md`.
+
+## Mandatory Checks
+1. **Chats & Contacts Load Fast & Cleanly:**
+   - All WhatsApp and Imported chats render quickly when scrolling; switching across 5–10 chats feels near-instant.
+   - Contact/group names resolve properly (no raw `@lid` or `@s.whatsapp.net` where a name exists) with zero sender-name flickering.
+2. **Every Button & Control Responds Fast (Zero Dead Clicks):**
+   - Tabs, modals, message dropdowns (`Copy message`), reactions, media/PDF lightbox + close, and Ask AI composer (`@ Add context`, `/ Skill`, model selector, send) all respond on the first click with no invisible overlay blocking or PDF iframe bleed.
+3. **Ask AI Feels Magical (Fast + Strictly Grounded):**
+   - **Scoped isolation:** Scoped Ask AI shows the human chat title in the pill and never leaks unrelated chats.
+   - **Cross-chat recall & follow-ups:** Needle-in-a-haystack queries, underspecified follow-ups, and OCR/media searches return accurate, cited results (with working **View in chat**) quickly.
+   - **Anti-hallucination:** Non-existent queries report not found rather than inventing facts.
+4. **Zero Console/Network Errors:**
+   - No uncaught JS exceptions or unexpected HTTP 500s during the flow.
