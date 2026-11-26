@@ -461,6 +461,7 @@ export default class GptService {
         businessContext,
         includeReconcileHint: asksReconcile || Boolean(expenseHistory),
         compact: budgets.compactPrompt,
+        includeGlobalMemory: scopeJids.length === 0,
       }),
       history,
       contextText,

@@ -19,10 +19,10 @@ export function isFollowUpTransformQuery(query) {
     || /^(?:in\s+\d+\s+(?:bullets?|points?|lines?|sentences?)|make\s+it\s+(?:shorter|concise|a\s+table|bullets?)|tldr|tl;dr)[.!?\s]*$/i.test(q);
 }
 
-export function buildSystemPrompt({ db, businessContext = false, now = new Date(), includeReconcileHint = false, compact = false }) {
+export function buildSystemPrompt({ db, businessContext = false, now = new Date(), includeReconcileHint = false, compact = false, includeGlobalMemory = true }) {
   const smb = businessContext ? synthesisSystemAddon(getSmbProfileFromDb(db)) : '';
   const businessName = businessContext ? String(db.getSetting?.('smb_business_name') || '').trim() : '';
-  const memory = memoryPromptBlock(db, now);
+  const memory = includeGlobalMemory ? memoryPromptBlock(db, now) : '';
   const today = now.toLocaleDateString('en-CA');
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
   const tools = TOOL_SPECS.map((t) => `- ${t.name} ${t.args} — ${t.about}`).join('\n');

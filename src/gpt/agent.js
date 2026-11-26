@@ -358,9 +358,13 @@ export async function runAgent({
 
 export function toSource(m, ctx = null) {
   const dirName = m.chatJid && ctx?.directory?.name ? ctx.directory.name(m.chatJid) : null;
-  const resolvedName = (m.chatName && !String(m.chatName).includes('@'))
-    ? m.chatName
-    : (dirName && !String(dirName).includes('@') ? dirName : (m.chatName || m.chatJid));
+  const isRawLabel = (v) => {
+    const s = String(v || '').trim();
+    return !s || s.includes('@') || /^\+?\d[\d\s()-]{6,}$/.test(s);
+  };
+  const resolvedName = (!isRawLabel(dirName))
+    ? dirName
+    : (!isRawLabel(m.chatName) ? m.chatName : (dirName || m.chatName || m.chatJid));
   return {
     ref: `m${m.id}`,
     text: messageBody(m),

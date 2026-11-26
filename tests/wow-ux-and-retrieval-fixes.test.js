@@ -1,7 +1,10 @@
 import { detectTimeRange } from '../src/gpt/retrieval.js';
 import { enforceGroundedAnswer } from '../src/search/grounding.js';
 import { defaultPaddleOcr } from '../src/ocr/paddle-ocr.js';
-import { runAgent } from '../src/gpt/agent.js';
+import { runAgent, toSource } from '../src/gpt/agent.js';
+import Database from '../src/storage/database.js';
+import GptService from '../src/gpt/gpt-service.js';
+import { addMemory } from '../src/gpt/user-memory.js';
 
 describe('WOW UX & Retrieval Fixes', () => {
   test('detectTimeRange spans across multiple dates in compound queries', () => {
@@ -69,5 +72,55 @@ describe('WOW UX & Retrieval Fixes', () => {
       },
     });
     expect(out.sources.some((s) => s.ref === 'm101')).toBe(true);
+  });
+
+  test('scoped Ask AI omits global saved memory from unrelated chats, and toSource prefers resolved contact name over phone number', async () => {
+    const db = new Database(':memory:');
+    try {
+      db.insertMessage({
+        messageId: 'h1',
+        chatJid: '917017331497@s.whatsapp.net',
+        chatName: 'Hritik Katariya',
+        sender: 'Hritik Katariya',
+        text: 'Call me when you come',
+        timestamp: 2000,
+      });
+      db.insertMessage({
+        messageId: 'h2',
+        chatJid: '917017331497@s.whatsapp.net',
+        chatName: '+91 7017331497',
+        sender: 'You',
+        text: 'Sure bro',
+        timestamp: 2001,
+      });
+      addMemory(db, 'The spa requires six hours notice for cancellation.');
+
+      let scopedSystem = '';
+      const fakeProvider = {
+        name: 'ollama',
+        model: 'llama3.2:3b',
+        chat: async (messages) => {
+          scopedSystem = messages.find((m) => m.role === 'system')?.content || '';
+          return 'You told Hritik sure bro.';
+        },
+      };
+
+      const svc = new GptService({ db, getProvider: () => fakeProvider });
+      await svc.handleTurn({
+        conversationId: 'conv-scoped-mem',
+        createConversationIfMissing: true,
+        scopeChatJid: '917017331497@s.whatsapp.net',
+        message: 'what can you do for me?',
+      });
+      expect(scopedSystem).not.toContain('spa requires six hours notice');
+
+      const src = toSource(
+        { id: 2, chatJid: '917017331497@s.whatsapp.net', chatName: '+91 7017331497', sender: 'You', text: 'Sure bro', timestamp: 2001 },
+        { directory: { name: () => 'Hritik Katariya' } },
+      );
+      expect(src.chatName).toBe('Hritik Katariya');
+    } finally {
+      db.close();
+    }
   });
 });
