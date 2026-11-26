@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { getCurrentTenantId, runWithTenant } from '../storage/tenant-context.js';
 import ChatDirectory from './chat-directory.js';
-import { ContextEngine, buildChatOverview, buildHistory, buildSystemPrompt, expenseHistoryBlocks } from './context.js';
+import { ContextEngine, buildChatOverview, buildHistory, buildSystemPrompt, expenseHistoryBlocks, isFollowUpTransformQuery } from './context.js';
 import { isBroadQuery } from './retrieval.js';
 import { runAgent } from './agent.js';
 import { createToolbox } from './tools.js';
-import { GPT_LIMITS, estimateTokens } from './limits.js';
+import { budgetsForProvider, GPT_LIMITS, estimateTokens } from './limits.js';
 import { listModelCatalog, providerForSelection, setProviderKey } from './model-registry.js';
 import {
   addMemory,
@@ -298,12 +298,16 @@ export default class GptService {
       directory: this.directory,
     });
     const effectiveQuery = contextualized.effectiveQuery;
+    const budgets = budgetsForProvider(provider, this.db);
+    const hasPriorAnswer = prior.some((m) => m.role === 'assistant' && String(m.content || '').trim().length > 20);
+    const isFollowUpTransform = hasPriorAnswer && isFollowUpTransformQuery(text);
     const [pre] = await Promise.all([
       this.context.prefetch({
         query: effectiveQuery,
         scopeJids,
         intent: contextualized.intent,
         provider,
+        skipSearch: isFollowUpTransform,
       }),
     ]);
     const contextText = [
@@ -322,7 +326,7 @@ export default class GptService {
     }
     status('Thinking…');
 
-    const { messages: history } = buildHistory(prior, memory);
+    const { messages: history } = buildHistory(prior, memory, budgets.historyTokens);
     const defaultChat = turnPins[0] || null;
     const overview = provider.name === 'ollama'
       && /\b1b\b/i.test(String(provider.model || ''))
@@ -346,6 +350,7 @@ export default class GptService {
         db: this.db,
         businessContext,
         includeReconcileHint: asksReconcile || Boolean(expenseHistory),
+        compact: budgets.compactPrompt,
       }),
       history,
       contextText,
@@ -359,6 +364,9 @@ export default class GptService {
         conversationId: conversation.id,
         resolveProvider: resolveExpenseProvider,
         prefetched: pre.messages,
+        directory: this.directory,
+        contextTokens: budgets.contextTokens,
+        isFollowUpTransform,
       },
       emit,
       signal,
@@ -726,6 +734,10 @@ export default class GptService {
   _scheduleUserMemory(provider, { userText, answerText, emit = null }) {
     if (!isMemoryEnabled(this.db)) return null;
     if (!shouldConsiderMemory(userText, answerText)) return null;
+    // Skip background memory extraction on small local Ollama models unless user explicitly asks to remember.
+    if (provider?.name === 'ollama' && /(?:^|:)[1-4]b\b/i.test(String(provider?.model || '')) && !/\bremember\b/i.test(userText)) {
+      return null;
+    }
     const tenant = getCurrentTenantId();
     // Resolves once the background decision/save is done so the SSE stream can
     // stay open long enough to deliver {type:'memory-updated'} before closing.

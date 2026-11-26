@@ -88,12 +88,17 @@ export function memoryPromptBlock(db, now = new Date()) {
 
 /**
  * Cheap gate before spending a model call on extraction.
- * Only real exchanges can reveal durable facts.
+ * Option A: Only consider saving memory when the user explicitly states a durable
+ * personal/business fact, preference, or asks to remember something — avoids
+ * wasting a 2nd LLM call per turn and prevents saving chat answers as user facts.
  */
+const EXPLICIT_USER_FACT_RE = /\b(?:remember\s+(?:that|this)|my\s+(?:name|business|company|shop|salon|site|role|team|email|phone|preference|address|laptop|device|computer)|my\s+[a-z0-9_-]{2,24}\s+(?:is|are)\b|i\s+(?:am|work|own|run|prefer|always|usually|live)\b|we\s+(?:are|use|prefer|run|own)\b|call\s+me\b)\b/i;
+
 export function shouldConsiderMemory(userText, answerText) {
   const u = String(userText || '').trim();
   const a = String(answerText || '').trim();
-  return u.length >= 12 && a.length >= 12;
+  if (u.length < 12 || a.length < 12) return false;
+  return EXPLICIT_USER_FACT_RE.test(u);
 }
 
 /**
@@ -135,10 +140,6 @@ export async function extractMemoryFromExchange(provider, { userText, answerText
     if (!mem || mem.toLowerCase() === 'null') return null;
     return mem.slice(0, 500);
   } catch {
-    // Model answered in prose; accept a short declarative line as the memory.
-    if (text.length <= 300 && /^(the user|user|they|he|she|we)/i.test(text)) {
-      return text.slice(0, 500);
-    }
     return null;
   }
 }

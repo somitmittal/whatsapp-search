@@ -1,7 +1,7 @@
 import { GROUNDING_PROMPT_RULES } from '../search/grounding.js';
 import { getSmbProfileFromDb, synthesisSystemAddon } from '../smb/profiles.js';
 import { memoryPromptBlock } from './user-memory.js';
-import { GPT_LIMITS, estimateTokens } from './limits.js';
+import { budgetsForProvider, GPT_LIMITS, estimateTokens } from './limits.js';
 import {
   detectTimeRange,
   formatSummaryLine,
@@ -12,13 +12,41 @@ import {
 import { decomposeQuery, heuristicDecompose } from './query-decomposer.js';
 import { TOOL_SPECS } from './tools.js';
 
-export function buildSystemPrompt({ db, businessContext = false, now = new Date(), includeReconcileHint = false }) {
+export function isFollowUpTransformQuery(query) {
+  const q = String(query || '').trim();
+  if (!q || q.length > 100) return false;
+  return /^(?:summarize|summarise|condense|shorten|reformat|format|rewrite|list|extract|give\s+me)\b.*\b(?:key\s*points?|bullets?|bullet\s*points?|summary|table|points?|above|that|it|this)\b/i.test(q)
+    || /^(?:in\s+\d+\s+(?:bullets?|points?|lines?|sentences?)|make\s+it\s+(?:shorter|concise|a\s+table|bullets?)|tldr|tl;dr)[.!?\s]*$/i.test(q);
+}
+
+export function buildSystemPrompt({ db, businessContext = false, now = new Date(), includeReconcileHint = false, compact = false }) {
   const smb = businessContext ? synthesisSystemAddon(getSmbProfileFromDb(db)) : '';
   const businessName = businessContext ? String(db.getSetting?.('smb_business_name') || '').trim() : '';
   const memory = memoryPromptBlock(db, now);
   const today = now.toLocaleDateString('en-CA');
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
   const tools = TOOL_SPECS.map((t) => `- ${t.name} ${t.args} — ${t.about}`).join('\n');
+  if (compact) {
+    return [
+      'You are WhatsApp GPT, an assistant over the user\'s WhatsApp archive.',
+      `Today is ${weekday} ${today}. Messages from the user have sender "You".`,
+      smb ? `${smb}${businessName ? ` Business: ${businessName}.` : ''}` : '',
+      memory,
+      GROUNDING_PROMPT_RULES,
+      [
+        'Messages appear as "[m123] date · sender: text" under "## Chat name". Media includes OCR text/filenames.',
+        'Cite supporting messages with [m123] right after each claim. Never invent [m...] handles.',
+        'For PDFs/menus/documents in context, CALL inspect_document on the message handle to read full text.',
+        'When scoped to a chat, stay strictly within that chat. Honor exact user format requests (e.g. "3 bullets", "table").',
+        ...(includeReconcileHint || businessContext ? [
+          'For expense reconciliation, CALL reconcile (never invent numbers).',
+        ] : []),
+        'TOOLS: only if context is insufficient, reply with ONLY CALL lines: CALL {"tool":"search","args":{"query":"...","chat":"..."}}',
+        tools,
+        'STYLE: direct answer first, concise bullets/short paragraphs, **bold** key facts.',
+      ].join('\n'),
+    ].filter(Boolean).join('\n\n');
+  }
   return [
     'You are WhatsApp GPT: a sharp assistant over the user\'s own WhatsApp archive.',
     `Today is ${weekday} ${today}. Messages from the user appear with sender "You".`,
@@ -187,8 +215,8 @@ export class ContextEngine {
     this.mediaIndexService = mediaIndexService;
   }
 
-  async prefetch({ query, scopeJids = [], provider = null, intent = null }) {
-    const budget = GPT_LIMITS.contextTokens;
+  async prefetch({ query, scopeJids = [], provider = null, intent = null, skipSearch = false }) {
+    const budget = budgetsForProvider(provider, this.db).contextTokens;
     const range = detectTimeRange(query);
     const broad = isBroadQuery(query);
     // Broad questions such as "what is this group about?" have no meaningful
@@ -201,7 +229,7 @@ export class ContextEngine {
     const resolvedIntent = intent || heuristicDecompose(query);
 
     const candidateJids = [];
-    if (Array.isArray(resolvedIntent?.candidateEntities)) {
+    if (!skipSearch && Array.isArray(resolvedIntent?.candidateEntities)) {
       for (const ent of resolvedIntent.candidateEntities) {
         const resolved = this.directory.resolve(ent);
         if (resolved?.chatJid && !scoped.includes(resolved.chatJid) && !candidateJids.includes(resolved.chatJid)) {
@@ -215,7 +243,7 @@ export class ContextEngine {
       if (!chatsToSearch.includes(jid)) chatsToSearch.push(jid);
     }
 
-    const searches = overview
+    const searches = (overview || skipSearch)
       ? []
       : chatsToSearch.map((jid) => hybridSearch({
         db: this.db,
@@ -310,14 +338,14 @@ export class ContextEngine {
  * Conversation history in Cursor style: a rolling memory of older turns plus as many
  * recent turns verbatim as fit. Returns the split point so older turns can be folded later.
  */
-export function buildHistory(prior, memory) {
+export function buildHistory(prior, memory, historyTokens = GPT_LIMITS.historyTokens) {
   const turns = prior.slice(memory.memoryUpto || 0);
   const kept = [];
   let used = 0;
   for (let i = turns.length - 1; i >= 0; i--) {
     const m = turns[i];
     const cost = estimateTokens(m.content);
-    if (used + cost > GPT_LIMITS.historyTokens && kept.length) break;
+    if (used + cost > historyTokens && kept.length) break;
     used += cost;
     kept.unshift({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content });
   }

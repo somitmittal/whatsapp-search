@@ -3,9 +3,18 @@ import { enforceGroundedAnswer, UNGROUNDED_NOTICE, NO_GROUNDED_ANSWER } from '..
 import { GPT_LIMITS } from './limits.js';
 import { messageBody } from './retrieval.js';
 
-const CALL_RE = /^\s*CALL\s+(\{.*\})\s*$/;
+const CALL_RE = /^\s*(?:Tools\s+)?CALL\s+(\{.*\})\s*$/i;
 const REF_RE = /\[m(\d+)\]/g;
 const KNOWN_TOOLS = new Set(['search', 'read', 'chats', 'summaries', 'reconcile', 'web_search', 'inspect_document']);
+
+function stripToolCallLines(text) {
+  return String(text || '')
+    .replace(/<(?:dots_function_call|tool_call|function_call)[\s\S]*?>/gi, '')
+    .split('\n')
+    .filter((l) => !CALL_RE.test(l) && !/^\s*Tools\s+CALL\b/i.test(l))
+    .join('\n')
+    .trim();
+}
 
 export class AbortedError extends Error {
   constructor() { super('aborted'); this.name = 'AbortedError'; }
@@ -150,8 +159,8 @@ async function streamStep(provider, messages, { emit, signal }) {
     }
     if (mode === 'tool') return;
     const head = buf.trimStart();
-    if (head.length < 4 && !head.includes('\n')) return;
-    mode = /^(CALL|```|<(?:dots_function_call|tool_call|function_call)|\{\s*"(?:tool|name)")/i.test(head) ? 'tool' : 'text';
+    if (head.length < 10 && !head.includes('\n')) return;
+    mode = /^((?:Tools\s+)?CALL\b|```|<(?:dots_function_call|tool_call|function_call)|\{\s*"(?:tool|name)")/i.test(head) ? 'tool' : 'text';
     if (mode === 'text') emit?.({ type: 'delta', text: buf });
   });
   return { text: String(text || buf).trim(), streamed: mode === 'text' };
@@ -188,30 +197,35 @@ export async function runAgent({
     if (step > 0) emit?.({ type: 'status', text: 'Writing the answer…' });
 
     const { text, streamed } = await streamStep(provider, messages, { emit, signal });
-    const calls = last ? [] : parseToolCalls(text);
+    const calls = (last || ctx?.isFollowUpTransform) ? [] : parseToolCalls(text);
     const callSig = JSON.stringify(calls);
     if (calls.length && callSig === prevCallSig) {
       messages.push({ role: 'user', content: 'You repeated the same tool calls. Answer now from what you already have.' });
       const finalStep = await streamStep(provider, messages, { emit, signal });
-      answer = finalStep.text.replace(/<(?:dots_function_call|tool_call|function_call)[\s\S]*?>/gi, '').split('\n').filter((l) => !CALL_RE.test(l)).join('\n').trim();
+      answer = stripToolCallLines(finalStep.text);
       if (!finalStep.streamed && answer) emit?.({ type: 'delta', text: answer });
       break;
     }
     prevCallSig = callSig;
 
     if (!calls.length) {
-      answer = text.replace(/<(?:dots_function_call|tool_call|function_call)[\s\S]*?>/gi, '').split('\n').filter((l) => !CALL_RE.test(l)).join('\n').trim();
+      answer = stripToolCallLines(text);
       if (!streamed && answer) emit?.({ type: 'delta', text: answer });
       break;
     }
     if (streamed) emit?.({ type: 'reset' });
 
     messages.push({ role: 'assistant', content: calls.map((c) => `CALL ${JSON.stringify({ tool: c.name, args: c.args })}`).join('\n') });
-    const budget = Math.floor(GPT_LIMITS.contextTokens / calls.length);
+    const budget = Math.floor((ctx?.contextTokens || GPT_LIMITS.contextTokens) / calls.length);
     const results = await Promise.all(calls.map(async (call) => {
       if (ctx?.scopeChatName && (call.name === 'search' || call.name === 'read' || call.name === 'summaries')) {
         if (!call.args) call.args = {};
-        if (!call.args.chat) call.args.chat = ctx.scopeChatName;
+        const allowedNames = (ctx.turnMentions || []).map((p) => String(p.chatName || '').toLowerCase()).filter(Boolean);
+        const requested = String(call.args.chat || '').trim().toLowerCase();
+        // Hard-enforce scope on single-chat threads so small models cannot drift to unrelated chats.
+        if (!requested || (allowedNames.length <= 1 && requested !== ctx.scopeChatName.toLowerCase())) {
+          call.args.chat = ctx.scopeChatName;
+        }
       }
       const fn = toolbox[call.name];
       emit?.({ type: 'tool', name: call.name, args: call.args, text: describeCall(call) });
@@ -298,17 +312,21 @@ export async function runAgent({
   const allSourceRows = [...citedIds.map((id) => sources.get(id)), ...extraMedia];
   return {
     answer: finalAnswer,
-    sources: allSourceRows.map(toSource),
-    refs: Object.fromEntries(allSourceRows.map((m) => [m.id, toSource(m)])),
+    sources: allSourceRows.map((m) => toSource(m, ctx)),
+    refs: Object.fromEntries(allSourceRows.map((m) => [m.id, toSource(m, ctx)])),
     payload,
   };
 }
 
-function toSource(m) {
+function toSource(m, ctx = null) {
+  const dirName = m.chatJid && ctx?.directory?.name ? ctx.directory.name(m.chatJid) : null;
+  const resolvedName = (m.chatName && !String(m.chatName).includes('@'))
+    ? m.chatName
+    : (dirName && !String(dirName).includes('@') ? dirName : (m.chatName || m.chatJid));
   return {
     ref: `m${m.id}`,
     text: messageBody(m),
-    chatName: m.chatName || m.chatJid,
+    chatName: resolvedName,
     chatJid: m.chatJid || null,
     messageId: m.messageId || null,
     sender: m.sender || 'Unknown',

@@ -91,6 +91,7 @@ export async function listModelCatalog(db) {
       if (configured) {
         const local = await listLocalOllamaModels();
         if (local.length) models = [...new Set([...local, ...models])];
+        models = models.filter((m) => !/(?::|-)cloud$/i.test(String(m)));
         source = 'local';
       }
     } else {

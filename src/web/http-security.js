@@ -117,7 +117,7 @@ export function contentSecurityPolicy() {
     "img-src 'self' data: blob:",
     "media-src 'self' blob:",
     "font-src 'self' data:",
-    "connect-src 'self' ws://127.0.0.1:* ws://localhost:* ws://[::1]:* wss://127.0.0.1:* wss://localhost:* ws: wss:",
+    "connect-src 'self' ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* wss://localhost:* ws: wss:",
     "worker-src 'self' blob:",
     "frame-src 'self' blob:",
   ].join('; ');

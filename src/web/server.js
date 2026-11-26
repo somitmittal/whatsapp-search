@@ -1628,10 +1628,10 @@ export default class WebServer {
       index: false,
       maxAge: 3600000,
       setHeaders: (res, filePath) => {
-        if (/\.(css|js|svg|png|jpg|webp|woff2?)$/i.test(filePath)) {
-          res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
-        } else if (filePath.endsWith('.html')) {
+        if (/\.(css|js)$/i.test(filePath) || filePath.endsWith('.html')) {
           res.setHeader('Cache-Control', 'no-cache');
+        } else if (/\.(svg|png|jpg|webp|woff2?)$/i.test(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
         }
       },
     }));

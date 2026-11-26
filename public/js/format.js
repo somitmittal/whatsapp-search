@@ -4,7 +4,7 @@ import { store } from './store.js';
 export function messageTimestampToDate(ts) {
   if (ts == null || ts === '') return null;
   const n = Number(ts);
-  if (!Number.isFinite(n)) return null;
+  if (!Number.isFinite(n) || n <= 0) return null;
   const sec = n > 1e12 ? Math.round(n / 1000) : Math.round(n);
   const d = new Date(sec * 1000);
   return Number.isNaN(d.getTime()) ? null : d;

@@ -3473,25 +3473,28 @@ export default class Database {
     const t = getCurrentTenantId();
     const rows = this._db.prepare(`
       SELECT chatJid, chatName, snippet, messageId, messageTs, rank FROM (
-        SELECT m.chat_jid AS chatJid,
-               m.chat_name AS chatName,
-               COALESCE(
-                 NULLIF(trim(m.text), ''),
-                 NULLIF(trim(m.media_caption), ''),
-                 NULLIF(trim(m.media_ai_index), ''),
-                 ''
-               ) AS snippet,
-               m.message_id AS messageId,
-               m.timestamp AS messageTs,
-               bm25(messages_fts) AS rank,
+        SELECT chatJid, chatName, snippet, messageId, messageTs, rank,
                ROW_NUMBER() OVER (
-                 PARTITION BY m.chat_jid
-                 ORDER BY bm25(messages_fts) ASC, m.timestamp DESC
+                 PARTITION BY chatJid
+                 ORDER BY rank ASC, messageTs DESC
                ) AS rn
-        FROM messages_fts
-        INNER JOIN messages m ON m.id = messages_fts.rowid
-        WHERE m.tenant_id = ?
-          AND messages_fts MATCH ?
+        FROM (
+          SELECT m.chat_jid AS chatJid,
+                 m.chat_name AS chatName,
+                 COALESCE(
+                   NULLIF(trim(m.text), ''),
+                   NULLIF(trim(m.media_caption), ''),
+                   NULLIF(trim(m.media_ai_index), ''),
+                   ''
+                 ) AS snippet,
+                 m.message_id AS messageId,
+                 m.timestamp AS messageTs,
+                 bm25(messages_fts) AS rank
+          FROM messages_fts
+          INNER JOIN messages m ON m.id = messages_fts.rowid
+          WHERE m.tenant_id = ?
+            AND messages_fts MATCH ?
+        )
       )
       WHERE rn = 1
       ORDER BY rank ASC, messageTs DESC

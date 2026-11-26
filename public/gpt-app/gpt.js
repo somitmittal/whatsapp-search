@@ -1918,7 +1918,7 @@ function renderMention() {
           <span class="sub">/${esc(c.path)} · ${esc(c.kind)}</span></div>`
       : `<div class="opt${i === index ? ' on' : ''}" role="option" data-i="${i}">
           <span class="nm">${esc(c.chatName)}</span>
-          <span class="sub">${c.messageCount} msgs${c.lastMessageTs ? ` · ${esc(fmtTs(c.lastMessageTs))}` : ''}</span></div>`)).join('')
+          <span class="sub">${c.messageCount} ${c.messageCount === 1 ? 'msg' : 'msgs'}${c.lastMessageTs ? ` · ${esc(fmtTs(c.lastMessageTs))}` : ''}</span></div>`)).join('')
     : `<div class="opt muted">${empty}</div>`;
 }
 
@@ -1976,6 +1976,10 @@ function refreshStreamingUi() {
   const stream = key ? activeStreams.get(key) : null;
   state.streaming = stream || null;
   setStreaming(!!stream);
+  if (els.send) {
+    els.send.setAttribute('aria-label', stream ? 'Stop' : 'Send');
+    els.send.title = stream ? 'Stop' : 'Send';
+  }
 }
 
 function abortStream() {
@@ -2409,6 +2413,13 @@ function wire() {
       e.preventDefault();
       els.modelList.querySelector(`[data-savekey="${CSS.escape(input.dataset.keyinput)}"]`)?.click();
     }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!els.threadSearch.hidden) { closeThreadSearch(); return; }
+    if (!els.modelMenu.hidden) { openModelMenu(false); return; }
+    if (els.tabMenu && !els.tabMenu.hidden) { closeTabMenu(); return; }
+    if (!els.settings.hidden) closeSettings();
   });
   document.addEventListener('mousedown', (e) => {
     if (!els.modelMenu.hidden

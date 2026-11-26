@@ -89,6 +89,7 @@ button { font: inherit; color: inherit; }
   margin-top: 4px; border: 1px solid transparent; border-bottom: 0;
   border-radius: 8px 8px 0 0; background: var(--tab-idle);
   color: var(--fg-2); cursor: grab; font-size: 12.5px; flex-shrink: 0;
+  overflow: hidden;
   user-select: none; -webkit-user-select: none; position: relative;
 }
 .gpt-tab:active { cursor: grabbing; }
@@ -125,7 +126,7 @@ button { font: inherit; color: inherit; }
 .gpt-tab .x {
   opacity: 0; border: 0; background: transparent; color: var(--fg-3);
   width: 18px; height: 18px; border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 1;
-  display: grid; place-items: center; padding: 0;
+  display: grid; place-items: center; padding: 0; flex-shrink: 0;
 }
 .gpt-tab:hover .x, .gpt-tab.active .x { opacity: 1; }
 .gpt-tab .x:hover { background: var(--panel-2); color: var(--danger); }

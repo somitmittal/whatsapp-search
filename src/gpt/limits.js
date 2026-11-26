@@ -44,3 +44,27 @@ export const GPT_LIMITS = Object.freeze({
 export function estimateTokens(text) {
   return Math.ceil(String(text || '').length / 4);
 }
+
+/**
+ * Provider-aware context/history token budgets.
+ * Prevents local Ollama models (often configured with num_ctx 2048-4096) from
+ * overflowing their context window and evicting system/scope instructions.
+ */
+export function budgetsForProvider(provider, db = null) {
+  if (provider?.name !== 'ollama') {
+    return {
+      contextTokens: GPT_LIMITS.contextTokens,
+      historyTokens: GPT_LIMITS.historyTokens,
+      compactPrompt: false,
+    };
+  }
+  const rawCtx = Number(db?.getSetting?.('ollama_num_ctx')) || 2048;
+  const numCtx = Math.max(1536, rawCtx);
+  const contextTokens = Math.min(GPT_LIMITS.contextTokens, Math.max(900, Math.floor(numCtx * 0.45)));
+  const historyTokens = Math.min(GPT_LIMITS.historyTokens, Math.max(450, Math.floor(numCtx * 0.2)));
+  return {
+    contextTokens,
+    historyTokens,
+    compactPrompt: numCtx <= 4096,
+  };
+}

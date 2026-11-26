@@ -120,12 +120,25 @@ export default class ChatDirectory {
   search(query, limit = 10) {
     const dir = this.list();
     const q = String(query || '').trim();
-    if (!q) return dir.chats.slice(0, limit);
-    const direct = dir.fuse.search(q, { limit }).map((r) => r.item);
-    if (direct.length >= limit) return direct;
-    const seen = new Set(direct.map((c) => c.chatJid));
-    const aliases = this._searchMessageAliases(q, dir, limit)
-      .filter((c) => !seen.has(c.chatJid));
-    return [...direct, ...aliases].slice(0, limit);
+    const rawList = !q
+      ? dir.chats.slice(0, limit * 2)
+      : (() => {
+          const direct = dir.fuse.search(q, { limit: limit * 2 }).map((r) => r.item);
+          if (direct.length >= limit * 2) return direct;
+          const seenJids = new Set(direct.map((c) => c.chatJid));
+          const aliases = this._searchMessageAliases(q, dir, limit)
+            .filter((c) => !seenJids.has(c.chatJid));
+          return [...direct, ...aliases];
+        })();
+    // Deduplicate linked/shadow JIDs sharing the same display title, keeping the richest one.
+    const byName = new Map();
+    for (const c of rawList) {
+      const key = String(c.chatName || c.chatJid).trim().toLowerCase();
+      const prev = byName.get(key);
+      if (!prev || (c.messageCount || 0) > (prev.messageCount || 0)) {
+        byName.set(key, c);
+      }
+    }
+    return [...byName.values()].slice(0, limit);
   }
 }

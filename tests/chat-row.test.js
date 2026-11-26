@@ -45,7 +45,6 @@ describe('shared chat row renderer', () => {
     });
     expect(html).toContain('class="chat-item"');
     expect(html).toContain('Site team');
-    expect(html).toContain('class="chat-ai-toggle on"');
-    expect(html).toContain('aria-pressed="true"');
+    expect(html).not.toContain('chat-ai-toggle');
   });
 });

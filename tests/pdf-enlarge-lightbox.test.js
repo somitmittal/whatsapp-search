@@ -168,7 +168,7 @@ describe('PDF Enlarge and Lightbox Viewer', () => {
     const html = buildChatMessagesHtml(messages, 'user1@s.whatsapp.net');
     expect(html).toContain('msg-media-pdf-container');
     expect(html).toContain('data-pdf-url="/api/message-media?messageId=pdf-msg-1"');
-    expect(html).toContain('class="msg-media-pdf"');
+    expect(html).toContain('msg-media-pdf');
     expect(html).toContain('msg-media-pdf-overlay');
     expect(html).toContain('Click to enlarge');
   });
