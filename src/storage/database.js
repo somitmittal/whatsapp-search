@@ -497,7 +497,8 @@ export default class Database {
       SELECT m.id, m.message_id AS messageId, m.chat_jid AS chatJid,
              m.chat_name AS chatName, m.sender, m.text,
              m.media_type AS mediaType, m.media_path AS mediaPath, m.media_caption AS mediaCaption,
-             m.media_ai_index AS mediaAiIndex, m.timestamp, bm25(messages_fts) AS rank
+             m.media_ai_index AS mediaAiIndex, m.quoted_payload AS quotedPayload,
+             m.timestamp, bm25(messages_fts) AS rank
       FROM messages_fts
       INNER JOIN messages m ON m.id = messages_fts.rowid
       WHERE m.tenant_id = ?
@@ -3199,6 +3200,36 @@ export default class Database {
     return this._db.prepare(sql).all(...params);
   }
 
+  getUnindexedMediaGlobal(limit = 20, { sender = null, mediaType = null } = {}) {
+    const t = getCurrentTenantId();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 30));
+    let sql = `
+      SELECT id, message_id AS messageId, chat_jid AS chatJid,
+             media_type AS mediaType, media_path AS mediaPath,
+             media_caption AS mediaCaption, text,
+             media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError,
+             timestamp
+      FROM messages
+      WHERE tenant_id = ?
+        AND media_path IS NOT NULL AND trim(media_path) != ''
+        AND (media_ai_index IS NULL OR trim(media_ai_index) = '' OR media_index_status IN ('pending', 'failed'))
+    `;
+    const params = [t];
+    if (sender) {
+      sql += ' AND sender = ?';
+      params.push(sender);
+    }
+    if (mediaType) {
+      sql += ' AND media_type = ?';
+      params.push(mediaType);
+    } else {
+      sql += " AND media_type IN ('image', 'sticker', 'document')";
+    }
+    sql += ' ORDER BY timestamp DESC LIMIT ?';
+    params.push(safeLimit);
+    return this._db.prepare(sql).all(...params);
+  }
+
   getPendingEmbeddingJobs(limit = 12, priorityChatJid = null, modelId = '', opts = {}) {
     const n = Math.max(1, Math.min(Number(limit) || 12, 40));
     const t = getCurrentTenantId();
@@ -3297,7 +3328,7 @@ export default class Database {
     const rows = this._db.prepare(`
       SELECT id, message_id AS messageId, chat_jid AS chatJid, chat_name AS chatName, sender, text,
              media_type AS mediaType, media_path AS mediaPath, media_caption AS mediaCaption,
-             media_ai_index AS mediaAiIndex,
+             media_ai_index AS mediaAiIndex, quoted_payload AS quotedPayload,
              media_index_status AS mediaIndexStatus, media_index_error AS mediaIndexError, timestamp
       FROM messages
       WHERE tenant_id = ? AND id IN (${placeholders})
@@ -3507,7 +3538,7 @@ export default class Database {
              m.media_type AS mediaType, m.media_path AS mediaPath, m.media_caption AS mediaCaption,
              m.media_ai_index AS mediaAiIndex,
              m.media_index_status AS mediaIndexStatus, m.media_index_error AS mediaIndexError,
-             m.contact_payload AS contactPayload,
+             m.contact_payload AS contactPayload, m.quoted_payload AS quotedPayload,
              m.timestamp, bm25(messages_fts) AS rank
       FROM messages_fts
       INNER JOIN messages m ON m.id = messages_fts.rowid
@@ -3520,9 +3551,9 @@ export default class Database {
 
   /**
    * Structured media retrieval for queries asking for "latest pdf", "recent images", "documents I sent".
-   * Queries indexed messages directly by mediaType, sender, file extension, and time order.
+   * Queries indexed messages directly by mediaType, sender, file extension, keywords, and time order.
    */
-  getRecentMediaMessages({ chatJid = null, mediaType = null, sender = null, fileExt = null, limit = 10 } = {}) {
+  getRecentMediaMessages({ chatJid = null, mediaType = null, sender = null, fileExt = null, keywords = null, limit = 10 } = {}) {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
     const t = getCurrentTenantId();
     const linkedJids = chatJid ? this.getLinkedJids(chatJid) : null;
@@ -3547,6 +3578,19 @@ export default class Database {
       const pattern = `%.${fileExt}%`;
       args.push(pattern, pattern, pattern);
     }
+    if (Array.isArray(keywords) && keywords.length > 0) {
+      const kwClauses = [];
+      for (const kw of keywords.slice(0, 6)) {
+        const cleanKw = String(kw || '').replace(/[%_]/g, '').trim();
+        if (cleanKw.length < 2) continue;
+        const pat = `%${cleanKw}%`;
+        kwClauses.push("(COALESCE(m.text, '') LIKE ? OR COALESCE(m.media_caption, '') LIKE ? OR COALESCE(m.media_ai_index, '') LIKE ? OR COALESCE(m.media_path, '') LIKE ?)");
+        args.push(pat, pat, pat, pat);
+      }
+      if (kwClauses.length) {
+        where.push(`(${kwClauses.join(' OR ')})`);
+      }
+    }
 
     args.push(safeLimit);
     return this._db.prepare(`
@@ -3555,7 +3599,7 @@ export default class Database {
              m.media_type AS mediaType, m.media_path AS mediaPath, m.media_caption AS mediaCaption,
              m.media_ai_index AS mediaAiIndex,
              m.media_index_status AS mediaIndexStatus, m.media_index_error AS mediaIndexError,
-             m.contact_payload AS contactPayload,
+             m.contact_payload AS contactPayload, m.quoted_payload AS quotedPayload,
              m.timestamp, 0.0 AS rank
       FROM messages m
       WHERE ${where.join(' AND ')}
@@ -4067,18 +4111,41 @@ export default class Database {
       if (
         !isGroup
         && (chatJid.endsWith('@s.whatsapp.net') || chatJid.endsWith('@hosted'))
-        && (looksLikeLidFallbackContactLabel(title) || looksLikeOpaqueNumericId(title))
+        && (
+          title === chatJid
+          || String(title).endsWith('@lid')
+          || looksLikeLidFallbackContactLabel(title)
+          || looksLikeOpaqueNumericId(title)
+        )
       ) {
-        title = formatPhoneLocalPart(chatJid.split('@')[0]);
+        const pnHuman = rosterNameByChat.get(chatJid);
+        title = pnHuman || formatPhoneLocalPart(chatJid.split('@')[0]);
       }
       if (
         !isGroup
         && chatJid.endsWith('@lid')
-        && (looksLikeLidFallbackContactLabel(title) || looksLikeOpaqueNumericId(title) || !title)
+        && (
+          !title
+          || title === chatJid
+          || String(title).endsWith('@lid')
+          || looksLikeLidFallbackContactLabel(title)
+          || looksLikeOpaqueNumericId(title)
+        )
       ) {
         const pn = lidToPnMap.get(chatJid) || (peerSenderName && looksLikePhoneOnly(peerSenderName) ? peerSenderName : null);
         if (pn) {
-          title = formatPhoneLocalPart(pn.split('@')[0]);
+          const pnRoster = rosterNameByChat.get(pn);
+          const pnCandRows = titlesByChat.get(pn);
+          let pnHuman = null;
+          if (Array.isArray(pnCandRows)) {
+            for (const r of pnCandRows) {
+              if (r.chatName && looksLikeContactDisplayName(r.chatName, pn)) {
+                pnHuman = String(r.chatName).trim();
+                break;
+              }
+            }
+          }
+          title = pnRoster || pnHuman || formatPhoneLocalPart(pn.split('@')[0]);
         }
       }
       if (isImportedChatJid(chatJid)) {

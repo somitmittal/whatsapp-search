@@ -344,6 +344,26 @@ export default class GptService {
     const budgets = budgetsForProvider(provider, this.db);
     const hasPriorAnswer = prior.some((m) => m.role === 'assistant' && String(m.content || '').trim().length > 20);
     const isFollowUpTransform = hasPriorAnswer && isFollowUpTransformQuery(text);
+    const lastSources = (() => {
+      if (!contextualized.isFollowUp && !contextualized.isRetry) return [];
+      const lastAssistant = [...prior].reverse().find((m) => m.role === 'assistant' && Array.isArray(m?.payload?.sources) && m.payload.sources.length);
+      return lastAssistant ? lastAssistant.payload.sources : [];
+    })();
+    const priorSourceJids = scopeJids.length > 0
+      ? []
+      : [...new Set(lastSources.map((s) => s?.chatJid).filter(Boolean))];
+    const priorCitedRowIds = lastSources
+      .map((s) => Number(String(s?.ref || '').replace(/^m/i, '')))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const priorCitedMessages = (priorCitedRowIds.length && typeof this.db.getMessagesByRowIds === 'function')
+      ? this.db.getMessagesByRowIds(priorCitedRowIds.slice(0, 6))
+      : [];
+    const focusPriorOnly = Boolean(
+      priorCitedMessages.length > 0
+      && contextualized.isFollowUp
+      && scopeJids.length === 0
+      && !/\b(?:else|other|others|more|another|all|besides|apart)\b/i.test(text),
+    );
     const [pre] = await Promise.all([
       this.context.prefetch({
         query: effectiveQuery,
@@ -351,6 +371,9 @@ export default class GptService {
         intent: contextualized.intent,
         provider,
         skipSearch: isFollowUpTransform,
+        priorSourceJids,
+        priorCitedMessages,
+        focusPriorOnly,
       }),
     ]);
     const contextText = [

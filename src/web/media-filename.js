@@ -31,7 +31,7 @@ const EXT_CONTENT_TYPES = {
 
 /** Filename extensions we recognize in captions / message text for downloads. */
 const HINT_FILENAME_RE =
-  /([^/\\\s][^/\\]*\.(?:xlsx|xls|csv|pdf|docx?|png|jpe?g|webp|gif|mp4|m4a|mp3|ogg|oga|opus|aac|wav|flac|webm|mov|bin))\b/i;
+  /([^\s/\\][^/\\\r\n]*?\.(?:xlsx|xls|csv|pdf|docx?|png|jpe?g|webp|gif|mp4|m4a|mp3|ogg|oga|opus|aac|wav|flac|webm|mov|bin))\b/i;
 
 export function contentTypeForMediaFile(filePath) {
   const ext = (String(filePath).split('.').pop() || '').toLowerCase();
@@ -40,7 +40,12 @@ export function contentTypeForMediaFile(filePath) {
 
 /** Prefer a human filename from caption/text when the on-disk name is a Baileys `.bin`. */
 export function attachmentFilenameFromMessage(absPath, messageId, hintText = '') {
-  const fromHint = String(hintText || '').match(HINT_FILENAME_RE)?.[1];
+  const hintStr = String(hintText || '').trim();
+  const fromHintMatch = hintStr.match(HINT_FILENAME_RE)?.[1] || '';
+  // Guard against space-separated duplicated hints (e.g. "foo.pdf foo.pdf"): take last filename segment cleanly
+  const fromHint = fromHintMatch
+    ? fromHintMatch.trim()
+    : '';
   let base = basename(String(fromHint || absPath || ''));
   if (!base || base === '.' || base === '..' || /\.bin$/i.test(base)) {
     const labeled = String(hintText || '').trim().split(/[\n\r]/)[0].slice(0, 120);

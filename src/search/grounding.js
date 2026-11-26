@@ -55,6 +55,15 @@ const NON_ENTITY_WORDS = new Set([
   'captions', 'history', 'scroll', 'search', 'terms', 'conditions', 't&c', 'tnc', 'tc',
   'match', 'matches', 'zero', 'found', 'exist', 'exists', 'bhaiyao', 'bhaiya',
   'ocr', 'menu', 'menus', 'ad', 'ads', 'order', 'orders', 'poster', 'posters',
+  'quotation', 'quote', 'quotes', 'warranty', 'warranties', 'replacement', 'gst', 'applicable',
+  'extra', 'application', 'charge', 'charges', 'price', 'prices', 'total', 'results', 'result',
+  'mention', 'mentions', 'mentioned', 'conversation', 'conversations', 'individuals', 'none',
+  'location', 'locations', 'company', 'companies', 'job', 'jobs', 'role', 'roles', 'reference',
+  'references', 'date', 'dates', 'time', 'times', 'sender', 'senders', 'shared', 'share',
+  'status', 'type', 'types', 'category', 'categories', 'item', 'items', 'option', 'options',
+  'tier', 'tiers', 'duration', 'amount', 'amounts', 'rate', 'rates', 'cost', 'costs',
+  'feature', 'features', 'brand', 'title', 'titles', 'address', 'addresses', 'description',
+  'information', 'overview', 'listed', 'list', 'posted', 'post', 'author', 'timing',
 ]);
 
 /** Characters that can sit between a sentence break and its first word. */
@@ -82,6 +91,14 @@ export function normalizePhrase(text) {
  * @typedef {{ tokens: Set<string>, paddedText: string }} GroundingIndex
  */
 
+/** Split camelCase and dot/hyphen/underscore compounds (e.g. "GlossFinish" -> ["Gloss", "Finish"], "V2_Abhishek.pdf" -> ["V2", "Abhishek", "pdf"]). */
+function compoundSubtokens(rawWord) {
+  const spaced = String(rawWord || '')
+    .replace(/([a-z\p{Ll}])([A-Z\p{Lu}])/gu, '$1 $2')
+    .replace(/[._\u2010\u2011-]+/g, ' ');
+  return spaced.split(/\s+/).map(normalizeToken).filter(Boolean);
+}
+
 /**
  * Build a lookup over the exact text the model was shown.
  * @param {string} sourceText
@@ -91,13 +108,25 @@ export function buildGroundingIndex(sourceText) {
   const text = String(sourceText || '');
   const tokens = new Set();
   for (const m of text.matchAll(TOKEN_RE)) {
-    const t = normalizeToken(m[0]);
+    const raw = m[0];
+    const t = normalizeToken(raw);
     if (!t) continue;
     tokens.add(t);
     // "Rahul's" / "reports" should match "Rahul" / "report".
     if (t.length > 3 && t.endsWith('s')) tokens.add(t.slice(0, -1));
+    for (const sub of compoundSubtokens(raw)) {
+      if (sub.length >= 2) {
+        tokens.add(sub);
+        if (sub.length > 3 && sub.endsWith('s')) tokens.add(sub.slice(0, -1));
+      }
+    }
   }
-  return { tokens, paddedText: ` ${normalizePhrase(text)} ` };
+  const normalized = normalizePhrase(text);
+  return {
+    tokens,
+    paddedText: ` ${normalized} `,
+    collapsedText: normalized.replace(/\s+/g, ''),
+  };
 }
 
 /**
@@ -113,6 +142,10 @@ export function isTokenGrounded(token, index) {
   if (NON_ENTITY_WORDS.has(t)) return true;
   if (index.tokens.has(t)) return true;
   if (t.length > 3 && t.endsWith('s') && index.tokens.has(t.slice(0, -1))) return true;
+  const parts = compoundSubtokens(token);
+  if (parts.length > 1 && parts.every((p) => p.length < 2 || NON_ENTITY_WORDS.has(p) || index.tokens.has(p))) {
+    return true;
+  }
   return false;
 }
 
@@ -124,7 +157,9 @@ export function isTokenGrounded(token, index) {
 export function isPhraseGrounded(phrase, index) {
   const p = normalizePhrase(phrase);
   if (!p) return true;
-  return index.paddedText.includes(` ${p} `);
+  if (index.paddedText.includes(` ${p} `)) return true;
+  const collapsed = p.replace(/\s+/g, '');
+  return Boolean(collapsed && collapsed.length >= 4 && index.collapsedText?.includes(collapsed));
 }
 
 function startsSentence(text, wordIndex) {
@@ -166,7 +201,21 @@ export function entityWords(text, { skipSentenceStart = true } = {}) {
 }
 
 function ungroundedWords(text, index, opts) {
-  return entityWords(text, opts).filter((w) => !isTokenGrounded(w, index));
+  const words = entityWords(text, opts);
+  const bad = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (isTokenGrounded(w, index)) continue;
+    const prev = i > 0 ? words[i - 1] : '';
+    const next = i + 1 < words.length ? words[i + 1] : '';
+    const mergedPrev = prev ? normalizeToken(prev + w) : '';
+    const mergedNext = next ? normalizeToken(w + next) : '';
+    if ((mergedPrev && index.tokens.has(mergedPrev)) || (mergedNext && index.tokens.has(mergedNext))) {
+      continue;
+    }
+    bad.push(w);
+  }
+  return bad;
 }
 
 /**

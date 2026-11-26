@@ -5,12 +5,26 @@ import { heuristicDecompose } from './query-decomposer.js';
 const RRF_K = 60;
 const DAY = 86_400;
 
+function formatQuotedSuffix(m) {
+  if (!m?.quotedPayload) return '';
+  let q = m.quotedPayload;
+  if (typeof q === 'string') {
+    try { q = JSON.parse(q); } catch { return ''; }
+  }
+  if (!q || typeof q !== 'object') return '';
+  const who = q.sender ? String(q.sender).trim() : '';
+  const txt = q.text ? String(q.text).replace(/\s+/g, ' ').trim().slice(0, 80) : (q.mediaType ? `[${q.mediaType}]` : '');
+  if (!who && !txt) return '';
+  return ` [replying to ${who ? `${who}: ` : ''}${txt}]`;
+}
+
 export function messageBody(m) {
   const rawText = String(m?.text || '').trim();
   const isPlaceholder = !rawText || /^\[[\w\s]+\]$/.test(rawText);
   const mediaBits = [m?.mediaCaption, m?.mediaAiIndex]
     .map((x) => (x ? String(x).trim() : ''))
     .filter(Boolean);
+  const quoteSuffix = formatQuotedSuffix(m);
 
   if (m?.mediaType || mediaBits.length || m?.hasMediaFile || m?.mediaPath) {
     const parts = [];
@@ -31,12 +45,12 @@ export function messageBody(m) {
     }
     const mediaTag = m?.mediaType ? `[${m.mediaType}]` : '[media]';
     if (parts.length) {
-      return `${mediaTag} ${parts.join(' · ')}`;
+      return `${mediaTag} ${parts.join(' · ')}${quoteSuffix}`;
     }
-    return mediaTag;
+    return `${mediaTag}${quoteSuffix}`;
   }
 
-  return rawText || `[${m?.mediaType || 'media'}]`;
+  return `${rawText || `[${m?.mediaType || 'media'}]`}${quoteSuffix}`;
 }
 
 function shortDate(ts) {
@@ -148,30 +162,46 @@ export async function hybridSearch({
   const outboundOnly = Boolean(resolvedIntent?.outboundOnly);
 
   // 1. Just-In-Time (JIT) On-Demand Media Indexing
-  if (mediaIndexService && chatJid) {
+  if (mediaIndexService) {
     try {
-      await mediaIndexService.indexChatMediaOnDemand(chatJid, {
-        limit: (modality === 'image' || modality === 'document') ? 10 : 5,
-        sender: outboundOnly ? 'You' : null,
-        mediaType: modality || null,
-      });
+      if (chatJid && typeof mediaIndexService.indexChatMediaOnDemand === 'function') {
+        await mediaIndexService.indexChatMediaOnDemand(chatJid, {
+          limit: (modality === 'image' || modality === 'document') ? 10 : 5,
+          sender: outboundOnly ? 'You' : null,
+          mediaType: modality || null,
+        });
+      } else if (!chatJid && (modality || resolvedIntent?.fileExt) && typeof mediaIndexService.indexRecentMediaOnDemand === 'function') {
+        await mediaIndexService.indexRecentMediaOnDemand({
+          limit: 20,
+          sender: outboundOnly ? 'You' : null,
+          mediaType: modality || (resolvedIntent?.fileExt ? 'document' : null),
+        });
+      }
     } catch (jitErr) {
       console.warn('[HybridSearch:JIT]', jitErr.message);
     }
   }
 
   // 2. Build multi-query search variants (canonical + lexical + semantic expansions)
-  const variants = new Set();
-  if (typeof query === 'string' && query.trim()) variants.add(query.trim());
-  if (resolvedIntent?.cleanedQuery) variants.add(resolvedIntent.cleanedQuery);
+  const variants = [];
+  const seenVar = new Set();
+  const addVariant = (v) => {
+    const s = String(v || '').trim();
+    const key = s.toLowerCase();
+    if (!s || seenVar.has(key)) return;
+    seenVar.add(key);
+    variants.push(s);
+  };
+  if (typeof query === 'string') addVariant(query);
+  if (resolvedIntent?.cleanedQuery) addVariant(resolvedIntent.cleanedQuery);
   if (Array.isArray(resolvedIntent?.lexicalQueries)) {
-    for (const lq of resolvedIntent.lexicalQueries) if (lq) variants.add(lq);
+    for (const lq of resolvedIntent.lexicalQueries) addVariant(lq);
   }
   if (Array.isArray(resolvedIntent?.semanticQueries)) {
-    for (const sq of resolvedIntent.semanticQueries) if (sq) variants.add(sq);
+    for (const sq of resolvedIntent.semanticQueries) addVariant(sq);
   }
   // Cap distinct query variants to avoid query explosion
-  const queryList = Array.from(variants).slice(0, 4);
+  const queryList = variants.slice(0, 4);
   if (!queryList.length && typeof query === 'string') queryList.push(query);
 
   // 3. Parallel FTS5 queries across all variants
@@ -186,6 +216,10 @@ export async function hybridSearch({
     : Promise.resolve([]);
 
   // 4b. Structured Media Retrieval (for documents/PDFs/images/videos)
+  const LEX_STOP = new Set(['the', 'and', 'for', 'from', 'with', 'find', 'show', 'give', 'tell', 'where', 'what', 'when', 'that', 'this', 'have', 'sent', 'received', 'shared']);
+  const mediaKeywords = (resolvedIntent?.lexicalQueries || [])
+    .flatMap((q) => String(q || '').toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, ' ').split(/\s+/))
+    .filter((w) => w.length >= 2 && !LEX_STOP.has(w));
   const structuredMediaPromise = Promise.resolve().then(() => {
     if (typeof db.getRecentMediaMessages === 'function' && (modality || resolvedIntent?.fileExt)) {
       try {
@@ -194,6 +228,7 @@ export async function hybridSearch({
           mediaType: modality || (resolvedIntent?.fileExt ? 'document' : null),
           sender: outboundOnly ? 'You' : null,
           fileExt: resolvedIntent?.fileExt || null,
+          keywords: mediaKeywords.length ? mediaKeywords : null,
           limit: Math.min(limit, 10),
         }) || [];
       } catch (e) {
@@ -241,10 +276,12 @@ export async function hybridSearch({
 
   structuredHits.forEach((m, i) => {
     rowsById.set(m.id, m);
-    // If user specifically asked for "latest/recent" or a specific fileExt without text, give top priority
-    const priority = (resolvedIntent?.recency === 'latest' || !queryList.some((q) => q.length > 3))
+    // Recency-only or filename/extension-only media queries get strong top priority;
+    // keyword media queries still rely on lexical/OCR matching rather than dumping unrelated latest images.
+    const isMediaOnlyQuery = !mediaKeywords.length;
+    const priority = (isMediaOnlyQuery && (resolvedIntent?.recency === 'latest' || !queryList.some((q) => q.length > 3)))
       ? (10.0 / (i + 1))
-      : (1.0 / (RRF_K + i + 1));
+      : (mediaKeywords.length ? (1.5 / (RRF_K + i + 1)) : (1.0 / (RRF_K + i + 1)));
     score.set(m.id, (score.get(m.id) || 0) + priority);
   });
 
@@ -272,7 +309,24 @@ export async function hybridSearch({
     for (const m of db.getMessagesByRowIds(missing)) rowsById.set(m.id, m);
   }
 
-  // Apply modality, direction, and implicit feedback multipliers
+  // Apply lexical coverage, exact-phrase, recency, modality, direction, and implicit feedback reranking
+  const RERANK_STOP = new Set([
+    'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'do', 'does', 'did',
+    'can', 'could', 'will', 'would', 'in', 'on', 'at', 'to', 'for', 'from',
+    'with', 'by', 'of', 'about', 'what', 'which', 'who', 'where', 'when', 'how',
+    'check', 'find', 'show', 'tell', 'latest', 'recent', 'last', 'newest', 'me', 'my',
+  ]);
+  const rawQueryTokens = String(resolvedIntent?.cleanedQuery || (typeof query === 'string' ? query : ''))
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}._-]+/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 2 && !RERANK_STOP.has(w));
+  const rerankTokens = [...new Set(rawQueryTokens)];
+  const phraseNeedle = rerankTokens.length >= 2 ? rerankTokens.join(' ') : '';
+  const rowTimestamps = [...rowsById.values()].map((r) => Number(r?.timestamp) || 0).filter((t) => t > 0);
+  const maxRowTs = rowTimestamps.length ? Math.max(...rowTimestamps) : 0;
+  const isLatestIntent = resolvedIntent?.recency === 'latest';
+
   const feedbackBoosts = (typeof db?.getImplicitBoostsForQuery === 'function' && typeof query === 'string' && query.trim())
     ? db.getImplicitBoostsForQuery(query)
     : null;
@@ -283,6 +337,25 @@ export async function hybridSearch({
     let multiplier = 1.0;
     if (modality && row.mediaType === modality) multiplier *= 1.5;
     if (outboundOnly && row.sender === 'You') multiplier *= 1.3;
+
+    const hay = `${messageBody(row)} ${row.chatName || ''} ${row.sender || ''}`.toLowerCase();
+    if (rerankTokens.length) {
+      let matched = 0;
+      for (const tok of rerankTokens) {
+        if (hay.includes(tok)) matched += 1;
+      }
+      const coverage = matched / rerankTokens.length;
+      multiplier *= (1 + 0.85 * coverage);
+      if (phraseNeedle && hay.includes(phraseNeedle)) multiplier *= 1.35;
+    }
+
+    const rowTs = Number(row.timestamp) || 0;
+    if (rowTs > 0 && maxRowTs > 0) {
+      const ageDays = Math.max(0, (maxRowTs - rowTs) / DAY);
+      const decayWeight = isLatestIntent ? 0.55 : 0.15;
+      multiplier *= (1 + decayWeight * Math.exp(-ageDays / 180));
+    }
+
     if (feedbackBoosts) {
       const chatDelta = row.chatJid ? (feedbackBoosts.chatBoosts.get(row.chatJid) || 0) : 0;
       const msgDelta = feedbackBoosts.messageBoosts.get(row.id) || 0;
@@ -306,6 +379,7 @@ export async function hybridSearch({
   const dedupeNeighborText = new Set();
 
   for (const hit of ranked) {
+    if (seen.has(hit.id)) continue;
     const around = GPT_LIMITS.neighborRadius
       ? db.getChatNeighbors(hit.chatJid, hit.timestamp, hit.id, GPT_LIMITS.neighborRadius)
       : [];

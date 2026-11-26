@@ -146,14 +146,15 @@ export function displayChatTitle(chatJid, chatName) {
   if (
     (pnUser || hostedUser)
     && (
-      looksLikeLidFallbackContactLabel(raw)
+      raw.endsWith('@lid')
+      || looksLikeLidFallbackContactLabel(raw)
       || looksLikeOpaqueNumericId(raw)
       || looksLikeMaskedPhoneLabel(raw)
     )
   ) {
     return formatPhoneLikeName(jid);
   }
-  if (lidUser && (looksLikeOpaqueNumericId(raw) || !raw)) {
+  if (lidUser && (looksLikeOpaqueNumericId(raw) || !raw || raw === jid || raw.endsWith('@lid'))) {
     const tail = (jid.split('@')[0] || '').replace(/\D/g, '').slice(-6);
     return tail ? `Contact (${tail})` : 'Contact';
   }

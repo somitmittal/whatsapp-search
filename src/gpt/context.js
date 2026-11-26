@@ -215,15 +215,18 @@ export class ContextEngine {
     this.mediaIndexService = mediaIndexService;
   }
 
-  async prefetch({ query, scopeJids = [], provider = null, intent = null, skipSearch = false }) {
+  async prefetch({ query, scopeJids = [], provider = null, intent = null, skipSearch = false, priorSourceJids = [], priorCitedMessages = [], focusPriorOnly = false }) {
     const budget = budgetsForProvider(provider, this.db).contextTokens;
     const range = detectTimeRange(query);
     const broad = isBroadQuery(query);
+    const isSituationalRecent = /\b(?:where\s+(?:are|r)\s+we|where\s+we\s+(?:heading|meeting|going)|did\s+(?:you|they)\s+leave|what\s+did\s+(?:he|she|they)\s+(?:just\s+)?say)\b/i.test(String(query || ''));
     // Broad questions such as "what is this group about?" have no meaningful
     // search terms. FTS/vector search turns those generic words into noisy hits;
     // use the scoped timeline and its indexed summaries instead.
     const overview = broad && !range;
     const scoped = [...new Set(scopeJids.filter(Boolean))];
+    const anchoredJids = [...new Set((priorSourceJids || []).filter(Boolean))].filter((j) => !scoped.includes(j));
+    const optsDirectPriorOnly = Boolean(focusPriorOnly);
 
     const currentChatName = scoped.length === 1 ? this.directory.name(scoped[0]) : null;
     const resolvedIntent = intent || heuristicDecompose(query);
@@ -234,16 +237,55 @@ export class ContextEngine {
         const resolved = this.directory.resolve(ent);
         if (resolved?.chatJid && !scoped.includes(resolved.chatJid) && !candidateJids.includes(resolved.chatJid)) {
           candidateJids.push(resolved.chatJid);
+        } else if (!resolved && /\s/.test(String(ent || ''))) {
+          for (const part of String(ent).split(/\s+/).reverse()) {
+            if (part.length < 4) continue;
+            const partMatch = this.directory.resolve(part);
+            if (partMatch?.chatJid && !scoped.includes(partMatch.chatJid) && !candidateJids.includes(partMatch.chatJid)) {
+              candidateJids.push(partMatch.chatJid);
+              if (candidateJids.length >= 3) break;
+            }
+          }
         }
       }
     }
 
-    const chatsToSearch = scoped.length ? [...scoped] : [null];
+    const pinnedPrior = [];
+    const seenPriorIds = new Set();
+    for (const m of (priorCitedMessages || [])) {
+      if (!m || seenPriorIds.has(m.id)) continue;
+      seenPriorIds.add(m.id);
+      pinnedPrior.push({ ...m, chatName: m.chatName || this.directory.name(m.chatJid) });
+      if (typeof this.db.getChatNeighbors === 'function') {
+        try {
+          for (const nb of this.db.getChatNeighbors(m.chatJid, m.timestamp, m.id, 1) || []) {
+            if (nb && !seenPriorIds.has(nb.id)) {
+              seenPriorIds.add(nb.id);
+              pinnedPrior.push({ ...nb, chatName: nb.chatName || this.directory.name(nb.chatJid) });
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    // Direct attribute follow-ups ("when was that shared?", "where is the job located?") when
+    // prior cited evidence is already pinned should focus tightly on that evidence instead of
+    // drowning small models with 15+ unrelated matches from the same group chat.
+    const skipSearchForFocusedPrior = Boolean(
+      skipSearch
+      || (pinnedPrior.length > 0 && optsDirectPriorOnly),
+    );
+
+    const chatsToSearch = scoped.length
+      ? [...scoped]
+      : (anchoredJids.length
+          ? (pinnedPrior.length ? [...anchoredJids.slice(0, 2)] : [...anchoredJids.slice(0, 2), null])
+          : [null]);
     for (const jid of candidateJids) {
       if (!chatsToSearch.includes(jid)) chatsToSearch.push(jid);
     }
 
-    const searches = (overview || skipSearch)
+    const searches = (overview || skipSearchForFocusedPrior)
       ? []
       : chatsToSearch.map((jid) => hybridSearch({
         db: this.db,
@@ -252,15 +294,19 @@ export class ContextEngine {
         chatJid: jid,
         startTs: range?.startTs ?? null,
         endTs: range?.endTs ?? null,
+        limit: pinnedPrior.length ? 5 : 20,
         mediaIndexService: this.mediaIndexService,
         intent: resolvedIntent,
       }));
     const searchResults = await Promise.all(searches.map((p) => p.catch(() => ({ messages: [] }))));
 
     const timeline = [];
-    if (scoped.length) {
-      const perChat = Math.max(1, Math.floor((range || broad ? GPT_LIMITS.maxMessagesInContext : 25) / scoped.length));
-      for (const jid of scoped) {
+    const timelineJids = scoped.length
+      ? scoped
+      : (pinnedPrior.length ? [] : anchoredJids.slice(0, 2));
+    if (timelineJids.length) {
+      const perChat = Math.max(1, Math.floor((range || broad ? GPT_LIMITS.maxMessagesInContext : (scoped.length ? 25 : 10)) / timelineJids.length));
+      for (const jid of timelineJids) {
         const linkedJids = typeof this.db.getLinkedJids === 'function' ? this.db.getLinkedJids(jid) : [jid];
         const rows = range
           ? this.db.getMessagesInRange({ chatJid: jid, startTs: range.startTs, endTs: range.endTs, limit: perChat, newestFirst: true })
@@ -269,24 +315,6 @@ export class ContextEngine {
               : this.db.getMessagesPaginated(jid, perChat, 0));
         const name = this.directory.name(jid);
         timeline.push(...rows.map((m) => ({ ...m, chatName: m.chatName || name })));
-      }
-    }
-
-    const seen = new Set();
-    const sections = [];
-    const all = [];
-    let remaining = budget;
-
-    if (timeline.length) {
-      const share = searchResults.some((r) => r.messages.length) ? Math.floor(budget * 0.6) : budget;
-      const packed = packMessages(timeline, share, seen);
-      if (packed.count) {
-        const heading = scoped.length === 1 && currentChatName
-          ? `# Active conversation in ${currentChatName} (Most recent messages)`
-          : `# Recent messages${range ? ` (${range.label})` : ''}`;
-        sections.push(`${heading}\n${packed.text}`);
-        remaining -= packed.tokens;
-        all.push(...timeline);
       }
     }
 
@@ -303,13 +331,56 @@ export class ContextEngine {
         if (i < arr.length) hits.push(arr[i]);
       }
     }
-    if (hits.length && remaining > 0) {
-      const packed = packMessages(hits, remaining, seen);
+
+    const seen = new Set();
+    const sections = [];
+    const all = [];
+    let remaining = budget;
+
+    if (pinnedPrior.length && remaining > 0) {
+      const priorBudget = Math.floor(budget * 0.45);
+      const packedPrior = packMessages(pinnedPrior, priorBudget, seen);
+      if (packedPrior.count) {
+        sections.push(`# Messages referenced in the previous answer (Check these first)\n${packedPrior.text}`);
+        remaining -= packedPrior.tokens;
+        all.push(...pinnedPrior);
+      }
+    }
+
+    const searchFirst = hits.length > 0 && !overview && !isSituationalRecent;
+
+    const packTimelineSection = (maxBudget, maxRows = timeline.length) => {
+      if (!timeline.length || maxBudget <= 0) return;
+      const slice = timeline.slice(0, maxRows);
+      const packed = packMessages(slice, maxBudget, seen);
+      if (packed.count) {
+        const heading = scoped.length === 1 && currentChatName
+          ? `# Active conversation in ${currentChatName} (Most recent messages)`
+          : `# Recent messages${range ? ` (${range.label})` : ''}`;
+        sections.push(`${heading}\n${packed.text}`);
+        remaining -= packed.tokens;
+        all.push(...slice);
+      }
+    };
+
+    const packHitsSection = (maxBudget) => {
+      if (!hits.length || maxBudget <= 0) return;
+      const packed = packMessages(hits, maxBudget, seen);
       if (packed.count) {
         sections.push(`# Search results for the question\n${packed.text}`);
         remaining -= packed.tokens;
         all.push(...hits);
       }
+    };
+
+    if (searchFirst) {
+      const hitShare = timeline.length ? Math.floor(budget * 0.68) : budget;
+      packHitsSection(hitShare);
+      packTimelineSection(remaining, 12);
+    } else {
+      const timelineShare = hits.length ? Math.floor(budget * 0.6) : budget;
+      packTimelineSection(timelineShare);
+      packHitsSection(remaining);
     }
 
     if (broad && !range && remaining > 0) {

@@ -9,11 +9,11 @@ import {
     setReplyTarget,
     updateComposerVisibility,
 } from '/js/composer.js';
-import { INITIAL_CHAT_MESSAGES_LIMIT } from '/js/constants.js';
+import { CHAT_PAGE, INITIAL_CHAT_MESSAGES_LIMIT } from '/js/constants.js';
 import { renderExpenseDiff } from '/js/expense-sheet-view.js';
 import { initExpenses } from '/js/expenses.js';
 import { initFetchShim } from '/js/fetch-shim.js';
-import { displayChatTitle, formatPhoneLikeName } from '/js/format.js';
+import { displayChatTitle, formatPhoneLikeName, messageTimestampToDate } from '/js/format.js';
 import { filterAndRankChats } from '/js/chat-list-filter.js';
 import { initGmail } from '/js/gmail.js';
 import { initImport } from '/js/import.js';
@@ -196,6 +196,8 @@ const state = {
   openTabs: loadOpenTabs(),
   /** Cached messages for open chat tabs: jid → rows */
   chatMessages: new Map(),
+  chatListLimit: 150,
+  chatListScopeKey: '',
   streaming: null,
   mention: { open: false, kind: 'chat', items: [], index: 0, ctrl: null },
   /** null = Auto (app default); { provider, model } = explicit pick for this thread. */
@@ -530,27 +532,38 @@ async function syncWaState() {
   }
 }
 
+let _waReloadInFlight = null;
 async function reloadActiveWaMessages() {
   const jid = state.activeChatJid;
   if (!jid) return;
-  try {
-    const res = await fetch(
-      `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${INITIAL_CHAT_MESSAGES_LIMIT}&offset=0`,
-      { headers: authHeaders() },
-    );
-    const msgs = res.ok ? await res.json() : [];
-    const list = Array.isArray(msgs) ? msgs : [];
-    // Keep optimistic outbound bubbles until the server has indexed them.
-    const prev = state.chatMessages.get(jid) || [];
-    const serverIds = new Set(list.map((m) => m.messageId).filter(Boolean));
-    const pending = prev.filter((m) => m.sender === 'You' && m.messageId && !serverIds.has(m.messageId));
-    const merged = pending.length ? [...list, ...pending] : list;
-    state.chatMessages.set(jid, merged);
-    if (state.activeChatJid === jid) {
-      paintWaMessages(jid, merged);
-      triggerDeferredSenderResolution(jid, merged);
-    }
-  } catch { /* ignore */ }
+  if (_waReloadInFlight && _waReloadInFlight.jid === jid) {
+    return _waReloadInFlight.promise;
+  }
+  const promise = (async () => {
+    try {
+      const lim = Math.max(store.chatMessagesOffset || INITIAL_CHAT_MESSAGES_LIMIT, INITIAL_CHAT_MESSAGES_LIMIT);
+      const res = await fetch(
+        `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${lim}&offset=0`,
+        { headers: authHeaders() },
+      );
+      const msgs = res.ok ? await res.json() : [];
+      const list = Array.isArray(msgs) ? msgs : [];
+      // Keep optimistic outbound bubbles until the server has indexed them.
+      const prev = state.chatMessages.get(jid) || [];
+      const serverIds = new Set(list.map((m) => m.messageId).filter(Boolean));
+      const pending = prev.filter((m) => m.sender === 'You' && m.messageId && !serverIds.has(m.messageId));
+      const merged = pending.length ? [...list, ...pending] : list;
+      state.chatMessages.set(jid, merged);
+      if (state.activeChatJid === jid) {
+        paintWaMessages(jid, merged);
+        triggerDeferredSenderResolution(jid, merged);
+      }
+    } catch { /* ignore */ }
+  })().finally(() => {
+    if (_waReloadInFlight?.promise === promise) _waReloadInFlight = null;
+  });
+  _waReloadInFlight = { jid, promise };
+  return promise;
 }
 
 /** Show an outbound bubble immediately while the server indexes / WA echoes. */
@@ -1190,17 +1203,32 @@ function onAccountChanged(detail = {}) {
   if (!els.settings.hidden && state.settingsTab === 'account') void refreshAccountPanel();
 }
 
+let _loadChatsInFlight = null;
+let _loadChatsQueued = false;
 async function loadChats() {
-  try {
-    // WhatsApp / imported roster — not GPT threads (those use loadThreads → /api/gpt/conversations).
-    const res = await fetch('/api/chats', { headers: authHeaders() });
-    if (!res.ok) throw new Error('failed');
-    const data = await res.json();
-    state.chats = Array.isArray(data) ? data : (data.chats || []);
-    store.chatData = state.chats;
-  } catch { state.chats = []; store.chatData = []; }
-  autoSelectSidebarTab();
-  renderChats();
+  if (_loadChatsInFlight) {
+    _loadChatsQueued = true;
+    return _loadChatsInFlight;
+  }
+  _loadChatsInFlight = (async () => {
+    try {
+      // WhatsApp / imported roster — not GPT threads (those use loadThreads → /api/gpt/conversations).
+      const res = await fetch('/api/chats', { headers: authHeaders() });
+      if (!res.ok) throw new Error('failed');
+      const data = await res.json();
+      state.chats = Array.isArray(data) ? data : (data.chats || []);
+      store.chatData = state.chats;
+    } catch { /* keep prior roster on transient abort */ }
+    autoSelectSidebarTab();
+    renderChats();
+  })().finally(() => {
+    _loadChatsInFlight = null;
+    if (_loadChatsQueued) {
+      _loadChatsQueued = false;
+      void loadChats();
+    }
+  });
+  return _loadChatsInFlight;
 }
 
 function renderWaBanner(st) {
@@ -1228,7 +1256,11 @@ function renderWaBanner(st) {
   }
 }
 
-function gptSidebarEmptyHtml() {
+function gptSidebarEmptyHtml(q = '') {
+  const cleanQ = String(q || '').trim();
+  if (cleanQ) {
+    return `No chats matching “${esc(cleanQ)}”.<br><span style="opacity:.85;font-size:13px">Try another name, phone number, or keyword.</span>`;
+  }
   if (store.sidebarListTab === 'imported') {
     return 'No imported chats yet.<br><span style="opacity:.85;font-size:13px">Tap <strong>Import chats</strong> to import a WhatsApp export.</span>';
   }
@@ -1241,6 +1273,11 @@ function gptSidebarEmptyHtml() {
 function renderChats() {
   const q = (els.chatFilter?.value || '').trim();
   const tab = store.sidebarListTab === 'chat' ? 'chat' : 'imported';
+  const scopeKey = `${tab}|${q}`;
+  if (state.chatListScopeKey !== scopeKey) {
+    state.chatListScopeKey = scopeKey;
+    state.chatListLimit = 150;
+  }
   const tabChats = state.chats.filter((c) => {
     if (!c?.chatJid || c.chatJid === 'status@broadcast') return false;
     return sidebarTabOf(c) === tab;
@@ -1257,14 +1294,15 @@ function renderChats() {
     })
     : tabChats.slice().sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0))
   );
+  state._renderedChatsTotal = rows.length;
   renderSidebarTabCounts();
   if (!rows.length) {
-    els.chatList.innerHTML = `<div class="sidebar-empty">${gptSidebarEmptyHtml()}</div>`;
+    els.chatList.innerHTML = `<div class="sidebar-empty">${gptSidebarEmptyHtml(q)}</div>`;
     delete els.chatList.dataset.fp;
     return;
   }
-  const topRows = rows.slice(0, 150);
-  const fp = `${tab}|${q}|${topRows.map((c) => `${c.chatJid}:${c.lastMessageTs}:${c.unreadCount || 0}`).join(',')}`;
+  const topRows = rows.slice(0, state.chatListLimit || 150);
+  const fp = `${tab}|${q}|${state.chatListLimit}|${topRows.map((c) => `${c.chatJid}:${c.lastMessageTs}:${c.unreadCount || 0}`).join(',')}`;
   if (els.chatList.dataset.fp !== fp) {
     els.chatList.innerHTML = topRows.map((c) => chatRowHtml(c)).join('');
     els.chatList.dataset.fp = fp;
@@ -1373,6 +1411,13 @@ async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = nu
 
   const focusStr = focusMessageId != null ? String(focusMessageId) : '';
   const cleanFocus = focusStr ? focusStr.replace(/^m/i, '') : '';
+  store.activeFocusMessageId = focusStr || null;
+  if (!focusStr) {
+    store.chatMessagesOffset = 0;
+    store.chatHasMoreLocal = true;
+    store.chatLoadingOlder = false;
+    store.chatOldestAnchorTs = null;
+  }
   if (focusStr) {
     const cached = state.chatMessages.get(jid);
     const hasFocus = Array.isArray(cached) && cached.some(
@@ -1408,6 +1453,17 @@ async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = nu
     const msgs = res.ok ? await res.json() : [];
     const list = Array.isArray(msgs) ? msgs : [];
     state.chatMessages.set(jid, list);
+    if (!focusStr && list.length) {
+      const sorted = [...list].sort((a, b) => (messageTimestampToDate(a.timestamp)?.getTime() ?? 0) - (messageTimestampToDate(b.timestamp)?.getTime() ?? 0));
+      store.chatOldestAnchorTs = sorted[0]?.timestamp ?? null;
+      store.chatMessagesOffset = list.length;
+      const chRow = state.chats.find((c) => c.chatJid === jid);
+      if (typeof chRow?.messageCount === 'number') {
+        store.chatHasMoreLocal = list.length < chRow.messageCount;
+      } else {
+        store.chatHasMoreLocal = list.length >= INITIAL_CHAT_MESSAGES_LIMIT;
+      }
+    }
     if (state.activeChatJid === jid) {
       paintWaMessages(jid, list, { forceScroll: !focusStr, focusMessageId: focusStr || null });
       triggerDeferredSenderResolution(jid, list);
@@ -1415,7 +1471,6 @@ async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = nu
     fetch(`/api/chats/${encodeURIComponent(jid)}/seen`, {
       method: 'POST', headers: authHeaders(), body: '{}',
     }).catch(() => {});
-    void syncWaState();
   } catch {
     if (state.activeChatJid === jid) {
       els.waView.innerHTML = '<div class="empty-messages-state"><div class="empty-messages-title">Could not load messages</div></div>';
@@ -1425,6 +1480,49 @@ async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = nu
   document.getElementById('msg-text')?.focus?.();
 }
 if (typeof window !== 'undefined') window.openChatTab = openChatTab;
+
+async function loadOlderWaChatPage() {
+  const jid = state.activeChatJid;
+  if (!jid || store.chatLoadingOlder || store.activeFocusMessageId || !store.chatHasMoreLocal) return;
+  store.chatLoadingOlder = true;
+  try {
+    const res = await fetch(
+      `/api/messages?chatJid=${encodeURIComponent(jid)}&limit=${CHAT_PAGE}&offset=${store.chatMessagesOffset || 0}`,
+      { headers: authHeaders() },
+    );
+    const rows = res.ok ? await res.json() : [];
+    if (state.activeChatJid !== jid || !Array.isArray(rows) || !rows.length) {
+      if (state.activeChatJid === jid) store.chatHasMoreLocal = false;
+      return;
+    }
+    const existing = state.chatMessages.get(jid) || [];
+    const seenIds = new Set(existing.map((m) => m.messageId || String(m.id)));
+    const fresh = rows.filter((m) => !seenIds.has(m.messageId || String(m.id)));
+    if (!fresh.length) {
+      store.chatHasMoreLocal = false;
+      return;
+    }
+    const sortedAsc = [...fresh].sort((a, b) => (messageTimestampToDate(a.timestamp)?.getTime() ?? 0) - (messageTimestampToDate(b.timestamp)?.getTime() ?? 0));
+    const oldH = els.waView.scrollHeight;
+    const oldTop = els.waView.scrollTop;
+    const frag = buildChatMessagesHtml(sortedAsc, jid, null, store.chatOldestAnchorTs);
+    els.waView.insertAdjacentHTML('afterbegin', frag);
+    els.waView.scrollTop = els.waView.scrollHeight - oldH + oldTop;
+    const merged = [...fresh, ...existing];
+    state.chatMessages.set(jid, merged);
+    els.waView.dataset.paintFp = messagesPaintFingerprint(merged, jid, null);
+    triggerDeferredSenderResolution(jid, fresh);
+    store.chatMessagesOffset = (store.chatMessagesOffset || 0) + rows.length;
+    store.chatOldestAnchorTs = sortedAsc[0]?.timestamp ?? store.chatOldestAnchorTs;
+    if (rows.length < CHAT_PAGE) store.chatHasMoreLocal = false;
+    const ch = state.chats.find((c) => c.chatJid === jid);
+    if (ch && typeof ch.messageCount === 'number' && store.chatMessagesOffset >= ch.messageCount) {
+      store.chatHasMoreLocal = false;
+    }
+  } catch { /* ignore */ } finally {
+    store.chatLoadingOlder = false;
+  }
+}
 
 async function openConversation(id, { pushUrl = true } = {}) {
   let data;
@@ -2630,6 +2728,14 @@ function wire() {
     if (!item?.dataset.jid || !els.chatList.contains(item)) return;
     showSidebarContextMenu(e, item.dataset.jid);
   });
+  els.chatList.addEventListener('scroll', () => {
+    const total = state._renderedChatsTotal || 0;
+    if ((state.chatListLimit || 150) >= total) return;
+    if (els.chatList.scrollTop + els.chatList.clientHeight >= els.chatList.scrollHeight - 240) {
+      state.chatListLimit = (state.chatListLimit || 150) + 150;
+      renderChats();
+    }
+  }, { passive: true });
 
   els.filter.addEventListener('input', renderThreads);
   els.threads.addEventListener('click', async (e) => {
@@ -2821,6 +2927,19 @@ function wire() {
   });
 
   els.askAi?.addEventListener('click', () => askAiAboutActiveChat());
+
+  els.waView?.addEventListener('scroll', () => {
+    if (!state.activeChatJid || store.activeFocusMessageId || store.chatLoadingOlder || !store.chatHasMoreLocal) return;
+    if (els.waView.scrollTop > 100) {
+      store.gptWaOlderScrollArmed = true;
+      return;
+    }
+    if (!store.gptWaOlderScrollArmed) return;
+    store.gptWaOlderScrollArmed = false;
+    void loadOlderWaChatPage().finally(() => {
+      setTimeout(() => { store.gptWaOlderScrollArmed = true; }, 350);
+    });
+  }, { passive: true });
 
   els.waView?.addEventListener('click', async (e) => {
     const menuBtn = e.target.closest('[data-wa-menu-toggle]');

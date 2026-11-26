@@ -44,7 +44,7 @@ import {
   downloadFilenameForServedMedia,
 } from './media-filename.js';
 import { isWaIngestionActive } from '../whatsapp/ingestion-gate.js';
-import { isPlaceholderSenderName, isUpgradeableSenderName } from '../whatsapp/chat-display-name.js';
+import { formatPhoneLocalPart, isPlaceholderSenderName, isUpgradeableSenderName } from '../whatsapp/chat-display-name.js';
 import { PHONE_HISTORY_DEFAULT_COUNT } from '../whatsapp/history-sync-policy.js';
 import SmbInboxService from '../smb/inbox-service.js';
 import AppointmentBoardService from '../smb/appointment-board.js';
@@ -1754,6 +1754,7 @@ export default class WebServer {
             ? wa.getUnreadCountsMap()
             : new Map();
           const persistedUnread = this.db.getAllChatUnread();
+          const mentionMemo = new Map();
           stats = stats.map((row) => {
             const live = liveUnread.get(row.chatJid);
             const stored = persistedUnread.get(row.chatJid);
@@ -1761,7 +1762,14 @@ export default class WebServer {
               Number.isFinite(live) ? live : 0,
               Number.isFinite(stored) ? stored : 0,
             );
-            return unreadCount > 0 ? { ...row, unreadCount } : { ...row, unreadCount: 0 };
+            const preview = row.lastMessagePreview
+              ? this._resolveNumericMentions(row.lastMessagePreview, wa, mentionMemo)
+              : row.lastMessagePreview;
+            return {
+              ...row,
+              lastMessagePreview: preview,
+              unreadCount: unreadCount > 0 ? unreadCount : 0,
+            };
           });
         } catch (_) {
           /* keep DB-only titles */
@@ -1860,9 +1868,17 @@ export default class WebServer {
           && chatJid !== 'status@broadcast'
           && !chatJid.endsWith('@imported');
         const memoResolved = new Map();
+        const mentionMemo = new Map();
+        const pendingBackfills = [];
         let needsBgResolve = false;
 
         for (const m of sanitized) {
+          if (m.text && /@\d{11,20}/.test(m.text)) {
+            m.text = this._resolveNumericMentions(m.text, wa, mentionMemo);
+          }
+          if (m.mediaCaption && /@\d{11,20}/.test(m.mediaCaption)) {
+            m.mediaCaption = this._resolveNumericMentions(m.mediaCaption, wa, mentionMemo);
+          }
           if (m.sender === 'You') continue;
           const needsResolve = !m.sender || isUpgradeableSenderName(m.sender);
           if (!needsResolve) continue;
@@ -1914,12 +1930,25 @@ export default class WebServer {
             }
             if (!m.senderJid) m.senderJid = lookupJid;
             if (!isUpgradeableSenderName(resolved)) {
-              try { this.db.backfillSenderName(lookupJid, resolved); } catch (_) {}
+              pendingBackfills.push([lookupJid, resolved]);
             }
           }
           if (!resolved || isUpgradeableSenderName(resolved)) {
             needsBgResolve = true;
           }
+        }
+
+        if (pendingBackfills.length > 0) {
+          const batch = pendingBackfills.slice(0, 50);
+          setImmediate(() => {
+            try {
+              runWithTenant(tid, () => {
+                for (const [lj, name] of batch) {
+                  try { this.db.backfillSenderName(lj, name); } catch (_) {}
+                }
+              });
+            } catch (_) {}
+          });
         }
 
         if (wa && needsBgResolve && typeof wa.resolveChatSenders === 'function') {
@@ -1999,7 +2028,7 @@ export default class WebServer {
           q.download === '1' ||
           q.download === 'true' ||
           String(q.disposition || '').toLowerCase() === 'attachment';
-        const nameHint = [row.mediaCaption, row.text].filter(Boolean).join(' ');
+        const nameHint = [...new Set([row.mediaCaption, row.text].map((s) => String(s || '').trim()).filter(Boolean))].join(' ');
         const fname = attachmentFilenameFromMessage(safe, messageId, nameHint);
         const isVoiceNote = row.mediaType === 'audio' || row.mediaType === 'ptt';
         let typeFromDisk = contentTypeForMediaFile(safe);
@@ -4506,6 +4535,48 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
+  }
+
+  /**
+   * Resolve opaque numeric WhatsApp @mentions (e.g. `@70261521023042`) into contact names or
+   * formatted phone numbers using in-memory WA contacts, DB sender history, and LID->PN mappings.
+   */
+  _resolveNumericMentions(text, wa = null, memo = new Map()) {
+    const raw = String(text || '');
+    if (!raw || !/@\d{11,20}/.test(raw)) return text;
+    return raw.replace(/@(\d{11,20})\b/g, (full, digits) => {
+      if (memo.has(digits)) {
+        const hit = memo.get(digits);
+        return hit ? `@${hit}` : full;
+      }
+      let resolved = null;
+      const candJids = [`${digits}@lid`, `${digits}@s.whatsapp.net`];
+      try {
+        if (typeof this.db?.getLinkedJids === 'function') {
+          for (const linked of this.db.getLinkedJids(`${digits}@lid`) || []) {
+            if (!candJids.includes(linked)) candJids.push(linked);
+          }
+        }
+        if (wa && typeof wa.getSenderDisplayNameFast === 'function') {
+          for (const j of candJids) {
+            const fast = wa.getSenderDisplayNameFast(j);
+            if (fast && !isUpgradeableSenderName(fast)) { resolved = fast; break; }
+          }
+        }
+        if (!resolved && typeof this.db?.getResolvedSenderForJid === 'function') {
+          const dbName = this.db.getResolvedSenderForJid(candJids);
+          if (dbName && !isUpgradeableSenderName(dbName)) resolved = dbName;
+        }
+        if (!resolved) {
+          const pnJid = candJids.find((j) => j.endsWith('@s.whatsapp.net') && j !== `${digits}@s.whatsapp.net`);
+          if (pnJid) {
+            resolved = formatPhoneLocalPart(pnJid.split('@')[0]);
+          }
+        }
+      } catch (_) {}
+      memo.set(digits, resolved || null);
+      return resolved ? `@${resolved}` : full;
+    });
   }
 
   /**

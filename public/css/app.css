@@ -481,7 +481,7 @@
     background: #000;
   }
   .msg-media-audio { width: min(260px, 80vw); margin-top: 4px; }
-  .msg-media-pdf {
+  iframe.msg-media-pdf {
     width: min(360px, 92vw);
     min-height: 280px;
     border: 0;

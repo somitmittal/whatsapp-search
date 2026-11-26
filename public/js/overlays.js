@@ -162,6 +162,11 @@ export function initOverlays() {
   });
 
   document.addEventListener('click', () => closeAllMenus());
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.querySelector('.overlay-panel.open')) {
+      closeAllOverlays();
+    }
+  });
 
   settingsOverlayRoot()?.querySelectorAll('[data-settings-tab]').forEach((btn) => {
     btn.addEventListener('click', () => setSettingsTab(btn.getAttribute('data-settings-tab')));

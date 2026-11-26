@@ -209,6 +209,32 @@ export default class MediaIndexService {
     return indexed;
   }
 
+  /** Fast-path OCR/doc extraction on most recent unindexed media across all chats for unscoped media queries. */
+  async indexRecentMediaOnDemand({ limit = 20, sender = null, mediaType = null } = {}) {
+    if (typeof this._db.getUnindexedMediaGlobal !== 'function') return 0;
+    const candidates = this._db.getUnindexedMediaGlobal(limit, { sender, mediaType });
+    if (!candidates.length) return 0;
+    let indexed = 0;
+    const CONCURRENCY = 5;
+    for (let i = 0; i < candidates.length; i += CONCURRENCY) {
+      const chunk = candidates.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(chunk.map(async (job) => {
+        try {
+          const ok = await this._indexOne(job, { fastOnly: true });
+          return ok ? 1 : 0;
+        } catch (err) {
+          console.warn(`[MediaIndex:JIT:Global] ${job.messageId}:`, err.message);
+          return 0;
+        }
+      }));
+      indexed += results.reduce((acc, v) => acc + v, 0);
+    }
+    if (indexed > 0) {
+      console.log(`[MediaIndex:JIT] Indexed ${indexed} recent media item(s) on-demand globally`);
+    }
+    return indexed;
+  }
+
   /**
    * PDF and non-PDF docs: extract text where possible; always include basename + caption for FTS.
    */

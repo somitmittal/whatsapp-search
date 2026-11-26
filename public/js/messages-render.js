@@ -293,6 +293,19 @@ function closeChatImageViewer() {
   }
 }
 
+let _viewerImageZoom = 1;
+
+function applyImageViewerZoom(root, nextZoom) {
+  _viewerImageZoom = Math.max(0.5, Math.min(4, Math.round(nextZoom * 100) / 100));
+  const image = root?.querySelector?.('img');
+  if (image) {
+    image.style.transform = _viewerImageZoom === 1 ? '' : `scale(${_viewerImageZoom})`;
+    image.style.transformOrigin = 'center center';
+  }
+  const zoomLbl = root?.querySelector?.('.viewer-zoom-level');
+  if (zoomLbl) zoomLbl.textContent = `${Math.round(_viewerImageZoom * 100)}%`;
+}
+
 function ensureChatMediaViewer() {
   if (imageViewerEl) return imageViewerEl;
   imageViewerEl = document.createElement('div');
@@ -304,8 +317,30 @@ function ensureChatMediaViewer() {
   imageViewerEl.innerHTML = '<button class="chat-image-viewer-close" type="button" aria-label="Close">×</button><div class="chat-image-viewer-stage"><img alt="" hidden style="display:none"><video class="chat-image-viewer-video" controls playsinline hidden style="display:none"></video><iframe class="chat-image-viewer-pdf" title="PDF preview" hidden style="display:none"></iframe></div><div class="chat-image-viewer-caption"></div>';
   document.body.appendChild(imageViewerEl);
   imageViewerEl.addEventListener('click', (event) => {
-    if (event.target === imageViewerEl || event.target.closest('.chat-image-viewer-close')) closeChatImageViewer();
+    const zoomBtn = event.target.closest('[data-viewer-zoom]');
+    if (zoomBtn) {
+      event.stopPropagation();
+      const op = zoomBtn.getAttribute('data-viewer-zoom');
+      if (op === 'in') applyImageViewerZoom(imageViewerEl, _viewerImageZoom + 0.25);
+      else if (op === 'out') applyImageViewerZoom(imageViewerEl, _viewerImageZoom - 0.25);
+      else applyImageViewerZoom(imageViewerEl, 1);
+      return;
+    }
+    if (
+      event.target === imageViewerEl
+      || event.target.classList.contains('chat-image-viewer-stage')
+      || event.target.closest('.chat-image-viewer-close')
+    ) {
+      closeChatImageViewer();
+    }
   });
+  imageViewerEl.querySelector('.chat-image-viewer-stage')?.addEventListener('wheel', (event) => {
+    const image = imageViewerEl?.querySelector('img');
+    if (!image || image.hidden || image.style.display === 'none') return;
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? 0.15 : -0.15;
+    applyImageViewerZoom(imageViewerEl, _viewerImageZoom + delta);
+  }, { passive: false });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && imageViewerEl && !imageViewerEl.hidden) closeChatImageViewer();
   });
@@ -318,6 +353,7 @@ export function openChatImageViewer(source, alt = '', caption = '') {
     return;
   }
   const root = ensureChatMediaViewer();
+  applyImageViewerZoom(root, 1);
   const image = root.querySelector('img');
   const video = root.querySelector('video');
   const pdf = root.querySelector('.chat-image-viewer-pdf');
@@ -349,7 +385,17 @@ export function openChatImageViewer(source, alt = '', caption = '') {
       if (captionEl) captionEl.textContent = `${caption ? caption + ' · ' : ''}Media file not downloaded. View in chat or download from WhatsApp.`;
     }
   }
-  if (captionEl && source) captionEl.textContent = caption;
+  if (captionEl && source) {
+    const cleanCap = caption ? `<span class="viewer-cap-text">${esc(caption)}</span>` : '';
+    const dlUrl = source.includes('?') ? `${source}&download=1` : `${source}?download=1`;
+    captionEl.innerHTML = `${cleanCap}<span class="viewer-actions">` +
+      `<button type="button" class="viewer-btn" data-viewer-zoom="out" aria-label="Zoom out" title="Zoom out">−</button>` +
+      `<span class="viewer-zoom-level">100%</span>` +
+      `<button type="button" class="viewer-btn" data-viewer-zoom="in" aria-label="Zoom in" title="Zoom in">+</button>` +
+      `<button type="button" class="viewer-btn" data-viewer-zoom="reset" aria-label="Reset zoom" title="Reset zoom">Reset</button>` +
+      `<a href="${escAttr(dlUrl)}" download class="viewer-btn" title="Download image">Download ↓</a>` +
+      `</span>`;
+  }
   root.hidden = false;
   root.setAttribute('aria-hidden', 'false');
 }

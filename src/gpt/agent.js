@@ -183,13 +183,14 @@ export async function runAgent({
     ...history,
     {
       role: 'user',
-      content: `${contextText ? `${contextText}\n\n---\n` : '# No matching messages were found up front — use tools.\n\n---\n'}Question: ${query}`,
+      content: `${contextText ? `${contextText}\n\n---\n` : '# No matching WhatsApp messages were found up front — use search/read/chats for archive questions, or web_search for live/public info.\n\n---\n'}Question: ${query}`,
     },
   ];
 
   let payload = {};
   let answer = '';
   let prevCallSig = '';
+  const seenCallSigs = new Set();
   for (let step = 0; step <= GPT_LIMITS.maxSteps; step++) {
     if (signal?.aborted) throw new AbortedError();
     const last = step === GPT_LIMITS.maxSteps;
@@ -199,14 +200,15 @@ export async function runAgent({
     const { text, streamed } = await streamStep(provider, messages, { emit, signal });
     const calls = (last || ctx?.isFollowUpTransform) ? [] : parseToolCalls(text);
     const callSig = JSON.stringify(calls);
-    if (calls.length && callSig === prevCallSig) {
-      messages.push({ role: 'user', content: 'You repeated the same tool calls. Answer now from what you already have.' });
+    if (calls.length && (callSig === prevCallSig || seenCallSigs.has(callSig))) {
+      messages.push({ role: 'user', content: 'You repeated tool calls you already ran. Answer now from what you already have.' });
       const finalStep = await streamStep(provider, messages, { emit, signal });
       answer = stripToolCallLines(finalStep.text);
       if (!finalStep.streamed && answer) emit?.({ type: 'delta', text: answer });
       break;
     }
     prevCallSig = callSig;
+    if (calls.length) seenCallSigs.add(callSig);
 
     if (!calls.length) {
       answer = stripToolCallLines(text);
@@ -275,19 +277,43 @@ export async function runAgent({
   let citedIds = [...new Set(cited.filter((id) => sources.has(id)))];
 
   // If the model answered from context but omitted explicit [m...] citation tags,
-  // attribute matching sources by filename/content mentions or top prefetch hit.
+  // score sources by token overlap against answer + query so we cite the true supporting message(s).
   if (citedIds.length === 0 && finalAnswer !== NO_GROUNDED_ANSWER && sources.size > 0) {
     const lowerAnswer = finalAnswer.toLowerCase();
+    const tokenizeForMatch = (s) => [...new Set(
+      String(s || '')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 3),
+    )];
+    const targetTokens = tokenizeForMatch(`${finalAnswer} ${query}`);
+    let bestId = null;
+    let bestScore = 0;
     for (const [id, s] of sources.entries()) {
       const fn = s.mediaPath ? s.mediaPath.split('/').pop().toLowerCase() : '';
+      const bodyStr = `${messageBody(s)} ${s.chatName || ''} ${s.sender || ''}`.toLowerCase();
       const textSample = String(s.text || s.mediaCaption || '').trim().toLowerCase();
       if ((fn && lowerAnswer.includes(fn)) || (textSample && textSample.length >= 10 && lowerAnswer.includes(textSample.slice(0, 40)))) {
         citedIds.push(id);
+        continue;
+      }
+      let overlap = 0;
+      for (const tok of targetTokens) {
+        if (bodyStr.includes(tok)) overlap += 1;
+      }
+      if (overlap > bestScore) {
+        bestScore = overlap;
+        bestId = id;
       }
     }
-    if (citedIds.length === 0 && Array.isArray(ctx?.prefetched) && ctx.prefetched.length > 0) {
-      const top = ctx.prefetched.find((m) => m && sources.has(m.id));
-      if (top) citedIds.push(top.id);
+    if (citedIds.length === 0) {
+      if (bestId != null && bestScore >= 2) {
+        citedIds.push(bestId);
+      } else if (Array.isArray(ctx?.prefetched) && ctx.prefetched.length > 0) {
+        const top = ctx.prefetched.find((m) => m && sources.has(m.id));
+        if (top) citedIds.push(top.id);
+      }
     }
   }
 

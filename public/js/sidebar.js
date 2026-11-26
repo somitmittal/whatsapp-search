@@ -125,7 +125,7 @@ export function renderChatsFromState() {
       helpers: CHAT_FILTER_HELPERS,
     })
     : tabChats;
-  renderChats(list);
+  renderChats(list, fq);
 }
 
 function activeChatFilterQuery() {
@@ -224,8 +224,12 @@ export function renderSidebarTabCounts() {
   });
 }
 
-function sidebarEmptyMessage() {
+function sidebarEmptyMessage(filterQuery = '') {
   const hint = (t) => `<br><span style="opacity:.85;font-size:13px">${t}</span>`;
+  const fq = String(filterQuery || '').trim();
+  if (fq) {
+    return `No chats matching \u201c${fq.replace(/[<>&"]/g, '')}\u201d.${hint('Try a different name, phone number, or keyword.')}`;
+  }
   if (store.sidebarListTab === 'imported') {
     return `No imported chats yet.${hint('Click <strong>+</strong> to import a WhatsApp export.')}`;
   }
@@ -238,13 +242,13 @@ function sidebarEmptyMessage() {
   return `No WhatsApp chats synced yet.${hint('They appear here as sync progresses.')}`;
 }
 
-function renderChats(chats) {
+function renderChats(chats, filterQuery = '') {
   const c = $('#chat-list');
   if (!c) return;
   if (!store._chatRowCache) store._chatRowCache = new Map();
   if (!chats.length) {
     store._chatRowCache.clear();
-    c.innerHTML = `<div class="sidebar-empty">${sidebarEmptyMessage()}</div>`;
+    c.innerHTML = `<div class="sidebar-empty">${sidebarEmptyMessage(filterQuery)}</div>`;
     return;
   }
   const tpl = document.createElement('template');

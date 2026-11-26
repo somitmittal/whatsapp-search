@@ -31,10 +31,13 @@ const FOLLOWUP_STOP_WORDS = new Set([
   'please', 'pls', 'plz', 'kindly', 'just', 'only', 'also', 'too', 'now', 'then', 'still', 'else',
   'any', 'some', 'same', 'more', 'other', 'another', 'both', 'each', 'all',
   'check', 'look', 'search', 'find', 'see', 'ask', 'tell', 'show', 'give', 'get', 'send', 'sent', 'try',
-  'update', 'updates', 'news', 'info', 'details', 'answer', 'reply',
+  'reply', 'replied', 'shared', 'share', 'posted', 'post', 'wrote', 'said', 'mention', 'mentioned',
+  'update', 'updates', 'news', 'info', 'details', 'answer', 'else', 'final', 'amount', 'price',
 ]);
 
 const ELLIPTICAL_LEAD_RE = /^(?:what\s+about|how\s+about|what\s+of|and\s+(?:what\s+about|for|in|with)|same\s+(?:for|in|with)|check\s+(?:in|with|for)|look\s+(?:in|into))\b/i;
+const REFERENTIAL_WORDS_RE = /\b(?:that|this|those|these|it|its|they|them|he|him|his|she|her|there|here|same)\b/i;
+const DEFINITE_FOLLOWUP_RE = /^(?:what|when|where|who|which|how|why|is|was|did|does|can|could|were|are)\b[\s\S]{0,60}\b(?:that|it|they|them|he|she|the\s+(?:\w+\s+)?(?:job|role|position|company|price|amount|total|quote|quotation|msg|message|chat|file|pdf|doc|document|image|photo|pic|bill|receipt|invoice|person|guy|location|date|time|slot|link|url|one))\b/i;
 const BROAD_CHAT_QUESTION_RE = /\b(?:summarize|summary|overview|recap|this\s+(?:chat|group)|about\s+this)\b/i;
 
 function extractMeaningfulTokens(text) {
@@ -55,6 +58,8 @@ function isUnderspecifiedFollowUp(raw) {
   const meaningful = extractMeaningfulTokens(text);
   if (meaningful.length === 0) return true;
   if (ELLIPTICAL_LEAD_RE.test(text) && words.length <= 6 && meaningful.length <= 2) return true;
+  if (words.length <= 8 && REFERENTIAL_WORDS_RE.test(text) && meaningful.length <= 2) return true;
+  if (words.length <= 8 && DEFINITE_FOLLOWUP_RE.test(text) && meaningful.length <= 3) return true;
   return false;
 }
 
