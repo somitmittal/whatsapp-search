@@ -329,16 +329,24 @@ export default class GptService {
       && isBroadQuery(text) && scopeJids.length === 1 && !pre.range
       ? buildChatOverview(defaultChat?.chatName || this.directory.name(scopeJids[0]), pre.messages)
       : null;
+    const asksReconcile = /\b(reconcil|expense|sheet|ledger|tally|hisab|khata|discrepanc|book\s*keep)\b/i.test(`${text} ${effectiveQuery}`);
     const mentionHint = resolvedMentions.length
-      ? `\n\n(@mentioned this turn: ${resolvedMentions.map((p) => p.chatName || p.chatJid).join(', ')}. `
-        + 'If they asked to reconcile, CALL reconcile with no chat arg so each mentioned site runs.)'
+      ? `\n\n(@mentioned this turn: ${resolvedMentions.map((p) => p.chatName || p.chatJid).join(', ')}.${
+        asksReconcile ? ' If they asked to reconcile, CALL reconcile with no chat arg so each mentioned site runs.' : ''
+      })`
       : '';
     const agentQuery = contextualized.isRetry
       ? `${text} (Retrying previous question: "${effectiveQuery}")${mentionHint}`
-      : `${text}${mentionHint}`;
+      : contextualized.isFollowUp
+        ? `${text} (Checking for: "${effectiveQuery}")${mentionHint}`
+        : `${text}${mentionHint}`;
     const result = overview || await runAgent({
       provider,
-      system: buildSystemPrompt({ db: this.db, businessContext }),
+      system: buildSystemPrompt({
+        db: this.db,
+        businessContext,
+        includeReconcileHint: asksReconcile || Boolean(expenseHistory),
+      }),
       history,
       contextText,
       query: agentQuery,

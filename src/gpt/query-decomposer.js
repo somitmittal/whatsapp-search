@@ -16,6 +16,7 @@ const PDF_RE = /\b(?:pdf|pdfs)\b/i;
 const DOCX_RE = /\b(?:doc|docx|word)\b/i;
 const EXCEL_RE = /\b(?:sheet|excel|csv|xls|xlsx)\b/i;
 const RETRY_RE = /^(?:try\s+again|retry|repeat|do\s+it\s+again|once\s+more|again|find\s+again)\b/i;
+const FOLLOWUP_CHECK_RE = /^(?:(?:can|could|will|would)\s+(?:u|you)\s+)?(?:please\s+|pls\s+)?(?:check|look|search|find|see|ask|try)\s*(?:in|into|inside|there|here|this|that|it)?[?!.]*$/i;
 
 function cleanFallbackText(query) {
   return String(query || '')
@@ -32,14 +33,20 @@ export function contextualizeQuery(query, { prior = [], scopeChatName = null, sc
   const raw = String(query || '').trim();
   let effective = raw;
   let isRetry = false;
+  let isFollowUp = false;
 
-  if (RETRY_RE.test(raw)) {
-    isRetry = true;
-    const lastUser = [...prior].reverse().find(
-      (m) => m.role === 'user' && !RETRY_RE.test(String(m.content || '').trim()),
-    );
+  if (RETRY_RE.test(raw) || FOLLOWUP_CHECK_RE.test(raw)) {
+    isRetry = RETRY_RE.test(raw);
+    isFollowUp = !isRetry;
+    const lastUser = [...prior].reverse().find((m) => {
+      if (m.role !== 'user') return false;
+      const c = String(m.content || '').trim();
+      return c && !RETRY_RE.test(c) && !FOLLOWUP_CHECK_RE.test(c);
+    });
     if (lastUser && lastUser.content) {
       effective = String(lastUser.content).trim();
+    } else {
+      isFollowUp = false;
     }
   }
 
@@ -47,7 +54,7 @@ export function contextualizeQuery(query, { prior = [], scopeChatName = null, sc
 
   // If scoped to a known chat, resolve pronouns or context
   if (scopeChatName && !intent.candidateEntities.includes(scopeChatName)) {
-    if (/\b(?:her|him|them|this\s+(?:group|chat)|here)\b/i.test(effective) || isRetry) {
+    if (/\b(?:her|him|them|this\s+(?:group|chat)|here)\b/i.test(effective) || isRetry || isFollowUp) {
       intent.candidateEntities.unshift(scopeChatName);
     }
   }
@@ -55,6 +62,7 @@ export function contextualizeQuery(query, { prior = [], scopeChatName = null, sc
   return {
     effectiveQuery: effective,
     isRetry,
+    isFollowUp,
     intent,
   };
 }

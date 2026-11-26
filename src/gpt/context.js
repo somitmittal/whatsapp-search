@@ -12,7 +12,7 @@ import {
 import { decomposeQuery, heuristicDecompose } from './query-decomposer.js';
 import { TOOL_SPECS } from './tools.js';
 
-export function buildSystemPrompt({ db, businessContext = false, now = new Date() }) {
+export function buildSystemPrompt({ db, businessContext = false, now = new Date(), includeReconcileHint = false }) {
   const smb = businessContext ? synthesisSystemAddon(getSmbProfileFromDb(db)) : '';
   const businessName = businessContext ? String(db.getSetting?.('smb_business_name') || '').trim() : '';
   const memory = memoryPromptBlock(db, now);
@@ -39,17 +39,21 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
       'When scoped to a chat, stay strictly within that conversation and do not cite or bring in messages from unrelated contacts.',
       '@mentions on the current user message set which chats are in scope for this turn only.',
       'When no chat is @mentioned, the thread\'s home chat (see "Pinned chats") is the default.',
-      'Expense comparisons in context are labelled with their site — use the matching site; do not mix sites.',
+      ...(includeReconcileHint || businessContext ? [
+        'Expense comparisons in context are labelled with their site — use the matching site; do not mix sites.',
+      ] : []),
       '',
       'TOOLS: if the context is not enough, reply with ONLY tool calls, one per line, nothing else:',
       'CALL {"tool":"search","args":{"query":"cement delivery","chat":"Site 2"}}',
       'You may issue several CALL lines at once; they run in parallel. Results come back and you continue.',
       'Prefer answering straight away when the context already answers the question.',
-      'For expense reconciliation or other sites, CALL reconcile.',
-      'When several chats are @mentioned this turn, CALL reconcile once with no chat arg (it runs each mentioned site).',
-      'When only one site is needed, CALL reconcile with that chat name.',
-      'If the user named a day (e.g. 10th Oct, yesterday), pass it as date in reconcile args so the skill picks that day\'s sheet.',
-      'Do not invent reconciliation numbers — always CALL reconcile (or use a labelled comparison already in context for that same site).',
+      ...(includeReconcileHint || businessContext ? [
+        'For expense reconciliation or other sites, CALL reconcile.',
+        'When several chats are @mentioned this turn, CALL reconcile once with no chat arg (it runs each mentioned site).',
+        'When only one site is needed, CALL reconcile with that chat name.',
+        'If the user named a day (e.g. 10th Oct, yesterday), pass it as date in reconcile args so the skill picks that day\'s sheet.',
+        'Do not invent reconciliation numbers — always CALL reconcile (or use a labelled comparison already in context for that same site).',
+      ] : []),
       'When you need public facts, documentation, current events, or world knowledge outside WhatsApp, CALL web_search with concise public keywords.',
       'PRIVACY GUARDRAIL: You are STRICTLY FORBIDDEN from passing private names, phone numbers, contact info, personal addresses, or private chat quotes to web_search.',
       'Never send personal details to the internet. Web search is exclusively for open public knowledge; internal WhatsApp information must ONLY be queried using search or read tools.',

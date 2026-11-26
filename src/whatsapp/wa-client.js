@@ -86,6 +86,9 @@ import {
 } from './qr-lifecycle.js';
 import { aggregateReactionCountsFromProtoList } from './reaction-counts.js';
 import { captureUnreadCounts, clearUnreadCount, unreadCountForChat } from './unread-tracker.js';
+import { installSignalLogFilter } from './suppress-signal-logs.js';
+
+installSignalLogFilter();
 
 import makeWASocket, {
   DisconnectReason,
