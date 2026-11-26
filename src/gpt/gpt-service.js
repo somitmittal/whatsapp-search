@@ -447,6 +447,13 @@ export default class GptService {
       : contextualized.isFollowUp
         ? `${text} (Checking for: "${effectiveQuery}")${mentionHint}`
         : `${text}${mentionHint}`;
+    const hasDirectMediaHits = Boolean(contextualized.intent?.modality || contextualized.intent?.fileExt)
+      && pre.messages.filter((m) => m && (m.mediaType || m.hasMediaFile || m.mediaPath)).length >= 2;
+    const singlePass = Boolean(
+      hasDirectMediaHits
+      && !asksReconcile
+      && /^\s*(?:find|show|get|list|fetch|pull|give)\b/i.test(text),
+    );
     const result = overview || await runAgent({
       provider,
       system: buildSystemPrompt({
@@ -468,6 +475,8 @@ export default class GptService {
         resolveProvider: resolveExpenseProvider,
         prefetched: pre.messages,
         directory: this.directory,
+        intent: contextualized.intent,
+        singlePass,
         contextTokens: budgets.contextTokens,
         isFollowUpTransform,
       },

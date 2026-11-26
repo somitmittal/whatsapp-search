@@ -1,6 +1,7 @@
 import { detectTimeRange } from '../src/gpt/retrieval.js';
 import { enforceGroundedAnswer } from '../src/search/grounding.js';
 import { defaultPaddleOcr } from '../src/ocr/paddle-ocr.js';
+import { runAgent } from '../src/gpt/agent.js';
 
 describe('WOW UX & Retrieval Fixes', () => {
   test('detectTimeRange spans across multiple dates in compound queries', () => {
@@ -33,5 +34,40 @@ describe('WOW UX & Retrieval Fixes', () => {
     const transcript = 'Alice: Hello, how are you?';
     const res = enforceGroundedAnswer(answer, transcript);
     expect(res.text).toBe('');
+  });
+
+  test('runAgent preserves prefetched media/document sources on positive media lookups even when citations omitted', async () => {
+    const fakeProvider = {
+      name: 'ollama',
+      model: 'llama3.2:3b',
+      chat: async () => 'Found your recent PDF bill from Krisumi.',
+    };
+    const prefetched = [
+      {
+        id: 101,
+        chatJid: '123@g.us',
+        chatName: 'Krisumi',
+        sender: 'Krisumi',
+        mediaType: 'document',
+        mediaPath: '/tmp/bill.pdf',
+        hasMediaFile: true,
+        text: 'Krisumi bill.pdf',
+        timestamp: 1000,
+      },
+    ];
+    const out = await runAgent({
+      provider: fakeProvider,
+      system: 'Answer briefly.',
+      history: [],
+      contextText: '[m101] Krisumi bill.pdf',
+      query: 'find my recent receipt or PDF bill',
+      toolbox: {},
+      ctx: {
+        prefetched,
+        intent: { modality: 'document' },
+        singlePass: true,
+      },
+    });
+    expect(out.sources.some((s) => s.ref === 'm101')).toBe(true);
   });
 });

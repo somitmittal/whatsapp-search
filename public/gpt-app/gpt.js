@@ -1221,6 +1221,7 @@ async function loadChats() {
     } catch { /* keep prior roster on transient abort */ }
     autoSelectSidebarTab();
     renderChats();
+    void prewarmTopChats();
   })().finally(() => {
     _loadChatsInFlight = null;
     if (_loadChatsQueued) {
@@ -1229,6 +1230,27 @@ async function loadChats() {
     }
   });
   return _loadChatsInFlight;
+}
+
+let _prewarmedTopChats = false;
+async function prewarmTopChats() {
+  if (_prewarmedTopChats || !state.chats.length) return;
+  _prewarmedTopChats = true;
+  const top = state.chats
+    .filter((c) => c?.chatJid && c.chatJid !== 'status@broadcast')
+    .sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0))
+    .slice(0, 6);
+  for (const c of top) {
+    if (state.chatMessages.has(c.chatJid)) continue;
+    try {
+      const res = await fetch(`/api/messages?chatJid=${encodeURIComponent(c.chatJid)}&limit=40&offset=0`, { headers: authHeaders() });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (Array.isArray(data.messages) && !state.chatMessages.has(c.chatJid)) {
+        state.chatMessages.set(c.chatJid, data.messages);
+      }
+    } catch { /* non-fatal */ }
+  }
 }
 
 function renderWaBanner(st) {

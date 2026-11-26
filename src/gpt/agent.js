@@ -198,7 +198,7 @@ export async function runAgent({
     if (step > 0) emit?.({ type: 'status', text: 'Writing the answer…' });
 
     const { text, streamed } = await streamStep(provider, messages, { emit, signal });
-    const calls = (last || ctx?.isFollowUpTransform) ? [] : parseToolCalls(text);
+    const calls = (last || ctx?.isFollowUpTransform || ctx?.singlePass) ? [] : parseToolCalls(text);
     const callSig = JSON.stringify(calls);
     if (calls.length && (callSig === prevCallSig || seenCallSigs.has(callSig))) {
       messages.push({ role: 'user', content: 'You repeated tool calls you already ran. Answer now from what you already have.' });
@@ -337,6 +337,17 @@ export async function runAgent({
   }
 
   const allSourceRows = [...citedIds.map((id) => sources.get(id)), ...extraMedia];
+  if ((ctx?.intent?.modality || ctx?.intent?.fileExt) && !isNegativeOrMeta && finalAnswer !== NO_GROUNDED_ANSWER && Array.isArray(ctx?.prefetched)) {
+    const existingIds = new Set(allSourceRows.filter(Boolean).map((m) => m.id));
+    const prefetchedMedia = ctx.prefetched
+      .filter((m) => m && !existingIds.has(m.id) && (m.mediaType || m.hasMediaFile || m.mediaPath))
+      .sort((a, b) => Number(Boolean(b.hasMediaFile || b.mediaPath)) - Number(Boolean(a.hasMediaFile || a.mediaPath)))
+      .slice(0, 4);
+    for (const m of prefetchedMedia) {
+      if (allSourceRows.length >= 6) break;
+      allSourceRows.push(m);
+    }
+  }
   return {
     answer: finalAnswer,
     sources: allSourceRows.map((m) => toSource(m, ctx)),
