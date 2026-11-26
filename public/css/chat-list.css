@@ -58,9 +58,9 @@
 }
 .chat-avatar-img {
   position: absolute; inset: 0; width: 100%; height: 100%;
-  object-fit: cover; border-radius: 50%;
+  object-fit: cover; border-radius: 50%; z-index: 2;
 }
-.chat-avatar-letter { position: relative; }
+.chat-avatar-letter { position: relative; z-index: 1; }
 .chat-avatar.has-photo { cursor: pointer; }
 .chat-avatar.has-photo:hover { filter: brightness(0.96); }
 .chat-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }

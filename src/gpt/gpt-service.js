@@ -3,7 +3,7 @@ import { getCurrentTenantId, runWithTenant } from '../storage/tenant-context.js'
 import ChatDirectory from './chat-directory.js';
 import { ContextEngine, buildChatOverview, buildHistory, buildSystemPrompt, expenseHistoryBlocks, isFollowUpTransformQuery } from './context.js';
 import { isBroadQuery } from './retrieval.js';
-import { runAgent } from './agent.js';
+import { runAgent, toSource } from './agent.js';
 import { createToolbox } from './tools.js';
 import { budgetsForProvider, GPT_LIMITS, estimateTokens } from './limits.js';
 import { listModelCatalog, providerForSelection, setProviderKey } from './model-registry.js';
@@ -415,6 +415,17 @@ export default class GptService {
     if (pre.messages.length) {
       const chats = new Set(pre.messages.map((m) => m.chatJid)).size;
       emit({ type: 'tool', text: `Pulled ${pre.messages.length} relevant messages from ${chats} chat${chats === 1 ? '' : 's'}${pre.range ? ` (${pre.range.label})` : ''}` });
+      if (contextualized.intent?.modality || contextualized.intent?.fileExt) {
+        const previewMedia = pre.messages
+          .filter((m) => m && (m.mediaType || m.hasMediaFile || m.mediaPath))
+          .slice(0, 4);
+        if (previewMedia.length) {
+          emit({
+            type: 'preview-sources',
+            sources: previewMedia.map((m) => toSource(m, { directory: this.directory })),
+          });
+        }
+      }
     }
     status('Thinking…');
 

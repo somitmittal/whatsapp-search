@@ -344,7 +344,27 @@ export function enforceGroundedAnswer(answer, sourceText, queryText = '') {
     if (prose.trim()) kept.push(prose);
   }
 
-  return { text: kept.join('\n').replace(/\n{3,}/g, '\n\n').trim(), removed };
+  // Strip orphaned section headings or colon-terminated lead-in lines whose body/bullets were all removed
+  const cleaned = [];
+  for (let i = 0; i < kept.length; i++) {
+    const cur = kept[i];
+    const trimmed = cur.trim();
+    const isHeadingOrLeadIn = /^#{1,6}\s+/.test(trimmed) || /:\s*$/.test(trimmed);
+    if (isHeadingOrLeadIn) {
+      let hasFollowingBody = false;
+      for (let j = i + 1; j < kept.length; j++) {
+        const nextTrimmed = kept[j].trim();
+        if (!nextTrimmed) continue;
+        if (/^#{1,6}\s+/.test(nextTrimmed)) break;
+        hasFollowingBody = true;
+        break;
+      }
+      if (!hasFollowingBody) continue;
+    }
+    cleaned.push(cur);
+  }
+
+  return { text: cleaned.join('\n').replace(/\n{3,}/g, '\n\n').trim(), removed };
 }
 
 /**

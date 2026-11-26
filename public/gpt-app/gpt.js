@@ -1642,13 +1642,17 @@ function sourceCards(sources = []) {
   if (!sources.length) return '';
   const who = [...new Set(sources.map((s) => s.chatName).filter(Boolean))].slice(0, 2).join(', ');
   return `<details class="gpt-sources-wrap"><summary>${sources.length} source${sources.length === 1 ? '' : 's'}${who ? ` · ${esc(who)}` : ''}</summary>
-    <div class="gpt-sources">${sources.map((s, i) => `
+    <div class="gpt-sources">${sources.map((s, i) => {
+    const chatPart = (s.chatName && s.chatName !== s.sender) ? s.chatName : '';
+    const metaText = [s.sender, chatPart, fmtTs(s.timestamp)].filter(Boolean).join(' · ');
+    return `
     <button type="button" class="gpt-source" data-ref="${escAttr(String(s.ref || '').replace(/^m/, ''))}" data-msg-id="${escAttr(s.messageId || '')}" data-chat-jid="${escAttr(s.chatJid || '')}" data-chat-name="${escAttr(s.chatName || '')}" title="View in chat">
       <span class="n">${i + 1}</span>
-      <span class="meta">${esc(s.sender)} · ${esc(s.chatName || '')} · ${esc(fmtTs(s.timestamp))}</span>
+      <span class="meta">${esc(metaText)}</span>
       <span class="txt">${esc(String(s.text || '').slice(0, 180))}</span>
       <span class="gpt-source-jump-hint">View in chat →</span>
-    </button>`).join('')}</div></details>`;
+    </button>`;
+  }).join('')}</div></details>`;
 }
 
 function skillChoicesHtml(choices = [], followUpPrompt = null) {
@@ -2262,6 +2266,14 @@ async function send(textOverride = null) {
         } else if (ev.type === 'tool') {
           steps.push(ev.text);
           live.list.insertAdjacentHTML('beforeend', `<li>${esc(ev.text)}</li>`);
+        } else if (ev.type === 'preview-sources' && Array.isArray(ev.sources) && ev.sources.length) {
+          let previewBox = live.wrap.querySelector('.gpt-stream-preview');
+          if (!previewBox) {
+            previewBox = document.createElement('div');
+            previewBox.className = 'gpt-stream-preview';
+            live.wrap.appendChild(previewBox);
+          }
+          previewBox.innerHTML = renderA2UiMediaDeck(ev.sources);
         } else if (ev.type === 'delta') {
           live.text += ev.text || '';
           paintLive(live);

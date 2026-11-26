@@ -294,8 +294,19 @@ export class ContextEngine {
     );
 
     let searchResults = (overview || skipSearch) ? [] : await runSearches(true);
-    if (!overview && !skipSearch && range?.specificDate && searchResults.every((r) => !r?.messages?.length)) {
-      searchResults = await runSearches(false);
+    const isMultiClause = /,|\band\b/i.test(String(query || '')) && String(query || '').split(/\s+/).length >= 8;
+    if (!overview && !skipSearch && range && (range.specificDate || range.multiDate || isMultiClause)) {
+      const totalHits = searchResults.reduce((acc, r) => acc + (r?.messages?.length || 0), 0);
+      if (totalHits === 0 || (isMultiClause && totalHits < 15)) {
+        const undated = await runSearches(false);
+        searchResults = searchResults.map((r, i) => {
+          const base = r?.messages || [];
+          const extra = undated[i]?.messages || [];
+          if (!extra.length) return r;
+          const seenIds = new Set(base.map((m) => m.id));
+          return { ...r, messages: [...base, ...extra.filter((m) => !seenIds.has(m.id))] };
+        });
+      }
     }
 
     const timeline = [];

@@ -271,6 +271,13 @@ if result:
     const unique = [...new Set(lines)];
     let result = unique.join(' · ');
 
+    // Drop pure OCR gibberish on portraits/photos (e.g. "rS, · 9rS · RS@RQ")
+    const realWords = result.match(/[a-zA-Z]{3,}/g) || [];
+    const realNumbers = result.match(/\b\d{2,}\b/g) || [];
+    if (realWords.length === 0 && realNumbers.length === 0) {
+      return '';
+    }
+
     // Detect payment receipts, menus & price lists
     const isPaymentOrMenu = /\b(transaction|paid to|debited|upi|phonepe|gpay|paytm|receipt|payment|bill|utr|menu|salon|spa|rate|price|charges|manicure|pedicure|facial|haircut)\b/i.test(result);
     if (isPaymentOrMenu) {
@@ -287,10 +294,11 @@ if result:
       }
     }
 
-    // Normalize Indian currency symbols so FTS matches both "100 Rs", "Rs 100", "100Rs", and "₹100"
-    const amountMatch = result.match(/(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)/i) ||
-                        result.match(/\b([\d,]+(?:\.\d{1,2})?)\s*(?:rs|rupees|inr)\b/i) ||
-                        result.match(/\b([\d,]+(?:\.\d{1,2})?)(?:rs|inr)\b/i);
+    // Normalize Indian currency symbols only for real multi-digit amounts or explicit payment context
+    // so OCR noise like "9rS" on portraits never expands into "₹9 / Rs 9 / INR 9".
+    const amountMatch = result.match(/(?:₹|rs\.?|inr)\s*([\d,]{2,}(?:\.\d{1,2})?)/i) ||
+                        result.match(/\b([\d,]{2,}(?:\.\d{1,2})?)\s*(?:rs\.?|rupees|inr)\b/i) ||
+                        (isPaymentOrMenu ? result.match(/\b([\d,]{2,}(?:\.\d{1,2})?)(?:rs|inr)\b/i) : null);
     if (amountMatch) {
       const num = amountMatch[1].replace(/,/g, '');
       const synonyms = [`₹${num}`, `Rs ${num}`, `INR ${num}`, `${num} Rs`, `${num} rupees`, `${num}Rs`, `Rs${num}`];

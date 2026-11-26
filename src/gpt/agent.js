@@ -260,13 +260,11 @@ export async function runAgent({
     console.log(`[GPT] Dropped ${grounded.removed.length} ungrounded fragment(s): ${grounded.removed.slice(0, 5).join(' | ')}`);
   }
   let finalAnswer = grounded.text;
+  const isNegativeOrMeta = /\b(?:no\s+(?:messages?|mentions?|results?|records?|chats?|details?)|zero\s+matches|not\s+found|could\s*(?:n't|not)\s+find|couldn't\s+find|don't\s+see|did\s+not\s+find|didn't\s+find|never\s+(?:messaged|mentioned|sent)|none\s+found|nothing\s+found|no\s+relevant|does\s+not\s+exist|if\s+you\s+need|you'd\s+need|you\s+would\s+need)\b/i.test(finalAnswer);
   if (!/[\p{L}\p{N}]/u.test(finalAnswer)) {
     finalAnswer = NO_GROUNDED_ANSWER;
-  } else if (grounded.removed.length) {
-    const isNegativeOrMeta = /\b(?:no\s+messages?|zero\s+matches|not\s+found|could\s+not\s+find|none\s+found|does\s+not\s+exist|if\s+you\s+need|you'd\s+need|you\s+would\s+need)\b/i.test(finalAnswer);
-    if (!isNegativeOrMeta) {
-      finalAnswer = `${finalAnswer}\n\n${UNGROUNDED_NOTICE}`;
-    }
+  } else if (grounded.removed.length && !isNegativeOrMeta) {
+    finalAnswer = `${finalAnswer}\n\n${UNGROUNDED_NOTICE}`;
   }
 
   const cited = [...finalAnswer.matchAll(REF_RE)].map((m) => Number(m[1]));
@@ -276,9 +274,9 @@ export async function runAgent({
   }
   let citedIds = [...new Set(cited.filter((id) => sources.has(id)))];
 
-  // If the model answered from context but omitted explicit [m...] citation tags,
+  // If the model answered positively from context but omitted explicit [m...] citation tags,
   // score sources by token overlap against answer + query so we cite the true supporting message(s).
-  if (citedIds.length === 0 && finalAnswer !== NO_GROUNDED_ANSWER && sources.size > 0) {
+  if (citedIds.length === 0 && finalAnswer !== NO_GROUNDED_ANSWER && !isNegativeOrMeta && sources.size > 0) {
     const lowerAnswer = finalAnswer.toLowerCase();
     const tokenizeForMatch = (s) => [...new Set(
       String(s || '')
@@ -321,15 +319,18 @@ export async function runAgent({
   // (photo, document, menu, receipt) in the same chat segment within 5 minutes, include that media in sources
   // so the media card is rendered directly for the user.
   const extraMedia = [];
-  for (const id of citedIds) {
-    const citedMsg = sources.get(id);
-    if (!citedMsg) continue;
-    for (const other of sources.values()) {
-      if (other && other.id !== id && (other.mediaType || other.hasMediaFile || other.mediaPath) &&
-          other.chatJid === citedMsg.chatJid &&
-          (other.sender === citedMsg.sender || Math.abs(other.timestamp - citedMsg.timestamp) <= 300)) {
-        if (!citedIds.includes(other.id) && !extraMedia.some((m) => m.id === other.id)) {
-          extraMedia.push(other);
+  if (!isNegativeOrMeta && finalAnswer !== NO_GROUNDED_ANSWER) {
+    for (const id of citedIds) {
+      const citedMsg = sources.get(id);
+      if (!citedMsg) continue;
+      for (const other of sources.values()) {
+        if (other && other.id !== id && (other.mediaType || other.hasMediaFile || other.mediaPath) &&
+            other.chatJid === citedMsg.chatJid &&
+            other.sender === citedMsg.sender &&
+            Math.abs(other.timestamp - citedMsg.timestamp) <= 300) {
+          if (!citedIds.includes(other.id) && !extraMedia.some((m) => m.id === other.id)) {
+            extraMedia.push(other);
+          }
         }
       }
     }
@@ -344,7 +345,7 @@ export async function runAgent({
   };
 }
 
-function toSource(m, ctx = null) {
+export function toSource(m, ctx = null) {
   const dirName = m.chatJid && ctx?.directory?.name ? ctx.directory.name(m.chatJid) : null;
   const resolvedName = (m.chatName && !String(m.chatName).includes('@'))
     ? m.chatName

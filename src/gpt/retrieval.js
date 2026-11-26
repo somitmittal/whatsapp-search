@@ -158,26 +158,48 @@ function resolveCalendarDate(dayNum, monthStr, yearStr, now) {
 export function detectTimeRange(query, now = new Date()) {
   const q = String(query || '').toLowerCase();
   const today = startOfLocalDay(now);
-  if (/\btoday\b|\btonight\b|\bthis morning\b/.test(q)) return { startTs: today, endTs: today + DAY - 1, label: 'today' };
-  if (/\byesterday\b/.test(q)) return { startTs: today - DAY, endTs: today - 1, label: 'yesterday' };
-  if (/\b(this|past|last) week\b|\blast 7 days\b/.test(q)) return { startTs: today - 6 * DAY, endTs: today + DAY - 1, label: 'the last 7 days' };
-  if (/\b(this|past|last) month\b|\blast 30 days\b/.test(q)) return { startTs: today - 29 * DAY, endTs: today + DAY - 1, label: 'the last 30 days' };
-  const iso = q.match(/\b(\d{4}-\d{2}-\d{2})\b/);
-  if (iso) {
+  const ranges = [];
+
+  if (/\btoday\b|\btonight\b|\bthis morning\b/.test(q)) {
+    ranges.push({ startTs: today, endTs: today + DAY - 1, label: 'today' });
+  }
+  if (/\byesterday\b/.test(q)) {
+    ranges.push({ startTs: today - DAY, endTs: today - 1, label: 'yesterday' });
+  }
+  if (/\b(this|past|last) week\b|\blast 7 days\b/.test(q)) {
+    ranges.push({ startTs: today - 6 * DAY, endTs: today + DAY - 1, label: 'the last 7 days' });
+  }
+  if (/\b(this|past|last) month\b|\blast 30 days\b/.test(q)) {
+    ranges.push({ startTs: today - 29 * DAY, endTs: today + DAY - 1, label: 'the last 30 days' });
+  }
+  for (const iso of q.matchAll(/\b(\d{4}-\d{2}-\d{2})\b/g)) {
     const s = parseDay(iso[1]);
-    if (s != null) return { startTs: s, endTs: s + DAY - 1, label: iso[1], specificDate: true, matchedText: iso[0] };
+    if (s != null) ranges.push({ startTs: s, endTs: s + DAY - 1, label: iso[1], specificDate: true, matchedText: iso[0] });
   }
-  const dmy = q.match(DATE_DMY_RE);
-  if (dmy) {
+  for (const dmy of q.matchAll(new RegExp(DATE_DMY_RE.source, 'gi'))) {
     const resolved = resolveCalendarDate(Number(dmy[1]), dmy[2], dmy[3], now);
-    if (resolved) return { ...resolved, label: dmy[0], specificDate: true, matchedText: dmy[0] };
+    if (resolved) ranges.push({ ...resolved, label: dmy[0], specificDate: true, matchedText: dmy[0] });
   }
-  const mdy = q.match(DATE_MDY_RE);
-  if (mdy) {
+  for (const mdy of q.matchAll(new RegExp(DATE_MDY_RE.source, 'gi'))) {
     const resolved = resolveCalendarDate(Number(mdy[2]), mdy[1], mdy[3], now);
-    if (resolved) return { ...resolved, label: mdy[0], specificDate: true, matchedText: mdy[0] };
+    if (resolved) ranges.push({ ...resolved, label: mdy[0], specificDate: true, matchedText: mdy[0] });
   }
-  return null;
+
+  if (ranges.length === 0) return null;
+  if (ranges.length === 1) return ranges[0];
+
+  const minStart = Math.min(...ranges.map((r) => r.startTs));
+  const maxEnd = Math.max(...ranges.map((r) => r.endTs));
+  // If multiple distinct dates are mentioned, span from earliest to latest so no clause is starved.
+  if (minStart !== ranges[0].startTs || maxEnd !== ranges[0].endTs) {
+    return {
+      startTs: minStart,
+      endTs: maxEnd,
+      label: `${ranges[0].label}..${ranges[ranges.length - 1].label}`,
+      multiDate: true,
+    };
+  }
+  return ranges[0];
 }
 
 export function isBroadQuery(query) {
