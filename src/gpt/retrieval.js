@@ -114,7 +114,47 @@ export function parseDay(value, { end = false } = {}) {
   return end ? start + DAY - 1 : start;
 }
 
-/** Common relative dates in the user's question → a time window for prefetch. */
+const MONTH_INDEX = {
+  jan: 0, january: 0,
+  feb: 1, february: 1,
+  mar: 2, march: 2,
+  apr: 3, april: 3,
+  may: 4,
+  jun: 5, june: 5,
+  jul: 6, july: 6,
+  aug: 7, august: 7,
+  sep: 8, sept: 8, september: 8,
+  oct: 9, october: 9,
+  nov: 10, november: 10,
+  dec: 11, december: 11,
+};
+
+const MONTH_NAME_ALT = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?';
+const DATE_DMY_RE = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_NAME_ALT})(?:,?\\s+(\\d{2,4}))?\\b`, 'i');
+const DATE_MDY_RE = new RegExp(`\\b(${MONTH_NAME_ALT})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{2,4}))?\\b`, 'i');
+
+function resolveCalendarDate(dayNum, monthStr, yearStr, now) {
+  const month = MONTH_INDEX[String(monthStr || '').toLowerCase()];
+  if (month == null || dayNum < 1 || dayNum > 31) return null;
+  let year;
+  if (yearStr) {
+    const rawY = Number(yearStr);
+    year = rawY < 100 ? 2000 + rawY : rawY;
+  } else {
+    year = now.getFullYear();
+    const candidate = new Date(year, month, dayNum);
+    // If the month/day is more than 7 days in the future, assume the previous year.
+    if (candidate.getTime() - now.getTime() > 7 * 86400 * 1000) {
+      year -= 1;
+    }
+  }
+  const d = new Date(year, month, dayNum);
+  if (d.getMonth() !== month || d.getDate() !== dayNum) return null;
+  const startTs = startOfLocalDay(d);
+  return { startTs, endTs: startTs + DAY - 1 };
+}
+
+/** Common relative and calendar dates in the user's question → a time window for prefetch. */
 export function detectTimeRange(query, now = new Date()) {
   const q = String(query || '').toLowerCase();
   const today = startOfLocalDay(now);
@@ -125,7 +165,17 @@ export function detectTimeRange(query, now = new Date()) {
   const iso = q.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (iso) {
     const s = parseDay(iso[1]);
-    if (s != null) return { startTs: s, endTs: s + DAY - 1, label: iso[1] };
+    if (s != null) return { startTs: s, endTs: s + DAY - 1, label: iso[1], specificDate: true, matchedText: iso[0] };
+  }
+  const dmy = q.match(DATE_DMY_RE);
+  if (dmy) {
+    const resolved = resolveCalendarDate(Number(dmy[1]), dmy[2], dmy[3], now);
+    if (resolved) return { ...resolved, label: dmy[0], specificDate: true, matchedText: dmy[0] };
+  }
+  const mdy = q.match(DATE_MDY_RE);
+  if (mdy) {
+    const resolved = resolveCalendarDate(Number(mdy[2]), mdy[1], mdy[3], now);
+    if (resolved) return { ...resolved, label: mdy[0], specificDate: true, matchedText: mdy[0] };
   }
   return null;
 }
@@ -193,6 +243,18 @@ export async function hybridSearch({
     variants.push(s);
   };
   if (typeof query === 'string') addVariant(query);
+  if (ranged && typeof query === 'string') {
+    const dateStripped = query
+      .replace(DATE_DMY_RE, ' ')
+      .replace(DATE_MDY_RE, ' ')
+      .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+      .replace(/\b(?:on|for|from|at|in)\s*$/i, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (dateStripped && dateStripped.toLowerCase() !== query.trim().toLowerCase()) {
+      addVariant(dateStripped);
+    }
+  }
   if (resolvedIntent?.cleanedQuery) addVariant(resolvedIntent.cleanedQuery);
   if (Array.isArray(resolvedIntent?.lexicalQueries)) {
     for (const lq of resolvedIntent.lexicalQueries) addVariant(lq);
@@ -352,8 +414,9 @@ export async function hybridSearch({
     const rowTs = Number(row.timestamp) || 0;
     if (rowTs > 0 && maxRowTs > 0) {
       const ageDays = Math.max(0, (maxRowTs - rowTs) / DAY);
-      const decayWeight = isLatestIntent ? 0.55 : 0.15;
-      multiplier *= (1 + decayWeight * Math.exp(-ageDays / 180));
+      const decayWeight = isLatestIntent ? 1.6 : 0.15;
+      const halfLifeDays = isLatestIntent ? 14 : 180;
+      multiplier *= (1 + decayWeight * Math.exp(-ageDays / halfLifeDays));
     }
 
     if (feedbackBoosts) {

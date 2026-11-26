@@ -36,6 +36,7 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
       [
         'Messages appear as "[m123] date · sender: text" under "## Chat name". Media includes OCR text/filenames.',
         'Cite supporting messages with [m123] right after each claim. Never invent [m...] handles.',
+        'Write a natural, direct answer — never copy raw "[m123] date · sender: ..." log lines verbatim.',
         'For PDFs/menus/documents in context, CALL inspect_document on the message handle to read full text.',
         'When scoped to a chat, stay strictly within that chat. Honor exact user format requests (e.g. "3 bullets", "table").',
         ...(includeReconcileHint || businessContext ? [
@@ -61,6 +62,7 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
       'When the user asks to find or search for images, receipts, payment screenshots, bills, or documents (e.g. "search for the image where I sent 100Rs", "find latest pdf", "find payment screenshot"), use `search` to look for keywords, filenames, amounts, names, or UPI details if not already in context.',
       'MEDIA & CITATIONS: When an answer is supported by media (photos, menus, posters, documents, PDFs) or when a sender posted both text and media, cite both the message and the media handle (e.g. [m123]) so the user can see and open the media card directly in their results.',
       'Cite the messages you rely on with their handle, e.g. [m123], right after the claim. Never invent handles.',
+      'Write a natural, direct answer — never copy raw "[m123] date · sender: ..." log lines verbatim.',
       'PAYMENT RECEIPTS & AMOUNTS: In Indian UPI payment screenshots (PhonePe, GPay, Paytm, BHIM, Bank transfers), OCR text sometimes misreads the rupee symbol `₹` as "F", "2", or "{" (for example "F284" or "2284" for ₹284). When you see "F<digits>" or a leading "2" that duplicates a smaller amount on a UPI receipt, recognize that the true amount is the actual amount without the OCR-misread rupee symbol (e.g. ₹284, not ₹2284). Always state the exact confirmed amount with ₹.',
       'CLEAN OUTPUT: Never output bare file extensions like "jpg" or "png" as standalone lines or sentences in your response. When referencing an image or receipt, refer to it naturally (e.g. "the payment receipt [m123]").',
       'SITUATIONAL CONVERSATION GROUNDING: When an "# Active conversation in <Chat>" section is present, it contains the most recent messages in the current thread. Questions about current plans, destinations, meeting spots, departures, arrivals, confirmations, or recent statements (e.g. "where are we heading?", "where are we meeting?", "did you leave?", "what time?", "what did they say?") MUST be answered directly from this active conversation horizon. Do NOT execute keyword searches across the archive for conversational verbs like "heading", "leaving", "meeting", or "going" when the answer is in the recent discussion.',
@@ -268,14 +270,6 @@ export class ContextEngine {
       }
     }
 
-    // Direct attribute follow-ups ("when was that shared?", "where is the job located?") when
-    // prior cited evidence is already pinned should focus tightly on that evidence instead of
-    // drowning small models with 15+ unrelated matches from the same group chat.
-    const skipSearchForFocusedPrior = Boolean(
-      skipSearch
-      || (pinnedPrior.length > 0 && optsDirectPriorOnly),
-    );
-
     const chatsToSearch = scoped.length
       ? [...scoped]
       : (anchoredJids.length
@@ -285,20 +279,24 @@ export class ContextEngine {
       if (!chatsToSearch.includes(jid)) chatsToSearch.push(jid);
     }
 
-    const searches = (overview || skipSearchForFocusedPrior)
-      ? []
-      : chatsToSearch.map((jid) => hybridSearch({
+    const runSearches = (withRange) => Promise.all(
+      chatsToSearch.map((jid) => hybridSearch({
         db: this.db,
         embeddings: this.embeddings,
         query: resolvedIntent?.cleanedQuery || query,
         chatJid: jid,
-        startTs: range?.startTs ?? null,
-        endTs: range?.endTs ?? null,
-        limit: pinnedPrior.length ? 5 : 20,
+        startTs: withRange ? (range?.startTs ?? null) : null,
+        endTs: withRange ? (range?.endTs ?? null) : null,
+        limit: pinnedPrior.length ? (optsDirectPriorOnly ? 6 : 8) : 20,
         mediaIndexService: this.mediaIndexService,
         intent: resolvedIntent,
-      }));
-    const searchResults = await Promise.all(searches.map((p) => p.catch(() => ({ messages: [] }))));
+      }).catch(() => ({ messages: [] }))),
+    );
+
+    let searchResults = (overview || skipSearch) ? [] : await runSearches(true);
+    if (!overview && !skipSearch && range?.specificDate && searchResults.every((r) => !r?.messages?.length)) {
+      searchResults = await runSearches(false);
+    }
 
     const timeline = [];
     const timelineJids = scoped.length

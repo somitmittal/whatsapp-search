@@ -62,6 +62,25 @@ function resolveMentionPins(mentions, directory) {
     : null)).filter(Boolean);
 }
 
+const EXPLICIT_GLOBAL_SCOPE_RE = /\b(?:across\s+(?:all\s+)?chats?|in\s+(?:all|other|every)\s+chats?|all\s+chats|all\s+messages|anywhere\s+in\s+(?:my\s+)?chats?)\b/i;
+
+/**
+ * When a thread was started via "New chat" (no home chatJid) and Turn 1 scoped via @mention,
+ * keep that @mention scope sticky on subsequent turns unless the user @mentions another chat
+ * or explicitly asks to search across all chats.
+ */
+export function resolveEffectiveMentions({ text, prior = [], scopeChatJid = null, resolvedMentions = [] }) {
+  if (resolvedMentions.length > 0) return resolvedMentions;
+  if (scopeChatJid || EXPLICIT_GLOBAL_SCOPE_RE.test(String(text || ''))) return [];
+  for (let i = prior.length - 1; i >= 0; i--) {
+    const msg = prior[i];
+    if (msg?.role !== 'user') continue;
+    const prevMentions = Array.isArray(msg?.payload?.mentions) ? msg.payload.mentions.filter((p) => p?.chatJid) : [];
+    if (prevMentions.length > 0) return prevMentions;
+  }
+  return [];
+}
+
 /** Keep the thread home chat as the only durable pin (UI identity). */
 function ensureScopePin(db, conversationId, scopeChatJid, scopeChatName, memoryPins) {
   if (!scopeChatJid) return memoryPins || [];
@@ -248,15 +267,21 @@ export default class GptService {
     const provider = resolved.provider;
 
     const memory = this.db.getConversationMemory(conversation.id);
+    const prior = this.db.listSearchMessages(conversation.id);
     const resolvedMentions = resolveMentionPins(mentions, this.directory);
-    const turnPins = turnScopePins(effectiveScopeChatJid, scopeChatName, resolvedMentions);
+    const effectiveMentions = resolveEffectiveMentions({
+      text,
+      prior,
+      scopeChatJid: effectiveScopeChatJid,
+      resolvedMentions,
+    });
+    const turnPins = turnScopePins(effectiveScopeChatJid, scopeChatName, effectiveMentions);
     ensureScopePin(this.db, conversation.id, effectiveScopeChatJid, scopeChatName, memory.pins);
 
     if (model !== undefined && JSON.stringify(existingModel) !== JSON.stringify(resolved.selection)) {
       this.db.setConversationModel(conversation.id, resolved.selection);
     }
 
-    const prior = this.db.listSearchMessages(conversation.id);
     this.db.addSearchMessage({
       id: randomUUID(), conversationId: conversation.id, role: 'user', content: text,
       payload: { scopeChatJid: effectiveScopeChatJid, mentions: resolvedMentions },
@@ -427,7 +452,7 @@ export default class GptService {
         status,
         scopeChatJid: defaultChat?.chatJid || effectiveScopeChatJid || null,
         scopeChatName: defaultChat?.chatName || scopeChatName || null,
-        turnMentions: resolvedMentions,
+        turnMentions: effectiveMentions,
         conversationId: conversation.id,
         resolveProvider: resolveExpenseProvider,
         prefetched: pre.messages,

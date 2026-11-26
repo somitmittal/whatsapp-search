@@ -3,7 +3,8 @@ import Database from '../src/storage/database.js';
 import { runWithTenant } from '../src/storage/tenant-context.js';
 import ChatDirectory from '../src/gpt/chat-directory.js';
 import { ContextEngine } from '../src/gpt/context.js';
-import { hybridSearch, messageBody } from '../src/gpt/retrieval.js';
+import { detectTimeRange, hybridSearch, messageBody } from '../src/gpt/retrieval.js';
+import { resolveEffectiveMentions } from '../src/gpt/gpt-service.js';
 import { contextualizeQuery } from '../src/gpt/query-decomposer.js';
 import { enforceGroundedAnswer } from '../src/search/grounding.js';
 import { runAgent } from '../src/gpt/agent.js';
@@ -146,5 +147,41 @@ describe('Cursor-grade Ask AI & QA bug fixes', () => {
     expect(displayChatTitle('167659098345499@lid', '167659098345499@lid')).toBe('Contact (345499)');
     expect(displayChatTitle('918279683435@s.whatsapp.net', '211050431549561@lid')).toBe('+91 8279683435');
     expect(attachmentFilenameFromMessage('/tmp/doc.pdf', 'm1', 'V2_Abhishek_Final.pdf V2_Abhishek_Final.pdf')).toBe('V2_Abhishek_Final.pdf');
+  });
+
+  test('resolveEffectiveMentions keeps @mention scope sticky on follow-up turns unless overridden', () => {
+    const prior = [
+      { role: 'user', content: 'Where are we meeting?', payload: { mentions: [{ type: 'chat', chatJid: '123@lid', chatName: 'Sanyam Malhotra' }] } },
+      { role: 'assistant', content: 'Burger King in Ran.' },
+    ];
+    const sticky = resolveEffectiveMentions({ text: 'what landmark did I mention?', prior, scopeChatJid: null, resolvedMentions: [] });
+    expect(sticky).toEqual([{ type: 'chat', chatJid: '123@lid', chatName: 'Sanyam Malhotra' }]);
+
+    const explicitGlobal = resolveEffectiveMentions({ text: 'search across all chats for Burger King', prior, scopeChatJid: null, resolvedMentions: [] });
+    expect(explicitGlobal).toEqual([]);
+
+    const switched = resolveEffectiveMentions({
+      text: 'what about Home?',
+      prior,
+      scopeChatJid: null,
+      resolvedMentions: [{ type: 'chat', chatJid: '456@g.us', chatName: 'Home' }],
+    });
+    expect(switched).toEqual([{ type: 'chat', chatJid: '456@g.us', chatName: 'Home' }]);
+  });
+
+  test('detectTimeRange parses natural calendar dates like "Nov 18" and rolls back future month/day to prior year', () => {
+    const now = new Date(2026, 10, 26, 13, 45, 0); // 2026-11-26
+    const nov18 = detectTimeRange('what about the order delivered on Nov 18?', now);
+    expect(nov18).not.toBeNull();
+    expect(nov18.specificDate).toBe(true);
+    expect(new Date(nov18.startTs * 1000).getFullYear()).toBe(2026);
+    expect(new Date(nov18.startTs * 1000).getMonth()).toBe(10);
+    expect(new Date(nov18.startTs * 1000).getDate()).toBe(18);
+
+    const dec18 = detectTimeRange('order delivered on Dec 18', now);
+    expect(dec18).not.toBeNull();
+    expect(new Date(dec18.startTs * 1000).getFullYear()).toBe(2025);
+    expect(new Date(dec18.startTs * 1000).getMonth()).toBe(11);
+    expect(new Date(dec18.startTs * 1000).getDate()).toBe(18);
   });
 });

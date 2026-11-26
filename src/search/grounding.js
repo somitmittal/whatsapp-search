@@ -64,6 +64,9 @@ const NON_ENTITY_WORDS = new Set([
   'tier', 'tiers', 'duration', 'amount', 'amounts', 'rate', 'rates', 'cost', 'costs',
   'feature', 'features', 'brand', 'title', 'titles', 'address', 'addresses', 'description',
   'information', 'overview', 'listed', 'list', 'posted', 'post', 'author', 'timing',
+  'point', 'points', 'discussion', 'discussions', 'agreed', 'clarified', 'confirmed',
+  'concern', 'concerned', 'delayed', 'issue', 'issues', 'meeting', 'plan', 'plans',
+  'schedule', 'update', 'updates', 'treatment', 'appointment', 'matter',
 ]);
 
 /** Characters that can sit between a sentence break and its first word. */
