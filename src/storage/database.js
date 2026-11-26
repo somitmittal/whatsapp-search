@@ -282,6 +282,109 @@ export default class Database {
     add('memory_upto', 'INTEGER DEFAULT 0');
     add('pins_json', 'TEXT');
     add('model_json', 'TEXT');
+
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS gpt_implicit_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL DEFAULT 'legacy-default',
+        conversation_id TEXT,
+        message_id TEXT,
+        query_text TEXT NOT NULL,
+        query_tokens TEXT NOT NULL DEFAULT '',
+        chat_jid TEXT,
+        wa_message_id INTEGER,
+        signal_type TEXT NOT NULL,
+        weight REAL NOT NULL DEFAULT 1.0,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_implicit_fb_tenant_time
+        ON gpt_implicit_feedback(tenant_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_implicit_fb_tenant_chat
+        ON gpt_implicit_feedback(tenant_id, chat_jid);
+    `);
+  }
+
+  static _tokenizeFeedbackQuery(text) {
+    const STOP = new Set(['the', 'is', 'at', 'which', 'on', 'in', 'a', 'an', 'and', 'or', 'for', 'to', 'of', 'with', 'from', 'by', 'about', 'what', 'when', 'where', 'who', 'how', 'can', 'you', 'me', 'my', 'did', 'was', 'were', 'are', 'this', 'that', 'it', 'please', 'pls', 'find', 'show', 'check', 'tell', 'give']);
+    const raw = String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/);
+    const out = [];
+    for (const tok of raw) {
+      if (tok.length >= 2 && !STOP.has(tok)) out.push(tok);
+    }
+    return [...new Set(out)];
+  }
+
+  recordImplicitFeedback({
+    conversationId = null,
+    messageId = null,
+    queryText = '',
+    chatJid = null,
+    waMessageId = null,
+    signalType = 'view_in_chat',
+    weight = 1.0,
+  } = {}) {
+    const q = String(queryText || '').trim();
+    if (!q || (!chatJid && waMessageId == null)) return null;
+    const t = getCurrentTenantId();
+    const tokens = Database._tokenizeFeedbackQuery(q).join(' ');
+    if (!tokens) return null;
+    const parsedMsgId = waMessageId != null && waMessageId !== '' ? Number(waMessageId) : null;
+    const cleanMsgId = Number.isFinite(parsedMsgId) ? parsedMsgId : null;
+    const now = Math.floor(Date.now() / 1000);
+    const info = this._db.prepare(`
+      INSERT INTO gpt_implicit_feedback (
+        tenant_id, conversation_id, message_id, query_text, query_tokens,
+        chat_jid, wa_message_id, signal_type, weight, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(t, conversationId, messageId, q.slice(0, 500), tokens, chatJid || null, cleanMsgId, signalType, Number(weight) || 0, now);
+    return info.lastInsertRowid;
+  }
+
+  getImplicitBoostsForQuery(queryText, { limit = 120 } = {}) {
+    const queryTokens = Database._tokenizeFeedbackQuery(queryText);
+    const chatBoosts = new Map();
+    const messageBoosts = new Map();
+    if (!queryTokens.length) {
+      return { chatBoosts, messageBoosts, topChatAffinities: [] };
+    }
+    const qSet = new Set(queryTokens);
+    const t = getCurrentTenantId();
+    const rows = this._db.prepare(`
+      SELECT query_tokens AS queryTokens, chat_jid AS chatJid, wa_message_id AS waMessageId, weight, created_at AS createdAt
+      FROM gpt_implicit_feedback
+      WHERE tenant_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(t, limit);
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    for (const r of rows) {
+      const rTokens = String(r.queryTokens || '').split(' ').filter(Boolean);
+      if (!rTokens.length) continue;
+      let overlap = 0;
+      for (const tok of rTokens) {
+        if (qSet.has(tok)) overlap++;
+      }
+      if (overlap === 0) continue;
+      const similarity = overlap / Math.sqrt(qSet.size * rTokens.length);
+      if (similarity < 0.25) continue;
+      const ageDays = Math.max(0, (nowSec - (r.createdAt || nowSec)) / 86400);
+      const decay = Math.exp(-ageDays / 30);
+      const delta = r.weight * similarity * decay * 0.45;
+      if (r.chatJid) {
+        chatBoosts.set(r.chatJid, (chatBoosts.get(r.chatJid) || 0) + delta);
+      }
+      if (r.waMessageId != null) {
+        messageBoosts.set(r.waMessageId, (messageBoosts.get(r.waMessageId) || 0) + delta * 1.25);
+      }
+    }
+
+    const topChatAffinities = [...chatBoosts.entries()]
+      .filter(([, s]) => s > 0.25)
+      .sort((a, b) => b[1] - a[1])
+      .map(([chatJid, score]) => ({ chatJid, score }));
+
+    return { chatBoosts, messageBoosts, topChatAffinities };
   }
 
   getConversationModel(id) {

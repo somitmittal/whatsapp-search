@@ -2491,6 +2491,35 @@ export default class WebServer {
       }
     });
 
+    this._app.post('/api/gpt/feedback/implicit', (req, res) => {
+      try {
+        const SIGNAL_WEIGHTS = {
+          view_in_chat: 1.5,
+          copy_answer: 1.0,
+          citation_click: 0.9,
+          media_open: 0.8,
+        };
+        const signalType = String(req.body?.signalType || '').trim();
+        const weight = SIGNAL_WEIGHTS[signalType];
+        if (!weight) return res.status(400).json({ error: 'Invalid signalType' });
+        const { conversationId, messageId, queryText, chatJid, waMessageId } = req.body || {};
+        if (typeof this.db.recordImplicitFeedback === 'function') {
+          this.db.recordImplicitFeedback({
+            conversationId: conversationId || null,
+            messageId: messageId || null,
+            queryText: String(queryText || ''),
+            chatJid: chatJid || null,
+            waMessageId: waMessageId ?? null,
+            signalType,
+            weight,
+          });
+        }
+        return res.json({ ok: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
     this._app.get('/api/gpt/models', async (_req, res) => {
       try {
         return res.json(await this._gpt.listModels());

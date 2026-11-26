@@ -2649,9 +2649,52 @@ function wire() {
     if (item) void openConversation(item.dataset.id);
   });
 
+  function findPrecedingUserQuery(assistantEl) {
+    let cur = assistantEl?.previousElementSibling;
+    while (cur) {
+      if (cur.classList?.contains('gpt-user')) return cur.textContent?.trim() || '';
+      cur = cur.previousElementSibling;
+    }
+    return '';
+  }
+
+  function emitImplicitFeedback({ el, chatJid = null, waMessageId = null, signalType }) {
+    try {
+      const msgEl = el?.closest?.('.gpt-assistant');
+      const queryText = findPrecedingUserQuery(msgEl);
+      if (!queryText) return;
+      fetch('/api/gpt/feedback/implicit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          conversationId: state.conversationId || null,
+          queryText,
+          chatJid: chatJid || null,
+          waMessageId: waMessageId || null,
+          signalType,
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch { /* non-fatal */ }
+  }
+
+  els.thread?.addEventListener('copy', (e) => {
+    const msgEl = e.target?.closest?.('.gpt-assistant');
+    if (!msgEl) return;
+    const firstSrc = msgEl.querySelector('.gpt-source[data-chat-jid]');
+    if (!firstSrc) return;
+    emitImplicitFeedback({
+      el: msgEl,
+      chatJid: firstSrc.dataset.chatJid || null,
+      waMessageId: firstSrc.dataset.msgId || firstSrc.dataset.ref || null,
+      signalType: 'copy_answer',
+    });
+  });
+
   els.thread.addEventListener('click', async (e) => {
     const choice = e.target.closest('[data-skill-choice]');
     if (choice?.dataset.skillChoice) { void send(choice.dataset.skillChoice); return; }
+
     const sendBtn = e.target.closest('[data-send-skill-run]');
     if (sendBtn) { await confirmSkillSend(sendBtn); return; }
 
@@ -2661,6 +2704,14 @@ function wire() {
       const mediaType = a2uiThumb.dataset.mediaType;
       const caption = a2uiThumb.dataset.caption || '';
       if (mediaUrl) {
+        const card = a2uiThumb.closest('.a2ui-media-card');
+        const jumpBtn = card?.querySelector('.a2ui-btn-jump');
+        emitImplicitFeedback({
+          el: a2uiThumb,
+          chatJid: jumpBtn?.dataset.chatJid || null,
+          waMessageId: jumpBtn?.dataset.msgId || card?.dataset.ref || null,
+          signalType: 'media_open',
+        });
         if (mediaType === 'pdf' || mediaUrl.toLowerCase().includes('.pdf')) {
           openChatPdfViewer(mediaUrl, caption);
         } else {
@@ -2677,6 +2728,14 @@ function wire() {
         alert('Media file is not downloaded yet. View in chat to download.');
         return;
       }
+      const card = a2uiView.closest('.a2ui-media-card');
+      const jumpBtn = card?.querySelector('.a2ui-btn-jump');
+      emitImplicitFeedback({
+        el: a2uiView,
+        chatJid: jumpBtn?.dataset.chatJid || null,
+        waMessageId: jumpBtn?.dataset.msgId || card?.dataset.ref || null,
+        signalType: 'media_open',
+      });
       const caption = a2uiView.dataset.caption || '';
       if (a2uiView.dataset.mediaType === 'pdf' || mediaUrl.toLowerCase().includes('.pdf')) {
         openChatPdfViewer(mediaUrl, caption);
@@ -2708,6 +2767,7 @@ function wire() {
       const jid = a2uiJump.dataset.chatJid;
       const name = a2uiJump.dataset.chatName || '';
       const msgId = a2uiJump.dataset.msgId || '';
+      emitImplicitFeedback({ el: a2uiJump, chatJid: jid, waMessageId: msgId, signalType: 'view_in_chat' });
       void openChatTab(jid, name, { focusMessageId: msgId || null });
       return;
     }
@@ -2717,6 +2777,7 @@ function wire() {
       const jid = gptSrc.dataset.chatJid;
       const name = gptSrc.dataset.chatName || '';
       const msgId = gptSrc.dataset.msgId || gptSrc.dataset.ref || '';
+      emitImplicitFeedback({ el: gptSrc, chatJid: jid, waMessageId: msgId, signalType: 'view_in_chat' });
       void openChatTab(jid, name, { focusMessageId: msgId || null });
       return;
     }
@@ -2734,6 +2795,12 @@ function wire() {
     const msg = c.closest('.gpt-assistant');
     const card = msg?.querySelector(`.gpt-source[data-ref="${CSS.escape(c.dataset.ref)}"]`);
     if (card) {
+      emitImplicitFeedback({
+        el: c,
+        chatJid: card.dataset.chatJid || null,
+        waMessageId: card.dataset.msgId || card.dataset.ref || null,
+        signalType: 'citation_click',
+      });
       const wrap = card.closest('details');
       if (wrap) wrap.open = true;
       card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });

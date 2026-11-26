@@ -272,13 +272,25 @@ export async function hybridSearch({
     for (const m of db.getMessagesByRowIds(missing)) rowsById.set(m.id, m);
   }
 
-  // Apply modality & direction multipliers
+  // Apply modality, direction, and implicit feedback multipliers
+  const feedbackBoosts = (typeof db?.getImplicitBoostsForQuery === 'function' && typeof query === 'string' && query.trim())
+    ? db.getImplicitBoostsForQuery(query)
+    : null;
+
   for (const [id, currentScore] of score.entries()) {
     const row = rowsById.get(id);
     if (!row) continue;
     let multiplier = 1.0;
     if (modality && row.mediaType === modality) multiplier *= 1.5;
     if (outboundOnly && row.sender === 'You') multiplier *= 1.3;
+    if (feedbackBoosts) {
+      const chatDelta = row.chatJid ? (feedbackBoosts.chatBoosts.get(row.chatJid) || 0) : 0;
+      const msgDelta = feedbackBoosts.messageBoosts.get(row.id) || 0;
+      const combined = chatDelta + msgDelta;
+      if (combined !== 0) {
+        multiplier *= Math.max(0.45, Math.min(2.2, 1.0 + combined));
+      }
+    }
     if (multiplier !== 1.0) score.set(id, currentScore * multiplier);
   }
 

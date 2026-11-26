@@ -298,6 +298,49 @@ export default class GptService {
       directory: this.directory,
     });
     const effectiveQuery = contextualized.effectiveQuery;
+
+    // Implicit negative feedback: if user retries or corrects the previous turn, down-rank its surfaced sources.
+    const isCorrective = contextualized.isRetry
+      || /\b(no,?\s*i\s*meant|wrong\s*chat|not\s*that|check\s*another|different\s*chat|actually\s*i\s*meant)\b/i.test(text);
+    if (isCorrective && typeof this.db.recordImplicitFeedback === 'function') {
+      const lastAssistant = [...prior].reverse().find((m) => m.role === 'assistant');
+      const lastUser = [...prior].reverse().find((m) => m.role === 'user');
+      const prevSources = lastAssistant?.payload?.sources;
+      if (lastUser?.content && Array.isArray(prevSources) && prevSources.length) {
+        const seenChats = new Set();
+        for (const src of prevSources.slice(0, 6)) {
+          if (!src?.chatJid && src?.messageId == null) continue;
+          const key = `${src.chatJid || ''}:${src.messageId ?? ''}`;
+          if (seenChats.has(key)) continue;
+          seenChats.add(key);
+          try {
+            this.db.recordImplicitFeedback({
+              conversationId: conversation.id,
+              messageId: lastAssistant.id,
+              queryText: lastUser.content,
+              chatJid: src.chatJid || null,
+              waMessageId: src.messageId ?? null,
+              signalType: 'rephrase_negative',
+              weight: -0.6,
+            });
+          } catch { /* non-fatal */ }
+        }
+      }
+    }
+
+    const learnedAffinityHint = (() => {
+      if (scopeJids.length > 0 || typeof this.db.getImplicitBoostsForQuery !== 'function') return '';
+      try {
+        const boosts = this.db.getImplicitBoostsForQuery(effectiveQuery);
+        const top = boosts?.topChatAffinities?.[0];
+        if (!top || top.score < 0.45) return '';
+        const name = this.directory?.name?.(top.chatJid) || top.chatJid;
+        return `# Learned affinity from past usage: similar queries previously matched "${name}"`;
+      } catch {
+        return '';
+      }
+    })();
+
     const budgets = budgetsForProvider(provider, this.db);
     const hasPriorAnswer = prior.some((m) => m.role === 'assistant' && String(m.content || '').trim().length > 20);
     const isFollowUpTransform = hasPriorAnswer && isFollowUpTransformQuery(text);
@@ -317,6 +360,7 @@ export default class GptService {
       effectiveScopeChatJid
         ? `# Thread home chat: ${scopeChatName || effectiveScopeChatJid}`
         : '',
+      learnedAffinityHint,
       expenseHistory,
       pre.text,
     ].filter(Boolean).join('\n\n');
