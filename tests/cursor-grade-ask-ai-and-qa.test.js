@@ -184,4 +184,29 @@ describe('Cursor-grade Ask AI & QA bug fixes', () => {
     expect(new Date(dec18.startTs * 1000).getMonth()).toBe(11);
     expect(new Date(dec18.startTs * 1000).getDate()).toBe(18);
   });
+
+  test('enforceGroundedAnswer blocks invented relationships between people while preserving grounded ones', () => {
+    const source = [
+      '[m1] 26 Nov 26 · Rudraksh Garg: Injection lgwa li tbtk',
+      '[m2] 26 Nov 26 · Parul Garg: Nhi lga rhe abhi',
+      '[m3] 26 Nov 26 · Alok Kumar Garg: Thyroid wala dr ko bhi dikha dena',
+    ].join('\n');
+
+    const fabricated = [
+      'Parul Garg, Rudraksh\'s wife, said the injection has not been given yet.',
+      '- Alok Kumar Garg (Rudraksh\'s father) suggested showing the thyroid doctor.',
+      '- Rudraksh Garg is Parul Garg\'s brother.',
+    ].join('\n');
+
+    const res = enforceGroundedAnswer(fabricated, source, 'What is the latest update?');
+    expect(res.text).not.toMatch(/\bwife\b|\bfather\b|\bbrother\b/i);
+    expect(res.text).toContain('Parul Garg');
+    expect(res.text).toContain('Alok Kumar Garg');
+    expect(res.removed.length).toBeGreaterThanOrEqual(3);
+
+    const groundedSource = '[m10] 26 Nov 26 · You: My wife Parul called the doctor.';
+    const groundedRes = enforceGroundedAnswer('Your wife Parul called the doctor.', groundedSource, 'Who called?');
+    expect(groundedRes.removed).toEqual([]);
+    expect(groundedRes.text).toContain('wife Parul');
+  });
 });

@@ -16,6 +16,7 @@ export const GROUNDING_PROMPT_RULES = [
   '- Never expand, translate or explain an abbreviation, acronym or short form. Copy it exactly as written.',
   '- Copy spellings exactly, even when a word looks misspelt, unfamiliar or wrong.',
   '- Never guess what an unknown word refers to. If you do not know, leave it as-is.',
+  '- NEVER invent, guess, or assume relationships, family roles, or titles between people (such as wife, husband, spouse, brother, sister, father, mother, son, daughter, cousin, friend, colleague, boss, manager, owner) unless that exact relationship is explicitly written in the messages.',
   '- If the messages do not answer the question, say so plainly instead of filling the gap.',
   '- SITUATIONAL CONVERSATIONS: When asked situational or immediate questions (e.g. "where are we heading?", "where are we meeting?", "did you leave?", "what time?"), answer from the active recent messages. Do not pull historical keyword matches from unrelated chats.',
 ].join('\n');
@@ -218,13 +219,63 @@ function ungroundedWords(text, index, opts) {
     }
     bad.push(w);
   }
+  for (const rel of ungroundedRelationshipWords(text, index)) {
+    if (!bad.some((b) => normalizeToken(b) === normalizeToken(rel))) bad.push(rel);
+  }
   return bad;
+}
+
+const RELATIONSHIP_WORDS = new Set([
+  'wife', 'wives', 'husband', 'husbands', 'spouse', 'spouses', 'partner', 'partners',
+  'fiance', 'fiancee', 'fiancée', 'brother', 'brothers', 'sister', 'sisters',
+  'sibling', 'siblings', 'father', 'fathers', 'mother', 'mothers', 'dad', 'mom',
+  'parent', 'parents', 'son', 'sons', 'daughter', 'daughters', 'child', 'children',
+  'uncle', 'uncles', 'aunt', 'aunts', 'cousin', 'cousins', 'nephew', 'nephews',
+  'niece', 'nieces', 'grandfather', 'grandmother', 'grandpa', 'grandma',
+  'in-law', 'in-laws', 'brother-in-law', 'sister-in-law', 'father-in-law',
+  'mother-in-law', 'son-in-law', 'daughter-in-law',
+  'boss', 'bosses', 'manager', 'managers', 'colleague', 'colleagues',
+  'coworker', 'coworkers', 'co-worker', 'co-workers', 'employee', 'employees',
+  'employer', 'employers', 'girlfriend', 'boyfriend', 'roommate', 'roommates',
+  'neighbor', 'neighbors', 'neighbour', 'neighbours',
+]);
+
+function isRelationshipWordGrounded(rawWord, index) {
+  const norm = normalizeToken(rawWord);
+  if (!norm) return true;
+  if (index.tokens.has(norm)) return true;
+  const singular = norm.endsWith('s') && norm.length > 3 ? norm.slice(0, -1) : '';
+  return Boolean(singular && index.tokens.has(singular));
+}
+
+function ungroundedRelationshipWords(text, index) {
+  const out = [];
+  for (const m of String(text || '').matchAll(/\b[a-z][a-z\u2010\u2011'-]*\b/gi)) {
+    const w = m[0];
+    const lower = w.toLowerCase();
+    if (!RELATIONSHIP_WORDS.has(lower)) continue;
+    if (!isRelationshipWordGrounded(lower, index)) out.push(w);
+  }
+  return out;
+}
+
+/**
+ * Strip invented comma-delimited relationship appositives like
+ * `Parul Garg, Rudraksh's wife, responded...` -> `Parul Garg responded...`.
+ */
+function stripUngroundedRelationshipAppositives(line, index, removed) {
+  return String(line || '').replace(/,\s*([^,\n]{1,60}?)\s*,/g, (match, inner) => {
+    const relBad = ungroundedRelationshipWords(inner, index);
+    if (relBad.length === 0) return match;
+    removed.push(inner.trim());
+    return '';
+  });
 }
 
 /**
  * Remove parenthetical glosses the model invented, e.g. `BSE (Bollywood Stock
  * Exchange)` → `BSE`. A parenthetical survives if it appears in the transcript
- * or contains no invented entity.
+ * or contains no invented entity or relationship.
  */
 function stripUngroundedParentheticals(line, index, removed) {
   return line.replace(/\s*\(([^()]*)\)/g, (match, inner) => {
@@ -269,7 +320,8 @@ export function enforceGroundedAnswer(answer, sourceText, queryText = '') {
   const kept = [];
 
   for (const rawLine of String(answer || '').split('\n')) {
-    const line = stripUngroundedParentheticals(rawLine, index, removed);
+    const noRelAppositive = stripUngroundedRelationshipAppositives(rawLine, index, removed);
+    const line = stripUngroundedParentheticals(noRelAppositive, index, removed);
     const listMatch = line.match(LIST_ITEM_RE);
 
     if (listMatch) {
