@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 import {
   captureChatScrollAnchor,
+  isTranscriptStickToBottom,
   restoreChatScroll,
   scrollChatToBottom,
+  setTranscriptStickToBottom,
 } from '../public/js/messages-render.js';
 
 describe('chat transcript scroll-to-bottom', () => {
@@ -36,7 +38,9 @@ describe('chat transcript scroll-to-bottom', () => {
       scrollTop,
       scrollHeight,
       clientHeight,
+      dataset: {},
       querySelectorAll: () => [],
+      addEventListener() {},
     };
   }
 
@@ -64,5 +68,19 @@ describe('chat transcript scroll-to-bottom', () => {
     const el = fakeContainer({ scrollHeight: 2000, clientHeight: 600, scrollTop: 1950 });
     el.querySelectorAll = () => [];
     expect(captureChatScrollAnchor(el)).toEqual({ mode: 'bottom' });
+  });
+
+  it('sticky-bottom survives a mid-thread anchor until the user leaves the live edge', () => {
+    const el = fakeContainer({ scrollHeight: 5000, clientHeight: 600, scrollTop: 0 });
+    setTranscriptStickToBottom(el, true);
+    expect(isTranscriptStickToBottom(el)).toBe(true);
+    expect(captureChatScrollAnchor(el)).toEqual({ mode: 'bottom' });
+    restoreChatScroll(el, { mode: 'top', scrollTop: 12 }, { force: false });
+    expect(el.scrollTop).toBe(5000);
+
+    setTranscriptStickToBottom(el, false);
+    el.scrollTop = 40;
+    restoreChatScroll(el, { mode: 'top', scrollTop: 40 }, { force: false });
+    expect(el.scrollTop).toBe(40);
   });
 });

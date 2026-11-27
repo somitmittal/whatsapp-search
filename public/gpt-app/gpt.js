@@ -1430,6 +1430,8 @@ async function openChatTab(jid, name = '', { pushUrl = true, focusMessageId = nu
     store.chatHasMoreLocal = true;
     store.chatLoadingOlder = false;
     store.chatOldestAnchorTs = null;
+    // Do not treat the open→bottom scroll as "user scrolled up" (that loads the oldest page).
+    store.gptWaOlderScrollArmed = false;
   }
   if (focusStr) {
     const cached = state.chatMessages.get(jid);
@@ -3033,6 +3035,8 @@ function wire() {
 
   els.waView?.addEventListener('scroll', () => {
     if (!state.activeChatJid || store.activeFocusMessageId || store.chatLoadingOlder || !store.chatHasMoreLocal) return;
+    // Only arm after the user has actually been near the latest messages; otherwise
+    // opening a chat while scrollTop is still 0 would jump to the oldest window.
     if (els.waView.scrollTop > 100) {
       store.gptWaOlderScrollArmed = true;
       return;
@@ -3040,7 +3044,9 @@ function wire() {
     if (!store.gptWaOlderScrollArmed) return;
     store.gptWaOlderScrollArmed = false;
     void loadOlderWaChatPage().finally(() => {
-      setTimeout(() => { store.gptWaOlderScrollArmed = true; }, 350);
+      setTimeout(() => {
+        if (els.waView && els.waView.scrollTop > 100) store.gptWaOlderScrollArmed = true;
+      }, 350);
     });
   }, { passive: true });
 

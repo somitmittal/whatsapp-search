@@ -262,6 +262,7 @@ export async function openChat(jid, focusMessageId = null) {
     store.chatLoadingOlder = false;
     store.chatOldestAnchorTs = null;
     store.chatPhoneFetchAttempted = false;
+    store.cvOlderScrollArmed = false;
   }
   const ch = store.chatData.find(c => c.chatJid === jid);
   // Follow the chat into its tab, but don't treat that as the user choosing a tab —
@@ -609,7 +610,10 @@ export function initChatView() {
     if (!store.cvOlderScrollArmed) return;
     store.cvOlderScrollArmed = false;
     void loadOlderChatPage().finally(() => {
-      setTimeout(() => { store.cvOlderScrollArmed = true; }, 400);
+      setTimeout(() => {
+        const cur = $('#cv-messages');
+        if (cur && cur.scrollTop > 100) store.cvOlderScrollArmed = true;
+      }, 400);
     });
   }, { passive: true });
 

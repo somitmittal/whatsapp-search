@@ -1195,6 +1195,7 @@ function rememberPaint(container, fp) {
  */
 export function captureChatScrollAnchor(container) {
   if (!container) return { mode: 'bottom' };
+  if (isTranscriptStickToBottom(container)) return { mode: 'bottom' };
   const gap = container.scrollHeight - container.scrollTop - container.clientHeight;
   if (gap < CHAT_NEAR_BOTTOM_PX) return { mode: 'bottom' };
   const top = container.scrollTop;
@@ -1214,6 +1215,32 @@ export function captureChatScrollAnchor(container) {
 /** Pending rAF tokens for stick-to-bottom (one per transcript container). */
 const _bottomStickRaf = new WeakMap();
 
+/** Containers that should keep the live edge across live re-paints until the user scrolls up. */
+const _stickBottomByEl = new WeakMap();
+
+export function setTranscriptStickToBottom(container, on = true) {
+  if (!container) return;
+  _stickBottomByEl.set(container, !!on);
+  if (container.dataset) container.dataset.stickBottom = on ? '1' : '0';
+}
+
+export function isTranscriptStickToBottom(container) {
+  if (!container) return false;
+  if (_stickBottomByEl.has(container)) return !!_stickBottomByEl.get(container);
+  return container.dataset?.stickBottom === '1';
+}
+
+function bindStickBottomScroll(container) {
+  if (!container || container.dataset.stickScrollBound === '1') return;
+  container.dataset.stickScrollBound = '1';
+  container.addEventListener('scroll', () => {
+    const gap = container.scrollHeight - container.scrollTop - container.clientHeight;
+    // Opening a chat force-scrolls to the latest messages; keep that until the user
+    // intentionally leaves the live edge (so WA polls / media reloads cannot yank to top).
+    setTranscriptStickToBottom(container, gap < CHAT_NEAR_BOTTOM_PX);
+  }, { passive: true });
+}
+
 /**
  * Scroll a transcript to the live edge. Applies immediately, then again on the
  * next animation frames so layout after unhide / innerHTML / image decode is
@@ -1221,6 +1248,8 @@ const _bottomStickRaf = new WeakMap();
  */
 export function scrollChatToBottom(container, { frames = 2 } = {}) {
   if (!container) return;
+  bindStickBottomScroll(container);
+  setTranscriptStickToBottom(container, true);
   const prev = _bottomStickRaf.get(container);
   if (prev != null) cancelAnimationFrame(prev);
 
@@ -1242,8 +1271,8 @@ export function scrollChatToBottom(container, { frames = 2 } = {}) {
     _bottomStickRaf.delete(container);
     // Media in the bottom viewport can still grow the scroll height after paint.
     const settle = () => {
-      const gap = container.scrollHeight - container.scrollTop - container.clientHeight;
-      if (gap < CHAT_NEAR_BOTTOM_PX * 2) apply();
+      if (!isTranscriptStickToBottom(container)) return;
+      apply();
     };
     let pending = 0;
     container.querySelectorAll('img').forEach((img) => {
@@ -1264,7 +1293,7 @@ export function scrollChatToBottom(container, { frames = 2 } = {}) {
 /** Restore sticky-bottom or a pre-paint message anchor after innerHTML replace. */
 export function restoreChatScroll(container, anchor, { force = false } = {}) {
   if (!container) return;
-  if (force || !anchor || anchor.mode === 'bottom') {
+  if (force || isTranscriptStickToBottom(container) || !anchor || anchor.mode === 'bottom') {
     scrollChatToBottom(container);
     return;
   }
@@ -1389,6 +1418,7 @@ export function paintChatTranscript(container, msgs, jid, {
 } = {}) {
   if (!container) return;
   bindVtScroll(container);
+  bindStickBottomScroll(container);
   if (!msgs.length) {
     container.innerHTML = emptyHtml || `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">No messages in this chat yet.</div></div>`;
     rememberPaint(container, messagesPaintFingerprint([], jid, focusMessageId));
@@ -1397,6 +1427,11 @@ export function paintChatTranscript(container, msgs, jid, {
     return;
   }
   const focusStr = focusMessageId != null ? String(focusMessageId) : '';
+  // Opening / sending pins the live edge. Loading older history or jumping to a
+  // focused message intentionally leaves that pin.
+  if (forceScroll) setTranscriptStickToBottom(container, true);
+  if (focusStr || preferStart != null) setTranscriptStickToBottom(container, false);
+  const stickBottom = forceScroll || (!focusStr && preferStart == null && isTranscriptStickToBottom(container));
   const sorted = [...msgs].sort((a, b) => {
     const ta = messageTimestampToDate(a.timestamp)?.getTime() ?? 0;
     const tb = messageTimestampToDate(b.timestamp)?.getTime() ?? 0;
@@ -1404,10 +1439,15 @@ export function paintChatTranscript(container, msgs, jid, {
   });
   const fp = messagesPaintFingerprint(sorted, jid, focusMessageId);
   // Live Baileys re-deliveries often re-fetch identical rows; replacing DOM kills hover menus.
-  if (!forceScroll && !focusStr && preferStart == null && shouldSkipPaint(container, fp)) return;
+  if (!forceScroll && !stickBottom && !focusStr && preferStart == null && shouldSkipPaint(container, fp)) return;
 
   const prevVt = _vtByEl.get(container);
-  let win = computeVtWindow(sorted, focusStr, preferStart);
+  // Stick-to-bottom opens must use the latest window, not a leftover scrolled-up slice.
+  let win = computeVtWindow(
+    sorted,
+    focusStr,
+    stickBottom && preferStart == null ? null : preferStart,
+  );
   if (win.virtualized && typeof preserveWindowEnd === 'number') {
     win = {
       ...win,
@@ -1415,7 +1455,7 @@ export function paintChatTranscript(container, msgs, jid, {
     };
   }
   // Keep an expanded window when the user already scrolled up (preferStart path).
-  if (win.virtualized && preferStart == null && !focusStr && !forceScroll && prevVt?.virtualized
+  if (win.virtualized && preferStart == null && !focusStr && !stickBottom && prevVt?.virtualized
     && prevVt.jid === jid && prevVt.msgs?.length) {
     win = {
       start: Math.min(prevVt.start, win.start),
@@ -1430,7 +1470,7 @@ export function paintChatTranscript(container, msgs, jid, {
     }
   }
 
-  const anchor = focusStr || forceScroll ? null : captureChatScrollAnchor(container);
+  const anchor = focusStr || stickBottom ? null : captureChatScrollAnchor(container);
   const slice = sorted.slice(win.start, win.end);
   const avgH = prevVt?.avgH || 0;
   const topPx = win.virtualized ? win.start * avgH : 0;
@@ -1481,7 +1521,7 @@ export function paintChatTranscript(container, msgs, jid, {
     const vtAfter = _vtByEl.get(container);
     if (vtAfter) vtAfter.focusMessageId = null;
   } else {
-    restoreChatScroll(container, anchor, { force: forceScroll });
+    restoreChatScroll(container, anchor, { force: stickBottom });
   }
 }
 
