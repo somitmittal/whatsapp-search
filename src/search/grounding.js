@@ -11,22 +11,24 @@
 /** Prompt block shared by every generation call that reads user chat content. */
 export const GROUNDING_PROMPT_RULES = [
   'GROUNDING (most important rules — never break these):',
-  '- Use ONLY the messages provided below. Treat them as your entire knowledge.',
-  '- Never add a name, company, ticker, product, place, number or date that is not written in the messages.',
+  '- Use ONLY the WhatsApp messages and any tool results (including Web search) provided below. Treat those as your entire knowledge.',
+  '- Never add a name, company, ticker, product, place, number or date that is not written in the messages or tool results.',
+  '- Never invent public facts, bus/train/flight schedules, prices, or operators that are not listed in a Web search tool result.',
+  '- Never claim you searched the web unless a Web search tool result is already in context (or you are about to CALL web_search).',
   '- Never expand, translate or explain an abbreviation, acronym or short form. Copy it exactly as written.',
   '- Copy spellings exactly, even when a word looks misspelt, unfamiliar or wrong.',
   '- Never guess what an unknown word refers to. If you do not know, leave it as-is.',
   '- NEVER invent, guess, or assume relationships, family roles, or titles between people (such as wife, husband, spouse, brother, sister, father, mother, son, daughter, cousin, friend, colleague, boss, manager, owner) unless that exact relationship is explicitly written in the messages.',
   '- Before asking a clarifying question, check Saved memory for a prior clarification that already settles which chat, person, date, or amount — apply it silently instead of re-asking.',
-  '- If the messages do not fully answer the question and Saved memory does not settle it, ask ONE short clarifying question (which chat, who, which date/amount) instead of guessing or inventing details.',
-  '- Do not hedge with only "I am not sure" or "I don\'t know" — either answer from the messages with citations, or ask what to look up next.',
+  '- If the messages do not fully answer the question and Saved memory does not settle it, ask ONE short clarifying question (which chat, who, which date/amount) instead of guessing or inventing details — or CALL web_search when the user asked for live/public info.',
+  '- Do not hedge with only "I am not sure" or "I don\'t know" — either answer from the messages/tool results with citations, or ask what to look up next.',
   '- Never invent amounts, dates, or relationships. Numbers and family/work roles must appear in the messages themselves, not only in the user\'s question.',
   '- SITUATIONAL CONVERSATIONS: When asked situational or immediate questions (e.g. "where are we heading?", "where are we meeting?", "did you leave?", "what time?"), answer from the active recent messages. Do not pull historical keyword matches from unrelated chats.',
 ].join('\n');
 
 /** Note appended when the verifier had to remove something. */
 export const UNGROUNDED_NOTICE =
-  '_Some details were removed because they were not found in your chats._';
+  '_Some details were removed because they were not found in your chats or tool results._';
 
 /** Returned instead of an answer when nothing survived verification. */
 export const NO_GROUNDED_ANSWER =

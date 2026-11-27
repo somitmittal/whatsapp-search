@@ -15,6 +15,54 @@
 const DEFAULT_TIMEOUT_MS = 5000;
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
+const WEB_INTENT_RE = /\b(?:search\s+(?:the\s+)?web|web\s+search|google(?:\s+it)?|look\s+(?:it\s+)?up\s+online|search\s+online|from\s+the\s+internet|on\s+the\s+internet|browse\s+the\s+web|check\s+(?:online|the\s+web)|not\s+in\s+(?:this|the|our)\s+chats?|outside\s+(?:this\s+)?(?:chat|whatsapp)|live\s+(?:web\s+)?(?:info|information|data|results))\b/i;
+
+const STRIP_FROM_WEB_QUERY_RE = /\b(?:can\s+u|can\s+you|could\s+you|please|pls|check(?:\s+which(?:\s+all)?)?|which\s+all|they\s+are\s+not\s+in\s+this\s+chat|not\s+in\s+(?:this|the|our)\s+chats?|search\s+(?:the\s+)?web|web\s+search|google(?:\s+it)?|look\s+(?:it\s+)?up\s+online|search\s+online|from\s+the\s+internet|on\s+the\s+internet|are\s+available|available)\b/gi;
+
+/**
+ * True when the user clearly wants a live/public internet lookup (not WhatsApp archive).
+ */
+export function detectWebSearchIntent(text) {
+  return WEB_INTENT_RE.test(String(text || ''));
+}
+
+/**
+ * Strip Ask-AI chatter so the outbound query is concise public keywords.
+ */
+export function extractWebSearchQuery(text) {
+  let q = String(text || '').trim();
+  q = q.replace(STRIP_FROM_WEB_QUERY_RE, ' ');
+  q = q.replace(/[,;:]+/g, ' ').replace(/[?!.]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (q.length < 3) q = String(text || '').trim().slice(0, 180);
+  return q.slice(0, 180);
+}
+
+function isTravelScheduleQuery(query) {
+  return /\b(bus|buses|train|trains|flight|flights|ticket|tickets|redbus|abhibus|irctc|route|routes)\b/i.test(String(query || ''));
+}
+
+/** Public booking hubs when free search APIs return nothing useful for travel. */
+function travelBookingFallbacks(query) {
+  const q = encodeURIComponent(String(query || '').trim());
+  return [
+    {
+      title: 'redBus',
+      snippet: 'Public Indian bus booking site. Open this link and set origin, destination, and travel date to see live operators, times, and fares — Ask AI cannot invent a live seat inventory.',
+      url: `https://www.redbus.in/search?q=${q}`,
+    },
+    {
+      title: 'AbhiBus',
+      snippet: 'Online bus tickets for interstate routes in India. Search the same route and date for current schedules.',
+      url: 'https://www.abhibus.com/',
+    },
+    {
+      title: 'MakeMyTrip buses',
+      snippet: 'Bus booking search across major Indian cities. Use origin, destination, and date filters for live results.',
+      url: 'https://www.makemytrip.com/bus-tickets/',
+    },
+  ];
+}
+
 function stripHtml(html) {
   return String(html || '')
     .replace(/<[^>]+>/g, '')
@@ -172,7 +220,7 @@ async function searchZeroConfig(query, signal) {
  */
 export function formatWebSearchResults(query, results) {
   if (!Array.isArray(results) || results.length === 0) {
-    return `No web results found for "${query}". Try rephrasing with different public keywords.`;
+    return `No web results found for "${query}". Try rephrasing with different public keywords. Do not invent schedules, operators, or prices.`;
   }
 
   const items = results.slice(0, 5).map((r, i) => {
@@ -182,7 +230,7 @@ export function formatWebSearchResults(query, results) {
     return `${i + 1}. **${title}**\n   ${snippet}${url}`;
   });
 
-  return `Web search results for "${query}":\n\n${items.join('\n\n')}`;
+  return `Web search results for "${query}":\n\n${items.join('\n\n')}\n\nUse only these results. If they do not list live schedules for the asked date, say so clearly and point the user to the Source links above — never invent operators or departure times.`;
 }
 
 /**
@@ -232,6 +280,17 @@ export async function searchWeb(query, { timeoutMs = DEFAULT_TIMEOUT_MS, signal 
 
     if (!results || results.length === 0) {
       results = await searchZeroConfig(q, controller.signal);
+    }
+
+    // Instant-Answer + Wikipedia often miss live travel inventory. Attach public
+    // booking hubs so the agent can still give grounded next steps.
+    if (isTravelScheduleQuery(q)) {
+      const useful = (results || []).filter((r) => /bus|ticket|redbus|abhibus|train|flight|schedule|operator/i.test(
+        `${r.title || ''} ${r.snippet || ''} ${r.url || ''}`,
+      ));
+      if (useful.length === 0) {
+        results = [...(results || []).slice(0, 2), ...travelBookingFallbacks(q)];
+      }
     }
 
     const text = formatWebSearchResults(q, results);

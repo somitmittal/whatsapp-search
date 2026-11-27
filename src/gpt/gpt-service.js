@@ -7,6 +7,7 @@ import { runAgent, toSource } from './agent.js';
 import { createToolbox } from './tools.js';
 import { budgetsForProvider, GPT_LIMITS, estimateTokens } from './limits.js';
 import { listModelCatalog, providerForSelection, setProviderKey } from './model-registry.js';
+import { detectWebSearchIntent, extractWebSearchQuery } from './web-search.js';
 import {
   addMemory,
   deleteMemory,
@@ -402,6 +403,26 @@ export default class GptService {
         focusPriorOnly,
       }),
     ]);
+    const wantsWeb = detectWebSearchIntent(text) || detectWebSearchIntent(effectiveQuery);
+    let webSearchBlock = '';
+    let webSearchPayload = null;
+    if (wantsWeb) {
+      const webQuery = extractWebSearchQuery(effectiveQuery || text);
+      emit({ type: 'tool', text: `Searching the web for “${webQuery}”…` });
+      status(`Searching the web for “${webQuery}”…`);
+      try {
+        const webOut = await this.toolbox.web_search(
+          { query: webQuery },
+          Math.floor(budgets.contextTokens / 2),
+          { prefetched: pre.messages, directory: this.directory, status },
+        );
+        webSearchBlock = webOut?.text ? `# Web search\n${webOut.text}` : '';
+        if (webOut?.payload) webSearchPayload = webOut.payload;
+      } catch (err) {
+        webSearchBlock = `# Web search\nWeb search failed: ${err?.message || 'unknown error'}`;
+      }
+    }
+
     const contextText = [
       turnPins.length
         ? `# Active chats this turn: ${turnPins.map((p) => p.chatName || p.chatJid).join(', ')}`
@@ -411,7 +432,10 @@ export default class GptService {
         : '',
       learnedAffinityHint,
       expenseHistory,
+      // Prefer web evidence ahead of chat hits when the user asked for a live lookup.
+      wantsWeb ? webSearchBlock : '',
       pre.text,
+      wantsWeb ? '' : webSearchBlock,
     ].filter(Boolean).join('\n\n');
     if (pre.messages.length) {
       const chats = new Set(pre.messages.map((m) => m.chatJid)).size;
@@ -443,16 +467,20 @@ export default class GptService {
         asksReconcile ? ' If they asked to reconcile, CALL reconcile with no chat arg so each mentioned site runs.' : ''
       })`
       : '';
+    const webHint = wantsWeb
+      ? '\n\n(User asked for a live web lookup. A "# Web search" section is already in context — answer from those results. Do not invent schedules/operators missing from that section. Do not CALL web_search again unless results are empty.)'
+      : '';
     const agentQuery = contextualized.isRetry
-      ? `${text} (Retrying previous question: "${effectiveQuery}")${mentionHint}`
+      ? `${text} (Retrying previous question: "${effectiveQuery}")${mentionHint}${webHint}`
       : contextualized.isFollowUp
-        ? `${text} (Checking for: "${effectiveQuery}")${mentionHint}`
-        : `${text}${mentionHint}`;
+        ? `${text} (Checking for: "${effectiveQuery}")${mentionHint}${webHint}`
+        : `${text}${mentionHint}${webHint}`;
     const hasDirectMediaHits = Boolean(contextualized.intent?.modality || contextualized.intent?.fileExt)
       && pre.messages.filter((m) => m && (m.mediaType || m.hasMediaFile || m.mediaPath)).length >= 2;
     const singlePass = Boolean(
       hasDirectMediaHits
       && !asksReconcile
+      && !wantsWeb
       && /^\s*(?:find|show|get|list|fetch|pull|give)\b/i.test(text),
     );
     const result = overview || await runAgent({
@@ -482,11 +510,15 @@ export default class GptService {
         singlePass,
         contextTokens: budgets.contextTokens,
         isFollowUpTransform,
+        webSearchPrefetched: wantsWeb,
       },
       emit,
       signal,
     });
     if (overview) emit?.({ type: 'delta', text: overview.answer });
+    if (webSearchPayload) {
+      result.payload = { ...(result.payload || {}), ...webSearchPayload };
+    }
 
     const expenseDiff = result.payload.expenseDiff || null;
     const skillRun = result.payload.skillRun || null;

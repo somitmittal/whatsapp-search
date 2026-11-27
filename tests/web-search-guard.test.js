@@ -1,8 +1,14 @@
 import { describe, it, expect, jest } from '@jest/globals';
 import { validateWebSearchQuery } from '../src/gpt/web-search-guard.js';
-import { searchWeb, formatWebSearchResults } from '../src/gpt/web-search.js';
+import {
+  searchWeb,
+  formatWebSearchResults,
+  detectWebSearchIntent,
+  extractWebSearchQuery,
+} from '../src/gpt/web-search.js';
 import { createToolbox, TOOL_SPECS } from '../src/gpt/tools.js';
 import { runAgent, parseToolCalls } from '../src/gpt/agent.js';
+import { enforceGroundedAnswer } from '../src/search/grounding.js';
 
 describe('Web Search Privacy Guardrail (validateWebSearchQuery)', () => {
   const mockDirectory = {
@@ -196,6 +202,27 @@ describe('Web Search Service (searchWeb & formatting)', () => {
   it('searchWeb returns empty query message when query is blank', async () => {
     const res = await searchWeb('');
     expect(res.text).toBe('web_search needs a "query".');
+  });
+
+  it('detects explicit web-search intent and cleans the outbound query', () => {
+    const text = 'can u check which all buses are available Kichha to Gurgaon on 29th November, they are not in this chat, search web';
+    expect(detectWebSearchIntent(text)).toBe(true);
+    expect(detectWebSearchIntent('what did Rohan say yesterday?')).toBe(false);
+    expect(extractWebSearchQuery(text)).toBe('buses Kichha to Gurgaon on 29th November');
+  });
+
+  it('attaches public booking hubs when free search misses travel schedules', async () => {
+    const res = await searchWeb('buses Kichha to Gurgaon on 29th November', { timeoutMs: 8000 });
+    expect(res.text).toMatch(/redBus|AbhiBus|MakeMyTrip/i);
+    expect(res.payload?.webSearch?.resultCount).toBeGreaterThan(0);
+  });
+
+  it('grounds answers that cite web-search tool results (not only chats)', () => {
+    const web = 'Web search results for "buses Kichha to Gurgaon":\n\n1. **redBus**\n   Public Indian bus booking site.\n   Source: https://www.redbus.in/';
+    const answer = 'I could not find a live seat list. Check **redBus** for Kichha to Gurgaon buses.';
+    const out = enforceGroundedAnswer(answer, web, 'buses Kichha to Gurgaon search web');
+    expect(out.text).toMatch(/redBus/);
+    expect(out.removed).toEqual([]);
   });
 });
 
