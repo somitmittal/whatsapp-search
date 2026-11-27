@@ -1,7 +1,7 @@
 import { PROVIDER_META, createProvider } from '../llm/provider.js';
 import { effectiveSearchApiKey, effectiveSummaryApiKey } from '../llm/defaults.js';
 import { canSpawnLocalOllama } from '../llm/deployment-env.js';
-import { listLocalOllamaModels } from '../llm/ollama-recommend.js';
+import { listLocalOllamaModels, localHasModel } from '../llm/ollama-recommend.js';
 import { fetchOllamaCloudModelNames } from '../llm/ollama-cloud.js';
 import config from '../config.js';
 
@@ -86,13 +86,17 @@ export async function listModelCatalog(db) {
     let models = [...(meta.models || [])];
     let configured = false;
     let source = null;
+    let installedModels = null;
     if (id === 'ollama') {
       configured = canSpawnLocalOllama();
       if (configured) {
-        const local = await listLocalOllamaModels();
-        if (local.length) models = [...new Set([...local, ...models])];
+        installedModels = await listLocalOllamaModels();
+        if (installedModels.length) models = [...new Set([...installedModels, ...models])];
         models = models.filter((m) => !/(?::|-)cloud$/i.test(String(m)));
+        models.sort((a, b) => Number(localHasModel(installedModels, b)) - Number(localHasModel(installedModels, a)));
         source = 'local';
+      } else {
+        installedModels = [];
       }
     } else {
       source = keySource(db, id);
@@ -111,6 +115,7 @@ export async function listModelCatalog(db) {
       configured,
       keySource: source,
       models,
+      ...(installedModels ? { installedModels } : {}),
     };
   }));
   return { default: defaultSelection(db), providers };

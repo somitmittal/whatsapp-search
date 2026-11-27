@@ -38,7 +38,7 @@ import {
 } from '/js/messages-render.js';
 import { openReactionDetailsModal } from '/js/reaction-details-modal.js';
 import { initOverlays, openOverlay } from '/js/overlays.js';
-import { downloadOllamaModel, initOllamaSetup } from '/js/ollama-setup.js';
+import { downloadOllamaModel, initOllamaSetup, ollamaLocalHas } from '/js/ollama-setup.js';
 import { initSettings, loadSettings } from '/js/settings.js';
 import { initSkillsSettings, loadManagedSkills } from '/js/skills-settings.js';
 import {
@@ -1887,15 +1887,21 @@ function renderModelMenu() {
         <input type="password" placeholder="${esc(p.name)} API key" autocomplete="off" data-keyinput="${escAttr(p.id)}">
         <button type="button" data-savekey="${escAttr(p.id)}">Save</button>
       </div>`;
-    for (const m of rows) {
+    const sorted = p.id === 'ollama' && Array.isArray(p.installedModels)
+      ? [...rows].sort((a, b) => Number(ollamaLocalHas(b, p.installedModels)) - Number(ollamaLocalHas(a, p.installedModels)))
+      : rows;
+    for (const m of sorted) {
       const key = modelKey(p.id, m);
       const hidden = state.hiddenModels.has(key);
       const on = key === selectedKey;
-      html += `<button type="button" class="gpt-model-opt${on ? ' on' : ''}${p.configured ? '' : ' off'}${hidden ? ' hidden-model' : ''}"
-          role="option" data-provider="${escAttr(p.id)}" data-model="${escAttr(m)}" ${p.configured || manage ? '' : 'disabled'}>
+      const needsDownload = p.id === 'ollama' && p.configured
+        && Array.isArray(p.installedModels) && !ollamaLocalHas(m, p.installedModels);
+      html += `<button type="button" class="gpt-model-opt${on ? ' on' : ''}${p.configured ? '' : ' off'}${needsDownload ? ' not-installed' : ''}${hidden ? ' hidden-model' : ''}"
+          role="option" data-provider="${escAttr(p.id)}" data-model="${escAttr(m)}"${needsDownload ? ' data-needs-download="1"' : ''} ${p.configured || manage ? '' : 'disabled'}>
         <span class="chk">${on ? '✓' : ''}</span>
         <span class="nm">${esc(shortModel(m))}</span>
         <span class="sub">${esc(m !== shortModel(m) ? m : '')}</span>
+        ${needsDownload && !manage ? `<span class="dl" data-download-model="${escAttr(m)}">Download</span>` : ''}
         ${manage ? `<span class="eye" data-eye="${escAttr(key)}" title="${hidden ? 'Show in list' : 'Hide from list'}">${hidden ? 'Hidden' : 'Shown'}</span>` : ''}
       </button>`;
     }
@@ -2457,15 +2463,13 @@ function showOllamaModelMissing(modelName) {
   const model = String(modelName || parseMissingModelName('') || 'the selected model').trim();
   els.thread.insertAdjacentHTML('beforeend', `<div class="gpt-msg gpt-error gpt-model-missing" data-missing-model="${escAttr(model)}">
     <p class="gpt-model-missing-title">Model not installed</p>
-    <p class="gpt-model-missing-lead"><code>${esc(model)}</code> is not on this Mac yet. Download it once to use Ask AI with this model — nothing starts until you choose.</p>
+    <p class="gpt-model-missing-lead"><code>${esc(model)}</code> is not on this Mac yet. Download it once to use Ask AI with this model — nothing starts until you choose. Or open the model list and pick one already on this device.</p>
     <div class="gpt-model-missing-actions">
       <button type="button" class="gpt-model-missing-btn" data-download-ollama="${escAttr(model)}">Download ${esc(model)}</button>
-      <button type="button" class="gpt-model-missing-btn secondary" data-open-gpt-settings="1">Choose another model</button>
     </div>
   </div>`);
   const card = els.thread.querySelector('.gpt-model-missing:last-of-type');
   const dl = card?.querySelector('[data-download-ollama]');
-  const settingsBtn = card?.querySelector('[data-open-gpt-settings]');
   dl?.addEventListener('click', async () => {
     const name = dl.getAttribute('data-download-ollama') || model;
     dl.disabled = true;
@@ -2494,11 +2498,8 @@ function showOllamaModelMissing(modelName) {
       dl.onclick = () => { card.remove(); els.input?.focus(); };
       const lead = card.querySelector('.gpt-model-missing-lead');
       if (lead) lead.textContent = `${name} is ready. Send your question again.`;
+      void loadModels();
     }
-  });
-  settingsBtn?.addEventListener('click', () => {
-    els.settings?.removeAttribute('hidden');
-    void loadSettings();
   });
   scrollToBottom(true);
 }
@@ -2603,8 +2604,26 @@ function wire() {
       try { await saveProviderKey(save.dataset.savekey, input?.value || ''); } catch (err) { alert(err.message); save.disabled = false; }
       return;
     }
+    const dl = e.target.closest('[data-download-model]');
+    if (dl) {
+      e.stopPropagation();
+      const name = dl.getAttribute('data-download-model') || '';
+      const prev = dl.textContent;
+      dl.textContent = '…';
+      const result = await downloadOllamaModel(name);
+      if (result.cancelled || !result.ok) {
+        dl.textContent = prev;
+        if (!result.cancelled && result.error) alert(result.error);
+        return;
+      }
+      dl.textContent = result.pulling ? 'Downloading…' : 'Ready';
+      await loadModels();
+      renderModelMenu();
+      return;
+    }
     const opt = e.target.closest('.gpt-model-opt');
     if (!opt || opt.disabled) return;
+    if (opt.dataset.needsDownload) return;
     if (state.manageModels && !opt.dataset.auto) return;
     setModel(opt.dataset.auto ? null : { provider: opt.dataset.provider, model: opt.dataset.model });
     openModelMenu(false);

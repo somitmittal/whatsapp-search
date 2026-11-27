@@ -60,6 +60,8 @@ describe('listModelCatalog', () => {
       expect(byId.groq.keySource).toBe('settings');
       expect(byId.claude.configured).toBe(false);
       expect(byId.claude.models.length).toBeGreaterThan(0);
+      expect(Array.isArray(byId.ollama.installedModels)).toBe(true);
+      expect(byId.ollama.installedModels.every((m) => byId.ollama.models.includes(m))).toBe(true);
     });
   });
 });
