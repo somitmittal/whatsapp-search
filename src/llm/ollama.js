@@ -13,6 +13,31 @@ export const OLLAMA_DEFAULT_KEEP_ALIVE_SEC = 300;
 /** Existing `/api/chat` fallback when `OLLAMA_NUM_CTX` is unset. */
 export const OLLAMA_DEFAULT_NUM_CTX = 4096;
 
+/** Thrown when the chosen local tag is not installed — UI offers a one-click download. */
+export class OllamaModelMissingError extends Error {
+  constructor(model) {
+    const name = String(model || '').trim() || 'unknown';
+    super(`The local model "${name}" is not installed yet. Download it to use Ask AI with this model.`);
+    this.name = 'OllamaModelMissingError';
+    this.code = 'ollama_model_missing';
+    this.model = name;
+  }
+}
+
+/** Detect Ollama's "model 'x' not found" 404 payloads (and our structured error). */
+export function parseOllamaModelMissing(errOrText, fallbackModel = '') {
+  if (errOrText && typeof errOrText === 'object') {
+    if (errOrText.code === 'ollama_model_missing' && errOrText.model) {
+      return { model: String(errOrText.model), code: 'ollama_model_missing' };
+    }
+  }
+  const text = String(errOrText?.message || errOrText || '');
+  const m = text.match(/model ['"]([^'"]+)['"] not found/i)
+    || text.match(/local model "([^"]+)" is not installed/i);
+  if (!m) return null;
+  return { model: m[1] || fallbackModel || 'unknown', code: 'ollama_model_missing' };
+}
+
 export default class OllamaProvider {
   constructor(_apiKey, model = 'llama3.2:3b') {
     this._baseUrl = (process.env.OLLAMA_HOST || 'http://localhost:11434').replace(/\/$/, '');
@@ -65,7 +90,13 @@ export default class OllamaProvider {
     return true;
   }
 
+  async _ensureModelInstalled() {
+    const hasModel = await this._hasModel(this._model);
+    if (!hasModel) throw new OllamaModelMissingError(this._model);
+  }
+
   async chat(messages, options = {}) {
+    await this._ensureModelInstalled();
     const body = {
       model: this._model,
       messages,
@@ -87,6 +118,7 @@ export default class OllamaProvider {
   }
 
   async *chatStream(messages, options = {}) {
+    await this._ensureModelInstalled();
     const { readTextChunks } = await import('./stream-chat.js');
     const body = {
       model: this._model,
@@ -306,6 +338,8 @@ export default class OllamaProvider {
     const res = await fetch(`${this._baseUrl}${path}`, init);
     if (!res.ok) {
       const text = await res.text().catch(() => '');
+      const missing = parseOllamaModelMissing(`Ollama ${res.status}: ${text}`, this._model);
+      if (missing) throw new OllamaModelMissingError(missing.model || this._model);
       throw new Error(`Ollama ${res.status}: ${text.slice(0, 300)}`);
     }
     return res;

@@ -68,6 +68,20 @@
     </div>
   </div>
 
+  <!-- Local Ollama model download progress (same contract as classic UI) -->
+  <div class="pull-banner" id="pull-banner">
+    <div class="pb-row">
+      <div class="pb-icon" id="pb-icon">&#11015;&#65039;</div>
+      <div class="pb-text">
+        <strong id="pb-title">Downloading model...</strong>
+        <span id="pb-detail">This may take a few minutes</span>
+      </div>
+      <div class="pb-pct" id="pb-pct">0%</div>
+      <button type="button" class="pb-cancel" id="pb-cancel">Cancel download</button>
+    </div>
+    <div class="pb-bar"><div class="pb-fill" id="pb-fill"></div></div>
+  </div>
+
   <div class="gpt-trial-nudge" id="gpt-trial-nudge" role="status" hidden>
     <p class="gpt-trial-nudge-text" id="gpt-trial-nudge-text"></p>
     <div class="gpt-trial-nudge-actions">

@@ -38,6 +38,7 @@ import {
 } from '/js/messages-render.js';
 import { openReactionDetailsModal } from '/js/reaction-details-modal.js';
 import { initOverlays, openOverlay } from '/js/overlays.js';
+import { downloadOllamaModel, initOllamaSetup } from '/js/ollama-setup.js';
 import { initSettings, loadSettings } from '/js/settings.js';
 import { initSkillsSettings, loadManagedSkills } from '/js/skills-settings.js';
 import {
@@ -63,6 +64,7 @@ const gptInits = [
   ['overlays', initOverlays],
   ['settings', initSettings],
   ['skillsSettings', initSkillsSettings],
+  ['ollamaSetup', initOllamaSetup],
   ['business', initBusiness],
   ['expenses', initExpenses],
   ['gmail', initGmail],
@@ -2221,7 +2223,7 @@ async function send(textOverride = null) {
       if (res.status === 402 || data.code === 'trial_expired' || data.code === 'account_required') {
         renderPaywall(data);
       } else {
-        showError(data.error || 'Request failed', data.code);
+        showError(data.error || 'Request failed', data.code, data.model);
       }
       return;
     }
@@ -2294,7 +2296,10 @@ async function send(textOverride = null) {
           live.text = '';
           paintLive(live);
         } else if (ev.type === 'error') {
-          throw new Error(ev.error || 'Something went wrong');
+          const err = new Error(ev.error || 'Something went wrong');
+          if (ev.code) err.code = ev.code;
+          if (ev.model) err.model = ev.model;
+          throw err;
         } else if (ev.type === 'done') {
           done = ev;
         }
@@ -2360,7 +2365,14 @@ async function send(textOverride = null) {
   } catch (err) {
     // The partial answer and the steps already streamed stay in the thread.
     // The server saved the same turn, so coming back to the tab shows it too.
-    freezeLive(live, err.name === 'AbortError' ? 'Stopped.' : (err.message || 'The answer stopped early'));
+    if (err?.name === 'AbortError') {
+      freezeLive(live, 'Stopped.');
+    } else if (isOllamaModelMissingError(err)) {
+      freezeLive(live, '');
+      showOllamaModelMissing(err.model || parseMissingModelName(err.message));
+    } else {
+      freezeLive(live, err.message || 'The answer stopped early');
+    }
   } finally {
     if (activeStreams.get(conversationId)?.ctrl === ctrl) activeStreams.delete(conversationId);
     refreshStreamingUi();
@@ -2424,15 +2436,83 @@ function renderPaywall(data) {
   scrollToBottom(true);
 }
 
-function showError(message, code) {
+function isOllamaModelMissingError(err) {
+  if (!err) return false;
+  if (err.code === 'ollama_model_missing') return true;
+  return /model ['"][^'"]+['"] not found/i.test(String(err.message || ''))
+    || /local model "[^"]+" is not installed/i.test(String(err.message || ''));
+}
+
+function parseMissingModelName(message) {
+  const text = String(message || '');
+  return text.match(/model ['"]([^'"]+)['"] not found/i)?.[1]
+    || text.match(/local model "([^"]+)" is not installed/i)?.[1]
+    || state.model
+    || 'the selected model';
+}
+
+function showOllamaModelMissing(modelName) {
+  const model = String(modelName || parseMissingModelName('') || 'the selected model').trim();
+  els.thread.insertAdjacentHTML('beforeend', `<div class="gpt-msg gpt-error gpt-model-missing" data-missing-model="${escAttr(model)}">
+    <p class="gpt-model-missing-title">Model not installed</p>
+    <p class="gpt-model-missing-lead"><code>${esc(model)}</code> is not on this Mac yet. Download it once to use Ask AI with this model — nothing starts until you choose.</p>
+    <div class="gpt-model-missing-actions">
+      <button type="button" class="gpt-model-missing-btn" data-download-ollama="${escAttr(model)}">Download ${esc(model)}</button>
+      <button type="button" class="gpt-model-missing-btn secondary" data-open-gpt-settings="1">Choose another model</button>
+    </div>
+  </div>`);
+  const card = els.thread.querySelector('.gpt-model-missing:last-of-type');
+  const dl = card?.querySelector('[data-download-ollama]');
+  const settingsBtn = card?.querySelector('[data-open-gpt-settings]');
+  dl?.addEventListener('click', async () => {
+    const name = dl.getAttribute('data-download-ollama') || model;
+    dl.disabled = true;
+    dl.textContent = 'Starting download…';
+    const result = await downloadOllamaModel(name);
+    if (result.cancelled) {
+      dl.disabled = false;
+      dl.textContent = `Download ${name}`;
+      return;
+    }
+    if (!result.ok) {
+      dl.disabled = false;
+      dl.textContent = `Download ${name}`;
+      alert(result.error || 'Download failed');
+      return;
+    }
+    if (result.pulling) {
+      dl.textContent = 'Downloading…';
+      const lead = card.querySelector('.gpt-model-missing-lead');
+      if (lead) {
+        lead.textContent = `Downloading ${name}… Progress is shown in the yellow banner above. You can cancel anytime.`;
+      }
+    } else if (result.healthy) {
+      dl.textContent = 'Ready — try again';
+      dl.disabled = false;
+      dl.onclick = () => { card.remove(); els.input?.focus(); };
+      const lead = card.querySelector('.gpt-model-missing-lead');
+      if (lead) lead.textContent = `${name} is ready. Send your question again.`;
+    }
+  });
+  settingsBtn?.addEventListener('click', () => {
+    els.settings?.removeAttribute('hidden');
+    void loadSettings();
+  });
+  scrollToBottom(true);
+}
+
+function showError(message, code, model) {
   if (code === 'trial_expired' || code === 'account_required') {
     renderPaywall({ error: message, code });
+    return;
+  }
+  if (code === 'ollama_model_missing' || isOllamaModelMissingError({ code, message })) {
+    showOllamaModelMissing(model || parseMissingModelName(message));
     return;
   }
   els.thread.insertAdjacentHTML('beforeend', `<div class="gpt-msg gpt-error">${esc(message)}</div>`);
   scrollToBottom(true);
 }
-
 /* ── Composer ─────────────────────────────────────────────────────── */
 
 function autosize() {

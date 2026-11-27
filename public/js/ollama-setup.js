@@ -36,6 +36,40 @@ export async function confirmOllamaDownload(model) {
   );
 }
 
+/**
+ * Confirm + start an Ollama pull for a specific tag (Settings / Ask AI missing-model CTA).
+ * @returns {{ ok: boolean, pulling?: boolean, healthy?: boolean, model?: string, error?: string, cancelled?: boolean }}
+ */
+export async function downloadOllamaModel(model) {
+  const name = String(model || '').trim();
+  if (!name) return { ok: false, error: 'No model selected' };
+  await ensureOllamaRecCache();
+  if (!ollamaLocalHas(name)) {
+    const ok = await confirmOllamaDownload(name);
+    if (!ok) return { ok: false, cancelled: true };
+  }
+  try {
+    const data = await fetch('/api/ollama/apply-recommendation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: name, confirmPull: !ollamaLocalHas(name) }),
+    }).then((r) => r.json());
+    if (data.error) return { ok: false, error: data.error };
+    // Cache may still list the old set until recommend refreshes.
+    store._hwRecCache = null;
+    if (data.pulling) startPullPolling();
+    else void refreshAiSetupBanner();
+    return {
+      ok: true,
+      pulling: !!data.pulling,
+      healthy: !!data.healthy,
+      model: data.model || name,
+    };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'Download failed' };
+  }
+}
+
 const AI_SETUP_DISMISS_KEY = 'ai_setup_dismissed_model';
 
 export function hideAiSetupBanner() {
@@ -232,12 +266,14 @@ export async function checkPullStatus() {
 }
 
 export function initOllamaSetup() {
-  $('#hw-apply').addEventListener('click', async () => {
+  // Classic Settings hardware panel — absent on /gpt (Ask AI still uses pull-banner + cancel).
+  $('#hw-apply')?.addEventListener('click', async () => {
     if (!store._hwRecCache) return;
     const rec = store._hwRecCache.recommended;
     const applyBtn = $('#hw-apply');
     const statusEl = $('#hw-status');
     const actionsEl = $('#hw-actions');
+    if (!applyBtn || !statusEl || !actionsEl || !rec) return;
     const downloadLabel = rec.available ? `Use ${rec.model}` : `Download ${rec.model} (~${rec.sizeGb} GB)`;
 
     if (!rec.available) {
@@ -260,10 +296,12 @@ export function initOllamaSetup() {
 
       if (data.warning) {
         statusEl.innerHTML = `<span class="health-dot warn"></span> ${esc(data.warning)}`;
-        $('#s-model').value = data.model;
+        const modelEl = $('#s-model');
+        if (modelEl) modelEl.value = data.model;
       } else if (data.healthy) {
         statusEl.innerHTML = `<span class="health-dot ok"></span> ${esc(rec.model)} is ready!`;
-        $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(rec.model)}`;
+        const sStatus = $('#s-status');
+        if (sStatus) sStatus.innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(rec.model)}`;
       } else if (data.pulling) {
         statusEl.innerHTML = `<span class="spinner" style="width:12px;height:12px;"></span> Downloading ${esc(data.model || rec.model)} — press <strong>Cancel download</strong> on the banner to stop`;
         hideAiSetupBanner();
@@ -272,9 +310,11 @@ export function initOllamaSetup() {
         statusEl.innerHTML = '<span class="health-dot fail"></span> Could not start Ollama — is it <a href="https://ollama.com/download" target="_blank">installed</a>?';
       }
 
-      $('#s-provider').value = 'ollama';
+      const providerEl = $('#s-provider');
+      if (providerEl) providerEl.value = 'ollama';
       updateModelOptions();
-      $('#s-model').value = data.model || rec.model;
+      const modelEl = $('#s-model');
+      if (modelEl) modelEl.value = data.model || rec.model;
       store._hwRecCache = null;
       void loadSettings();
       void refreshAiSetupBanner();
@@ -286,8 +326,8 @@ export function initOllamaSetup() {
     applyBtn.textContent = downloadLabel;
   });
 
-  $('#hw-dismiss').addEventListener('click', () => {
-    $('#hw-recommend').classList.remove('visible');
+  $('#hw-dismiss')?.addEventListener('click', () => {
+    $('#hw-recommend')?.classList.remove('visible');
   });
 
   $('#asb-dismiss')?.addEventListener('click', () => {

@@ -2672,7 +2672,20 @@ export default class WebServer {
       } catch (err) {
         if (err?.name !== 'AbortedError') {
           console.error('GPT chat error:', err.message);
-          emit({ type: 'error', error: err.message });
+          const payload = { type: 'error', error: err.message || 'Something went wrong' };
+          if (err?.code === 'ollama_model_missing') {
+            payload.code = 'ollama_model_missing';
+            payload.model = err.model || null;
+          } else {
+            // Raw Ollama 404s from older paths still need a download CTA.
+            const m = String(err.message || '').match(/model ['"]([^'"]+)['"] not found/i);
+            if (m) {
+              payload.code = 'ollama_model_missing';
+              payload.model = m[1];
+              payload.error = `The local model "${m[1]}" is not installed yet. Download it to use Ask AI with this model.`;
+            }
+          }
+          emit(payload);
         }
       }
       return res.end();
@@ -2746,7 +2759,19 @@ export default class WebServer {
         console.error('Search chat API error:', err.message);
         if (res.headersSent) {
           try {
-            res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
+            const payload = { type: 'error', error: err.message };
+            if (err?.code === 'ollama_model_missing') {
+              payload.code = 'ollama_model_missing';
+              payload.model = err.model || null;
+            } else {
+              const m = String(err.message || '').match(/model ['"]([^'"]+)['"] not found/i);
+              if (m) {
+                payload.code = 'ollama_model_missing';
+                payload.model = m[1];
+                payload.error = `The local model "${m[1]}" is not installed yet. Download it to use Ask AI with this model.`;
+              }
+            }
+            res.write(`data: ${JSON.stringify(payload)}\n\n`);
           } catch { /* already closed */ }
           return res.end();
         }
