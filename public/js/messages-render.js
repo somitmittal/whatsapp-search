@@ -1131,11 +1131,61 @@ export function captureChatScrollAnchor(container) {
   return { mode: 'top', scrollTop: top };
 }
 
+/** Pending rAF tokens for stick-to-bottom (one per transcript container). */
+const _bottomStickRaf = new WeakMap();
+
+/**
+ * Scroll a transcript to the live edge. Applies immediately, then again on the
+ * next animation frames so layout after unhide / innerHTML / image decode is
+ * reflected in scrollHeight (open-chat was landing mid-thread otherwise).
+ */
+export function scrollChatToBottom(container, { frames = 2 } = {}) {
+  if (!container) return;
+  const prev = _bottomStickRaf.get(container);
+  if (prev != null) cancelAnimationFrame(prev);
+
+  const apply = () => {
+    container.scrollTop = container.scrollHeight;
+  };
+  apply();
+
+  let left = Math.max(0, frames | 0);
+  if (!left) return;
+
+  const tick = () => {
+    apply();
+    left -= 1;
+    if (left > 0) {
+      _bottomStickRaf.set(container, requestAnimationFrame(tick));
+      return;
+    }
+    _bottomStickRaf.delete(container);
+    // Media in the bottom viewport can still grow the scroll height after paint.
+    const settle = () => {
+      const gap = container.scrollHeight - container.scrollTop - container.clientHeight;
+      if (gap < CHAT_NEAR_BOTTOM_PX * 2) apply();
+    };
+    let pending = 0;
+    container.querySelectorAll('img').forEach((img) => {
+      if (img.complete) return;
+      pending += 1;
+      const done = () => {
+        pending -= 1;
+        settle();
+      };
+      img.addEventListener('load', done, { once: true });
+      img.addEventListener('error', done, { once: true });
+    });
+    if (pending) setTimeout(settle, 320);
+  };
+  _bottomStickRaf.set(container, requestAnimationFrame(tick));
+}
+
 /** Restore sticky-bottom or a pre-paint message anchor after innerHTML replace. */
 export function restoreChatScroll(container, anchor, { force = false } = {}) {
   if (!container) return;
   if (force || !anchor || anchor.mode === 'bottom') {
-    container.scrollTop = container.scrollHeight;
+    scrollChatToBottom(container);
     return;
   }
   if (anchor.mode === 'anchor' && anchor.id) {
@@ -1152,7 +1202,7 @@ export function restoreChatScroll(container, anchor, { force = false } = {}) {
     container.scrollTop = anchor.scrollTop;
     return;
   }
-  container.scrollTop = container.scrollHeight;
+  scrollChatToBottom(container);
 }
 
 function measureVtAvgHeight(container) {
@@ -1346,7 +1396,7 @@ export function paintChatTranscript(container, msgs, jid, {
       target.classList.add('msg-focus');
       setTimeout(() => { target.classList.remove('msg-focus'); }, 2800);
     } else {
-      container.scrollTop = container.scrollHeight;
+      scrollChatToBottom(container);
     }
   } else {
     restoreChatScroll(container, anchor, { force: forceScroll });

@@ -60,6 +60,8 @@ try {
   // End-user: open a chat, confirm bubbles + WA cluster/tail classes, scroll transcript
   await page.locator(rowSel).first().click({ timeout: 10000 });
   await page.waitForSelector('#gpt-wa-view .msg-block, #gpt-wa-view .empty-messages-state', { timeout: 30000 });
+  // Let open-chat stick-to-bottom rAF + layout settle before asserting.
+  await page.waitForTimeout(450);
   const transcriptStats = await page.evaluate(() => {
     const view = document.querySelector('#gpt-wa-view');
     if (!view) return null;
@@ -67,6 +69,8 @@ try {
     const tails = view.querySelectorAll('.msg-block.tail');
     const continued = view.querySelectorAll('.msg-block.continued');
     const spacers = view.querySelectorAll('.msg-vt-spacer');
+    const openGap = view.scrollHeight - view.scrollTop - view.clientHeight;
+    const openNearBottom = openGap < 140 || view.scrollHeight <= view.clientHeight + 40;
     const before = view.scrollTop;
     view.scrollTop = Math.max(0, view.scrollTop - Math.min(800, view.scrollHeight));
     const afterUp = view.scrollTop;
@@ -76,6 +80,8 @@ try {
       tails: tails.length,
       continued: continued.length,
       spacers: spacers.length,
+      openGap,
+      openNearBottom,
       scrolledUp: before !== afterUp || view.scrollHeight > view.clientHeight + 40,
       nearBottom: view.scrollHeight - view.scrollTop - view.clientHeight < 140,
     };
@@ -88,6 +94,8 @@ try {
     if (!empty) fail('transcript paint', 'no message blocks after opening chat');
   } else if (transcriptStats.tails < 1) {
     fail('WA cluster tails', 'expected .msg-block.tail on open chat');
+  } else if (transcriptStats.blocks >= 1 && !transcriptStats.openNearBottom) {
+    fail('open chat scroll bottom', `gap=${transcriptStats.openGap} after open (expected near bottom)`);
   }
 
   // Scroll to top to pull older pages; windowed paint should introduce spacers once > initial limit.
