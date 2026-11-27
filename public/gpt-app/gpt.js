@@ -207,6 +207,8 @@ const state = {
   catalog: null,
   manageModels: false,
   hiddenModels: new Set(JSON.parse(localStorage.getItem(HIDDEN_MODELS_KEY) || '[]')),
+  /** Ollama tags currently being pulled — keeps Download → Downloading… across menu re-renders. */
+  downloadingModels: new Set(),
   settingsTab: 'general',
   accountStatus: null,
   trialNudgeDismissed: false,
@@ -1894,14 +1896,17 @@ function renderModelMenu() {
       const key = modelKey(p.id, m);
       const hidden = state.hiddenModels.has(key);
       const on = key === selectedKey;
+      const downloading = p.id === 'ollama' && state.downloadingModels.has(m);
       const needsDownload = p.id === 'ollama' && p.configured
         && Array.isArray(p.installedModels) && !ollamaLocalHas(m, p.installedModels);
-      html += `<button type="button" class="gpt-model-opt${on ? ' on' : ''}${p.configured ? '' : ' off'}${needsDownload ? ' not-installed' : ''}${hidden ? ' hidden-model' : ''}"
-          role="option" data-provider="${escAttr(p.id)}" data-model="${escAttr(m)}"${needsDownload ? ' data-needs-download="1"' : ''} ${p.configured || manage ? '' : 'disabled'}>
+      const pending = needsDownload || downloading;
+      html += `<button type="button" class="gpt-model-opt${on ? ' on' : ''}${p.configured ? '' : ' off'}${pending ? ' not-installed' : ''}${hidden ? ' hidden-model' : ''}"
+          role="option" data-provider="${escAttr(p.id)}" data-model="${escAttr(m)}"${pending ? ' data-needs-download="1"' : ''} ${p.configured || manage ? '' : 'disabled'}>
         <span class="chk">${on ? '✓' : ''}</span>
         <span class="nm">${esc(shortModel(m))}</span>
         <span class="sub">${esc(m !== shortModel(m) ? m : '')}</span>
-        ${needsDownload && !manage ? `<span class="dl" data-download-model="${escAttr(m)}">Download</span>` : ''}
+        ${downloading && !manage ? '<span class="dl busy">Downloading…</span>' : ''}
+        ${needsDownload && !downloading && !manage ? `<span class="dl" data-download-model="${escAttr(m)}">Download</span>` : ''}
         ${manage ? `<span class="eye" data-eye="${escAttr(key)}" title="${hidden ? 'Show in list' : 'Hide from list'}">${hidden ? 'Hidden' : 'Shown'}</span>` : ''}
       </button>`;
     }
@@ -2459,6 +2464,84 @@ function parseMissingModelName(message) {
     || 'the selected model';
 }
 
+function markMissingCardReady(card, model) {
+  if (!card) return;
+  card.classList.remove('gpt-error');
+  card.classList.add('gpt-model-ready');
+  const title = card.querySelector('.gpt-model-missing-title');
+  const lead = card.querySelector('.gpt-model-missing-lead');
+  const actions = card.querySelector('.gpt-model-missing-actions');
+  if (title) title.textContent = 'Model downloaded successfully';
+  if (lead) lead.innerHTML = `<code>${esc(model)}</code> is ready on this Mac. Send your question again to use it.`;
+  if (actions) {
+    actions.innerHTML = '<button type="button" class="gpt-model-missing-btn" data-dismiss-ready="1">Got it</button>';
+    actions.querySelector('[data-dismiss-ready]')?.addEventListener('click', () => {
+      card.remove();
+      els.input?.focus();
+    });
+  }
+}
+
+function showOllamaDownloadSuccess(model) {
+  const name = String(model || '').trim();
+  if (!name) return;
+  const existing = [...els.thread.querySelectorAll('.gpt-model-missing, .gpt-model-ready')]
+    .find((el) => el.dataset.missingModel === name);
+  if (existing?.classList.contains('gpt-model-ready')) return;
+  if (existing) {
+    markMissingCardReady(existing, name);
+    scrollToBottom(true);
+    return;
+  }
+  els.thread.insertAdjacentHTML('beforeend', `<div class="gpt-msg gpt-model-ready" data-missing-model="${escAttr(name)}" role="status">
+    <p class="gpt-model-missing-title">Model downloaded successfully</p>
+    <p class="gpt-model-missing-lead"><code>${esc(name)}</code> is ready. Select it in the model list if needed, then ask again.</p>
+  </div>`);
+  scrollToBottom(true);
+}
+
+function showOllamaDownloadFailed(model, status, detail) {
+  const name = String(model || '').trim() || 'the model';
+  const cancelled = status === 'cancelled';
+  els.thread.insertAdjacentHTML('beforeend', `<div class="gpt-msg gpt-error" role="status">
+    <p class="gpt-model-missing-title">${cancelled ? 'Download cancelled' : 'Download failed'}</p>
+    <p class="gpt-model-missing-lead">${esc(detail || (cancelled
+      ? `${name} did not finish downloading. You can try again from the model list.`
+      : `${name} could not be downloaded. Try again from the model list.`))}</p>
+  </div>`);
+  scrollToBottom(true);
+}
+
+async function handleOllamaPullComplete(detail) {
+  const model = String(detail?.model || '').trim();
+  const status = detail?.status;
+  if (model) state.downloadingModels.delete(model);
+  else state.downloadingModels.clear();
+  await loadModels();
+  if (!els.modelMenu.hidden) renderModelMenu();
+  if (status === 'done') {
+    showOllamaDownloadSuccess(model);
+    return;
+  }
+  if (status === 'error' || status === 'cancelled') {
+    for (const card of els.thread.querySelectorAll('.gpt-model-missing')) {
+      if (model && card.dataset.missingModel !== model) continue;
+      const dl = card.querySelector('[data-download-ollama]');
+      if (dl) {
+        dl.disabled = false;
+        dl.textContent = `Download ${card.dataset.missingModel || model}`;
+      }
+      const lead = card.querySelector('.gpt-model-missing-lead');
+      if (lead && status === 'cancelled') {
+        lead.textContent = 'Download cancelled. You can try again when you are ready.';
+      }
+    }
+    const hasCard = model && [...els.thread.querySelectorAll('.gpt-model-missing')]
+      .some((c) => c.dataset.missingModel === model);
+    if (!hasCard) showOllamaDownloadFailed(model, status, detail?.detail);
+  }
+}
+
 function showOllamaModelMissing(modelName) {
   const model = String(modelName || parseMissingModelName('') || 'the selected model').trim();
   els.thread.insertAdjacentHTML('beforeend', `<div class="gpt-msg gpt-error gpt-model-missing" data-missing-model="${escAttr(model)}">
@@ -2474,13 +2557,16 @@ function showOllamaModelMissing(modelName) {
     const name = dl.getAttribute('data-download-ollama') || model;
     dl.disabled = true;
     dl.textContent = 'Starting download…';
+    state.downloadingModels.add(name);
     const result = await downloadOllamaModel(name);
     if (result.cancelled) {
+      state.downloadingModels.delete(name);
       dl.disabled = false;
       dl.textContent = `Download ${name}`;
       return;
     }
     if (!result.ok) {
+      state.downloadingModels.delete(name);
       dl.disabled = false;
       dl.textContent = `Download ${name}`;
       alert(result.error || 'Download failed');
@@ -2493,11 +2579,8 @@ function showOllamaModelMissing(modelName) {
         lead.textContent = `Downloading ${name}… Progress is shown in the yellow banner above. You can cancel anytime.`;
       }
     } else if (result.healthy) {
-      dl.textContent = 'Ready — try again';
-      dl.disabled = false;
-      dl.onclick = () => { card.remove(); els.input?.focus(); };
-      const lead = card.querySelector('.gpt-model-missing-lead');
-      if (lead) lead.textContent = `${name} is ready. Send your question again.`;
+      state.downloadingModels.delete(name);
+      markMissingCardReady(card, name);
       void loadModels();
     }
   });
@@ -2610,15 +2693,23 @@ function wire() {
       const name = dl.getAttribute('data-download-model') || '';
       const prev = dl.textContent;
       dl.textContent = '…';
+      state.downloadingModels.add(name);
       const result = await downloadOllamaModel(name);
       if (result.cancelled || !result.ok) {
+        state.downloadingModels.delete(name);
         dl.textContent = prev;
         if (!result.cancelled && result.error) alert(result.error);
+        renderModelMenu();
         return;
       }
-      dl.textContent = result.pulling ? 'Downloading…' : 'Ready';
+      if (result.pulling) {
+        renderModelMenu();
+        return;
+      }
+      state.downloadingModels.delete(name);
       await loadModels();
       renderModelMenu();
+      showOllamaDownloadSuccess(name);
       return;
     }
     const opt = e.target.closest('.gpt-model-opt');
@@ -3226,6 +3317,9 @@ async function boot() {
   setMode('gpt');
   if (matchMedia('(max-width: 820px)').matches) els.app.classList.add('chats-hidden');
   wire();
+  window.addEventListener('ollama-pull-complete', (e) => {
+    void handleOllamaPullComplete(e.detail || {});
+  });
   autosize();
   window.addEventListener('wgpt:chats-imported', async (ev) => {
     setSidebarListTab('imported', { pin: false });

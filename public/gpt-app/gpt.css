@@ -1364,6 +1364,8 @@ html[data-theme="dark"] .btn-cancel { background: #1f2c33; color: #e9edef; }
   white-space: nowrap;
 }
 .gpt-model-opt .dl:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.gpt-model-opt .dl.busy { cursor: default; color: var(--fg-3); border-color: var(--line); background: transparent; }
+.gpt-model-opt .dl.busy:hover { border-color: var(--line); background: transparent; }
 .gpt-model-opt.hidden-model .nm { text-decoration: line-through; color: var(--fg-3); }
 .gpt-model-opt .eye { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--fg-2); }
 .gpt-model-opt .eye:hover { border-color: var(--accent); color: var(--fg); }
@@ -1416,6 +1418,19 @@ html[data-theme="dark"] .btn-cancel { background: #1f2c33; color: #e9edef; }
   background: var(--accent); color: #fff; font: inherit; font-size: 13px; font-weight: 600;
 }
 .gpt-model-missing-btn:disabled { opacity: .65; cursor: default; }
+.gpt-msg.gpt-model-ready {
+  color: var(--fg);
+  background: color-mix(in srgb, #43a047 12%, var(--panel));
+  border-color: color-mix(in srgb, #43a047 45%, var(--line));
+  max-width: 460px;
+}
+.gpt-msg.gpt-model-ready .gpt-model-missing-title { margin: 0 0 6px; font-weight: 600; }
+.gpt-msg.gpt-model-ready .gpt-model-missing-lead { margin: 0; font-size: 13px; color: var(--fg-2); line-height: 1.45; }
+.gpt-msg.gpt-model-ready .gpt-model-missing-lead code {
+  font-size: 12px; padding: 1px 6px; border-radius: 6px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.gpt-msg.gpt-model-ready .gpt-model-missing-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
 /* Ollama pull progress (mirrors classic /css/app.css .pull-banner) */
 .pull-banner {

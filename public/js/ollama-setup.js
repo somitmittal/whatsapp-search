@@ -198,10 +198,23 @@ function stopPullPolling() {
   if (store.pullPollTimer) { clearInterval(store.pullPollTimer); store.pullPollTimer = null; }
 }
 
+function notifyPullTerminal(data) {
+  if (!data?.status || data.status === 'downloading') return;
+  const key = `${data.status}:${data.model || ''}`;
+  if (store._lastPullNotifyKey === key) return;
+  store._lastPullNotifyKey = key;
+  try {
+    window.dispatchEvent(new CustomEvent('ollama-pull-complete', {
+      detail: { model: data.model || '', status: data.status, detail: data.detail || '' },
+    }));
+  } catch { /* ignore */ }
+}
+
 export async function checkPullStatus() {
   try {
     const data = await fetch('/api/pull-status').then(r => r.json());
     const banner = $('#pull-banner');
+    if (!banner) return;
     // Keep the existing 2s watcher alive: on startup the first status request can
     // arrive before Ollama begins pulling. Stopping here delayed the bar by up to
     // the 30s fallback interval even though download progress was already logged.
@@ -211,21 +224,27 @@ export async function checkPullStatus() {
     }
 
     banner.classList.remove('error', 'done', 'can-cancel');
-    $('#pb-fill').style.width = (data.percent || 0) + '%';
-    $('#pb-pct').textContent = (data.percent || 0) + '%';
+    const fill = $('#pb-fill');
+    const pct = $('#pb-pct');
+    const icon = $('#pb-icon');
+    const title = $('#pb-title');
+    const detail = $('#pb-detail');
+    if (fill) fill.style.width = `${data.percent || 0}%`;
+    if (pct) pct.textContent = `${data.percent || 0}%`;
 
     if (data.status === 'downloading') {
       banner.classList.add('visible', 'can-cancel');
       hideAiSetupBanner();
-      $('#pb-icon').innerHTML = '&#11015;&#65039;';
-      $('#pb-title').textContent = `Downloading ${data.model}...`;
-      $('#pb-detail').textContent = data.detail || 'Required for AI Search — press Cancel download to stop';
+      if (icon) icon.innerHTML = '&#11015;&#65039;';
+      if (title) title.textContent = `Downloading ${data.model}...`;
+      if (detail) detail.textContent = data.detail || 'Required for AI Search — press Cancel download to stop';
     } else if (data.status === 'cancelled') {
       banner.classList.add('visible', 'error');
-      $('#pb-icon').innerHTML = '&#10060;';
-      $('#pb-title').textContent = 'Download cancelled';
-      $('#pb-detail').textContent = data.detail || 'You can download again from the green banner or Settings';
-      $('#pb-pct').textContent = '';
+      if (icon) icon.innerHTML = '&#10060;';
+      if (title) title.textContent = 'Download cancelled';
+      if (detail) detail.textContent = data.detail || 'You can download again from the green banner or Settings';
+      if (pct) pct.textContent = '';
+      notifyPullTerminal(data);
       setTimeout(() => {
         banner.classList.remove('visible');
         stopPullPolling();
@@ -233,16 +252,19 @@ export async function checkPullStatus() {
       }, 5000);
     } else if (data.status === 'done') {
       banner.classList.add('visible', 'done');
-      $('#pb-icon').innerHTML = '&#9989;';
-      $('#pb-title').textContent = `${data.model} ready!`;
-      $('#pb-detail').textContent = 'Model downloaded successfully';
-      $('#pb-pct').textContent = '';
-      $('#s-status').innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
+      if (icon) icon.innerHTML = '&#9989;';
+      if (title) title.textContent = `${data.model} ready!`;
+      if (detail) detail.textContent = 'Model downloaded successfully — you can use it in Ask AI now';
+      if (pct) pct.textContent = '';
+      // Classic Settings only — absent on /gpt; must not throw or success UI never sticks.
+      const sStatus = $('#s-status');
+      if (sStatus) sStatus.innerHTML = `<span class="health-dot ok"></span> Connected to ${esc(data.model)}`;
       const hwSt = $('#hw-status');
       if (hwSt && hwSt.style.display !== 'none') {
         hwSt.innerHTML = `<span class="health-dot ok"></span> ${esc(data.model)} is ready!`;
       }
       localStorage.removeItem(AI_SETUP_DISMISS_KEY);
+      notifyPullTerminal(data);
       setTimeout(() => {
         banner.classList.remove('visible');
         stopPullPolling();
@@ -250,10 +272,11 @@ export async function checkPullStatus() {
       }, 5000);
     } else if (data.status === 'error') {
       banner.classList.add('visible', 'error');
-      $('#pb-icon').innerHTML = '&#10060;';
-      $('#pb-title').textContent = `Download failed`;
-      $('#pb-detail').textContent = data.detail || 'Try again from Settings';
-      $('#pb-pct').textContent = '';
+      if (icon) icon.innerHTML = '&#10060;';
+      if (title) title.textContent = 'Download failed';
+      if (detail) detail.textContent = data.detail || 'Try again from Settings';
+      if (pct) pct.textContent = '';
+      notifyPullTerminal(data);
       setTimeout(() => {
         banner.classList.remove('visible');
         stopPullPolling();
