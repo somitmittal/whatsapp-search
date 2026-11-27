@@ -10,6 +10,7 @@
 export const OLLAMA_MODELS_BASE = [
   'llama3.2:3b',
   'llama3.2:1b',
+  'qwen2.5:3b',
   'qwen3.5:4b',
   'mistral',
   'gemma2:9b',
