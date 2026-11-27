@@ -17,7 +17,10 @@ export const GROUNDING_PROMPT_RULES = [
   '- Copy spellings exactly, even when a word looks misspelt, unfamiliar or wrong.',
   '- Never guess what an unknown word refers to. If you do not know, leave it as-is.',
   '- NEVER invent, guess, or assume relationships, family roles, or titles between people (such as wife, husband, spouse, brother, sister, father, mother, son, daughter, cousin, friend, colleague, boss, manager, owner) unless that exact relationship is explicitly written in the messages.',
-  '- If the messages do not answer the question, say so plainly instead of filling the gap.',
+  '- Before asking a clarifying question, check Saved memory for a prior clarification that already settles which chat, person, date, or amount — apply it silently instead of re-asking.',
+  '- If the messages do not fully answer the question and Saved memory does not settle it, ask ONE short clarifying question (which chat, who, which date/amount) instead of guessing or inventing details.',
+  '- Do not hedge with only "I am not sure" or "I don\'t know" — either answer from the messages with citations, or ask what to look up next.',
+  '- Never invent amounts, dates, or relationships. Numbers and family/work roles must appear in the messages themselves, not only in the user\'s question.',
   '- SITUATIONAL CONVERSATIONS: When asked situational or immediate questions (e.g. "where are we heading?", "where are we meeting?", "did you leave?", "what time?"), answer from the active recent messages. Do not pull historical keyword matches from unrelated chats.',
 ].join('\n');
 
@@ -27,7 +30,7 @@ export const UNGROUNDED_NOTICE =
 
 /** Returned instead of an answer when nothing survived verification. */
 export const NO_GROUNDED_ANSWER =
-  'I could not answer this from your chats without guessing, so no answer is shown.';
+  'I could not find enough in your chats to answer that without guessing. Which chat or person should I look in?';
 
 const WORD_RE = /[\p{L}][\p{L}\p{N}&+'’.\u2010\u2011-]*/gu;
 const TOKEN_RE = /[\p{L}\p{N}][\p{L}\p{N}&+'’.\u2010\u2011-]*/gu;
@@ -125,6 +128,10 @@ export function buildGroundingIndex(sourceText) {
       }
     }
   }
+  // Digits stuck to words/currency ("₹499per", "Rs.599/-") must still ground "499"/"599".
+  for (const m of text.matchAll(/\d{3,}/g)) {
+    tokens.add(m[0]);
+  }
   const normalized = normalizePhrase(text);
   return {
     tokens,
@@ -134,15 +141,15 @@ export function buildGroundingIndex(sourceText) {
 }
 
 /**
- * True when a single word can be traced to the transcript. Pure numbers are
- * allowed because counts ("3 people") are legitimately derived.
+ * True when a single word can be traced to the transcript.
+ * Digits must appear in the source text — invented amounts/dates are hallucinations.
  * @param {string} token
  * @param {GroundingIndex} index
  */
 export function isTokenGrounded(token, index) {
   const t = normalizeToken(token);
   if (!t) return true;
-  if (/^\d+$/.test(t)) return true;
+  if (/^\d+$/.test(t)) return index.tokens.has(t);
   if (NON_ENTITY_WORDS.has(t)) return true;
   if (index.tokens.has(t)) return true;
   if (t.length > 3 && t.endsWith('s') && index.tokens.has(t.slice(0, -1))) return true;
@@ -204,23 +211,35 @@ export function entityWords(text, { skipSentenceStart = true } = {}) {
   return out;
 }
 
-function ungroundedWords(text, index, opts) {
+/**
+ * @param {string} text
+ * @param {GroundingIndex} entityIndex  chat (+ optional query names for negative answers)
+ * @param {GroundingIndex} chatIndex    chat-only — amounts + relationships must live here
+ * @param {{ skipSentenceStart?: boolean }} [opts]
+ */
+function ungroundedWords(text, entityIndex, chatIndex, opts) {
   const words = entityWords(text, opts);
   const bad = [];
+  const relIndex = chatIndex || entityIndex;
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
-    if (isTokenGrounded(w, index)) continue;
+    const norm = normalizeToken(w);
+    const indexForToken = /^\d+$/.test(norm) ? relIndex : entityIndex;
+    if (isTokenGrounded(w, indexForToken)) continue;
     const prev = i > 0 ? words[i - 1] : '';
     const next = i + 1 < words.length ? words[i + 1] : '';
     const mergedPrev = prev ? normalizeToken(prev + w) : '';
     const mergedNext = next ? normalizeToken(w + next) : '';
-    if ((mergedPrev && index.tokens.has(mergedPrev)) || (mergedNext && index.tokens.has(mergedNext))) {
+    if ((mergedPrev && indexForToken.tokens.has(mergedPrev)) || (mergedNext && indexForToken.tokens.has(mergedNext))) {
       continue;
     }
     bad.push(w);
   }
-  for (const rel of ungroundedRelationshipWords(text, index)) {
+  for (const rel of ungroundedRelationshipWords(text, relIndex)) {
     if (!bad.some((b) => normalizeToken(b) === normalizeToken(rel))) bad.push(rel);
+  }
+  for (const amt of ungroundedAmountTokens(text, relIndex)) {
+    if (!bad.some((b) => normalizeToken(b) === normalizeToken(amt))) bad.push(amt);
   }
   return bad;
 }
@@ -259,6 +278,16 @@ function ungroundedRelationshipWords(text, index) {
   return out;
 }
 
+/** Multi-digit amounts/dates (3+ digits) must appear in the chat — not only in the question. */
+function ungroundedAmountTokens(text, chatIndex) {
+  const out = [];
+  for (const m of String(text || '').matchAll(/\b\d{3,}\b/g)) {
+    const n = m[0];
+    if (!chatIndex?.tokens?.has(normalizeToken(n))) out.push(n);
+  }
+  return out;
+}
+
 /**
  * Strip invented comma-delimited relationship appositives like
  * `Parul Garg, Rudraksh's wife, responded...` -> `Parul Garg responded...`.
@@ -277,10 +306,10 @@ function stripUngroundedRelationshipAppositives(line, index, removed) {
  * Exchange)` → `BSE`. A parenthetical survives if it appears in the transcript
  * or contains no invented entity or relationship.
  */
-function stripUngroundedParentheticals(line, index, removed) {
+function stripUngroundedParentheticals(line, entityIndex, chatIndex, removed) {
   return line.replace(/\s*\(([^()]*)\)/g, (match, inner) => {
-    if (isPhraseGrounded(inner, index)) return match;
-    const bad = ungroundedWords(inner, index, { skipSentenceStart: false });
+    if (isPhraseGrounded(inner, entityIndex)) return match;
+    const bad = ungroundedWords(inner, entityIndex, chatIndex, { skipSentenceStart: false });
     if (bad.length === 0) return match;
     removed.push(inner.trim());
     return '';
@@ -292,11 +321,11 @@ function splitSentences(text) {
   return parts && parts.length ? parts : [String(text || '')];
 }
 
-function dropUngroundedSentences(line, index, removed) {
+function dropUngroundedSentences(line, entityIndex, chatIndex, removed) {
   const sentences = splitSentences(line);
   const kept = [];
   for (const s of sentences) {
-    const bad = ungroundedWords(s, index, { skipSentenceStart: true });
+    const bad = ungroundedWords(s, entityIndex, chatIndex, { skipSentenceStart: true });
     if (bad.length) {
       removed.push(...bad);
       continue;
@@ -309,24 +338,31 @@ function dropUngroundedSentences(line, index, removed) {
 /**
  * Strip anything in the answer that is not supported by the transcript.
  *
+ * `queryText` may supply entity *names* so negative answers can repeat the
+ * asked-about term (e.g. "Bingetown was not found"). Relationships and amounts
+ * still require the chat transcript — query wording alone is not evidence.
+ *
  * @param {string} answer
  * @param {string} sourceText the transcript exactly as it was sent to the model
+ * @param {string} [queryText]
  * @returns {{ text: string, removed: string[] }}
  */
 export function enforceGroundedAnswer(answer, sourceText, queryText = '') {
-  const combinedSource = queryText ? `${sourceText}\n${queryText}` : sourceText;
-  const index = buildGroundingIndex(combinedSource);
+  const chatIndex = buildGroundingIndex(sourceText);
+  const entityIndex = queryText
+    ? buildGroundingIndex(`${sourceText}\n${queryText}`)
+    : chatIndex;
   const removed = [];
   const kept = [];
 
   for (const rawLine of String(answer || '').split('\n')) {
-    const noRelAppositive = stripUngroundedRelationshipAppositives(rawLine, index, removed);
-    const line = stripUngroundedParentheticals(noRelAppositive, index, removed);
+    const noRelAppositive = stripUngroundedRelationshipAppositives(rawLine, chatIndex, removed);
+    const line = stripUngroundedParentheticals(noRelAppositive, entityIndex, chatIndex, removed);
     const listMatch = line.match(LIST_ITEM_RE);
 
     if (listMatch) {
       const [, marker, content] = listMatch;
-      const bad = ungroundedWords(content, index, { skipSentenceStart: false });
+      const bad = ungroundedWords(content, entityIndex, chatIndex, { skipSentenceStart: false });
       if (bad.length) {
         removed.push(...bad);
         continue;
@@ -340,7 +376,7 @@ export function enforceGroundedAnswer(answer, sourceText, queryText = '') {
       continue;
     }
 
-    const prose = dropUngroundedSentences(line, index, removed);
+    const prose = dropUngroundedSentences(line, entityIndex, chatIndex, removed);
     if (prose.trim()) kept.push(prose);
   }
 
@@ -395,6 +431,46 @@ export function dropUnsupportedQuotes(answer, citedTexts) {
       continue;
     }
 
+    const unsupported = quotes.filter((q) => !isPhraseGrounded(q, target));
+    if (unsupported.length) {
+      removed.push(...unsupported);
+      continue;
+    }
+    kept.push(line);
+  }
+
+  return { text: kept.join('\n'), removed };
+}
+
+/**
+ * Same as dropUnsupportedQuotes but for Ask AI `[m123]` handles.
+ * `textsById` maps numeric message row id → message body text.
+ *
+ * @param {string} answer
+ * @param {Map<number, string>|Record<number, string>} textsById
+ * @returns {{ text: string, removed: string[] }}
+ */
+export function dropUnsupportedMessageQuotes(answer, textsById) {
+  const removed = [];
+  const kept = [];
+  const lookup = textsById instanceof Map
+    ? textsById
+    : new Map(Object.entries(textsById || {}).map(([k, v]) => [Number(k), v]));
+
+  for (const line of String(answer || '').split('\n')) {
+    const citation = line.match(/\[m(\d+)\]/i);
+    const quotes = [...line.matchAll(/["“]([^"”]{4,})["”]/g)].map((m) => m[1]);
+    if (!citation || quotes.length === 0) {
+      kept.push(line);
+      continue;
+    }
+    const id = Number(citation[1]);
+    const body = lookup.get(id);
+    if (!body) {
+      removed.push(citation[0]);
+      continue;
+    }
+    const target = buildGroundingIndex(body);
     const unsupported = quotes.filter((q) => !isPhraseGrounded(q, target));
     if (unsupported.length) {
       removed.push(...unsupported);

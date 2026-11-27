@@ -13,6 +13,7 @@ import {
   extractMemoryFromExchange,
   isMemoryEnabled,
   listMemory as listUserMemory,
+  saveClarificationFromTurn,
   setMemoryEnabled,
   shouldConsiderMemory,
 } from './user-memory.js';
@@ -462,6 +463,7 @@ export default class GptService {
         includeReconcileHint: asksReconcile || Boolean(expenseHistory),
         compact: budgets.compactPrompt,
         includeGlobalMemory: scopeJids.length === 0,
+        memoryQuery: effectiveQuery || text,
       }),
       history,
       contextText,
@@ -510,7 +512,13 @@ export default class GptService {
     if (skillRun?.id) this.db.updateSkillRun(skillRun.id, { messageId: assistant.id });
 
     this._scheduleCompaction(conversation.id, provider);
-    const memoryPromise = this._scheduleUserMemory(provider, { userText: text, answerText: result.answer, emit });
+    const priorAssistantText = [...prior].reverse().find((m) => m.role === 'assistant')?.content || '';
+    const memoryPromise = this._scheduleUserMemory(provider, {
+      userText: text,
+      answerText: result.answer,
+      priorAssistantText,
+      emit,
+    });
     const fresh = this.getConversation(conversation.id);
     return {
       conversationId: conversation.id,
@@ -768,6 +776,7 @@ export default class GptService {
       const memoryPromise = this._scheduleUserMemory(provider, {
         userText: query,
         answerText: result.answer,
+        priorAssistantText: '',
         emit,
       });
       const fresh = this.getConversation(conversation.id);
@@ -844,14 +853,21 @@ export default class GptService {
    * whether the exchange revealed something durable about the user worth
    * saving (never blocks or alters the answer itself).
    */
-  _scheduleUserMemory(provider, { userText, answerText, emit = null }) {
+  _scheduleUserMemory(provider, { userText, answerText, priorAssistantText = '', emit = null }) {
     if (!isMemoryEnabled(this.db)) return null;
-    if (!shouldConsiderMemory(userText, answerText)) return null;
+    const tenant = getCurrentTenantId();
+    // Clarifying-question replies are saved immediately (no LLM) so the next turn
+    // can reuse which chat/person/date without re-asking.
+    const clarification = saveClarificationFromTurn(this.db, { priorAssistantText, userText });
+    if (clarification?.added) {
+      try { emit?.({ type: 'memory-updated', text: clarification.entry.text }); } catch { /* stream closed */ }
+      try { this._onMemorySaved?.({ added: true, entry: clarification.entry, memories: clarification.memories }, tenant); } catch { /* */ }
+    }
+    if (!shouldConsiderMemory(userText, answerText, { priorAssistantText })) return clarification?.added ? Promise.resolve() : null;
     // Skip background memory extraction on small local Ollama models unless user explicitly asks to remember.
     if (provider?.name === 'ollama' && /(?:^|:)[1-4]b\b/i.test(String(provider?.model || '')) && !/\bremember\b/i.test(userText)) {
-      return null;
+      return clarification?.added ? Promise.resolve() : null;
     }
-    const tenant = getCurrentTenantId();
     // Resolves once the background decision/save is done so the SSE stream can
     // stay open long enough to deliver {type:'memory-updated'} before closing.
     return new Promise((resolve) => {

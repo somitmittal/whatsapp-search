@@ -1,4 +1,5 @@
 import { audioFileExt } from '../whatsapp/voice-content.js';
+import { fetchAbortSignal } from './stream-chat.js';
 
 const BASE_URL = 'https://api.openai.com/v1';
 const TIMEOUT_MS = 60_000;
@@ -31,7 +32,7 @@ export default class OpenAIProvider {
       max_tokens: options.maxTokens ?? 2048,
     };
 
-    const res = await this._fetch('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    const res = await this._fetch('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS, options.signal);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content?.trim() || '';
   }
@@ -45,7 +46,7 @@ export default class OpenAIProvider {
       max_tokens: options.maxTokens ?? 2048,
       stream: true,
     };
-    const res = await this._fetch('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    const res = await this._fetch('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS, options.signal);
     yield* readTextChunks(res.body);
   }
 
@@ -106,27 +107,21 @@ export default class OpenAIProvider {
     }
   }
 
-  async _fetch(path, method, body, timeout) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    try {
-      const init = {
-        method,
-        signal: controller.signal,
-        headers: { Authorization: `Bearer ${this._apiKey}` },
-      };
-      if (body) {
-        init.headers['Content-Type'] = 'application/json';
-        init.body = JSON.stringify(body);
-      }
-      const res = await fetch(`${BASE_URL}${path}`, init);
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`OpenAI API ${res.status}: ${text.slice(0, 300)}`);
-      }
-      return res;
-    } finally {
-      clearTimeout(timer);
+  async _fetch(path, method, body, timeout, externalSignal) {
+    const init = {
+      method,
+      signal: fetchAbortSignal(timeout, externalSignal),
+      headers: { Authorization: `Bearer ${this._apiKey}` },
+    };
+    if (body) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
     }
+    const res = await fetch(`${BASE_URL}${path}`, init);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`OpenAI API ${res.status}: ${text.slice(0, 300)}`);
+    }
+    return res;
   }
 }

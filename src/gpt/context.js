@@ -19,10 +19,18 @@ export function isFollowUpTransformQuery(query) {
     || /^(?:in\s+\d+\s+(?:bullets?|points?|lines?|sentences?)|make\s+it\s+(?:shorter|concise|a\s+table|bullets?)|tldr|tl;dr)[.!?\s]*$/i.test(q);
 }
 
-export function buildSystemPrompt({ db, businessContext = false, now = new Date(), includeReconcileHint = false, compact = false, includeGlobalMemory = true }) {
+export function buildSystemPrompt({
+  db,
+  businessContext = false,
+  now = new Date(),
+  includeReconcileHint = false,
+  compact = false,
+  includeGlobalMemory = true,
+  memoryQuery = '',
+} = {}) {
   const smb = businessContext ? synthesisSystemAddon(getSmbProfileFromDb(db)) : '';
   const businessName = businessContext ? String(db.getSetting?.('smb_business_name') || '').trim() : '';
-  const memory = includeGlobalMemory ? memoryPromptBlock(db, now) : '';
+  const memory = includeGlobalMemory ? memoryPromptBlock(db, now, { query: memoryQuery }) : '';
   const today = now.toLocaleDateString('en-CA');
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
   const tools = TOOL_SPECS.map((t) => `- ${t.name} ${t.args} — ${t.about}`).join('\n');
@@ -91,7 +99,9 @@ export function buildSystemPrompt({ db, businessContext = false, now = new Date(
       '',
       'ANSWER STYLE: lead with the direct answer, then supporting detail. Use short paragraphs or bullets,',
       '**bold** key names/amounts/dates. For "what happened" questions give a tight chronological recap.',
-      'If nothing relevant exists, say so in one line and suggest what to ask instead.',
+      'If Saved memory already settles which chat/person/date to use, apply it silently — do not re-ask.',
+      'If nothing relevant exists (and memory does not settle it), ask one short clarifying question (which chat / who / which date) instead of guessing.',
+      'If several chats could match and memory does not disambiguate, ask which one — do not pick silently and do not invent a best guess.',
     ].join('\n'),
   ].filter(Boolean).join('\n\n');
 }

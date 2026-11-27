@@ -1,5 +1,10 @@
 import { streamChat } from '../llm/stream-chat.js';
-import { enforceGroundedAnswer, UNGROUNDED_NOTICE, NO_GROUNDED_ANSWER } from '../search/grounding.js';
+import {
+  enforceGroundedAnswer,
+  UNGROUNDED_NOTICE,
+  NO_GROUNDED_ANSWER,
+  dropUnsupportedMessageQuotes,
+} from '../search/grounding.js';
 import { GPT_LIMITS } from './limits.js';
 import { messageBody } from './retrieval.js';
 
@@ -147,23 +152,31 @@ function describeCall({ name, args }) {
 async function streamStep(provider, messages, { emit, signal }) {
   let buf = '';
   let mode = null;
-  const text = await streamChat(provider, messages, {
-    maxTokens: GPT_LIMITS.answerTokens,
-    temperature: 0.2,
-  }, (delta) => {
-    if (signal?.aborted) throw new AbortedError();
-    buf += delta;
-    if (mode === 'text') {
-      emit?.({ type: 'delta', text: delta });
-      return;
+  try {
+    const text = await streamChat(provider, messages, {
+      maxTokens: GPT_LIMITS.answerTokens,
+      temperature: 0.2,
+      signal,
+    }, (delta) => {
+      if (signal?.aborted) throw new AbortedError();
+      buf += delta;
+      if (mode === 'text') {
+        emit?.({ type: 'delta', text: delta });
+        return;
+      }
+      if (mode === 'tool') return;
+      const head = buf.trimStart();
+      if (head.length < 10 && !head.includes('\n')) return;
+      mode = /^((?:Tools\s+)?CALL\b|```|<(?:dots_function_call|tool_call|function_call)|\{\s*"(?:tool|name)")/i.test(head) ? 'tool' : 'text';
+      if (mode === 'text') emit?.({ type: 'delta', text: buf });
+    });
+    return { text: String(text || buf).trim(), streamed: mode === 'text' };
+  } catch (err) {
+    if (signal?.aborted || err?.name === 'AbortError' || /aborted/i.test(String(err?.message || ''))) {
+      throw new AbortedError();
     }
-    if (mode === 'tool') return;
-    const head = buf.trimStart();
-    if (head.length < 10 && !head.includes('\n')) return;
-    mode = /^((?:Tools\s+)?CALL\b|```|<(?:dots_function_call|tool_call|function_call)|\{\s*"(?:tool|name)")/i.test(head) ? 'tool' : 'text';
-    if (mode === 'text') emit?.({ type: 'delta', text: buf });
-  });
-  return { text: String(text || buf).trim(), streamed: mode === 'text' };
+    throw err;
+  }
 }
 
 /**
@@ -254,16 +267,21 @@ export async function runAgent({
   const historyText = history.map((m) => m.content).join('\n');
   const userQueries = [query, ...history.filter((m) => m.role === 'user').map((m) => m.content)].join('\n');
   const chatNames = [...new Set([...sources.values()].map((m) => m.chatName).concat(ctx?.scopeChatName || []))].filter(Boolean).join(' ');
-  const sourceText = [userQueries, chatNames, ...transcriptParts, historyText, ...[...sources.values()].map(messageBody)].join('\n');
-  const grounded = enforceGroundedAnswer(answer, sourceText, userQueries);
-  if (grounded.removed.length) {
-    console.log(`[GPT] Dropped ${grounded.removed.length} ungrounded fragment(s): ${grounded.removed.slice(0, 5).join(' | ')}`);
+  // Chat evidence only — do not put the user question into the transcript index (that
+  // lets "is X his wife?" ground the word "wife" from the question alone).
+  const sourceText = [chatNames, ...transcriptParts, historyText, ...[...sources.values()].map(messageBody)].join('\n');
+  const textsById = new Map([...sources.entries()].map(([id, m]) => [id, messageBody(m)]));
+  const quoted = dropUnsupportedMessageQuotes(answer, textsById);
+  const grounded = enforceGroundedAnswer(quoted.text, sourceText, userQueries);
+  const removed = [...quoted.removed, ...grounded.removed];
+  if (removed.length) {
+    console.log(`[GPT] Dropped ${removed.length} ungrounded fragment(s): ${removed.slice(0, 5).join(' | ')}`);
   }
   let finalAnswer = grounded.text;
-  const isNegativeOrMeta = /\b(?:no\s+(?:messages?|mentions?|results?|records?|chats?|details?)|zero\s+matches|not\s+found|could\s*(?:n't|not)\s+find|couldn't\s+find|don't\s+see|did\s+not\s+find|didn't\s+find|never\s+(?:messaged|mentioned|sent)|none\s+found|nothing\s+found|no\s+relevant|does\s+not\s+exist|if\s+you\s+need|you'd\s+need|you\s+would\s+need)\b/i.test(finalAnswer);
+  const isNegativeOrMeta = /\b(?:no\s+(?:messages?|mentions?|results?|records?|chats?|details?)|zero\s+matches|not\s+found|could\s*(?:n't|not)\s+find|couldn't\s+find|don't\s+see|did\s+not\s+find|didn't\s+find|never\s+(?:messaged|mentioned|sent)|none\s+found|nothing\s+found|no\s+relevant|does\s+not\s+exist|if\s+you\s+need|you'd\s+need|you\s+would\s+need|which\s+chat|which\s+person|should\s+i\s+look)\b/i.test(finalAnswer);
   if (!/[\p{L}\p{N}]/u.test(finalAnswer)) {
     finalAnswer = NO_GROUNDED_ANSWER;
-  } else if (grounded.removed.length && !isNegativeOrMeta) {
+  } else if (removed.length && !isNegativeOrMeta) {
     finalAnswer = `${finalAnswer}\n\n${UNGROUNDED_NOTICE}`;
   }
 
@@ -274,8 +292,8 @@ export async function runAgent({
   }
   let citedIds = [...new Set(cited.filter((id) => sources.has(id)))];
 
-  // If the model answered positively from context but omitted explicit [m...] citation tags,
-  // score sources by token overlap against answer + query so we cite the true supporting message(s).
+  // Speculative auto-cite only on strong evidence — never fall back to "first prefetch"
+  // (wrong "View in chat" destroys trust faster than a missing citation).
   if (citedIds.length === 0 && finalAnswer !== NO_GROUNDED_ANSWER && !isNegativeOrMeta && sources.size > 0) {
     const lowerAnswer = finalAnswer.toLowerCase();
     const tokenizeForMatch = (s) => [...new Set(
@@ -285,7 +303,7 @@ export async function runAgent({
         .split(/\s+/)
         .filter((w) => w.length >= 3),
     )];
-    const targetTokens = tokenizeForMatch(`${finalAnswer} ${query}`);
+    const answerTokens = tokenizeForMatch(finalAnswer);
     let bestId = null;
     let bestScore = 0;
     for (const [id, s] of sources.entries()) {
@@ -297,7 +315,7 @@ export async function runAgent({
         continue;
       }
       let overlap = 0;
-      for (const tok of targetTokens) {
+      for (const tok of answerTokens) {
         if (bodyStr.includes(tok)) overlap += 1;
       }
       if (overlap > bestScore) {
@@ -305,13 +323,10 @@ export async function runAgent({
         bestId = id;
       }
     }
-    if (citedIds.length === 0) {
-      if (bestId != null && bestScore >= 2) {
-        citedIds.push(bestId);
-      } else if (Array.isArray(ctx?.prefetched) && ctx.prefetched.length > 0) {
-        const top = ctx.prefetched.find((m) => m && sources.has(m.id));
-        if (top) citedIds.push(top.id);
-      }
+    // Require solid overlap against the answer body (not the user query).
+    if (citedIds.length === 0 && bestId != null && bestScore >= 4 && answerTokens.length > 0) {
+      const ratio = bestScore / answerTokens.length;
+      if (ratio >= 0.35) citedIds.push(bestId);
     }
   }
 

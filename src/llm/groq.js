@@ -1,3 +1,5 @@
+import { fetchAbortSignal } from './stream-chat.js';
+
 const BASE_URL = 'https://api.groq.com/openai/v1';
 const TIMEOUT_MS = 60_000;
 const ASR_TIMEOUT_MS = 120_000;
@@ -72,7 +74,7 @@ export default class GroqProvider {
       max_tokens: options.maxTokens ?? 2048,
     };
 
-    const res = await this._fetchWithRotation('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    const res = await this._fetchWithRotation('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS, options.signal);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content?.trim() || '';
   }
@@ -86,7 +88,7 @@ export default class GroqProvider {
       max_tokens: options.maxTokens ?? 2048,
       stream: true,
     };
-    const res = await this._fetchWithRotation('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    const res = await this._fetchWithRotation('/chat/completions', 'POST', body, options.timeoutMs ?? TIMEOUT_MS, options.signal);
     yield* readTextChunks(res.body);
   }
 
@@ -155,7 +157,7 @@ export default class GroqProvider {
   /**
    * Tries every key in round-robin on 429 before giving up.
    */
-  async _fetchWithRotation(path, method, body, timeout) {
+  async _fetchWithRotation(path, method, body, timeout, externalSignal) {
     const keyCount = this._keys.length || 1;
 
     for (let attempt = 0; attempt < keyCount + 1; attempt++) {
@@ -163,7 +165,7 @@ export default class GroqProvider {
       if (!key) throw new Error('Groq: no API key configured');
 
       try {
-        const res = await this._fetchRaw(key, path, method, body, timeout);
+        const res = await this._fetchRaw(key, path, method, body, timeout, externalSignal);
         if (!res.ok) {
           const text = await res.text().catch(() => '');
           if (res.status === 429 && attempt < keyCount) {
@@ -185,22 +187,16 @@ export default class GroqProvider {
     throw new Error('Groq: all keys rate-limited — please wait before retrying');
   }
 
-  async _fetchRaw(key, path, method, body, timeout) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    try {
-      const init = {
-        method,
-        signal: controller.signal,
-        headers: { Authorization: `Bearer ${key}` },
-      };
-      if (body) {
-        init.headers['Content-Type'] = 'application/json';
-        init.body = JSON.stringify(body);
-      }
-      return await fetch(`${BASE_URL}${path}`, init);
-    } finally {
-      clearTimeout(timer);
+  async _fetchRaw(key, path, method, body, timeout, externalSignal) {
+    const init = {
+      method,
+      signal: fetchAbortSignal(timeout, externalSignal),
+      headers: { Authorization: `Bearer ${key}` },
+    };
+    if (body) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
     }
+    return await fetch(`${BASE_URL}${path}`, init);
   }
 }

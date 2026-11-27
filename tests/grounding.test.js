@@ -26,10 +26,11 @@ describe('buildGroundingIndex', () => {
     expect(isTokenGrounded('Bollywood', index)).toBe(false);
   });
 
-  it('treats plurals and numbers as grounded', () => {
-    const index = buildGroundingIndex('Rahul shared the report');
+  it('treats plurals as grounded and requires numbers to appear in the source', () => {
+    const index = buildGroundingIndex('Rahul shared the report for 42 rupees');
     expect(isTokenGrounded('reports', index)).toBe(true);
     expect(isTokenGrounded('42', index)).toBe(true);
+    expect(isTokenGrounded('99999', index)).toBe(false);
   });
 
   it('checks phrases as contiguous text', () => {
@@ -110,6 +111,37 @@ describe('enforceGroundedAnswer', () => {
     const { text, removed } = enforceGroundedAnswer(answer, STOCK_TRANSCRIPT, userQuery);
     expect(text).toBe('No message or image containing Bingetown exists in the chat.');
     expect(removed).toEqual([]);
+  });
+
+  it('does not treat relationship words from the user query as chat evidence', () => {
+    const answer = 'Parul is Rudraksh\'s wife.';
+    const transcript = 'Parul: see you tomorrow\nRudraksh: ok';
+    const userQuery = 'Is Parul his wife?';
+    const { text, removed } = enforceGroundedAnswer(answer, transcript, userQuery);
+    expect(removed.map((r) => r.toLowerCase())).toEqual(expect.arrayContaining(['wife']));
+    expect(text.toLowerCase()).not.toContain('wife');
+  });
+
+  it('strips invented amounts that are not in the chat', () => {
+    const answer = 'You paid 45000 via UPI yesterday.';
+    const transcript = 'Ramesh: paid via UPI yesterday';
+    const { text, removed } = enforceGroundedAnswer(answer, transcript, 'how much did I pay?');
+    expect(removed.map(String)).toEqual(expect.arrayContaining(['45000']));
+    expect(text).not.toMatch(/45000/);
+  });
+
+  it('keeps amounts that appear in the chat transcript', () => {
+    const answer = 'You paid 284 to the merchant.';
+    const transcript = 'PhonePe: Paid ₹284 to merchant';
+    const { text, removed } = enforceGroundedAnswer(answer, transcript, 'how much?');
+    expect(removed).not.toContain('284');
+    expect(text).toContain('284');
+  });
+});
+
+describe('ask-when-unsure copy', () => {
+  it('NO_GROUNDED_ANSWER asks a clarifying question instead of a dead end', () => {
+    expect(NO_GROUNDED_ANSWER.toLowerCase()).toMatch(/which chat|which person|look in/);
   });
 });
 

@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { canSpawnLocalOllama } from './deployment-env.js';
+import { fetchAbortSignal } from './stream-chat.js';
 
 const TIMEOUT_MS = 180_000;
 const HEALTH_CACHE_MS = 30_000;
@@ -80,7 +81,7 @@ export default class OllamaProvider {
     // (Plain format:'json' lets them pad whitespace until num_predict, so require a schema.)
     if (options.jsonSchema) body.format = options.jsonSchema;
 
-    const res = await this._fetch('/api/chat', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    const res = await this._fetch('/api/chat', 'POST', body, options.timeoutMs ?? TIMEOUT_MS, options.signal);
     const data = await res.json();
     return data?.message?.content?.trim() || data?.response?.trim() || '';
   }
@@ -97,7 +98,7 @@ export default class OllamaProvider {
         temperature: options.temperature ?? 0.3,
       },
     };
-    const res = await this._fetch('/api/chat', 'POST', body, options.timeoutMs ?? TIMEOUT_MS);
+    const res = await this._fetch('/api/chat', 'POST', body, options.timeoutMs ?? TIMEOUT_MS, options.signal);
     yield* readTextChunks(res.body);
   }
 
@@ -296,23 +297,17 @@ export default class OllamaProvider {
     }
   }
 
-  async _fetch(path, method, body, timeout) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    try {
-      const init = { method, signal: controller.signal, headers: {} };
-      if (body) {
-        init.headers['Content-Type'] = 'application/json';
-        init.body = JSON.stringify(body);
-      }
-      const res = await fetch(`${this._baseUrl}${path}`, init);
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`Ollama ${res.status}: ${text.slice(0, 300)}`);
-      }
-      return res;
-    } finally {
-      clearTimeout(timer);
+  async _fetch(path, method, body, timeout, externalSignal) {
+    const init = { method, signal: fetchAbortSignal(timeout, externalSignal), headers: {} };
+    if (body) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
     }
+    const res = await fetch(`${this._baseUrl}${path}`, init);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Ollama ${res.status}: ${text.slice(0, 300)}`);
+    }
+    return res;
   }
 }

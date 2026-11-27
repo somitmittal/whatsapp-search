@@ -24,15 +24,13 @@ import { initMenus, priorityLoadChat, showSidebarContextMenu } from '/js/menus.j
 import {
   applyIncomingReactionToDom,
   applyResolvedSenderNamesToDom,
-  buildChatMessagesHtml,
-  captureChatScrollAnchor,
   closeReactionEmojiPickers,
   handleMessageCopyClick,
   messagesPaintFingerprint,
   openChatImageViewer,
   openChatPdfViewer,
+  paintChatTranscript,
   postWaReaction,
-  restoreChatScroll,
   senderNeedsResolution,
   showMediaRetryNote,
   toggleMessageMenu,
@@ -1357,47 +1355,37 @@ async function toggleChatAiIndex(jid, enabled) {
   }
 }
 
-function paintWaMessages(jid, msgs, { forceScroll = false, focusMessageId = null } = {}) {
-  const focusStr = focusMessageId != null ? String(focusMessageId) : '';
-  if (!msgs.length) {
-    const awaiting = state.chats.find((c) => c.chatJid === jid)?.awaitingSync;
-    els.waView.innerHTML = `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">${
-      awaiting
-        ? 'This chat is still waiting for WhatsApp history. Keep the app linked — new and synced messages will appear here.'
-        : 'No messages in this chat yet.'
-    }</div></div>`;
-    els.waView.dataset.paintFp = messagesPaintFingerprint([], jid, focusMessageId);
-    return;
-  }
-  const sorted = [...msgs].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-  const fp = messagesPaintFingerprint(sorted, jid, focusMessageId);
-  // Identical live reloads (Baileys re-delivery) must not rebuild DOM — menu hover flickers.
-  if (!forceScroll && !focusStr && els.waView.dataset.paintFp === fp) return;
-  // Live sync / media-ready re-paints must keep scrolled-up readers in place.
-  const anchor = focusStr || forceScroll ? null : captureChatScrollAnchor(els.waView);
-  els.waView.innerHTML = buildChatMessagesHtml(sorted, jid, focusMessageId, null);
-  els.waView.dataset.paintFp = fp;
-  if (focusStr) {
+function paintWaMessages(jid, msgs, {
+  forceScroll = false,
+  focusMessageId = null,
+  preferStart = null,
+  preserveWindowEnd = null,
+} = {}) {
+  const awaiting = !msgs.length && state.chats.find((c) => c.chatJid === jid)?.awaitingSync;
+  const emptyHtml = `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">${
+    awaiting
+      ? 'This chat is still waiting for WhatsApp history. Keep the app linked — new and synced messages will appear here.'
+      : 'No messages in this chat yet.'
+  }</div></div>`;
+  paintChatTranscript(els.waView, msgs, jid, {
+    forceScroll,
+    focusMessageId,
+    preferStart,
+    preserveWindowEnd,
+    emptyHtml,
+  });
+  if (focusMessageId) {
+    const focusStr = String(focusMessageId);
     const cleanFocus = focusStr.replace(/^m/i, '');
-    const target = [...els.waView.querySelectorAll('.bubble, .msg-block')].find(
-      (el) => {
-        const mid = el.getAttribute('data-message-id') || '';
-        const numId = el.getAttribute('data-id') || '';
-        return mid === focusStr || mid === cleanFocus || numId === focusStr || numId === cleanFocus;
-      },
-    );
+    const target = [...els.waView.querySelectorAll('.bubble, .msg-block')].find((el) => {
+      const mid = el.getAttribute('data-message-id') || '';
+      const numId = el.getAttribute('data-id') || '';
+      return mid === focusStr || mid === cleanFocus || numId === focusStr || numId === cleanFocus;
+    });
     if (target) {
-      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      target.classList.add('flash', 'msg-focus');
-      setTimeout(() => {
-        target.classList.remove('flash');
-        target.classList.remove('msg-focus');
-      }, 3500);
-    } else {
-      els.waView.scrollTop = els.waView.scrollHeight;
+      target.classList.add('flash');
+      setTimeout(() => target.classList.remove('flash'), 3500);
     }
-  } else {
-    restoreChatScroll(els.waView, anchor, { force: forceScroll });
   }
 }
 
@@ -1525,14 +1513,14 @@ async function loadOlderWaChatPage() {
       return;
     }
     const sortedAsc = [...fresh].sort((a, b) => (messageTimestampToDate(a.timestamp)?.getTime() ?? 0) - (messageTimestampToDate(b.timestamp)?.getTime() ?? 0));
-    const oldH = els.waView.scrollHeight;
-    const oldTop = els.waView.scrollTop;
-    const frag = buildChatMessagesHtml(sortedAsc, jid, null, store.chatOldestAnchorTs);
-    els.waView.insertAdjacentHTML('afterbegin', frag);
-    els.waView.scrollTop = els.waView.scrollHeight - oldH + oldTop;
-    const merged = [...fresh, ...existing];
+    const merged = [...sortedAsc, ...existing];
     state.chatMessages.set(jid, merged);
-    els.waView.dataset.paintFp = messagesPaintFingerprint(merged, jid, null);
+    // Keep the newly prepended page + prior window mounted so scroll-up history stays visible.
+    paintWaMessages(jid, merged, {
+      forceScroll: false,
+      preferStart: 0,
+      preserveWindowEnd: Math.min(merged.length, sortedAsc.length + INITIAL_CHAT_MESSAGES_LIMIT),
+    });
     triggerDeferredSenderResolution(jid, fresh);
     store.chatMessagesOffset = (store.chatMessagesOffset || 0) + rows.length;
     store.chatOldestAnchorTs = sortedAsc[0]?.timestamp ?? store.chatOldestAnchorTs;

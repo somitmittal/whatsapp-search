@@ -1,4 +1,5 @@
 import { GEMINI_FALLBACK_CHAIN } from './provider-models.js';
+import { fetchAbortSignal } from './stream-chat.js';
 
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const TIMEOUT_MS = 60_000;
@@ -60,7 +61,7 @@ export default class GeminiProvider {
 
     const timeout = options.timeoutMs ?? TIMEOUT_MS;
     const res = await this._fetchWithFallback(
-      `/models/${this._model}:generateContent`, 'POST', body, timeout,
+      `/models/${this._model}:generateContent`, 'POST', body, timeout, options.signal,
     );
     const data = await res.json();
     const candidate = data?.candidates?.[0];
@@ -91,6 +92,7 @@ export default class GeminiProvider {
       'POST',
       body,
       options.timeoutMs ?? TIMEOUT_MS,
+      options.signal,
     );
     yield* readTextChunks(res.body);
   }
@@ -136,7 +138,7 @@ export default class GeminiProvider {
     return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
   }
 
-  async _fetchWithFallback(path, method, body, timeout) {
+  async _fetchWithFallback(path, method, body, timeout, externalSignal) {
     const modelInPath = path.includes(`/models/${this._model}`);
     const modelsToTry = [this._model, ...this._fallbackModels];
 
@@ -145,7 +147,7 @@ export default class GeminiProvider {
         ? path.replace(`/models/${this._model}`, `/models/${model}`)
         : path;
       try {
-        return await this._fetchWithRotation(actualPath, method, body, timeout);
+        return await this._fetchWithRotation(actualPath, method, body, timeout, externalSignal);
       } catch (err) {
         const retryable = err.message?.includes('429') || err.message?.includes('503');
         if (retryable) {
@@ -162,7 +164,7 @@ export default class GeminiProvider {
    * Tries every key in round-robin on 429 before giving up.
    * Each key gets one attempt; if all are rate-limited, backs off and retries once.
    */
-  async _fetchWithRotation(path, method, body, timeout) {
+  async _fetchWithRotation(path, method, body, timeout, externalSignal) {
     const keyCount = this._keys.length || 1;
 
     for (let attempt = 0; attempt < keyCount + 1; attempt++) {
@@ -170,7 +172,7 @@ export default class GeminiProvider {
       if (!key) throw new Error('Gemini: no API key configured');
 
       try {
-        const res = await this._fetchWithKey(key, path, method, body, timeout);
+        const res = await this._fetchWithKey(key, path, method, body, timeout, 1, externalSignal);
         return res;
       } catch (err) {
         const is429 = err.message?.includes('429');
@@ -191,21 +193,18 @@ export default class GeminiProvider {
     throw new Error('Gemini: all keys rate-limited — please wait before retrying');
   }
 
-  async _fetchWithKey(key, path, method, body, timeout, retries = 1) {
+  async _fetchWithKey(key, path, method, body, timeout, retries = 1, externalSignal) {
     for (let attempt = 0; attempt <= retries; attempt++) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
       try {
         const sep = path.includes('?') ? '&' : '?';
         const url = `${BASE_URL}${path}${sep}key=${key}`;
-        const init = { method, signal: controller.signal, headers: {} };
+        const init = { method, signal: fetchAbortSignal(timeout, externalSignal), headers: {} };
         if (body) {
           init.headers['Content-Type'] = 'application/json';
           init.body = JSON.stringify(body);
         }
         const res = await fetch(url, init);
         if ((res.status === 429 || res.status === 503) && attempt < retries) {
-          clearTimeout(timer);
           await new Promise(r => setTimeout(r, (attempt + 1) * 2000));
           continue;
         }
@@ -215,12 +214,10 @@ export default class GeminiProvider {
         }
         return res;
       } catch (err) {
-        clearTimeout(timer);
+        if (externalSignal?.aborted || err?.name === 'AbortError') throw err;
         const retryable = err.message?.includes('429') || err.message?.includes('503');
         if (attempt < retries && retryable) continue;
         throw err;
-      } finally {
-        clearTimeout(timer);
       }
     }
   }

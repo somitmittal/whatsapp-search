@@ -399,8 +399,16 @@ export function createToolbox({ db, embeddings, directory, runSkill = null, medi
         };
       }
 
+      // Respect the shared tool token budget — full PDF dumps blow small-model context.
+      const tokenBudget = Math.max(200, Number(budget) || 1200);
+      const charCap = Math.min(content.length, tokenBudget * 4);
+      let packed = content;
+      if (content.length > charCap) {
+        packed = `${content.slice(0, charCap)}\n\n…[document truncated to fit context budget; ask about a specific section if needed]`;
+      }
+
       return {
-        text: `## Document Content: ${fn} ([m${targetMsg.id}])\n\n${content}`,
+        text: `## Document Content: ${fn} ([m${targetMsg.id}])\n\n${packed}`,
         messages: [targetMsg],
       };
     },

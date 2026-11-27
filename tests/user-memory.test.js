@@ -15,11 +15,15 @@ afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
 const {
   MEMORY_LIMIT,
   addMemory,
+  buildClarificationMemoryText,
   deleteMemory,
   extractMemoryFromExchange,
+  isClarifyingQuestion,
   isMemoryEnabled,
   listMemory,
   memoryPromptBlock,
+  saveClarificationFromTurn,
+  selectRelevantMemories,
   setMemoryEnabled,
   shouldConsiderMemory,
 } = await import('../src/gpt/user-memory.js');
@@ -82,6 +86,46 @@ describe('memoryPromptBlock', () => {
     expect(memoryPromptBlock(db)).toBe('');
     setMemoryEnabled(db, true);
   });
+
+  test('with a query, injects only overlapping memories', () => {
+    setMemoryEnabled(db, true);
+    addMemory(db, 'Prefers looking up spa bookings in the Lotus Spa chat');
+    addMemory(db, 'Uses a ThinkPad for work travel');
+    const spaBlock = memoryPromptBlock(db, new Date(), { query: 'Did the spa confirm my booking?' });
+    expect(spaBlock).toContain('Lotus Spa');
+    expect(spaBlock).not.toContain('ThinkPad');
+    const laptopBlock = memoryPromptBlock(db, new Date(), { query: 'which laptop do I travel with?' });
+    expect(laptopBlock).toContain('ThinkPad');
+    expect(laptopBlock).not.toContain('Lotus Spa');
+  });
+});
+
+describe('clarification memory', () => {
+  test('detects clarifying assistant questions', () => {
+    expect(isClarifyingQuestion('I could not find enough without guessing. Which chat or person should I look in?')).toBe(true);
+    expect(isClarifyingQuestion('The payment of ₹499 went through yesterday.')).toBe(false);
+  });
+
+  test('builds and saves a clarification fact from the user reply', () => {
+    const ask = 'Which chat or person should I look in for that booking?';
+    const text = buildClarificationMemoryText(ask, 'Lotus Spa with Priya');
+    expect(text).toMatch(/Lotus Spa with Priya/);
+    expect(text).toMatch(/User clarification/);
+    const res = saveClarificationFromTurn(db, { priorAssistantText: ask, userText: 'Lotus Spa with Priya' });
+    expect(res?.added).toBe(true);
+    expect(res.entry.kind).toBe('clarification');
+    const block = memoryPromptBlock(db, new Date(), { query: 'Was my spa booking confirmed last week?' });
+    expect(block).toContain('Lotus Spa with Priya');
+  });
+
+  test('selectRelevantMemories ranks clarification overlaps above unrelated facts', () => {
+    const items = [
+      { id: '1', text: 'Owns a red scooter', kind: 'fact', ts: 1 },
+      { id: '2', text: 'User clarification: for "Which chat should I look in for bookings?", they said "Wife Home chat". Apply this next time instead of asking again.', kind: 'clarification', ts: 2 },
+    ];
+    const picked = selectRelevantMemories(items, 'check the booking confirmation please');
+    expect(picked.map((m) => m.id)).toEqual(['2']);
+  });
 });
 
 describe('shouldConsiderMemory gate', () => {
@@ -91,6 +135,13 @@ describe('shouldConsiderMemory gate', () => {
   });
   test('accepts substantive exchanges', () => {
     expect(shouldConsiderMemory('My laptop is a MacBook Air 2017 model', 'Noted, I will remember that.')).toBe(true);
+  });
+  test('skips LLM extract when the prior turn was a clarifying question', () => {
+    expect(shouldConsiderMemory(
+      'Wife Home chat',
+      'Looking in Wife Home chat now.',
+      { priorAssistantText: 'Which chat or person should I look in?' },
+    )).toBe(false);
   });
 });
 

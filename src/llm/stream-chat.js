@@ -33,9 +33,19 @@ export async function* readTextChunks(body) {
 }
 
 export async function streamChat(provider, messages, options = {}, onDelta) {
+  if (options.signal?.aborted) {
+    const err = new Error('aborted');
+    err.name = 'AbortError';
+    throw err;
+  }
   if (provider && typeof provider.chatStream === 'function') {
     let all = '';
     for await (const part of provider.chatStream(messages, options)) {
+      if (options.signal?.aborted) {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
       if (!part) continue;
       all += part;
       onDelta?.(part);
@@ -45,4 +55,24 @@ export async function streamChat(provider, messages, options = {}, onDelta) {
   const text = String(await provider.chat(messages, options) || '').trim();
   if (text) onDelta?.(text);
   return text;
+}
+
+/**
+ * Merge a caller AbortSignal with a timeout so Stop/disconnect cancels the HTTP fetch.
+ * @param {number} timeoutMs
+ * @param {AbortSignal} [external]
+ */
+export function fetchAbortSignal(timeoutMs, external) {
+  const timeout = AbortSignal.timeout(Math.max(1, Number(timeoutMs) || 60_000));
+  if (!external) return timeout;
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([timeout, external]);
+  const controller = new AbortController();
+  const abort = () => controller.abort(external.reason || timeout.reason);
+  if (external.aborted || timeout.aborted) {
+    abort();
+    return controller.signal;
+  }
+  external.addEventListener('abort', abort, { once: true });
+  timeout.addEventListener('abort', abort, { once: true });
+  return controller.signal;
 }

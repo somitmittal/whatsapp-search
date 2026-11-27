@@ -10,10 +10,10 @@ import { openForwardOverlay, promptDeleteMessage } from './message-actions.js';
 import { openReactionDetailsModal } from './reaction-details-modal.js';
 import {
   applyResolvedSenderNamesToDom,
-  buildChatMessagesHtml,
   closeReactionEmojiPickers,
   handleMessageCopyClick,
   mediaIndexStateHtml,
+  paintChatTranscript,
   postWaReaction,
   renderMessages,
   senderNeedsResolution,
@@ -414,11 +414,18 @@ async function loadOlderChatPage() {
       return ta - tb;
     });
     const c = $('#cv-messages');
-    const oldH = c.scrollHeight;
-    const oldTop = c.scrollTop;
-    const frag = buildChatMessagesHtml(sortedAsc, jid, null, store.chatOldestAnchorTs);
-    c.insertAdjacentHTML('afterbegin', frag);
-    c.scrollTop = c.scrollHeight - oldH + oldTop;
+    const cached = store._chatMessageCache?.get(jid)?.msgs;
+    const existing = Array.isArray(cached) ? cached : [];
+    const seenIds = new Set(existing.map((m) => m.messageId || String(m.id)));
+    const fresh = sortedAsc.filter((m) => !seenIds.has(m.messageId || String(m.id)));
+    const merged = fresh.length ? [...fresh, ...existing] : [...sortedAsc, ...existing];
+    if (!store._chatMessageCache) store._chatMessageCache = new Map();
+    store._chatMessageCache.set(jid, { msgs: merged, ts: Date.now() });
+    paintChatTranscript(c, merged, jid, {
+      forceScroll: false,
+      preferStart: 0,
+      preserveWindowEnd: Math.min(merged.length, fresh.length + INITIAL_CHAT_MESSAGES_LIMIT),
+    });
     triggerDeferredSenderResolution(jid, rows);
     store.chatMessagesOffset += rows.length;
     store.chatOldestAnchorTs = sortedAsc[0]?.timestamp ?? store.chatOldestAnchorTs;

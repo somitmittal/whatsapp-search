@@ -95,6 +95,7 @@ export default class Database {
     }
     this._db.pragma('synchronous = NORMAL');
     this._db.pragma('foreign_keys = ON');
+    this._db.pragma('busy_timeout = 5000');
     this._db.pragma('cache_size = -64000');
     this._db.pragma('temp_store = MEMORY');
     this._db.pragma('mmap_size = 268435456');
@@ -4009,18 +4010,57 @@ export default class Database {
     const previewByChat = new Map();
     const titlesByChat = new Map();
 
-    const allJids = new Set([
-      ...aggRows.map((r) => r.chatJid),
-      ...rosterTsByChat.keys(),
-    ]);
-
-    for (const jid of allJids) {
-      if (!jid) continue;
-      if (this._stmtChatPreview) {
+    // Batch last-message + title candidates (was N+1 per chat — freezes large archives).
+    try {
+      const previewRows = this._db.prepare(`
+        SELECT chat_jid AS chatJid, text, sender, media_type AS mediaType,
+               receipt_status AS receiptStatus, message_id AS messageId
+        FROM (
+          SELECT chat_jid, text, sender, media_type, receipt_status, message_id,
+                 ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY timestamp DESC, id DESC) AS rn
+          FROM messages
+          WHERE tenant_id = ?
+        )
+        WHERE rn = 1
+      `).all(t);
+      for (const p of previewRows) {
+        if (p?.chatJid) previewByChat.set(p.chatJid, p);
+      }
+    } catch (err) {
+      console.warn('[DB] batched chat preview failed, falling back:', err.message);
+      for (const jid of new Set([...aggRows.map((r) => r.chatJid), ...rosterTsByChat.keys()])) {
+        if (!jid || !this._stmtChatPreview) continue;
         const p = this._stmtChatPreview.get(t, jid);
         if (p) previewByChat.set(jid, p);
       }
-      if (this._stmtChatTitleCandidates) {
+    }
+
+    try {
+      const titleRows = this._db.prepare(`
+        SELECT chat_jid AS chatJid, chat_name AS chatName, sender
+        FROM (
+          SELECT chat_jid, chat_name, sender,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY chat_jid
+                   ORDER BY timestamp DESC, id DESC
+                 ) AS rn
+          FROM messages
+          WHERE tenant_id = ?
+            AND ((chat_name IS NOT NULL AND chat_name != '')
+              OR (sender IS NOT NULL AND sender != '' AND sender != 'You'))
+        )
+        WHERE rn <= 5
+      `).all(t);
+      for (const row of titleRows) {
+        if (!row?.chatJid) continue;
+        const list = titlesByChat.get(row.chatJid) || [];
+        list.push({ chatName: row.chatName, sender: row.sender });
+        titlesByChat.set(row.chatJid, list);
+      }
+    } catch (err) {
+      console.warn('[DB] batched chat titles failed, falling back:', err.message);
+      for (const jid of new Set([...aggRows.map((r) => r.chatJid), ...rosterTsByChat.keys()])) {
+        if (!jid || !this._stmtChatTitleCandidates) continue;
         const rows = this._stmtChatTitleCandidates.all(t, jid);
         if (rows && rows.length) titlesByChat.set(jid, rows);
       }

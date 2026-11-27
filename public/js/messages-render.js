@@ -1,11 +1,26 @@
 import { store } from './store.js';
 import { canSendMessageToJid } from './composer.js';
+import { CHAT_PAGE, INITIAL_CHAT_MESSAGES_LIMIT } from './constants.js';
 import { dateFmt, formatChatBubbleDateTime, formatChatDateSeparator, messageTimestampToDate, receiptTicksHtml } from './format.js';
 import { mediaDownloadUrl, mediaUrlForMessage, messageMediaDownloadAnchor } from './media.js';
 import { $, esc, escAttr, hash } from './util.js';
 import { setupReactionSearch } from './emoji-picker.js';
 import { getRecentEmojis, recordRecentEmoji } from './emoji-data.js';
 import { invalidateReactionDetailsCache } from './reaction-details-modal.js';
+
+/** DOM window size — one initial chat page of bubbles. */
+const VT_WINDOW = INITIAL_CHAT_MESSAGES_LIMIT;
+/** Enable windowed paint once the transcript exceeds the initial fetch size. */
+const VT_THRESHOLD = INITIAL_CHAT_MESSAGES_LIMIT;
+/** Expand/contract the window by one older-page chunk (matches CHAT_PAGE fetches). */
+const VT_EXPAND = CHAT_PAGE;
+/** Same-sender cluster gap used by WhatsApp Web (~1 minute). */
+const CLUSTER_GAP_MS = 60_000;
+/** Scroll edge (px) that triggers window expansion — same band as sticky-bottom. */
+const VT_EDGE_PX = 120;
+
+/** Per-container virtualization state (msgs + window indices + measured row height). */
+const _vtByEl = new WeakMap();
 
 let imageViewerEl = null;
 /** WhatsApp Web icon paths for the message menu (mirror of WA's own icons). */
@@ -859,6 +874,21 @@ export function mediaIndexStateHtml(m) {
   return `<span class="media-index-state ${escAttr(status)}" title="${escAttr(m.mediaIndexError || '')}">${esc(labels[status] || 'Index status unavailable')}</span>`;
 }
 
+function sameMessageCluster(prev, curr) {
+  if (!prev || !curr) return false;
+  const prevOut = prev.sender === 'You';
+  const currOut = curr.sender === 'You';
+  if (prevOut !== currOut) return false;
+  if (!prevOut && String(prev.sender || '') !== String(curr.sender || '')) return false;
+  if (!prevOut && prev.senderJid && curr.senderJid && String(prev.senderJid) !== String(curr.senderJid)) {
+    return false;
+  }
+  const tPrev = messageTimestampToDate(prev.timestamp)?.getTime() ?? 0;
+  const tCurr = messageTimestampToDate(curr.timestamp)?.getTime() ?? 0;
+  if (!tPrev || !tCurr) return false;
+  return Math.abs(tCurr - tPrev) <= CLUSTER_GAP_MS;
+}
+
 export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelowTs) {
   const isGroup = jid.includes('@g.us');
   let html = '', lastDate = '';
@@ -867,7 +897,10 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
     lastDate = ad ? ad.toDateString() : '';
   }
   const focusStr = focusMessageId != null ? String(focusMessageId) : '';
-  for (const m of sortedAsc) {
+  for (let i = 0; i < sortedAsc.length; i++) {
+    const m = sortedAsc[i];
+    const prev = i > 0 ? sortedAsc[i - 1] : null;
+    const next = i + 1 < sortedAsc.length ? sortedAsc[i + 1] : null;
     const d = messageTimestampToDate(m.timestamp);
     const ds = d ? formatChatDateSeparator(d) : '';
     const dsKey = d ? d.toDateString() : '';
@@ -876,12 +909,17 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
       lastDate = dsKey;
     }
     const out = m.sender === 'You';
+    const continued = sameMessageCluster(prev, m)
+      && !(dsKey && prev && messageTimestampToDate(prev.timestamp)?.toDateString() !== dsKey);
+    const hasTail = !sameMessageCluster(m, next)
+      || (next && dsKey && messageTimestampToDate(next.timestamp)?.toDateString() !== dsKey);
     const ts = d ? formatChatBubbleDateTime(d) : '';
     const ticks = out ? receiptTicksHtml(m.receiptStatus) : '';
     const isDirectChat = !isGroup && jid !== 'status@broadcast' && !String(jid).endsWith('@imported');
     const effectiveSenderJid = m.senderJid || (isDirectChat ? jid : '');
     let sender = '';
-    if (!out && m.sender) {
+    // WhatsApp hides the group sender name on continued bubbles in a stack.
+    if (!out && m.sender && !continued) {
       const sjidAttr = effectiveSenderJid ? ` data-sender-jid="${escAttr(effectiveSenderJid)}"` : '';
       if (isGroup || jid === 'status@broadcast') {
         const colors = ['#1fa855','#6b46c1','#d93025','#1a73e8','#e8710a','#9334e6','#0d652d'];
@@ -1018,7 +1056,8 @@ export function buildChatMessagesHtml(sortedAsc, jid, focusMessageId, anchorBelo
           ${rxHtml}
           ${liveOk ? `<button type="button" class="bubble-react-trigger" data-wa-emoji-picker-toggle="1" title="React" aria-label="React"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-3.5-9c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm7 0c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg></button><div class="wa-reaction-picker" hidden aria-label="Choose a reaction"></div>` : ''}
         </div>` : '';
-    html += `<div class="msg-block ${out ? 'out' : 'in'}"${storageAttr}${midAttr}${dataId} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}"${dataMid}${dataId}>${sender}${quoteHtml}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxBar}</div>`;
+    const clusterCls = `${continued ? ' continued' : ''}${hasTail ? ' tail' : ''}`;
+    html += `<div class="msg-block ${out ? 'out' : 'in'}${clusterCls}"${storageAttr}${midAttr}${dataId} data-from-me="${out ? '1' : '0'}">${toolbar}<div class="bubble ${out ? 'out' : 'in'}${focusCls}${clusterCls}"${dataMid}${dataId}>${sender}${quoteHtml}${body}<span class="time" title="${d ? escAttr(dateFmt('full').format(d)) : ''}">${ts ? esc(ts) : '—'}${ticks}</span></div>${rxBar}</div>`;
   }
   return html;
 }
@@ -1116,23 +1155,115 @@ export function restoreChatScroll(container, anchor, { force = false } = {}) {
   container.scrollTop = container.scrollHeight;
 }
 
+function measureVtAvgHeight(container) {
+  const blocks = container.querySelectorAll('.msg-block');
+  if (blocks.length < 2) {
+    const one = blocks[0];
+    return one ? Math.max(40, one.offsetHeight) : 0;
+  }
+  const first = blocks[0];
+  const last = blocks[blocks.length - 1];
+  const span = (last.offsetTop + last.offsetHeight) - first.offsetTop;
+  return Math.max(40, Math.round(span / blocks.length));
+}
+
+function vtSpacer(side, px) {
+  if (!px || px <= 0) return '';
+  return `<div class="msg-vt-spacer" data-vt="${side}" style="height:${Math.round(px)}px" aria-hidden="true"></div>`;
+}
+
+function findFocusIndex(sorted, focusStr) {
+  if (!focusStr) return -1;
+  const clean = focusStr.replace(/^m/i, '');
+  return sorted.findIndex((m) => {
+    const mid = m.messageId != null ? String(m.messageId) : '';
+    const numId = m.id != null ? String(m.id) : '';
+    return mid === focusStr || mid === clean || numId === focusStr || numId === clean;
+  });
+}
+
+function computeVtWindow(sorted, focusStr, preferStart = null) {
+  const n = sorted.length;
+  if (n <= VT_THRESHOLD) return { start: 0, end: n, virtualized: false };
+  let start;
+  let end;
+  if (typeof preferStart === 'number' && Number.isFinite(preferStart)) {
+    start = Math.max(0, Math.min(n, Math.floor(preferStart)));
+    end = Math.min(n, start + VT_WINDOW);
+    if (end - start < VT_WINDOW) start = Math.max(0, end - VT_WINDOW);
+  } else {
+    const focusIdx = findFocusIndex(sorted, focusStr);
+    if (focusIdx >= 0) {
+      start = Math.max(0, focusIdx - Math.floor(VT_WINDOW / 2));
+      end = Math.min(n, start + VT_WINDOW);
+      if (end - start < VT_WINDOW) start = Math.max(0, end - VT_WINDOW);
+    } else {
+      start = Math.max(0, n - VT_WINDOW);
+      end = n;
+    }
+  }
+  return { start, end, virtualized: true };
+}
+
+function bindVtScroll(container) {
+  if (!container || container.dataset.vtScrollBound === '1') return;
+  container.dataset.vtScrollBound = '1';
+  let ticking = false;
+  container.addEventListener('scroll', () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      ticking = false;
+      const vt = _vtByEl.get(container);
+      if (!vt?.virtualized || !vt.msgs?.length) return;
+      if (vt.focusMessageId) return;
+      const { msgs, jid, start, end } = vt;
+      if (container.scrollTop < VT_EDGE_PX && start > 0) {
+        const nextStart = Math.max(0, start - VT_EXPAND);
+        paintChatTranscript(container, msgs, jid, {
+          forceScroll: false,
+          focusMessageId: null,
+          preferStart: nextStart,
+          preserveWindowEnd: end,
+        });
+      } else if (
+        container.scrollHeight - container.scrollTop - container.clientHeight < VT_EDGE_PX
+        && end < msgs.length
+      ) {
+        paintChatTranscript(container, msgs, jid, {
+          forceScroll: false,
+          focusMessageId: null,
+          preferStart: start,
+          preserveWindowEnd: Math.min(msgs.length, end + VT_EXPAND),
+        });
+      }
+    });
+  }, { passive: true });
+}
+
 /**
+ * Shared WhatsApp transcript paint for classic `#cv-messages` and GPT `#gpt-wa-view`.
+ * Large chats only mount a window of bubbles (spacers hold scroll height).
+ *
+ * @param {HTMLElement} container
  * @param {object[]} msgs
  * @param {string} jid
- * @param {string|null} [focusMessageId]
- * @param {{ forceScroll?: boolean }} [opts] forceScroll=true on initial open / own send;
- *   live refreshes omit it so scrolled-up readers keep their place.
+ * @param {{ forceScroll?: boolean, focusMessageId?: string|null, preferStart?: number|null, preserveWindowEnd?: number|null, emptyHtml?: string }} [opts]
  */
-export function renderMessages(msgs, jid, focusMessageId = null, { forceScroll = false } = {}) {
-  const c = $('#cv-messages');
+export function paintChatTranscript(container, msgs, jid, {
+  forceScroll = false,
+  focusMessageId = null,
+  preferStart = null,
+  preserveWindowEnd = null,
+  emptyHtml = null,
+} = {}) {
+  if (!container) return;
+  bindVtScroll(container);
   if (!msgs.length) {
-    const ch = store.chatData.find((row) => row.chatJid === jid);
-    const claimed = Number(ch?.messageCount) || 0;
-    const hint = claimed > 0
-      ? `This chat reports ${claimed.toLocaleString()} messages, but none loaded. Try refreshing, or re-import the chat export.`
-      : 'No messages in this chat yet.';
-    c.innerHTML = `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">${esc(hint)}</div></div>`;
-    rememberPaint(c, messagesPaintFingerprint([], jid, focusMessageId));
+    container.innerHTML = emptyHtml || `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">No messages in this chat yet.</div></div>`;
+    rememberPaint(container, messagesPaintFingerprint([], jid, focusMessageId));
+    container.dataset.paintFp = _paintFpByEl.get(container) || '';
+    _vtByEl.delete(container);
     return;
   }
   const focusStr = focusMessageId != null ? String(focusMessageId) : '';
@@ -1143,24 +1274,106 @@ export function renderMessages(msgs, jid, focusMessageId = null, { forceScroll =
   });
   const fp = messagesPaintFingerprint(sorted, jid, focusMessageId);
   // Live Baileys re-deliveries often re-fetch identical rows; replacing DOM kills hover menus.
-  if (!forceScroll && !focusStr && shouldSkipPaint(c, fp)) return;
-  const anchor = focusStr || forceScroll ? null : captureChatScrollAnchor(c);
-  const html = buildChatMessagesHtml(sorted, jid, focusMessageId, null);
-  c.innerHTML = html;
-  rememberPaint(c, fp);
+  if (!forceScroll && !focusStr && preferStart == null && shouldSkipPaint(container, fp)) return;
+
+  const prevVt = _vtByEl.get(container);
+  let win = computeVtWindow(sorted, focusStr, preferStart);
+  if (win.virtualized && typeof preserveWindowEnd === 'number') {
+    win = {
+      ...win,
+      end: Math.max(win.start, Math.min(sorted.length, Math.floor(preserveWindowEnd))),
+    };
+  }
+  // Keep an expanded window when the user already scrolled up (preferStart path).
+  if (win.virtualized && preferStart == null && !focusStr && !forceScroll && prevVt?.virtualized
+    && prevVt.jid === jid && prevVt.msgs?.length) {
+    win = {
+      start: Math.min(prevVt.start, win.start),
+      end: Math.max(prevVt.end, win.end),
+      virtualized: true,
+    };
+    if (win.end - win.start > VT_WINDOW * 2) {
+      // Cap runaway growth while staying near the reader's prior window.
+      const mid = Math.floor((win.start + win.end) / 2);
+      win.start = Math.max(0, mid - VT_WINDOW);
+      win.end = Math.min(sorted.length, win.start + VT_WINDOW * 2);
+    }
+  }
+
+  const anchor = focusStr || forceScroll ? null : captureChatScrollAnchor(container);
+  const slice = sorted.slice(win.start, win.end);
+  const avgH = prevVt?.avgH || 0;
+  const topPx = win.virtualized ? win.start * avgH : 0;
+  const bottomPx = win.virtualized ? (sorted.length - win.end) * avgH : 0;
+  const html = buildChatMessagesHtml(slice, jid, focusMessageId, null);
+  container.innerHTML = `${vtSpacer('top', topPx)}${html}${vtSpacer('bottom', bottomPx)}`;
+  rememberPaint(container, fp);
+  container.dataset.paintFp = fp;
+
+  const measured = measureVtAvgHeight(container);
+  const nextAvg = measured || avgH;
+  _vtByEl.set(container, {
+    msgs: sorted,
+    jid,
+    start: win.start,
+    end: win.end,
+    virtualized: win.virtualized,
+    avgH: nextAvg,
+    focusMessageId: focusStr || null,
+  });
+
+  // Reconcile spacer heights once we have a real average (avoids invented row heights).
+  if (win.virtualized && nextAvg) {
+    const topEl = container.querySelector('.msg-vt-spacer[data-vt="top"]');
+    const botEl = container.querySelector('.msg-vt-spacer[data-vt="bottom"]');
+    const wantTop = win.start * nextAvg;
+    const wantBot = (sorted.length - win.end) * nextAvg;
+    if (topEl) topEl.style.height = `${Math.round(wantTop)}px`;
+    else if (wantTop > 0) container.insertAdjacentHTML('afterbegin', vtSpacer('top', wantTop));
+    if (botEl) botEl.style.height = `${Math.round(wantBot)}px`;
+    else if (wantBot > 0) container.insertAdjacentHTML('beforeend', vtSpacer('bottom', wantBot));
+  }
+
   if (focusStr) {
-    const target = [...c.querySelectorAll('.bubble[data-message-id]')].find(
-      el => el.getAttribute('data-message-id') === focusStr
-    );
+    const cleanFocus = focusStr.replace(/^m/i, '');
+    const target = [...container.querySelectorAll('.bubble[data-message-id], .msg-block[data-message-id]')].find((el) => {
+      const mid = el.getAttribute('data-message-id') || '';
+      const numId = el.getAttribute('data-id') || '';
+      return mid === focusStr || mid === cleanFocus || numId === focusStr || numId === cleanFocus;
+    });
     if (target) {
       target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      target.classList.add('msg-focus');
       setTimeout(() => { target.classList.remove('msg-focus'); }, 2800);
     } else {
-      c.scrollTop = c.scrollHeight;
+      container.scrollTop = container.scrollHeight;
     }
   } else {
-    restoreChatScroll(c, anchor, { force: forceScroll });
+    restoreChatScroll(container, anchor, { force: forceScroll });
   }
+}
+
+/**
+ * Classic `#cv-messages` transcript paint (windowed for large chats).
+ * @param {object[]} msgs
+ * @param {string} jid
+ * @param {string|null} [focusMessageId]
+ * @param {{ forceScroll?: boolean }} [opts] forceScroll=true on initial open / own send;
+ *   live refreshes omit it so scrolled-up readers keep their place.
+ */
+export function renderMessages(msgs, jid, focusMessageId = null, { forceScroll = false } = {}) {
+  const c = $('#cv-messages');
+  if (!c) return;
+  let emptyHtml = null;
+  if (!msgs.length) {
+    const ch = store.chatData.find((row) => row.chatJid === jid);
+    const claimed = Number(ch?.messageCount) || 0;
+    const hint = claimed > 0
+      ? `This chat reports ${claimed.toLocaleString()} messages, but none loaded. Try refreshing, or re-import the chat export.`
+      : 'No messages in this chat yet.';
+    emptyHtml = `<div class="empty-messages-state"><div class="empty-messages-title">No messages to show</div><div class="empty-messages-hint">${esc(hint)}</div></div>`;
+  }
+  paintChatTranscript(c, msgs, jid, { forceScroll, focusMessageId, emptyHtml });
 }
 // --- WhatsApp-style voice note playback (delegated) ---
 export function _vnFmt(s) {
