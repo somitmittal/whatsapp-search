@@ -6,6 +6,10 @@ import {
 import { getCurrentTenantId } from '../storage/tenant-context.js';
 
 /**
+ * Session auth helpers for local/desktop installs.
+ * @deprecated Do not expand into multi-tenant / multi-account SaaS auth UX.
+ * See docs/agents/deprecated.md
+ *
  * @param {import('express').Application} app
  * @param {{ sessions: import('../auth/user-session.js').UserSessionService, isSecureCookie: () => boolean }} ctx
  */

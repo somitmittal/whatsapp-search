@@ -4456,7 +4456,7 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
       }
     });
 
-    // Legacy WhatsApp mirror UI (optional). Primary entry is /gpt.
+    // DEPRECATED: classic WhatsApp mirror UI. Active product is /gpt — see docs/agents/deprecated.md
     this._app.get('/chats', (_req, res) => res.sendFile(resolve(config.publicDir, 'index.html'), { dotfiles: 'allow' }));
 
     // Multer (and other) errors must stay JSON — the import UI calls res.json().
@@ -4500,6 +4500,9 @@ Score 1.0 = directly answers the query. Score 0.0 = completely unrelated.`;
   /**
    * Enable/disable AI indexing for one chat. When enabled, starts indexing immediately.
    * Body: { chatJid, enabled }.
+   *
+   * @deprecated The per-chat indexing *button/menu* product is inactive — keep this API
+   * for compatibility but do not build new UX on it. See docs/agents/deprecated.md
    */
   _handleIndexToggle(req, res) {
     try {

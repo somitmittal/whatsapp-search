@@ -9,7 +9,8 @@ Searchable operates as a hybrid local web application and packaged Electron desk
 * **Backend / API Server (`src/index.js`, `src/web/server.js`)**:
   - Express-based local HTTP server (default port 3000, overridable by `WEB_PORT`).
   - Routes for WhatsApp sync, chat rosters (`/api/chats`), Ask AI sessions (`/api/gpt/conversations`), and expenses.
-  - Multi-tenant isolation enforced via `src/storage/tenant-context.js` and `AsyncLocalStorage`.
+  - Row-level `tenantId` isolation via `src/storage/tenant-context.js` (local single-workspace; **multi-tenant SaaS is deprecated** — see [deprecated.md](./deprecated.md)).
+  - **Primary UI route:** `/gpt`. `/` redirects to `/gpt`. Classic `index.html` / `/chats` is deprecated.
 
 * **Storage & Indexing (`src/storage/database.js`)**:
   - Local SQLite database powered by `better-sqlite3`.
@@ -39,18 +40,22 @@ Searchable operates as a hybrid local web application and packaged Electron desk
 ```
 whatsapp-gpt/
 ├── AGENTS.md                  # Root agent rules & progressive router
-├── docs/agents/               # Agent guides (architecture, anti-regressions, handoffs)
+├── docs/agents/               # Agent guides (architecture, deprecated, anti-regressions)
 ├── electron/                  # Electron main process & desktop packaging scripts
-├── public/                    # Frontend client assets (vanilla JS + CSS)
+├── public/
+│   ├── gpt.html + gpt-app/    # ACTIVE primary UI (Ask AI + WA in GPT shell)
+│   ├── index.html + js/app.js # DEPRECATED classic UI (do not extend)
+│   └── js/*                   # Shared modules — edit when imported by gpt.js
 ├── scripts/                   # Harness scripts (init.sh, verify.sh, prune-worktrees.sh)
 ├── src/
 │   ├── gpt/                   # Ask AI agent, tools, context engine, model registry
 │   ├── llm/                   # LLM provider clients (Ollama, Groq, Gemini, etc.)
 │   ├── search/                # Grounding, hybrid retrieval, synthesis
 │   ├── skills/                # Slash-skills, expense reconciliation runners
-│   ├── storage/               # SQLite database, multi-tenant migrations
+│   ├── storage/               # SQLite database (tenant columns = isolation, not SaaS product)
 │   ├── web/                   # Express HTTP routes and middleware
 │   └── whatsapp/              # Baileys WhatsApp client, ingestion queues
+├── extension/, mobile/, wa-search*  # DEPRECATED inactive clients/prototypes
 └── tests/                     # Jest test suites
 ```
 

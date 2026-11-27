@@ -297,6 +297,7 @@ export function initSidebar() {
       openAvatarViewer(av.dataset.avatarJid, av.dataset.avatarTitle, av.dataset.avatarRev);
     };
     c.addEventListener('click', (e) => {
+      // DEPRECATED: .chat-ai-toggle UX is inactive — see docs/agents/deprecated.md
       const toggle = e.target.closest('.chat-ai-toggle');
       if (toggle && c.contains(toggle)) {
         e.preventDefault();

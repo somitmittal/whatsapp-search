@@ -31,9 +31,37 @@
     {
       "id": "dev-harness-progressive-docs",
       "category": "developer-harness",
-      "description": "Progressive disclosure docs in docs/agents/ covering architecture, anti-regressions, and handoff",
-      "verify_cmd": "test -f docs/agents/architecture.md && test -f docs/agents/anti-regressions.md",
+      "description": "Progressive disclosure docs in docs/agents/ covering architecture, deprecated surfaces, anti-regressions, and handoff",
+      "verify_cmd": "test -f docs/agents/architecture.md && test -f docs/agents/deprecated.md && test -f docs/agents/anti-regressions.md",
       "status": "passing"
+    },
+    {
+      "id": "agent-deprecated-surfaces-map",
+      "category": "developer-harness",
+      "description": "Marks classic UI, AI-indexing button/menu, multi-tenant SaaS, and old clients as deprecated so agents default to /gpt",
+      "verify_cmd": "test -f docs/agents/deprecated.md && test -f .cursor/rules/deprecated-surfaces.mdc && rg -q 'DEPRECATED' public/index.html public/js/app.js",
+      "status": "passing"
+    },
+    {
+      "id": "ui-classic-whatsapp-search",
+      "category": "ui-legacy",
+      "description": "DEPRECATED classic WhatsApp Search shell (public/index.html). Replaced by /gpt.",
+      "verify_cmd": "rg -q 'DEPRECATED' public/index.html",
+      "status": "deprecated"
+    },
+    {
+      "id": "ui-ai-indexing-toggle",
+      "category": "ui-legacy",
+      "description": "DEPRECATED per-chat AI indexing button/menu (.chat-ai-toggle, Index for AI search). Backend Ask AI retrieval remains active.",
+      "verify_cmd": "rg -q '@deprecated' public/js/menus.js public/js/dashboard.js",
+      "status": "deprecated"
+    },
+    {
+      "id": "saas-multi-tenant-expansion",
+      "category": "infra-legacy",
+      "description": "DEPRECATED multi-tenant SaaS expansion. Local single-workspace tenantId isolation only.",
+      "verify_cmd": "rg -q 'deprecated' src/storage/migrate-multi-tenant.js src/storage/tenant-context.js",
+      "status": "deprecated"
     },
     {
       "id": "runtime-harness-robust-tool-parsing",

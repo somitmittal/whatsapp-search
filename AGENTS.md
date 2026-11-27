@@ -79,10 +79,26 @@ Once all three layers and end-to-end tests have passed:
 
 ---
 
+## 🚫 Deprecated / Inactive (Do Not Work On Unless Explicitly Asked)
+
+Agents routinely waste time on old surfaces. **Skip these by default.** Full map: [docs/agents/deprecated.md](docs/agents/deprecated.md) (also `.cursor/rules/deprecated-surfaces.mdc`).
+
+| Inactive | Active instead |
+|---|---|
+| Classic UI `public/index.html`, `public/js/app.js`, `GET /chats` | **GPT shell** `/gpt` → `public/gpt.html` + `public/gpt-app/` |
+| Per-chat **AI indexing** button/menu (`.chat-ai-toggle`, Index for AI search) | Ask AI search/retrieval in `src/gpt/` + `src/search/` (no toggle UX work) |
+| Multi-tenant SaaS / tenant-switch / auth expansion | Local **single-workspace** desktop; keep existing `tenantId` isolation only |
+| `extension/`, `mobile/`, `wa-search-preview/`, `wa-search.jsx` | Electron + `/gpt` |
+
+Files marked with `DEPRECATED` / `@deprecated` banners at the top are inactive entry points — do not “clean up” or extend them without an explicit user request.
+
+---
+
 ## 📖 Progressive Disclosure Index (Read on Demand)
 
 Do not load unnecessary context into your prompt upfront. Read these modular guides only when touching their respective domains:
 
+* **[Deprecated / Inactive Surfaces](docs/agents/deprecated.md):** Classic UI, AI-indexing buttons, multi-tenant SaaS, old clients — **do not spend time here** unless the user asks.
 * **[Architecture & Layout](docs/agents/architecture.md):** High-level view of Electron, Express server, SQLite storage, WhatsApp Baileys integration, and GPT agents.
 * **[E2E User Testing Guidelines](docs/agents/e2e-testing-guidelines.md):** Speed + accuracy rubric for verifying chat/contact loading, UI button responsiveness, and Ask AI scoping/grounding/OCR search (`.cursor/rules/e2e-user-testing.mdc`).
 * **[Anti-Regression Checklist](docs/agents/anti-regressions.md):** **MANDATORY CHECKLIST** before merging. Details previous regressions:
@@ -101,5 +117,5 @@ Do not load unnecessary context into your prompt upfront. Read these modular gui
 * **Node:** `>=22.23.4 <23` (security baseline; see engines), ESM (`"type": "module"`).
 * **Local server:** `npm start` → http://localhost:3000 (dev data in `data/`).
 * **Desktop app data:** `~/Library/Application Support/Searchable/data` (macOS).
-* **UIs:** Ask AI: `/gpt`; WhatsApp search: `/`.
-* **Control-plane:** Lives in `src/control-plane/` (Vercel entry: `api/index.js`).
+* **Primary UI:** Ask AI / GPT at `/gpt` (`/` redirects there). Classic WhatsApp search UI is deprecated.
+* **Control-plane:** Lives in `src/control-plane/` (Vercel entry: `api/index.js`) — license/trial only; do not expand multi-tenant SaaS.

@@ -1,7 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { LEGACY_TENANT_ID } from './tenant-constants.js';
 
-/** Request/job-scoped tenant id for shared SQLite (row-level isolation). */
+/**
+ * Request/job-scoped tenant id for shared SQLite (row-level isolation).
+ * Used by local single-workspace installs. Multi-tenant SaaS expansion is deprecated —
+ * keep isolation working; do not build tenant-switch product features.
+ * See docs/agents/deprecated.md
+ */
 export const tenantContext = new AsyncLocalStorage();
 
 export function getCurrentTenantId() {

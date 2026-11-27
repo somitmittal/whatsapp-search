@@ -1,0 +1,23 @@
+---
+description: Skip deprecated classic UI, AI-index buttons, and multi-tenant SaaS work unless the user explicitly asks
+alwaysApply: true
+---
+
+# Deprecated surfaces — do not waste time here
+
+Full map: `docs/agents/deprecated.md`.
+
+## Active product
+
+- UI: **`/gpt`** → `public/gpt.html` + `public/gpt-app/`
+- Agent/search: `src/gpt/`, `src/search/` (retrieval/grounding for Ask AI)
+- Desktop: `electron/`, local single-workspace WhatsApp sync
+
+## Do not touch unless the user explicitly requests it
+
+1. **Classic UI** — `public/index.html`, `public/js/app.js`, `GET /chats` legacy route. `/` already redirects to `/gpt`.
+2. **AI indexing button/menu** — `#menu-index-chat`, `#ctx-index-chat`, `.chat-ai-toggle`, and the `setChatIndexEnabled` / “Index for AI search” UX. Backend FTS/JIT indexing for Ask AI is fine; the opt-in toggle product is not.
+3. **Multi-tenant SaaS expansion** — do not grow multi-user tenancy, tenant-switch UX, or control-plane admin. Keep existing `tenantId` / `legacy-default` isolation working for local installs only.
+4. **Old clients** — `extension/`, `mobile/`, `wa-search-preview/`, `wa-search.jsx`.
+
+Shared modules imported by `gpt.js` (e.g. `messages-render.js`, `composer.js`, `wa-connection.js`) are active when GPT needs them — edit those for GPT bugs, not to revive classic chrome.

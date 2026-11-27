@@ -1,3 +1,7 @@
+/**
+ * @deprecated Inactive prototype. Active product UI is /gpt (public/gpt-app/).
+ * See docs/agents/deprecated.md — do not extend.
+ */
 import { useState, useCallback, useRef, useEffect } from "react";
 
 // ═══════════════════════════════════════════════════════════════════

@@ -119,6 +119,10 @@ async function refreshDashOnce() {
   }
 }
 
+/**
+ * @deprecated Per-chat AI indexing toggle UX is inactive — do not extend.
+ * See docs/agents/deprecated.md
+ */
 export async function setChatIndexEnabled(jid, enabled) {
   try {
     const r = await fetch('/api/summaries/index-toggle', {

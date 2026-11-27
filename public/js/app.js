@@ -1,3 +1,8 @@
+/**
+ * @deprecated Classic shell bootstrap only (`public/index.html`).
+ * Active UI is `/gpt` → `public/gpt-app/gpt.js`. Do not add features here.
+ * See docs/agents/deprecated.md
+ */
 // Entry point: imports every UI module and runs their init() in the original script order.
 import { initFetchShim } from './fetch-shim.js';
 import { initConstants } from './constants.js';

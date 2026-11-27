@@ -1,6 +1,10 @@
 /**
  * Shared SQLite + row-level tenant isolation (tenant_id on all user data).
  * Idempotent; safe to run on every Database open.
+ *
+ * @deprecated Multi-tenant SaaS product work is inactive. Keep this migration for
+ * local single-workspace compatibility (`legacy-default`); do not invent new tenant models.
+ * See docs/agents/deprecated.md
  */
 import { LEGACY_TENANT_ID } from './tenant-constants.js';
 

@@ -94,6 +94,11 @@ function setMenuItemLabel(item, label) {
   item.appendChild(document.createTextNode(label));
 }
 
+/**
+ * @deprecated Per-chat "AI indexing" menu UX is inactive — do not extend.
+ * Ask AI retrieval still uses backend indexing; this toggle product is not active.
+ * See docs/agents/deprecated.md
+ */
 export function syncIndexChatMenuItem() {
   const item = $('#menu-index-chat');
   if (!item) return;

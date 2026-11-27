@@ -1338,6 +1338,7 @@ function openImportChats() {
   setTimeout(() => document.getElementById('file-input')?.click(), 0);
 }
 
+/** @deprecated Per-chat AI indexing toggle UX is inactive — see docs/agents/deprecated.md */
 async function toggleChatAiIndex(jid, enabled) {
   try {
     const res = await fetch('/api/summaries/index-toggle', {
