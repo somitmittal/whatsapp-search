@@ -498,6 +498,90 @@ function openChatVideoViewer(source, caption = '') {
   root.setAttribute('aria-hidden', 'false');
 }
 
+/** Baileys / DB ids sometimes carry a leading `m`; treat both forms as equal. */
+export function messageIdsMatch(a, b) {
+  if (a == null || b == null) return false;
+  const left = String(a);
+  const right = String(b);
+  if (left === right) return true;
+  const cleanLeft = left.replace(/^m/i, '');
+  const cleanRight = right.replace(/^m/i, '');
+  return left === cleanRight || cleanLeft === right || cleanLeft === cleanRight;
+}
+
+function activeTranscriptContainer() {
+  const gpt = document.getElementById('gpt-wa-view');
+  if (gpt && !gpt.hasAttribute('hidden') && gpt.offsetParent !== null) return gpt;
+  const classic = document.getElementById('cv-messages');
+  if (classic && classic.offsetParent !== null) return classic;
+  return gpt || classic || null;
+}
+
+function findMessageBlockInContainer(container, messageId) {
+  if (!container || messageId == null) return null;
+  return [...container.querySelectorAll('.msg-block[data-message-id], .bubble[data-message-id]')].find((el) => (
+    messageIdsMatch(el.getAttribute('data-message-id'), messageId)
+    || messageIdsMatch(el.getAttribute('data-id'), messageId)
+  )) || null;
+}
+
+/**
+ * Scroll a transcript overflow container so `el` sits near the vertical center.
+ * Prefer this over Element.scrollIntoView — flex + virtualized spacers make
+ * scrollIntoView jump the wrong ancestor (or barely move).
+ */
+export function scrollContainerToElement(container, el, { block = 'center' } = {}) {
+  if (!container || !el) return;
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  const delta = eRect.top - cRect.top;
+  const next = block === 'start'
+    ? container.scrollTop + delta - 12
+    : container.scrollTop + delta - (container.clientHeight / 2) + (eRect.height / 2);
+  container.scrollTop = Math.max(0, next);
+}
+
+function flashMessageBlock(target) {
+  if (!target) return;
+  const block = target.classList?.contains('msg-block') ? target : target.closest?.('.msg-block') || target;
+  block.classList.add('flash', 'msg-focus');
+  setTimeout(() => {
+    block.classList.remove('flash', 'msg-focus');
+  }, 1600);
+}
+
+/**
+ * Jump the open WhatsApp transcript to a message (quoted-reply tap, "show in chat").
+ * Re-windows virtualized chats when the target is off-DOM but still in the loaded set.
+ * @returns {boolean} true if handled locally; false if the caller should fetch/open.
+ */
+export function scrollTranscriptToMessage(messageId) {
+  const mid = String(messageId || '').trim();
+  if (!mid) return false;
+  const container = activeTranscriptContainer();
+  if (!container) return false;
+
+  const painted = findMessageBlockInContainer(container, mid);
+  if (painted) {
+    scrollContainerToElement(container, painted, { block: 'center' });
+    flashMessageBlock(painted);
+    return true;
+  }
+
+  const vt = _vtByEl.get(container);
+  if (vt?.msgs?.length && vt.jid) {
+    const idx = findFocusIndex(vt.msgs, mid);
+    if (idx >= 0) {
+      paintChatTranscript(container, vt.msgs, vt.jid, {
+        forceScroll: false,
+        focusMessageId: mid,
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('click', (event) => {
     const quoteEl = event.target?.closest?.('.msg-quote-inline');
@@ -506,12 +590,8 @@ if (typeof document !== 'undefined') {
       if (qMid) {
         event.preventDefault();
         event.stopPropagation();
-        const targetBlock = document.querySelector(`.msg-block[data-message-id="${CSS.escape(qMid)}"]`);
-        if (targetBlock) {
-          targetBlock.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          targetBlock.classList.add('flash');
-          setTimeout(() => targetBlock.classList.remove('flash'), 1200);
-        } else if (typeof window !== 'undefined' && typeof window.openChatTab === 'function' && store?.activeChat) {
+        if (scrollTranscriptToMessage(qMid)) return;
+        if (typeof window !== 'undefined' && typeof window.openChatTab === 'function' && store?.activeChat) {
           window.openChatTab(store.activeChat, '', { focusMessageId: qMid });
         } else if (typeof window !== 'undefined' && typeof window.openChat === 'function' && store?.activeChat) {
           window.openChat(store.activeChat, qMid);
@@ -1385,19 +1465,21 @@ export function paintChatTranscript(container, msgs, jid, {
   }
 
   if (focusStr) {
-    const cleanFocus = focusStr.replace(/^m/i, '');
-    const target = [...container.querySelectorAll('.bubble[data-message-id], .msg-block[data-message-id]')].find((el) => {
-      const mid = el.getAttribute('data-message-id') || '';
-      const numId = el.getAttribute('data-id') || '';
-      return mid === focusStr || mid === cleanFocus || numId === focusStr || numId === cleanFocus;
-    });
+    const target = findMessageBlockInContainer(container, focusStr);
     if (target) {
-      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      target.classList.add('msg-focus');
-      setTimeout(() => { target.classList.remove('msg-focus'); }, 2800);
+      // Double rAF: spacers/avg height settle before we measure getBoundingClientRect.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          scrollContainerToElement(container, target, { block: 'center' });
+          flashMessageBlock(target);
+        });
+      });
     } else {
       scrollChatToBottom(container);
     }
+    // Unlock VT edge expansion after the jump (bindVtScroll skips while focus is set).
+    const vtAfter = _vtByEl.get(container);
+    if (vtAfter) vtAfter.focusMessageId = null;
   } else {
     restoreChatScroll(container, anchor, { force: forceScroll });
   }
