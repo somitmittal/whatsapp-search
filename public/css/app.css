@@ -1589,9 +1589,14 @@
     display: block; width: min(302px, 88vw);
     padding: 8px; border: 1px solid var(--border); border-radius: 12px;
     background: #fff; box-shadow: 0 8px 24px rgba(11, 20, 26, 0.2);
+    overflow: visible;
   }
   .msg-block.out .wa-reaction-picker { left: auto; right: 0; }
-  .wa-reaction-picker .wa-tb { width: 32px; height: 32px; padding: 2px; font-size: 21px; }
+  .wa-reaction-picker .wa-tb {
+    width: 34px; height: 34px; padding: 0; font-size: 20px;
+    display: inline-flex; align-items: center; justify-content: center;
+    line-height: 1; overflow: visible;
+  }
   .wa-picker-quick {
     display: flex; align-items: center; justify-content: center; gap: 4px;
     padding: 2px 4px 8px; border-bottom: 1px solid var(--border); margin-bottom: 6px;
@@ -1601,7 +1606,8 @@
   .wa-picker-quick .wa-tb-remove-reaction { font-size: 20px; font-weight: 700; color: var(--text2); transform: none; }
   .wa-picker-grid {
     display: grid; grid-template-columns: repeat(8, 34px); gap: 2px;
-    max-height: min(220px, 40vh); overflow-y: auto;
+    max-height: min(260px, 45vh); overflow-y: auto; overflow-x: hidden;
+    padding: 4px 0;
   }
   html[data-theme="dark"] .wa-msg-menu { background: #233138; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
   html[data-theme="dark"] .wa-menu-item { color: #e9edef; }
